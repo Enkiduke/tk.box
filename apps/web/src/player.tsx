@@ -6,6 +6,9 @@ import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js'
 import {readPreference} from './storage.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
+// Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
+export type TimeshiftState={state:'LIVE'|'PAUSED'|'PLAYING_DELAYED'|'EXPIRED'|'STOPPED';behindLiveMs:number;viewerCursorUtc:number;broadcastNowUtc:number};
+export type Timeshift=(action:'pause'|'resume'|'go-live'|'state',displayedUtc?:number)=>Promise<TimeshiftState>;
 export type Delivery='direct'|'remux'|'transcode';
 export type SubtitleTrack={id:string;label:string;language?:string;forced:boolean;selected:boolean;supported:boolean};
 export type AudioTrack={id:string;label:string;language?:string;selected:boolean};
@@ -28,18 +31,26 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,liveSwitching,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
   const [subtitleId,setSubtitleId]=useState<string|null>(null),[subtitleStatus,setSubtitleStatus]=useState<'loading'|'ready'|'failed'>(),[captions,setCaptions]=useState<Caption[]>(),[shift,setShift]=useState(0),lastSubtitle=useRef<string|null>(null);
   const [hover,setHover]=useState<{x:number;time:number}>(),[flash,setFlash]=useState<{icon:string;label?:string;key:number}>();
+  // Go Live reloads the stream at the live edge; `generation` restarts the player effect without a new URL.
+  const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
+  useEffect(()=>{setShifted(undefined);},[url]);
   const clear=()=>{const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
   useImperativeHandle(handle,()=>({stop:clear}),[]);
   useEffect(()=>{
     const video=ref.current!,generation={active:!!url,started:false};state.current=generation;setShift(0);let hls:Hls|undefined,last=0,seekOnLoad=true,failureReported=false;
-    const fail=(message:string)=>{if(!generation.active||failureReported)return;failureReported=true;hls?.stopLoad();onError(message);};
+    const fail=(message:string)=>{
+      if(!generation.active||failureReported)return;failureReported=true;hls?.stopLoad();
+      // A delayed custom-channel viewer whose buffer ran out gets the expiry notice and Go Live, not an error.
+      const shift=timeshiftRef.current;if(!shift){onError(message);return;}
+      void shift('state').then(s=>{if(!generation.active)return;if(s.state==='EXPIRED')setShifted(s);else onError(message);},()=>{if(generation.active)onError(message);});
+    };
     const progress=(kind:'playing'|'paused'|'stopped')=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind);};
     const sync=()=>setView({playing:!video.paused,waiting:!video.paused&&video.readyState<3,time:video.currentTime,duration:video.duration,buffered:video.buffered.length?video.buffered.end(video.buffered.length-1):0,volume:video.volume,muted:video.muted});
     const loaded=()=>{if(generation.active&&seekOnLoad&&startOffsetMs>0&&Number.isFinite(video.duration))video.currentTime=Math.min(startOffsetMs/1000,Math.max(0,video.duration-.1));sync();};
@@ -56,7 +67,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         // hls.js starts at the resume point itself, so it never fetches segments from the beginning first.
         // Subtitles come from tk.box's own WebVTT track, so embedded 608 captions would only duplicate them.
         // Live channels join at the live edge and ride out short relay restarts.
-        seekOnLoad=false;const controller=new Controller(live?{liveDurationInfinity:true,enableCEA708Captions:false}:{startPosition:startOffsetMs/1000,enableCEA708Captions:false});hls=controller;let networkRetries=0,mediaRecovered=false;
+        seekOnLoad=false;const controller=new Controller(live?{liveDurationInfinity:true,enableCEA708Captions:false}:{startPosition:startOffsetMs/1000,enableCEA708Captions:false});hls=controller;hlsRef.current=controller;let networkRetries=0,mediaRecovered=false;
         controller.on(Controller.Events.ERROR,(_event,data)=>{
           if(!data.fatal||!generation.active||failureReported)return;
           if(data.type===Controller.ErrorTypes.NETWORK_ERROR&&networkRetries++<(live?8:3)){window.setTimeout(()=>{if(generation.active&&!failureReported)controller.startLoad();},live?1500:0);return;}
@@ -74,8 +85,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const watchdog=new LivePlaybackWatchdog(),stallCheck=live&&url&&feeds?window.setInterval(()=>{
       if(generation.active&&!failureReported&&watchdog.check(performance.now(),video.currentTime,video.paused||video.seeking))fail('The live stream stopped advancing.');
     },2000):undefined;
-    return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();video.removeAttribute('src');video.load();};
-  },[url]);
+    return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();hlsRef.current=undefined;video.removeAttribute('src');video.load();};
+  },[url,generationKey]);
   // Each title starts from the viewer's subtitle preference, then Plex's selection. Plex stream IDs
   // are unique per server, so a restart of the same title (an audio switch) keeps the current subtitles.
   useEffect(()=>{
@@ -109,7 +120,30 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   };
   const flashKey=useRef(0);
   const showFlash=(icon:string,label?:string)=>setFlash({icon,label,key:++flashKey.current});
-  const toggle=()=>{const video=ref.current!;if(video.paused){void video.play().catch(()=>{});showFlash('play');}else{video.pause();showFlash('pause');}};
+  // On a custom channel, Pause pins this viewer at the broadcast time on screen (the stream's program date-time)
+  // and Play resumes from there, behind live, until Go Live.
+  const [shiftBusy,setShiftBusy]=useState(false);
+  const shiftAction=(action:'pause'|'resume'|'go-live',displayedUtc?:number)=>{
+    if(!timeshift)return Promise.resolve(undefined);setShiftBusy(true);
+    return timeshift(action,displayedUtc).then(s=>{setShifted(s);return s;},e=>{if((e as {code?:string}).code==='BUFFER_EXPIRED')return timeshift('state').then(s=>{setShifted(s);return s;});onError((e as Error).message);return undefined;}).finally(()=>setShiftBusy(false));
+  };
+  const goLive=()=>void shiftAction('go-live').then(s=>{if(s?.state==='LIVE')setGenerationKey(k=>k+1);});
+  const toggle=()=>{
+    const video=ref.current!;
+    if(live&&timeshift){
+      if(shiftBusy||shifted?.state==='EXPIRED')return;
+      if(!video.paused){video.pause();showFlash('pause');const at=hlsRef.current?.playingDate?.getTime();void shiftAction('pause',at??Date.now()-10000);}
+      else void shiftAction('resume').then(s=>{if(s&&s.state!=='EXPIRED'){void video.play().catch(()=>{});showFlash('play');}});
+      return;
+    }
+    if(video.paused){void video.play().catch(()=>{});showFlash('play');}else{video.pause();showFlash('pause');}
+  };
+  // While behind live the gap keeps growing, and the buffer can expire; refresh what the server says.
+  useEffect(()=>{
+    if(!timeshift||!shifted||shifted.state==='LIVE'||shifted.state==='EXPIRED')return;
+    const timer=window.setInterval(()=>void timeshift('state').then(setShifted,()=>{}),5000);return()=>clearInterval(timer);
+  },[timeshift,shifted?.state]);
+  const behind=!!shifted&&shifted.state!=='LIVE';
   const seek=(delta:number)=>{const video=ref.current!;video.currentTime=Math.max(0,Math.min(Number.isFinite(video.duration)?video.duration:Infinity,video.currentTime+delta));showFlash(delta<0?'rewind':'forward',`${delta<0?'−':'+'}${Math.abs(delta)}s`);};
   const changeRate=(next:number)=>{setRate(next);showFlash('speed',`${next}×`);};
   const toggleFullscreen=()=>{if(document.fullscreenElement)void document.exitFullscreen();else void shell.current?.requestFullscreen?.().catch(()=>{});};
@@ -154,10 +188,11 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
-      {!view.playing&&!view.waiting&&!liveSwitching&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
+      {!view.playing&&!view.waiting&&!liveSwitching&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
       {audioSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching audio…</div>}
       {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
+      {shifted?.state==='EXPIRED'&&<div className="player-expired" role="alert"><strong>Buffer expired</strong><span>You were paused longer than this channel keeps, so that part is gone.</span><button className="primary" disabled={shiftBusy} onClick={goLive}>Go Live</button></div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
       {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
         {panel==='channels'?channels:panel==='subtitles'?<>
@@ -200,7 +235,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           <button className="icon-button" onClick={()=>seek(10)} aria-label="Forward 10 seconds" title="Forward 10 seconds (l)"><Icon name="forward" size={26}/></button></>}
           <div className="volume"><button className="icon-button" onClick={()=>{ref.current!.muted=!view.muted;}} aria-label={view.muted?'Unmute':'Mute'} title={view.muted?'Unmute (m)':'Mute (m)'}><Icon name={view.muted||view.volume===0?'mute':'volume'} size={24}/></button>
             <input type="range" aria-label="Volume" min={0} max={1} step={.05} value={view.muted?0:view.volume} style={{'--level':`${(view.muted?0:view.volume)*100}%`} as CSSProperties} onChange={e=>{const video=ref.current!;video.volume=Number(e.target.value);video.muted=video.volume===0;}}/></div>
-          {live?<span className="player-live"><i aria-hidden="true"/>LIVE</span>:<button className="player-time" onClick={()=>setRemaining(r=>!r)} title="Show elapsed or remaining time">
+          {live&&behind?<button className="player-live behind" onClick={goLive} disabled={shiftBusy||shifted.state==='EXPIRED'} title="Jump to what's on now">{shifted.state==='PAUSED'?'Paused':'Behind'} · −{timecode(shifted.behindLiveMs/1000)}<strong>Go Live</strong></button>:live?<span className="player-live"><i aria-hidden="true"/>LIVE</span>:<button className="player-time" onClick={()=>setRemaining(r=>!r)} title="Show elapsed or remaining time">
             {remaining&&known?`−${timecode(view.duration-position)}`:timecode(position)}{known&&<span> / {timecode(view.duration)}</span>}
           </button>}
           <span className="grow"/>

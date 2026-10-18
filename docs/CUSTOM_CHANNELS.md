@@ -112,6 +112,14 @@ Phase 2 is implemented: `services/custom-tv.ts` and `providers/part-proxy.ts`, t
 - Plex is read with the grant of the most recent viewer to tune or refresh. Each viewer's own library access is checked on every playlist.
 - Not yet verified: real Plex media on the Linux host, or the HTTP part proxy (this sandbox blocks loopback sockets).
 
+Phase 3 is implemented as well: Pause, Resume and Go Live, in `services/custom-tv.ts` (reusing `SegmentBuffer`, `ViewerCursor` and `renderManifest` from `streaming/buffer.ts`), the player and Settings → Playback. How it works:
+
+- FFmpeg no longer deletes segments. The station indexes each new segment by broadcast time and keeps about 90 seconds normally. While any viewer is behind live it keeps up to `pauseRetentionMinutes`, still within `SEGMENT_CACHE_MAX_BYTES` per channel and a 1 GiB free-space floor.
+- Every viewer gets its own manifest: the last 8 segments when live, or a window starting 30 seconds before its own cursor when paused or delayed, with `EXT-X-START` and program date-times. Pause sends hls.js's `playingDate`, which is in server time, so browser clock skew doesn't matter.
+- An expired cursor (past retention, removed segments, retention lowered, or low disk) answers `BUFFER_EXPIRED`. The player shows "Buffer expired" with Go Live, which reloads the stream at the live edge. Resume never jumps to live by itself.
+- Settings shows buffer use, the longest buffered window and viewers behind live, warns before retention is lowered, and flags low disk.
+- Not verified in a browser yet. Restoring a paused session after a page reload is out of scope (spec: LATER).
+
 1. **Channels and programming.** Migration, store, admin API, Channel Manager UI with picker, arrange tools, drafts, publish and preview. Custom rows in the guide (not yet tunable). Tests: arrange tools, the auto-add insertion rule, publish/rebase.
 2. **Playout.** Station pipeline, tune, boundaries, idle stop, viewer authorization, unavailable slate. Requires a real check on the Linux host with real Plex files.
 3. **Pause/Resume/Go Live.** Viewer cursors, retention setting, expiry, admin cache diagnostics.

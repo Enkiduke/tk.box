@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, statfs, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AppError, requireThat } from '../errors.js';
 import { opaque } from '../security/vault.js';
 import { assertVideoEncode, type EncoderBudget } from '../streaming/policy.js';
+import { SegmentBuffer, ViewerCursor, renderManifest, type Segment } from '../streaming/buffer.js';
 import type { CustomChannelStore } from '../persistence/custom-channels.js';
 import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import type { LocalMedia } from '../providers/local-media.js';
@@ -15,10 +16,14 @@ import type { LiveDelivery, LiveSource } from './live-tv.js';
 type Station = {
   key: string; channelId: string; dir: string; viewers: Set<string>; grant: PlexGrant; stopped: boolean; child?: ChildProcess;
   ready: Promise<void>; output: boolean; stderr: string; library?: string; encode: boolean; source?: LiveSource;
+  // The retained window, indexed by broadcast time. `buffer` mirrors it for viewer cursors.
+  segments: Segment[]; buffer: SegmentBuffer; lastSequence: number; discontinuities: number; indexer?: NodeJS.Timeout; indexing: boolean; pressure: boolean; checkedDisk: number;
 };
-type Viewer = { id: string; hash: string; channelId: string; seen: number };
+type Viewer = { id: string; hash: string; channelId: string; seen: number; cursor: ViewerCursor };
 type Input = { path: string; demuxer?: string; protocols: string };
+export type TimeshiftState = { state: string; viewerCursorUtc: number; broadcastNowUtc: number; behindLiveMs: number; bufferStartUtc?: number; bufferEndUtc?: number };
 const segmentName = /^seg-\d{6}\.ts$/;
+const LIVE_WINDOW_MS = 90000, LIVE_SEGMENTS = 8, LEAD_IN_MS = 30000, FREE_FLOOR = 1024 ** 3;
 const sleep = (ms: number) => new Promise(done => setTimeout(done, Math.max(0, ms)).unref());
 
 // Custom channel playout. A channel is a schedule, not a running video: a station starts when the first viewer
@@ -27,14 +32,18 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, Math.max(0, m
 // Each program is one FFmpeg run, read in real time, appending to one shared HLS window behind a discontinuity.
 // Browser-safe H.264 is copied; other 1080p-or-lower video is encoded within the shared encoder budget; audio is AAC.
 // Plex history is never touched: media is read from disk or as a plain part request, and no timeline is reported.
+//
+// Pause, Resume and Go Live are per viewer. Segments are shared and kept, by broadcast time, for as long as a paused
+// or delayed viewer needs them (up to the pause retention setting, the byte cap and a free-space floor). Each viewer
+// gets its own manifest: the live edge, or a window starting at its own cursor. The station's clock never pauses.
 export class CustomTv {
   private stations = new Map<string, Station>();
   private viewers = new Map<string, Viewer>();
   private root: string;
   private timer: NodeJS.Timeout;
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private local: LocalMedia, private parts: PartProxy, private budget: EncoderBudget, cacheDir: string,
-    private ffmpeg = 'ffmpeg', private log: (message: string, detail: Record<string, unknown>) => void = () => {},
-    private options = { maxStations: 6, maxPerViewer: 4, idleMs: 45000, readyMs: 30000 }) {
+    private retentionMs: () => number, private maxBytes: number, private ffmpeg = 'ffmpeg', private log: (message: string, detail: Record<string, unknown>) => void = () => {},
+    private options = { maxStations: 6, maxPerViewer: 4, idleMs: 45000, readyMs: 30000, indexMs: 1000, freeBytes: (dir: string) => statfs(dir).then(s => s.bavail * s.bsize) }) {
     this.root = join(cacheDir, 'custom', `${process.pid}-${opaque().slice(0, 8)}`);
     void this.reapStale(join(cacheDir, 'custom'));
     this.timer = setInterval(() => this.sweep(), 10000); this.timer.unref();
@@ -46,50 +55,75 @@ export class CustomTv {
     let station = this.stations.get(channelId);
     if (!station) {
       requireThat(this.stations.size < this.options.maxStations, 'LIVE_CAPACITY_REACHED', 'Too many channels are being watched right now. Please try again shortly.', 503);
-      const key = opaque().slice(0, 16), created: Station = { key, channelId, dir: join(this.root, key), viewers: new Set(), grant, stopped: false, ready: Promise.resolve(), output: false, stderr: '', encode: false };
+      const key = opaque().slice(0, 16);
+      const created: Station = { key, channelId, dir: join(this.root, key), viewers: new Set(), grant, stopped: false, ready: Promise.resolve(), output: false, stderr: '', encode: false,
+        segments: [], buffer: new SegmentBuffer(this.maxBytes, () => this.retained(created)), lastSequence: -1, discontinuities: 0, indexing: false, pressure: false, checkedDisk: 0 };
       this.stations.set(channelId, created);
-      created.ready = mkdir(created.dir, { recursive: true, mode: 0o700 }).then(() => { void this.run(created); return this.waitReady(created); });
+      created.ready = mkdir(created.dir, { recursive: true, mode: 0o700 }).then(() => {
+        created.indexer = setInterval(() => void this.index(created), this.options.indexMs); created.indexer.unref();
+        void this.run(created); return this.waitReady(created);
+      });
       created.ready.catch(() => this.destroy(created));
       station = created;
     }
     station.grant = grant;
-    const viewer: Viewer = { id: opaque(), hash, channelId, seen: Date.now() };
+    const target = station, viewer: Viewer = { id: opaque(), hash, channelId, seen: Date.now(), cursor: new ViewerCursor(station.buffer, () => this.effectiveRetention(target)) };
     this.viewers.set(viewer.id, viewer); station.viewers.add(viewer.id);
     try { await station.ready; } catch (e) { this.stop(viewer.id, hash); throw e; }
     requireThat(this.viewers.has(viewer.id), 'SESSION_NOT_FOUND', 'Live session was stopped.', 409);
-    this.authorize(station, grant, viewer);
-    return { id: viewer.id, streamUrl: `/api/v1/live/sessions/${viewer.id}/index.m3u8`, delivery: (station.encode ? 'transcode' : 'remux') as LiveDelivery, channel, source: station.source ?? {} };
+    this.authorize(station, grant, viewer, station.library ? [station.library] : []);
+    return { id: viewer.id, streamUrl: `/api/v1/live/sessions/${viewer.id}/index.m3u8`, delivery: (station.encode ? 'transcode' : 'remux') as LiveDelivery, channel, source: station.source ?? {}, timeshift: true };
   }
   private owned(id: string, hash: string) {
     const viewer = this.viewers.get(id);
     requireThat(viewer?.hash === hash, 'SESSION_NOT_FOUND', 'Live session is unavailable.', 404);
-    return viewer;
-  }
-  // Every viewer needs access to the library of what is airing, checked again on each playlist.
-  private authorize(station: Station, grant: PlexGrant, viewer: Viewer) {
-    if (station.library && !grant.libraries.some(l => l.key === station.library)) { this.stop(viewer.id, viewer.hash); throw new AppError('PLEX_ACCESS_DENIED', 'This program isn’t available to your Plex account.', 403); }
-  }
-  async playlist(id: string, hash: string, grant: PlexGrant) {
-    const viewer = this.owned(id, hash), station = this.stations.get(viewer.channelId);
-    if (!station || !this.store.isVisible(viewer.channelId)) { this.stop(id, hash); throw new AppError('CHANNEL_NOT_FOUND', 'Channel is no longer available.', 404); }
-    this.authorize(station, grant, viewer); station.grant = grant; viewer.seen = Date.now();
-    let text: string;
-    try { text = await readFile(join(station.dir, 'index.m3u8'), 'utf8'); } catch { throw new AppError('LIVE_UNAVAILABLE', 'The channel stream is restarting.', 503, true); }
-    requireThat(text.startsWith('#EXTM3U'), 'LIVE_UNAVAILABLE', 'The channel stream is restarting.', 503);
-    return text.split(/\r?\n/).filter(line => !line || line.startsWith('#') || segmentName.test(line.trim())).join('\n');
-  }
-  async segment(id: string, hash: string, name: string) {
-    requireThat(segmentName.test(name), 'INVALID_MEDIA', 'Unsupported stream path.', 400);
-    const viewer = this.owned(id, hash), station = this.stations.get(viewer.channelId);
+    const station = this.stations.get(viewer.channelId);
     requireThat(station, 'SESSION_NOT_FOUND', 'Live session is unavailable.', 404);
     viewer.seen = Date.now();
+    return { viewer, station };
+  }
+  // Every viewer needs access to the library of each program it is sent, checked on every manifest.
+  private authorize(station: Station, grant: PlexGrant, viewer: Viewer, libraries: string[]) {
+    if (libraries.some(l => l && !grant.libraries.some(g => g.key === l))) { this.stop(viewer.id, viewer.hash); throw new AppError('PLEX_ACCESS_DENIED', 'This program isn’t available to your Plex account.', 403); }
+    station.grant = grant;
+  }
+  async playlist(id: string, hash: string, grant: PlexGrant, now = Date.now()) {
+    const { viewer, station } = this.owned(id, hash);
+    if (!this.store.isVisible(viewer.channelId)) { this.stop(id, hash); throw new AppError('CHANNEL_NOT_FOUND', 'Channel is no longer available.', 404); }
+    const state = viewer.cursor.inspect(now);
+    requireThat(state.state !== 'EXPIRED', 'BUFFER_EXPIRED', 'Buffer expired. Go Live to continue.', 410);
+    if (!station.segments.length) throw new AppError('LIVE_UNAVAILABLE', 'The channel stream is starting.', 503, true);
+    // Live viewers follow the edge; delayed viewers get a window from just before their own position.
+    const live = state.state === 'LIVE', window = live ? station.segments.slice(-LIVE_SEGMENTS) : station.segments.filter(s => s.end > state.cursor - LEAD_IN_MS);
+    this.authorize(station, grant, viewer, [...new Set(window.map(s => s.programId))]);
+    return renderManifest(window, false, live ? undefined : state.cursor);
+  }
+  async segment(id: string, hash: string, name: string, now = Date.now()) {
+    requireThat(segmentName.test(name), 'INVALID_MEDIA', 'Unsupported stream path.', 400);
+    const { viewer, station } = this.owned(id, hash);
+    requireThat(viewer.cursor.inspect(now).state !== 'EXPIRED', 'BUFFER_EXPIRED', 'Buffer expired. Go Live to continue.', 410);
+    requireThat(station.segments.some(s => s.uri === name), 'SEGMENT_EXPIRED', 'Segment is no longer available.', 404);
     const path = join(station.dir, name);
     const size = await stat(path).then(s => s.size, () => { throw new AppError('SEGMENT_EXPIRED', 'Segment is no longer available.', 404); });
     return { size, body: createReadStream(path) };
   }
+  // Pause pins the viewer at the broadcast time it was showing (the stream's program date-time, which is server time).
+  pause(id: string, hash: string, displayedUtc: number, now = Date.now()) {
+    requireThat(Number.isFinite(displayedUtc), 'INVALID_CURSOR', 'Invalid presentation time.');
+    const { viewer, station } = this.owned(id, hash), first = station.segments[0], last = station.segments.at(-1);
+    requireThat(first && last, 'BUFFER_EXPIRED', 'Nothing is buffered to pause on yet.', 409);
+    viewer.cursor.pause(Math.round(Math.max(first.start, Math.min(displayedUtc, last.end - 1, now))), now);
+    return this.state(id, hash, now);
+  }
+  resume(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.resume(now); return this.state(id, hash, now); }
+  goLive(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.goLive(); return this.state(id, hash, now); }
+  state(id: string, hash: string, now = Date.now()): TimeshiftState {
+    const { viewer, station } = this.owned(id, hash), s = viewer.cursor.inspect(now);
+    return { state: s.state, viewerCursorUtc: s.cursor, broadcastNowUtc: now, behindLiveMs: s.state === 'LIVE' ? 0 : s.behindLiveMs, bufferStartUtc: station.segments[0]?.start, bufferEndUtc: station.segments.at(-1)?.end };
+  }
   stop(id: string, hash: string) {
     const viewer = this.viewers.get(id); if (!viewer || viewer.hash !== hash) return;
-    this.viewers.delete(id);
+    viewer.cursor.stop(); this.viewers.delete(id);
     const station = this.stations.get(viewer.channelId);
     station?.viewers.delete(id);
     if (station && !station.viewers.size) this.destroy(station);
@@ -98,6 +132,55 @@ export class CustomTv {
   close() { clearInterval(this.timer); for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
   get count() { return this.stations.size; }
+  // Administrator diagnostics: what the pause buffer actually holds.
+  usage(now = Date.now()) {
+    const stations = [...this.stations.values()], delayed = [...this.viewers.values()].filter(v => ['PAUSED', 'PLAYING_DELAYED'].includes(v.cursor.inspect(now).state));
+    return { bytes: stations.reduce((n, s) => n + s.buffer.bytes, 0), maxBytesPerChannel: this.maxBytes, stations: stations.length, delayedViewers: delayed.length,
+      bufferedMs: Math.max(0, ...stations.map(s => s.segments.length ? s.segments.at(-1)!.end - s.segments[0]!.start : 0)), storagePressure: stations.some(s => s.pressure) };
+  }
+
+  private delayed(s: Station) { return [...s.viewers].some(id => { const state = this.viewers.get(id)?.cursor.state; return state === 'PAUSED' || state === 'PLAYING_DELAYED'; }); }
+  // How far back segments are kept: the pause retention while someone is behind live, else just the live window.
+  private retained(s: Station) { return !s.pressure && this.delayed(s) ? Math.max(LIVE_WINDOW_MS, this.retentionMs()) : LIVE_WINDOW_MS; }
+  // Low disk shortens what a delayed viewer may rely on, so their cursor expires instead of silently jumping.
+  private effectiveRetention(s: Station) { return s.pressure ? LIVE_WINDOW_MS : this.retentionMs(); }
+  // Follows FFmpeg's playlist and adds each new segment to the retained window, timed by broadcast clock.
+  private async index(s: Station, now = Date.now()) {
+    if (s.indexing || s.stopped) return; s.indexing = true;
+    try {
+      const text = await readFile(join(s.dir, 'index.m3u8'), 'utf8').catch(() => '');
+      let discontinuity = false, duration = 0;
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line === '#EXT-X-DISCONTINUITY') discontinuity = true;
+        else if (line.startsWith('#EXTINF:')) duration = Number.parseFloat(line.slice(8)) * 1000;
+        else if (segmentName.test(line)) {
+          const sequence = Number(line.slice(4, 10));
+          if (sequence > s.lastSequence && duration > 0) {
+            const bytes = await stat(join(s.dir, line)).then(x => x.size, () => 0);
+            if (!bytes) break;
+            const previous = s.segments.at(-1), start = Math.round(Math.max(previous?.end ?? 0, now - duration)), marked = discontinuity && !!previous;
+            s.segments.push({ id: line, uri: line, start, end: start + Math.max(1, Math.round(duration)), bytes, programId: s.library ?? '', revision: 0, sequence, discontinuity: marked, discontinuitySequence: s.discontinuities });
+            if (marked) s.discontinuities++;
+            s.lastSequence = sequence;
+          }
+          discontinuity = false; duration = 0;
+        }
+      }
+      if (now - s.checkedDisk > 10000) { s.checkedDisk = now; s.pressure = await this.options.freeBytes(s.dir).then(free => free < FREE_FLOOR, () => false); }
+      await this.prune(s, now);
+    } finally { s.indexing = false; }
+  }
+  private async prune(s: Station, now: number) {
+    const keepFrom = now - this.retained(s);
+    let bytes = s.segments.reduce((n, x) => n + x.bytes, 0);
+    while (s.segments.length > LIVE_SEGMENTS && (bytes > this.maxBytes || s.segments[0]!.end <= keepFrom)) {
+      const old = s.segments.shift()!; bytes -= old.bytes;
+      // The next segment's discontinuity count already counts tags before it, so removal keeps HLS numbering right.
+      await unlink(join(s.dir, old.uri)).catch(() => {});
+    }
+    s.buffer.replace(s.segments);
+  }
 
   // The playout loop: always play what the clock says is airing, from where it is now.
   private async run(s: Station) {
@@ -147,14 +230,15 @@ export class CustomTv {
     return this.exec(s, ['-re', '-f', 'lavfi', '-i', 'color=c=0x0e0e12:s=1280x720:r=25', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', (ms / 1000).toFixed(3),
       '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-g', '50', '-c:a', 'aac', '-b:a', '64k']);
   }
-  // Runs one FFmpeg into the station's HLS window and resolves when it exits: true for a clean finish.
+  // Runs one FFmpeg into the station's HLS output and resolves when it exits: true for a clean finish.
+  // FFmpeg never deletes segments; the retained window above decides what is kept.
   private exec(s: Station, args: string[]) {
     if (s.stopped) return Promise.resolve(false);
     const append = s.output, out = (name: string) => join(s.dir, name).replaceAll('\\', '/');
     const child = spawn(this.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...args, '-max_muxing_queue_size', '1024',
       // Short segments keep tuning quick: the first one is listed as soon as two seconds are read.
-      '-f', 'hls', '-hls_time', '2', '-hls_list_size', '15', '-hls_delete_threshold', '8',
-      '-hls_flags', `delete_segments+independent_segments+omit_endlist+temp_file${append ? '+append_list+discont_start' : ''}`,
+      '-f', 'hls', '-hls_time', '2', '-hls_list_size', '15',
+      '-hls_flags', `independent_segments+omit_endlist+temp_file${append ? '+append_list+discont_start' : ''}`,
       '-hls_segment_filename', out('seg-%06d.ts'), out('index.m3u8')], { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     s.child = child; s.stderr = '';
     child.stderr!.on('data', (b: Buffer) => { s.stderr = (s.stderr + b.toString()).slice(-2000); });
@@ -163,8 +247,9 @@ export class CustomTv {
       const end = (ok: boolean) => { if (finished) return; finished = true; if (s.child === child) s.child = undefined; done(ok); };
       child.on('error', () => { s.stderr += '\nFFmpeg could not be started.'; end(false); });
       child.on('close', code => {
-        // Once FFmpeg has written a playlist, later programs append to it.
-        void readFile(join(s.dir, 'index.m3u8'), 'utf8').then(t => { if (/#EXTINF/.test(t)) s.output = true; }, () => {}).finally(() => {
+        // Index what this program wrote before the next one appends; later programs continue the same playlist.
+        void this.index(s).finally(() => {
+          if (s.segments.length) s.output = true;
           if (code !== 0 && !s.stopped) this.log('custom playout exited', { channelId: s.channelId, code, detail: this.redact(s.stderr) });
           end(code === 0);
         });
@@ -175,16 +260,16 @@ export class CustomTv {
     const deadline = Date.now() + this.options.readyMs;
     while (Date.now() < deadline) {
       if (s.stopped) throw new AppError('MEDIA_CANCELLED', 'Live session was stopped.', 409);
-      try { if ((await readFile(join(s.dir, 'index.m3u8'), 'utf8')).match(/#EXTINF/g)?.length) { s.output = true; return; } } catch { /* not written yet */ }
+      if (s.segments.length) { s.output = true; return; }
       await sleep(250);
     }
     throw new AppError('LIVE_TUNE_TIMEOUT', 'The channel did not start in time. Please try again.', 504, true);
   }
   private destroy(s: Station) {
     if (s.stopped) return;
-    s.stopped = true;
+    s.stopped = true; clearInterval(s.indexer);
     if (this.stations.get(s.channelId) === s) this.stations.delete(s.channelId);
-    for (const id of s.viewers) this.viewers.delete(id);
+    for (const id of s.viewers) { this.viewers.get(id)?.cursor.stop(); this.viewers.delete(id); }
     const child = s.child;
     const exited = !child || child.exitCode !== null ? Promise.resolve() : new Promise<void>(done => { child.once('close', () => done()); child.kill('SIGKILL'); });
     void exited.then(() => rm(s.dir, { recursive: true, force: true, maxRetries: 5 })).catch(() => {});

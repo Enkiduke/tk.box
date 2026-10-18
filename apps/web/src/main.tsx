@@ -3,7 +3,7 @@ import {createRoot} from 'react-dom/client';
 import type {Principal,Library,CatalogItem} from '../../../packages/contracts/src/index.js';
 import {api,ApiClientError} from './api.js';
 import {useApi,useRoute,useScrolled,link,invalidate} from './hooks.js';
-import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type MediaTracks,type SourceInfo} from './player.js';
+import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo} from './player.js';
 import {Icon,ErrorNotice,Loading,Empty,ActionNotice} from './components.js';
 import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
@@ -59,6 +59,11 @@ function App() {
     // Keep the station's feed list so the player can switch feeds without a guide lookup.
     const next:LiveSession={...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}};sessionRef.current=next;setSession(next);window.location.hash='watch';
   }),[]);
+  // Pause, Resume and Go Live for the current custom-channel session.
+  const timeshift=useCallback<Timeshift>((step,displayedUtc)=>{
+    const current=sessionRef.current;if(current?.kind!=='live')return Promise.reject(new Error('Nothing is playing.'));
+    return step==='state'?api<TimeshiftState>(`/live/sessions/${current.id}/state`):api<TimeshiftState>(`/live/sessions/${current.id}/${step}`,'POST',step==='pause'?{displayedUtc:Math.round(displayedUtc??Date.now())}:{});
+  },[]);
   const playbackError=(message:string)=>{
     const current=sessionRef.current;
     if(current?.kind!=='live'||!current.channel.stack){setError(message);return;}
@@ -131,7 +136,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} source={session?.source} subtitleBase={vod&&`/api/v1/playback/sessions/${vod.id}/subtitles/`} audioSwitching={switchingAudio} liveSwitching={switchingLive} onAudioChange={vod&&changeAudio} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={playbackError}/>
+    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} source={session?.source} subtitleBase={vod&&`/api/v1/playback/sessions/${vod.id}/subtitles/`} audioSwitching={switchingAudio} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&changeAudio} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={playbackError}/>
     {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error}/>}
   </div>;
 }

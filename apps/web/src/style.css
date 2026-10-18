@@ -899,12 +899,12 @@ tr:hover .row-actions button{color:var(--text)}
 .program-text strong{font-size:14px}
 .program-text small{font-size:12.5px;color:var(--muted)}
 .program-runtime{flex:none;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-.choice-list{display:flex;flex-direction:column;gap:6px}
-.choice{display:flex;flex-direction:row;align-items:flex-start;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;color:var(--text);cursor:pointer}
-.choice.selected{border-color:var(--muted);background:var(--surface-2)}
-.choice input{flex:none;width:auto;margin-top:3px}
-.choice span{display:flex;flex-direction:column;gap:3px}
-.choice small{color:var(--muted);font-size:12.5px;line-height:1.45}
+.arrange-choices{display:flex;flex-direction:column;gap:6px}
+.arrange-choice{display:flex;flex-direction:row;align-items:flex-start;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;color:var(--text);cursor:pointer}
+.arrange-choice.selected{border-color:var(--muted);background:var(--surface-2)}
+.arrange-choice input{flex:none;width:auto;margin-top:3px}
+.arrange-choice span{display:flex;flex-direction:column;gap:3px}
+.arrange-choice small{color:var(--muted);font-size:12.5px;line-height:1.45}
 dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .picker{display:flex;flex-direction:column;gap:14px}
 .picker h2{margin:0 36px 0 0}
@@ -940,3 +940,10 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
   .handoff{flex-direction:column;align-items:stretch}
   .handoff>svg{transform:rotate(90deg);align-self:center}
 }
+/* Custom channel Pause/Resume/Go Live: the behind-live chip and the expired-buffer notice. */
+.player-live.behind{gap:10px;border:0;background:var(--glass);border:1px solid var(--glass-line);color:var(--text);font-weight:600;letter-spacing:0;font-variant-numeric:tabular-nums;cursor:pointer}
+.player-live.behind strong{padding:2px 8px;border-radius:4px;background:rgba(229,57,53,.9);color:#fff;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase}
+.player-live.behind:hover:not(:disabled){background:rgba(255,255,255,.14)}
+.player-expired{position:absolute;top:50%;left:50%;z-index:4;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;max-width:min(420px,calc(100% - 32px));padding:22px 26px;border-radius:14px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--glass-line);text-align:center}
+.player-expired strong{font-size:17px}
+.player-expired span{font-size:13.5px;color:var(--muted);line-height:1.5}

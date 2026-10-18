@@ -2,7 +2,11 @@
 
 Updated October 17, 2026. **Milestone 0 foundations implemented; integration acceptance remains OPEN.** Live remote Plex owner setup is verified; production deployment and real media/provider streaming acceptance remain open.
 
-## Latest pass: custom channels, phase 2 (playout)
+## Latest pass: custom channels, phase 3 (Pause, Resume, Go Live)
+
+- On custom channels the player's Pause button pins that viewer's position, and Play continues from there, behind live, showing how far behind. Go Live jumps back to what's on now. Other viewers and the schedule aren't affected. Segments are shared and kept by broadcast time only while someone needs them, up to the pause retention setting (default 30 minutes), the per-channel disk cap and a free-space floor. Past that, the viewer sees "Buffer expired" with Go Live. Settings → Playback shows buffer use and warns before retention is lowered. IPTV stays strictly live.
+
+## Previous pass: custom channels, phase 2 (playout)
 
 - Custom channels can be watched (October 18, 2026). The first viewer starts a shared station that joins the airing program at its clock position, and each following program starts on schedule behind an HLS discontinuity. The station stops when the last viewer leaves. H.264 is copied; other video at 1080p or below is encoded within the shared encoder budget. Media is read from disk in same-host mode, otherwise through a loopback-only proxy, so the Plex token stays out of FFmpeg's arguments. No Plex timeline or watch state is ever written. Details and limits: [Custom channels](CUSTOM_CHANNELS.md#build-phases).
 
