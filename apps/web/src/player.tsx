@@ -1,0 +1,245 @@
+import {forwardRef,useEffect,useImperativeHandle,useRef,useState,type CSSProperties,type ReactNode,type RefObject} from 'react';
+import type Hls from 'hls.js';
+import {Icon} from './components.js';
+import {timecode} from './hooks.js';
+import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
+import {readPreference} from './storage.js';
+export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
+export type Delivery='direct'|'remux'|'transcode';
+export type SubtitleTrack={id:string;label:string;language?:string;forced:boolean;selected:boolean;supported:boolean};
+export type AudioTrack={id:string;label:string;language?:string;selected:boolean};
+export type MediaTracks={subtitles:SubtitleTrack[];audio:AudioTrack[]};
+export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string};
+const deliveryLabel:Record<Delivery,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
+const deliveryDetail:Record<Delivery,string>={direct:'Playing the original file.',remux:'Original video, repackaged for this browser.',transcode:'Converted by Plex for this browser.'};
+const liveDetail:Partial<Record<Delivery,string>>={remux:'Channel video, repackaged for this browser.',transcode:'Channel video, converted by tk.box for this browser.'};
+const speeds=[.5,.75,1,1.25,1.5,2],sizes=[['s','Small'],['m','Medium'],['l','Large']] as const;
+type Size=typeof sizes[number][0];type Panel='subtitles'|'settings'|'channels';
+// Viewer conveniences only; Plex's own track selection is the default.
+const stored=(key:string)=>{try{return readPreference(localStorage,`tk.box.player.${key}`);}catch{return null;}};
+const store=(key:string,value:string)=>{try{localStorage.setItem(`tk.box.player.${key}`,value);}catch{/* storage unavailable */}};
+const resolution=(source?:SourceInfo)=>{const h=source?.height,w=source?.width;if(!h)return undefined;return w&&w>=3200||h>=2000?'4K':h>=1000?'1080p':h>=700?'720p':`${h}p`;};
+const codec=(name?:string)=>name?({h264:'H.264',hevc:'HEVC',h265:'HEVC',av1:'AV1',vp9:'VP9',aac:'AAC',ac3:'Dolby Digital',eac3:'Dolby Digital+',truehd:'TrueHD',dca:'DTS',dts:'DTS',flac:'FLAC',opus:'Opus',mp3:'MP3'}[name.toLowerCase()]??name.toUpperCase()):undefined;
+function initialSubtitle(tracks:SubtitleTrack[]) {
+  const usable=tracks.filter(t=>t.supported),preference=stored('subtitles');
+  if(preference==='off')return null;
+  if(preference)return (usable.find(t=>t.language===preference&&!t.forced)??usable.find(t=>t.language===preference))?.id??null;
+  return usable.find(t=>t.selected)?.id??null;
+}
+export type Feed={id:string;label:string;quality?:string};
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+  const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
+  const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
+  const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
+  const [subtitleId,setSubtitleId]=useState<string|null>(null),[subtitleStatus,setSubtitleStatus]=useState<'loading'|'ready'|'failed'>(),[captions,setCaptions]=useState<Caption[]>(),[shift,setShift]=useState(0),lastSubtitle=useRef<string|null>(null);
+  const [hover,setHover]=useState<{x:number;time:number}>(),[flash,setFlash]=useState<{icon:string;label?:string;key:number}>();
+  const clear=()=>{const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
+  useImperativeHandle(handle,()=>({stop:clear}),[]);
+  useEffect(()=>{
+    const video=ref.current!,generation={active:!!url,started:false};state.current=generation;setShift(0);let hls:Hls|undefined,last=0,seekOnLoad=true;
+    const progress=(kind:'playing'|'paused'|'stopped')=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind);};
+    const sync=()=>setView({playing:!video.paused,waiting:!video.paused&&video.readyState<3,time:video.currentTime,duration:video.duration,buffered:video.buffered.length?video.buffered.end(video.buffered.length-1):0,volume:video.volume,muted:video.muted});
+    const loaded=()=>{if(generation.active&&seekOnLoad&&startOffsetMs>0&&Number.isFinite(video.duration))video.currentTime=Math.min(startOffsetMs/1000,Math.max(0,video.duration-.1));sync();};
+    const playing=()=>{generation.started=true;progress('playing');sync();};
+    const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
+    const pause=()=>{progress('paused');sync();},ended=()=>{progress('stopped');sync();},error=()=>{if(generation.active&&video.error?.code!==1)onError('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
+    const events={loadedmetadata:loaded,play:playing,timeupdate:time,pause,ended,error,waiting:sync,playing:sync,volumechange:sync,progress:sync,seeked:sync} as const;
+    for(const [name,listener] of Object.entries(events))video.addEventListener(name,listener);
+    if(url) {
+      // Recent Chromium answers "maybe" for native HLS, but hls.js over MSE is the tested path; native HLS is the fallback without MSE.
+      const mse='MediaSource' in window||'ManagedMediaSource' in window;
+      if(url.endsWith('.m3u8')&&(mse||!video.canPlayType('application/vnd.apple.mpegurl')))void import('hls.js').then(({default:Controller})=>{
+        if(!generation.active)return;if(!Controller.isSupported()){onError('This browser cannot play this stream.');return;}
+        // hls.js starts at the resume point itself, so it never fetches segments from the beginning first.
+        // Subtitles come from tk.box's own WebVTT track, so embedded 608 captions would only duplicate them.
+        // Live channels join at the live edge and ride out short relay restarts.
+        seekOnLoad=false;const controller=new Controller(live?{liveDurationInfinity:true,enableCEA708Captions:false}:{startPosition:startOffsetMs/1000,enableCEA708Captions:false});hls=controller;let networkRetries=0,mediaRecovered=false;
+        controller.on(Controller.Events.ERROR,(_event,data)=>{
+          if(!data.fatal||!generation.active)return;
+          if(data.type===Controller.ErrorTypes.NETWORK_ERROR&&networkRetries++<(live?8:3)){window.setTimeout(()=>{if(generation.active)controller.startLoad();},live?1500:0);return;}
+          if(data.type===Controller.ErrorTypes.MEDIA_ERROR&&(!mediaRecovered||live)){mediaRecovered=true;controller.recoverMediaError();return;}
+          onError('Playback could not continue. The stream stopped responding or is incompatible with this browser.');controller.destroy();
+        });
+        controller.on(Controller.Events.FRAG_LOADED,()=>{networkRetries=0;});
+        controller.on(Controller.Events.INIT_PTS_FOUND,(_event,data)=>{if(generation.active&&data.id==='main')setShift(timelineShift(data.initPTS,data.timescale));});
+        controller.loadSource(url);controller.attachMedia(video);void video.play().catch(()=>{});
+      }).catch(()=>{if(generation.active)onError('The streaming player could not be loaded.');});
+      else {video.src=url;void video.play().catch(()=>{});}
+    }
+    // Paused sessions keep the server-side stream alive and the Plex position current.
+    const heartbeat=window.setInterval(()=>{if(video.paused&&!video.ended)progress('paused');},60000);
+    return()=>{generation.active=false;clearInterval(heartbeat);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();video.removeAttribute('src');video.load();};
+  },[url]);
+  // Each title starts from the viewer's subtitle preference, then Plex's selection. Plex stream IDs
+  // are unique per server, so a restart of the same title (an audio switch) keeps the current subtitles.
+  useEffect(()=>{
+    const subtitles=tracks?.subtitles??[],keep=subtitleId!==null&&subtitles.some(t=>t.id===subtitleId);
+    const id=!url?null:keep?subtitleId:initialSubtitle(subtitles);setSubtitleId(id);if(!keep)lastSubtitle.current=id;setPanel(undefined);
+  },[url]);
+  useEffect(()=>{if(ref.current)ref.current.playbackRate=rate;},[rate,url]);
+  // Subtitles may take a while to prepare on the server; playback never waits for them.
+  useEffect(()=>{
+    setCaptions(undefined);
+    if(!url||!subtitleId||!subtitleBase){setSubtitleStatus(undefined);return;}
+    const abort=new AbortController();setSubtitleStatus('loading');
+    fetch(`${subtitleBase}${subtitleId}`,{signal:abort.signal}).then(r=>r.ok?r.text():Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(text=>{const cues=parseVtt(text);if(!text.startsWith('WEBVTT'))throw new Error('not WebVTT');setCaptions(cues);setSubtitleStatus('ready');})
+      .catch(()=>{if(!abort.signal.aborted)setSubtitleStatus('failed');});
+    return()=>abort.abort();
+  },[url,subtitleId,subtitleBase]);
+  const audio=tracks?.audio.find(t=>t.selected)??tracks?.audio[0];
+  const chooseSubtitle=(id:string|null)=>{
+    setSubtitleId(id);if(id)lastSubtitle.current=id;
+    const track=tracks?.subtitles.find(t=>t.id===id);store('subtitles',track?.language??(id?'':'off'));
+  };
+  const chooseAudio=(id:string)=>{
+    if(id===audio?.id||audioSwitching||!onAudioChange)return;
+    onAudioChange(id,(ref.current?.currentTime??0)*1000);setPanel(undefined);
+  };
+  const toggleSubtitles=()=>{
+    if(subtitleId){chooseSubtitle(null);showFlash('captions','Subtitles off');return;}
+    const next=lastSubtitle.current??tracks?.subtitles.find(t=>t.supported&&!t.forced)?.id??null;
+    if(next){chooseSubtitle(next);showFlash('captions',tracks?.subtitles.find(t=>t.id===next)?.label);}
+  };
+  const flashKey=useRef(0);
+  const showFlash=(icon:string,label?:string)=>setFlash({icon,label,key:++flashKey.current});
+  const toggle=()=>{const video=ref.current!;if(video.paused){void video.play().catch(()=>{});showFlash('play');}else{video.pause();showFlash('pause');}};
+  const seek=(delta:number)=>{const video=ref.current!;video.currentTime=Math.max(0,Math.min(Number.isFinite(video.duration)?video.duration:Infinity,video.currentTime+delta));showFlash(delta<0?'rewind':'forward',`${delta<0?'−':'+'}${Math.abs(delta)}s`);};
+  const changeRate=(next:number)=>{setRate(next);showFlash('speed',`${next}×`);};
+  const toggleFullscreen=()=>{if(document.fullscreenElement)void document.exitFullscreen();else void shell.current?.requestFullscreen?.().catch(()=>{});};
+  useEffect(()=>{const changed=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener('fullscreenchange',changed);return()=>document.removeEventListener('fullscreenchange',changed);},[]);
+  useEffect(()=>{if(docked){setPanel(undefined);if(document.fullscreenElement)void document.exitFullscreen();}},[docked]);
+  // Controls fade after a few idle seconds while playing, like a TV player.
+  const timer=useRef(0);
+  const wake=()=>{setIdle(false);clearTimeout(timer.current);timer.current=window.setTimeout(()=>setIdle(true),3000);};
+  useEffect(()=>()=>clearTimeout(timer.current),[]);
+  useEffect(()=>{
+    if(docked||!url)return;
+    const keys=(event:KeyboardEvent)=>{
+      const target=event.target as HTMLElement;if(event.ctrlKey||event.metaKey||event.altKey||target.closest('input:not([type=range]),select,textarea,dialog'))return;
+      if(event.key==='Escape'&&panel){event.preventDefault();setPanel(undefined);return;}
+      const video=ref.current!,step=(direction:number)=>{const index=speeds.indexOf(rate);changeRate(speeds[Math.max(0,Math.min(speeds.length-1,(index<0?2:index)+direction))]!);};
+      const actions:Record<string,()=>void>={' ':toggle,k:toggle,f:toggleFullscreen,...(live?{...(onChannel?{PageUp:()=>onChannel(1),PageDown:()=>onChannel(-1),ChannelUp:()=>onChannel(1),ChannelDown:()=>onChannel(-1)}:{}),...(channels?{g:()=>setPanel(p=>p==='channels'?undefined:'channels')}:{})}:{ArrowLeft:()=>seek(-10),ArrowRight:()=>seek(10),j:()=>seek(-10),l:()=>seek(10),c:toggleSubtitles,'>':()=>step(1),'<':()=>step(-1)}),
+        m:()=>{video.muted=!video.muted;showFlash(video.muted?'mute':'volume');},ArrowUp:()=>{video.volume=Math.min(1,video.volume+.1);video.muted=false;showFlash('volume',`${Math.round(video.volume*100)}%`);},ArrowDown:()=>{video.volume=Math.max(0,video.volume-.1);showFlash(video.volume?'volume':'mute',`${Math.round(video.volume*100)}%`);}};
+      const action=actions[event.key.length===1?event.key.toLowerCase():event.key];
+      if(action){if(event.key===' '&&target.closest('button'))return;if(target.matches('input[type=range]')&&event.key.startsWith('Arrow'))return;event.preventDefault();action();wake();}
+    };
+    window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);
+  },[docked,url,live,onChannel,channels,panel,rate,subtitleId,tracks]);
+  const shown=!idle||!view.playing||!!panel,position=scrub??view.time,known=!live&&Number.isFinite(view.duration)&&view.duration>0;
+  const activeTrack=tracks?.subtitles.find(t=>t.id===subtitleId);
+  const commit=()=>{if(scrub!==undefined){ref.current!.currentTime=scrub;setScrub(undefined);}};
+  const hoverAt=(clientX:number,element:HTMLElement)=>{const box=element.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(clientX-box.left)/box.width));setHover({x:fraction*box.width,time:fraction*view.duration});};
+  const quality=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
+  return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
+    <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
+    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} shift={shift} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
+    {view.waiting&&<span className="player-spinner spinner" role="status" aria-label="Buffering"/>}
+    {docked?<div className="mini-controls">
+      <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
+      <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
+      <button className="icon-button" onClick={onRestore} aria-label="Expand player"><Icon name="expand" size={18}/></button>
+      <button className="icon-button" onClick={onStop} aria-label="Stop playback"><Icon name="close" size={18}/></button>
+      {known&&<span className="mini-progress"><span style={{width:`${view.time/view.duration*100}%`}}/></span>}
+    </div>:<>
+      <div className="player-top">
+        <button className="player-round" onClick={onBack} aria-label="Back to browsing" title="Keep playing in a mini player"><Icon name="back" size={22}/></button>
+        <div className="player-heading"><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</div>
+        <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
+      </div>
+      {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
+      {!view.playing&&!view.waiting&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
+      {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
+      {audioSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching audio…</div>}
+      {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
+      {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
+        {panel==='channels'?channels:panel==='subtitles'?<>
+          <PanelSection title="Subtitles"><div role="radiogroup" aria-label="Subtitle track" className="choices">
+            <Choice selected={!subtitleId} onSelect={()=>chooseSubtitle(null)}>Off</Choice>
+            {tracks?.subtitles.map(t=><Choice key={t.id} selected={t.id===subtitleId} disabled={!t.supported} onSelect={()=>chooseSubtitle(t.id)}
+              detail={!t.supported?'Image-based, not supported yet':t.forced?'Forced':undefined}>{t.label}</Choice>)}
+            {!tracks?.subtitles.length&&<p className="panel-empty">This title has no subtitles.</p>}
+          </div></PanelSection>
+          {!!tracks?.subtitles.length&&<PanelSection title="Size"><div className="segmented">{sizes.map(([value,label])=><button key={value} aria-pressed={size===value} onClick={()=>{setSize(value);store('subtitleSize',value);}}>{label}</button>)}</div></PanelSection>}
+        </>:<>
+          {tracks&&tracks.audio.length>1&&onAudioChange&&<PanelSection title="Audio"><div role="radiogroup" aria-label="Audio track" className="choices">
+            {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={audioSwitching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
+          </div></PanelSection>}
+          {live&&onFeed&&feeds&&feeds.length>1&&<PanelSection title="Feed"><div role="radiogroup" aria-label="Channel feed" className="choices">
+            {feeds.map(f=><Choice key={f.id} selected={f.id===feed} detail={f.quality} onSelect={()=>{if(f.id!==feed)onFeed(f.id);}}>{f.label}</Choice>)}
+          </div></PanelSection>}
+          {!live&&<PanelSection title="Playback speed"><div className="segmented">{speeds.map(value=><button key={value} aria-pressed={rate===value} onClick={()=>setRate(value)}>{value===1?'Normal':`${value}×`}</button>)}</div></PanelSection>}
+          <PanelSection title="Stream">
+            <dl className="stream-info">
+              <div><dt>Mode</dt><dd>{deliveryLabel[delivery]}<small>{(live&&liveDetail[delivery])||deliveryDetail[delivery]}</small></dd></div>
+              {quality&&<div><dt>Video</dt><dd>{quality}</dd></div>}
+              {audio&&<div><dt>Audio</dt><dd>{audio.label}</dd></div>}
+            </dl>
+          </PanelSection>
+        </>}
+      </div>}
+      <div className="player-bottom" ref={bottomRef}>
+        {known&&<div className="scrubber" style={{'--played':`${position/view.duration*100}%`,'--buffered':`${view.buffered/view.duration*100}%`} as CSSProperties}
+          onPointerMove={e=>hoverAt(e.clientX,e.currentTarget)} onPointerLeave={()=>setHover(undefined)}>
+          {(hover||scrub!==undefined)&&<span className="scrub-tip" style={{left:scrub!==undefined?`${scrub/view.duration*100}%`:hover!.x}}>{timecode(scrub??hover!.time)}</span>}
+          <input type="range" aria-label="Seek" min={0} max={view.duration} step={1} value={position} aria-valuetext={`${timecode(position)} of ${timecode(view.duration)}`}
+            onChange={e=>setScrub(Number(e.target.value))} onPointerUp={commit} onKeyUp={commit}/>
+        </div>}
+        <div className="player-bar">
+          <button className="icon-button play-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'} title={view.playing?'Pause (k)':'Play (k)'}><Icon name={view.playing?'pause':'play'} size={28}/></button>
+          {live&&onChannel&&<><button className="icon-button" onClick={()=>onChannel(-1)} aria-label="Previous channel" title="Previous channel (Page Down)"><Icon name="back" size={24}/></button>
+          <button className="icon-button channel-next" onClick={()=>onChannel(1)} aria-label="Next channel" title="Next channel (Page Up)"><Icon name="back" size={24}/></button></>}
+          {!live&&<><button className="icon-button" onClick={()=>seek(-10)} aria-label="Back 10 seconds" title="Back 10 seconds (j)"><Icon name="rewind" size={26}/></button>
+          <button className="icon-button" onClick={()=>seek(10)} aria-label="Forward 10 seconds" title="Forward 10 seconds (l)"><Icon name="forward" size={26}/></button></>}
+          <div className="volume"><button className="icon-button" onClick={()=>{ref.current!.muted=!view.muted;}} aria-label={view.muted?'Unmute':'Mute'} title={view.muted?'Unmute (m)':'Mute (m)'}><Icon name={view.muted||view.volume===0?'mute':'volume'} size={24}/></button>
+            <input type="range" aria-label="Volume" min={0} max={1} step={.05} value={view.muted?0:view.volume} style={{'--level':`${(view.muted?0:view.volume)*100}%`} as CSSProperties} onChange={e=>{const video=ref.current!;video.volume=Number(e.target.value);video.muted=video.volume===0;}}/></div>
+          {live?<span className="player-live"><i aria-hidden="true"/>LIVE</span>:<button className="player-time" onClick={()=>setRemaining(r=>!r)} title="Show elapsed or remaining time">
+            {remaining&&known?`−${timecode(view.duration-position)}`:timecode(position)}{known&&<span> / {timecode(view.duration)}</span>}
+          </button>}
+          <span className="grow"/>
+          {live&&onFeed&&feeds&&feeds.length>1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Change feed · ${feeds.length} available`} title="Change feed">{feeds.find(f=>f.id===feed)?.quality??'Feed'} · {feeds.length}</button>}
+          {rate!==1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')}>{rate}×</button>}
+          {live&&channels&&<button className="icon-button" onClick={()=>setPanel(p=>p==='channels'?undefined:'channels')} aria-label="Browse channels" aria-expanded={panel==='channels'} title="Browse channels (g)"><Icon name="grid" size={24}/></button>}
+          {!live&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}
+          <button className="icon-button" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label="Playback settings" aria-expanded={panel==='settings'} title="Settings"><Icon name="gear" size={24}/></button>
+          <button className="icon-button" onClick={toggleFullscreen} aria-label={fullscreen?'Exit full screen':'Full screen'} title={fullscreen?'Exit full screen (f)':'Full screen (f)'}><Icon name={fullscreen?'minimize':'fullscreen'} size={24}/></button>
+        </div>
+      </div>
+    </>}
+  </aside>;
+});
+const captionScale:Record<Size,[number,number]>={s:[.036,14],m:[.046,16],l:[.058,19]};
+// Draws the cues active at the media time over the picture, above the controls while they show.
+function Captions({video,cues,shift,size,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];shift:number;size:Size;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
+  const [active,setActive]=useState<number[]>([]),[box,setBox]=useState({height:0,inset:0});
+  useEffect(()=>{
+    const element=video.current;if(!element)return;let frame=0,key='';
+    const update=()=>{const next=activeCaptions(cues,element.currentTime+shift),nextKey=next.join(',');if(nextKey!==key){key=nextKey;setActive(next);}};
+    const loop=()=>{update();frame=requestAnimationFrame(loop);};
+    const measure=()=>{
+      const {clientWidth:w,clientHeight:h,videoWidth:vw,videoHeight:vh}=element;
+      const picture=vw&&vh?Math.min(h,w*vh/vw):h;setBox({height:picture,inset:Math.max(0,(h-picture)/2)});
+    };
+    const observer=new ResizeObserver(measure);observer.observe(element);
+    const events=['seeked','timeupdate','loadedmetadata','resize'] as const;
+    for(const name of events)element.addEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);
+    measure();update();loop();
+    return()=>{cancelAnimationFrame(frame);observer.disconnect();for(const name of events)element.removeEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);};
+  },[video,cues,shift]);
+  const [scale,minimum]=docked?[.05,11]:captionScale[size],fontSize=Math.max(minimum,box.height*scale);
+  const bottom=Math.max(box.inset+box.height*.05,controls?.current?(controls.current.offsetHeight+8):0);
+  return <div className="player-captions" lang={language} style={{bottom,fontSize}} aria-hidden="true">
+    {active.map(i=><div key={i} className="caption">{cues[i]!.lines.map((line,n)=><span key={n} className="caption-line">{line.map((span,m)=>
+      <span key={m} style={{fontStyle:span.i?'italic':undefined,fontWeight:span.b?700:undefined,textDecoration:span.u?'underline':undefined}}>{span.text}</span>)}</span>)}</div>)}
+  </div>;
+}
+const PanelSection=({title,children}:{title:string;children:ReactNode})=><section className="panel-section"><h4>{title}</h4>{children}</section>;
+const Choice=({selected,disabled,detail,onSelect,children}:{selected:boolean;disabled?:boolean;detail?:string;onSelect:()=>void;children:ReactNode})=>
+  <button className="choice" role="radio" aria-checked={selected} disabled={disabled} onClick={onSelect}><span className="choice-check">{selected&&<Icon name="check" size={16}/>}</span><span className="choice-label">{children}{detail&&<small>{detail}</small>}</span></button>;
+export function browserCapabilities() {
+  const video=document.createElement('video');
+  const videoCodecs=[['h264:8','video/mp4; codecs="avc1.640028"'],['hevc:8','video/mp4; codecs="hvc1.1.6.L120.B0"'],['hevc:10','video/mp4; codecs="hvc1.2.4.L153.B0"']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
+  const audioCodecs=[['aac','audio/mp4; codecs="mp4a.40.2"'],['mp3','audio/mpeg']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
+  return {videoCodecs,audioCodecs,containers:['mp4',...(!!window.MediaSource||video.canPlayType('application/vnd.apple.mpegurl')?['hls']:[])]};
+}

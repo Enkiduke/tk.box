@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>tk.box continuous generated-media experiment</title>
+<style>body{font-family:system-ui;max-width:1000px;margin:2rem auto;background:#101820;color:#eee}section{display:inline-block;vertical-align:top;width:46%;margin:1%}video{width:100%;background:#000}button{padding:.6rem;margin:.2rem}pre{white-space:pre-wrap}p{line-height:1.5}</style>
+<h1>Continuous generated-media experiment</h1><p>Two experimental viewers share one clock and on-demand FFmpeg work. These are fixed eight-second generated sources. The accelerated retention window is 30 seconds; this loopback-only harness uses temporary fixture cookies, not Plex sign-in. It is separate from tk.box's application player.</p><div id="players"></div>
+<script src="/hls.js"></script><script>
+async function api(path,method='GET',body={}){const r=await fetch('/lab'+path,{method,headers:method==='GET'?{}:{'Content-Type':'application/json'},...(method==='GET'?{}:{body:JSON.stringify(body)})});const data=await r.json();if(!r.ok)throw new Error(data.code+': '+data.message);return data;}
+for(let i=1;i<=2;i++){
+ const section=document.createElement('section'),title=document.createElement('h2'),video=document.createElement('video'),status=document.createElement('pre');title.textContent='Viewer '+i;video.setAttribute('aria-label','Viewer '+i+' video');video.playsInline=true;let id,hls,generation=0,requestedPause;
+ const show=e=>status.textContent=e.message??String(e);
+ async function load(){const generationId=++generation;hls?.destroy();video.pause();for(let tries=0;tries<24;tries++){const state=await api('/viewers/'+id+'/state');if(state.failure)throw new Error(state.failure+' · use Retry');if(state.bufferEndUtc)break;if(tries===23)throw new Error('STREAM_WARMING · use Retry');await new Promise(r=>setTimeout(r,250));}if(generationId!==generation)return;
+   if(!Hls.isSupported())throw new Error('This experimental cursor mapping requires hls.js/MediaSource.');hls=new Hls({liveSyncDurationCount:2,liveMaxLatencyDurationCount:Infinity,maxLiveSyncPlaybackRate:1});hls.loadSource('/lab/viewers/'+id+'/manifest.m3u8');hls.attachMedia(video);hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(generationId===generation)video.play().catch(show);});hls.on(Hls.Events.ERROR,(_,e)=>{if(e.fatal)show(new Error(e.type+': '+e.details+' · use Retry'));});
+ }
+ function button(label,fn){const b=document.createElement('button');b.textContent=label+' viewer '+i;b.onclick=()=>Promise.resolve().then(fn).catch(show);section.append(b);}
+ section.append(title,video);button('Tune',async()=>{if(!id){id=(await api('/viewers','POST')).id;}await load();});
+ button('Pause',async()=>{if(!id||!hls)throw new Error('Tune first.');requestedPause=hls.playingDate?.getTime();if(!Number.isFinite(requestedPause))throw new Error('No displayed UTC mapping yet.');video.pause();hls.stopLoad();await api('/viewers/'+id+'/pause','POST',{displayedUtc:requestedPause});});
+ button('Resume',async()=>{await api('/viewers/'+id+'/resume','POST');await load();});
+ button('Go Live',async()=>{await api('/viewers/'+id+'/go-live','POST');await load();});
+ button('Retry',async()=>{await api('/viewers/'+id+'/retry','POST');await load();});
+ button('Stop',async()=>{generation++;hls?.destroy();hls=undefined;video.pause();video.removeAttribute('src');video.load();if(id){await api('/viewers/'+id+'/stop','POST');id=undefined;}status.textContent='Stopped';});
+ section.append(status);document.querySelector('#players').append(section);
+ setInterval(async()=>{if(!id)return;try{const s=await api('/viewers/'+id+'/state'),displayed=hls?.playingDate?.getTime();section.dataset.state=s.state;section.dataset.displayed=displayed??'';section.dataset.cursor=s.cursor;status.textContent=JSON.stringify({...s,displayedUtc:displayed,displayedBehindLiveMs:displayed?Math.round(s.broadcastNowUtc-displayed):null,pausedAtUtc:requestedPause},null,2);if(s.state==='EXPIRED'){video.pause();hls?.stopLoad();}}catch(e){show(e);}},1000);
+}
+</script></html>

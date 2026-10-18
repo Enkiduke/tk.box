@@ -1,0 +1,62 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tk.box",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.env",
+        "dist/apps/server/src/index.js"
+      ],
+      "port": 3000,
+      "url": "http://127.0.0.1:3000"
+    },
+    {
+      "name": "ui-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:ui"
+      ],
+      "port": 3011
+    },
+    {
+      "name": "ui-preview-live",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:ui",
+        "--",
+        "--port=3012",
+        "--stream=http://127.0.0.1:8899/mpeg2.ts",
+        "--stream=http://127.0.0.1:8899/h264.ts",
+        "--stream=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+      ],
+      "port": 3012
+    },
+    {
+      "name": "live-fixture",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "fixture:live"
+      ],
+      "port": 8899
+    },
+    {
+      "name": "ui-preview-health",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:ui",
+        "--",
+        "--port=3013",
+        "--stream=http://127.0.0.1:8899/h264.ts",
+        "--stream=http://127.0.0.1:8899/mpeg2.ts",
+        "--stream=http://127.0.0.1:8899/slate.ts",
+        "--stream=http://127.0.0.1:8899/missing.ts"
+      ],
+      "port": 3013
+    }
+  ]
+}

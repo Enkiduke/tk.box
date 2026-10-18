@@ -1,0 +1,398 @@
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import type { Db } from './database.js';
+import { Vault, digest } from '../security/vault.js';
+import { requireThat } from '../errors.js';
+import { validateEndpoint, sourceEndpoint, type SourceEndpoint } from '../providers/source-fetch.js';
+import { healthHidden } from './channel-health-store.js';
+import { sportsHidden, readSportsSettings, eventRank } from './sports-store.js';
+import { looksLikeEvents, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
+import { stackKey, quality, feedRank } from '../services/channel-stacks.js';
+import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
+
+type Kind='m3u'|'xmltv';
+type SourceRow={id:string;kind:Kind;name:string;revision:number;interval_hours:number;auto_add:number;encrypted_endpoint:string|null;encrypted_snapshot:string|null;encrypted_candidate:string|null;candidate_digest:string|null;last_attempt:number|null;last_success:number|null;next_due:number|null;last_error:string|null;retry_after:number|null};
+type ChannelRow={id:string;source_id:string;identity:string;encrypted_provider:string;approval:'pending'|'approved'|'ignored';present:number;conflict:number;enabled:number;first_seen:number;last_seen:number;missing_since:number|null;display_name:string|null;stack_key:string|null;number:number|null;position:number|null};
+type Feed={id:string;sourceId:string;name:string;number:number;position:number;hasLogo:boolean;stack:string;quality?:string;rank:number;online:boolean;label?:string;event?:{sport:string|null;league:string|null;start:number}};
+// Viewer visibility: approved, present, enabled, not failing checks and, for event-driven sources, airing now.
+const viewable=`approval='approved' AND present=1 AND conflict=0 AND enabled=1 AND NOT ${healthHidden} AND NOT ${sportsHidden}`;
+const hours=z.number().int().min(1).max(168);
+export const sourceCreate=z.object({kind:z.enum(['m3u','xmltv']),name:z.string().trim().min(1).max(120),endpoint:sourceEndpoint.optional()}).strict();
+export const sourcePolicy=z.object({expectedRevision:z.number().int().nonnegative(),intervalHours:hours,autoAddNewChannels:z.boolean().optional()}).strict();
+export const channelEdit=z.object({expectedRevision:z.number().int().nonnegative(),approval:z.enum(['approved','ignored']).optional(),enabled:z.boolean().optional(),displayName:z.string().trim().min(1).max(200).nullable().optional(),number:z.number().int().min(1).max(999999).optional(),position:z.number().int().min(0).max(999999).optional(),acceptIdentity:z.boolean().optional(),stack:z.string().trim().max(120).nullable().optional()}).strict();
+// Provider IDs identify entries. Without one, an exact name that is unique in the snapshot does; a renamed
+// entry then reads as a new pending channel instead of silently merging. URIs never become identities.
+function identities(snapshot:M3uSnapshot) {
+  const ids=new Map<string,number>(),names=new Map<string,number>();
+  for(const p of snapshot.channels)if(p.tvgId)ids.set(p.tvgId,(ids.get(p.tvgId)??0)+1);else names.set(p.name,(names.get(p.name)??0)+1);
+  return snapshot.channels.map(p=>p.tvgId?{identity:`id:${p.tvgId}`,unique:ids.get(p.tvgId)===1}:names.get(p.name)===1?{identity:`name:${p.name}`,unique:true}:{identity:`unresolved:${digest(p.streamUrl)}`,unique:false});
+}
+
+export class IptvStore {
+  constructor(private db:Db,private vault:Vault) {}
+  private source(id:string) {const row=this.db.prepare('SELECT * FROM iptv_sources WHERE id=?').get(id) as SourceRow|undefined;requireThat(row,'SOURCE_NOT_FOUND','Source not found.',404);return row;}
+  private channel(id:string) {const row=this.db.prepare('SELECT c.*,n.number,n.position FROM iptv_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=?').get(id) as ChannelRow|undefined;requireThat(row,'CHANNEL_NOT_FOUND','Channel not found.',404);return row;}
+  private channels(sourceId:string) {return this.db.prepare('SELECT c.*,n.number,n.position FROM iptv_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE source_id=? ORDER BY first_seen,id').all(sourceId) as ChannelRow[];}
+  private provider(c:ChannelRow) {return JSON.parse(this.vault.open(c.encrypted_provider,`iptv:channel:${c.id}`)) as M3uChannel;}
+  private audit(actor:string,event:string,id:string,now:number) {this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor,event,now,JSON.stringify({id}));}
+  private check(row:SourceRow,expected:number) {requireThat(row.revision===expected,'REVISION_CONFLICT','Source changed. Reload and retry.',409);}
+  private snapshot<T>(row:SourceRow):T|undefined {return row.encrypted_snapshot ? JSON.parse(this.vault.open(row.encrypted_snapshot,`iptv:snapshot:${row.id}`)) as T : undefined;}
+  status(id:string) {const r=this.source(id),feed=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(id) as {feed_id:string}|undefined;return {id:r.id,kind:r.kind,name:r.name,revision:r.revision,intervalHours:r.interval_hours,autoAddNewChannels:!!r.auto_add,remote:!!r.encrypted_endpoint,lastAttempt:r.last_attempt,lastSuccess:r.last_success,nextDue:r.next_due,lastError:r.last_error,retryAfter:r.retry_after,candidateDigest:r.candidate_digest,feedId:feed?.feed_id};}
+  list() {return (this.db.prepare('SELECT id FROM iptv_sources ORDER BY id').all() as {id:string}[]).map(r=>this.status(r.id));}
+  create(actor:string,input:z.input<typeof sourceCreate>,now=Date.now()) {
+    const v=sourceCreate.parse(input),id=randomUUID();
+    requireThat(this.list().length<64,'SOURCE_LIMIT','Source limit reached.',409);
+    const endpoint=v.endpoint ? validateEndpoint(v.endpoint) : undefined,interval=v.kind==='m3u'?12:6;
+    this.db.transaction(()=>{
+      this.db.prepare('INSERT INTO iptv_sources(id,kind,name,interval_hours,encrypted_endpoint,next_due) VALUES(?,?,?,?,?,?)').run(id,v.kind,v.name,interval,endpoint ? this.vault.seal(JSON.stringify(endpoint),`iptv:endpoint:${id}`) : null,endpoint ? now : null);
+      this.audit(actor,'iptv_source_created',id,now);
+    })();return this.status(id);
+  }
+  remove(actor:string,id:string,expected:number,now=Date.now()) {
+    return this.db.transaction(()=>{
+      this.check(this.source(id),expected);
+      const ownFeed=this.status(id).feedId;
+      // Feed removal changes each linked playlist's configuration as well.
+      const linked=this.db.prepare('SELECT source_id FROM iptv_source_feeds WHERE feed_id=?').all(id) as {source_id:string}[];
+      for(const source of linked) {
+        this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(source.source_id);
+        this.audit(actor,'iptv_feed_unlinked',source.source_id,now);
+      }
+      this.db.prepare('DELETE FROM iptv_mappings WHERE feed_id=? OR channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(id,id);
+      this.db.prepare('DELETE FROM iptv_favorites WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(id);
+      this.db.prepare('DELETE FROM lineup_numbers WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(id);
+      this.db.prepare('DELETE FROM iptv_channel_health WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(id);
+      this.db.prepare('DELETE FROM iptv_health_policies WHERE source_id=?').run(id);
+      this.db.prepare('DELETE FROM iptv_offline_slates WHERE source_id=?').run(id);
+      this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(id);
+      this.db.prepare('DELETE FROM sports_admitted WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(id);
+      this.db.prepare('DELETE FROM sports_policies WHERE source_id=?').run(id);
+      this.db.prepare('DELETE FROM iptv_source_feeds WHERE source_id=? OR feed_id=?').run(id,id);
+      this.db.prepare('DELETE FROM iptv_channels WHERE source_id=?').run(id);
+      this.db.prepare('DELETE FROM iptv_sources WHERE id=?').run(id);
+      this.audit(actor,'iptv_source_removed',id,now);
+      if(ownFeed&&!this.db.prepare('SELECT 1 FROM iptv_source_feeds WHERE feed_id=?').get(ownFeed))this.remove(actor,ownFeed,this.source(ownFeed).revision,now);
+      return {status:'removed' as const,id};
+    })();
+  }
+  endpoint(id:string):SourceEndpoint {const row=this.source(id);requireThat(row.encrypted_endpoint,'STATIC_SOURCE','Uploaded sources require a new administrator upload; there is no remote refresh.');return JSON.parse(this.vault.open(row.encrypted_endpoint,`iptv:endpoint:${id}`)) as SourceEndpoint;}
+  replaceEndpoint(actor:string,id:string,expected:number,input:SourceEndpoint,now=Date.now()) {
+    const endpoint=validateEndpoint(input);
+    this.db.transaction(()=>{const row=this.source(id);this.check(row,expected);
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_endpoint=?,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(endpoint),`iptv:endpoint:${id}`),Math.max(now,row.retry_after??0),id);this.audit(actor,'iptv_endpoint_replaced',id,now);
+    })();return this.status(id);
+  }
+  policy(actor:string,id:string,input:z.input<typeof sourcePolicy>,now=Date.now()) {
+    const v=sourcePolicy.parse(input);
+    this.db.transaction(()=>{const row=this.source(id);this.check(row,v.expectedRevision);requireThat(row.kind==='m3u'||v.autoAddNewChannels===undefined,'INVALID_POLICY','Auto Add applies to M3U sources only.');
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1,interval_hours=?,auto_add=?,next_due=? WHERE id=?').run(v.intervalHours,v.autoAddNewChannels===undefined?row.auto_add:Number(v.autoAddNewChannels),row.encrypted_endpoint?Math.max(now+v.intervalHours*3600000,row.retry_after??0):null,id);this.audit(actor,'iptv_source_policy_changed',id,now);
+    })();return this.status(id);
+  }
+  due(now=Date.now()) {return (this.db.prepare('SELECT id FROM iptv_sources WHERE encrypted_endpoint IS NOT NULL AND next_due<=? AND (retry_after IS NULL OR retry_after<=?) ORDER BY next_due,id LIMIT 4').all(now,now) as {id:string}[]).map(r=>r.id);}
+  begin(id:string,now=Date.now()) {const row=this.source(id);requireThat(!row.retry_after||row.retry_after<=now,'SOURCE_BACKOFF','Provider backoff is still active.',429);this.endpoint(id);this.db.prepare('UPDATE iptv_sources SET last_attempt=? WHERE id=?').run(now,id);return row.revision;}
+  failed(id:string,expected:number,retryAfter:number|undefined,now=Date.now()) {
+    // A settings edit during fetch wins. Never overwrite its newly selected cadence.
+    const row=this.source(id);if(row.revision!==expected)return;
+    this.db.prepare('UPDATE iptv_sources SET last_error=?,retry_after=?,next_due=? WHERE id=?').run(retryAfter?'SOURCE_RATE_LIMITED':'SOURCE_REFRESH_FAILED',retryAfter??null,Math.max(now+row.interval_hours*3600000,retryAfter??0),id);
+  }
+  ingest(actor:string,id:string,expected:number,bytes:Buffer,now=Date.now()) {
+    const row=this.source(id);this.check(row,expected);
+    const parsed=row.kind==='m3u'?parseM3u(new TextDecoder('utf-8',{fatal:true}).decode(bytes)):parseXmltv(bytes);
+    requireThat(parsed.channels.length<=20000,'IMPORT_LIMIT','Too many source channels.');
+    return this.db.transaction(()=>{
+      const current=this.source(id);this.check(current,expected);
+      if(current.kind==='m3u') {
+        const old=this.channels(id).filter(c=>c.present&&!c.conflict),ids=new Set(identities(parsed as M3uSnapshot).map(i=>i.identity));
+        // A clean HTTP EOF cannot detect a logically truncated provider export.
+        // Hold a majority disappearance until the exact candidate is reviewed.
+        if(old.length>=2 && old.filter(c=>!ids.has(c.identity)).length>old.length/2) {
+          const text=JSON.stringify(parsed),fingerprint=digest(text);
+          this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_candidate=?,candidate_digest=?,last_attempt=?,last_error=?,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:candidate:${id}`),fingerprint,now,'SNAPSHOT_REVIEW_REQUIRED',current.encrypted_endpoint?now+current.interval_hours*3600000:null,id);
+          this.audit(actor,'iptv_snapshot_held',id,now);return {status:'review_required' as const,source:this.status(id)};
+        }
+      }
+      this.publish(actor,current,parsed,now);return {status:'published' as const,source:this.status(id)};
+    })();
+  }
+  acceptCandidate(actor:string,id:string,expected:number,fingerprint:string,now=Date.now()) {
+    return this.db.transaction(()=>{const row=this.source(id);this.check(row,expected);requireThat(row.encrypted_candidate&&row.candidate_digest===fingerprint,'CANDIDATE_CHANGED','Reload the source candidate before approving.',409);
+      const parsed=JSON.parse(this.vault.open(row.encrypted_candidate,`iptv:candidate:${id}`)) as M3uSnapshot;this.publish(actor,row,parsed,now);return this.status(id);
+    })();
+  }
+  candidateReview(id:string) {
+    const row=this.source(id);requireThat(row.encrypted_candidate,'CANDIDATE_NOT_FOUND','No snapshot is awaiting review.',404);
+    const snapshot=JSON.parse(this.vault.open(row.encrypted_candidate,`iptv:candidate:${id}`)) as M3uSnapshot,ids=new Set(identities(snapshot).map(i=>i.identity));
+    return {revision:row.revision,digest:row.candidate_digest,incoming:snapshot.channels.map(c=>({tvgId:c.tvgId,name:c.name,group:c.group})),missing:this.channels(id).filter(c=>!ids.has(c.identity)).map(c=>({id:c.id,name:c.display_name??this.provider(c).name,number:c.number}))};
+  }
+  private publish(actor:string,row:SourceRow,parsed:M3uSnapshot|XmlSnapshot,now:number) {
+    // An event playlist imported without an explicit choice becomes event-driven before its channels exist,
+    // so channel checks never sweep it. The administrator's choice, once made, is kept.
+    if(row.kind==='m3u'&&!this.db.prepare('SELECT 1 FROM sports_policies WHERE source_id=?').get(row.id)&&looksLikeEvents((parsed as M3uSnapshot).channels.map(c=>c.name))) {
+      this.db.prepare('INSERT INTO sports_policies VALUES(?,1,30)').run(row.id);this.audit('system:sports','sports_policy_detected',row.id,now);
+    }
+    if(row.kind==='m3u')this.reconcile(row,parsed as M3uSnapshot,now);
+    this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(parsed),`iptv:snapshot:${row.id}`),now,now,row.encrypted_endpoint?now+row.interval_hours*3600000:null,row.id);
+    this.audit(actor,'iptv_snapshot_published',row.id,now);
+  }
+  private reserve(id:string,number?:number,position?:number) {
+    const existing=this.db.prepare('SELECT number,position FROM lineup_numbers WHERE channel_id=?').get(id) as {number:number;position:number}|undefined;
+    if(number!==undefined)requireThat(!this.db.prepare('SELECT 1 FROM lineup_numbers WHERE number=? AND channel_id<>?').get(number,id),'NUMBER_CONFLICT','Channel number is already reserved.',409);
+    if(number===undefined&&!existing) {const used=new Set((this.db.prepare('SELECT number FROM lineup_numbers').all() as {number:number}[]).map(n=>n.number));number=1;while(used.has(number))number++;}
+    const tail=position===undefined&&!existing ? (this.db.prepare('SELECT MAX(position) AS tail FROM lineup_numbers').get() as {tail:number|null}).tail??-1 : -1;
+    this.db.prepare('INSERT INTO lineup_numbers VALUES(?,?,?) ON CONFLICT(channel_id) DO UPDATE SET number=excluded.number,position=excluded.position').run(id,number??existing!.number,position??existing?.position??tail+1);
+  }
+  private reconcile(row:SourceRow,snapshot:M3uSnapshot,now:number) {
+    const prior=this.channels(row.id),byIdentity=new Map(prior.map(c=>[c.identity,c])),seen=new Set<string>(),resolved=identities(snapshot);
+    const reservations=this.db.prepare('SELECT number,position FROM lineup_numbers').all() as {number:number;position:number}[];
+    const used=new Set(reservations.map(r=>r.number));let nextNumber=1,nextPosition=reservations.reduce((max,r)=>Math.max(max,r.position),-1)+1;
+    for(const [i,p] of snapshot.channels.entries()) {
+      // Ambiguous entries retain a review record; their URI is never promoted into a trusted identity.
+      const {identity,unique}=resolved[i]!;
+      if(seen.has(identity))continue;seen.add(identity);
+      const old=byIdentity.get(identity),previous=old?this.provider(old):undefined;
+      const conflict=!unique||!!(previous&&previous.name!==p.name&&previous.streamUrl!==p.streamUrl);
+      if(old) {
+        // Keep last accepted identity data when conflicted; approval and curation survive.
+        this.db.prepare('UPDATE iptv_channels SET encrypted_provider=?,present=1,conflict=?,last_seen=?,missing_since=NULL WHERE id=?').run(conflict?old.encrypted_provider:this.vault.seal(JSON.stringify(p),`iptv:channel:${old.id}`),Number(conflict||!!old.conflict),now,old.id);
+      } else {
+        const id=randomUUID(),admitted=!!row.auto_add&&!conflict;
+        this.db.prepare('INSERT INTO iptv_channels(id,source_id,identity,encrypted_provider,approval,present,conflict,first_seen,last_seen) VALUES(?,?,?,?,?,1,?,?,?)').run(id,row.id,identity,this.vault.seal(JSON.stringify(p),`iptv:channel:${id}`),admitted?'approved':'pending',Number(conflict),now,now);
+        if(admitted){while(used.has(nextNumber))nextNumber++;this.reserve(id,nextNumber,nextPosition++);used.add(nextNumber++);}
+      }
+    }
+    for(const old of prior) {
+      if(seen.has(old.identity))continue;
+      // Unresolved review records that were never admitted carry nothing worth retaining.
+      if(old.identity.startsWith('unresolved:')&&old.approval!=='approved'&&old.number===null) {
+        for(const table of ['iptv_channel_health','iptv_mappings','iptv_favorites','lineup_numbers','sports_windows','sports_admitted'])this.db.prepare(`DELETE FROM ${table} WHERE channel_id=?`).run(old.id);
+        this.db.prepare('DELETE FROM iptv_channels WHERE id=?').run(old.id);
+      } else this.db.prepare('UPDATE iptv_channels SET present=0,missing_since=COALESCE(missing_since,?) WHERE id=?').run(now,old.id);
+    }
+  }
+  adminChannels(id:string) {this.source(id);return this.channels(id).map(c=>{const p=this.provider(c);return {id:c.id,sourceId:c.source_id,tvgId:p.tvgId,name:c.display_name??p.name,group:p.group,stack:c.stack_key,stackKey:this.stackOf(c,p),quality:quality(p.name)??null,approval:c.approval,present:!!c.present,conflict:!!c.conflict,enabled:!!c.enabled,number:c.number,position:c.position,firstSeen:c.first_seen,lastSeen:c.last_seen,missingSince:c.missing_since};});}
+  private stackOf(c:Pick<ChannelRow,'id'|'display_name'|'stack_key'>,p:M3uChannel) {return (c.stack_key===null?stackKey(c.display_name??p.name):c.stack_key&&stackKey(c.stack_key))||`solo:${c.id}`;}
+  private feeds():Feed[] {return (this.db.prepare(`SELECT c.id,c.source_id,c.display_name,c.stack_key,c.encrypted_provider,n.number,n.position,(SELECT h.status FROM iptv_channel_health h WHERE h.channel_id=c.id) AS health,(SELECT sp.enabled FROM sports_policies sp WHERE sp.source_id=c.source_id) AS sports,(SELECT w.stack_key FROM sports_windows w WHERE w.channel_id=c.id) AS event,ew.sport AS event_sport,ew.league_key AS event_league,ew.start AS event_start FROM iptv_channels c JOIN lineup_numbers n ON n.channel_id=c.id LEFT JOIN sports_windows ew ON ew.channel_id=c.id WHERE ${viewable} ORDER BY n.position,n.number,c.id`).all() as (ChannelRow&{health:string|null;sports:number|null;event:string|null;event_sport:string|null;event_league:string|null;event_start:number|null})[]).map(c=>{const p=this.provider(c),q=quality(p.name)??quality(c.display_name??'');
+    // Event channels are named by the event alone; their feeds are told apart by the provider's slot.
+    const label=c.sports&&!c.display_name?channelTag(p.name):undefined;
+    return {id:c.id,sourceId:c.source_id,name:this.nameOf(c,p,!!c.sports),number:c.number!,position:c.position!,hasLogo:/^https?:\/\//i.test(p.logo),...(label?{label}:{}),
+    // Event channels stack by the scheduled event they carry ("Home Stream", "Away Stream"), never by name.
+    stack:`${c.source_id}:${c.sports?c.event??`solo:${c.id}`:this.stackOf(c,p)}`,...(q?{quality:q}:{}),rank:feedRank(p.name),online:c.health==='online',...(c.sports&&c.event_start!==null?{event:{sport:c.event_sport,league:c.event_league,start:c.event_start}}:{})};});}
+  private nameOf(c:Pick<ChannelRow,'display_name'>,p:M3uChannel,sports:boolean) {return c.display_name??(sports?eventChannelName(p.name):p.name);}
+  // The sport of the event a visible event channel carries, for its fallback icon.
+  sportFor(id:string) {
+    const row=this.db.prepare('SELECT w.sport FROM sports_windows w JOIN sports_policies sp ON sp.source_id=w.source_id AND sp.enabled=1 WHERE w.channel_id=?').get(id) as {sport:string|null}|undefined;
+    if(!row)return undefined;
+    // Windows matched before sports were recorded fall back to the channel's own name, not the generic icon.
+    return (SPORTS as readonly string[]).includes(row.sport??'')?row.sport as Sport:sportOf(this.provider(this.channel(id)).name);
+  }
+  private sportsSource(sourceId:string) {return !!this.db.prepare('SELECT 1 FROM sports_policies WHERE source_id=? AND enabled=1').get(sourceId);}
+  visible() {return this.feeds().map(({rank:_,online:__,label:___,event:____,...feed})=>feed);}
+  // One lineup row per station within a source, like identity. The default feed is the best quality (FHD, then HD), primary before
+  // backup, then a feed confirmed working; the row keeps the earliest lineup position of its feeds.
+  // Live event rows form one block, above or below the rest (Live Sports settings), ordered by sport, league, then start.
+  stacks() {
+    const settings=readSportsSettings(this.db),rankOf=eventRank(settings),top=settings.placement==='top';
+    const order=(e:NonNullable<Feed['event']>)=>[...rankOf(e.sport,e.league),e.start];
+    const groups=new Map<string,Feed[]>();
+    for(const feed of this.feeds()){const group=groups.get(feed.stack);if(group)group.push(feed);else groups.set(feed.stack,[feed]);}
+    return [...groups.values()].map(group=>{
+      const position=Math.min(...group.map(f=>f.position)),feeds=group.sort((a,b)=>b.rank-a.rank||Number(b.online)-Number(a.online)||a.position-b.position||a.number-b.number);
+      const {rank:_,online:__,label:___,event:____,...primary}=feeds[0]!,event=feeds.find(f=>f.event)?.event;
+      return {row:{...primary,position,feeds:feeds.map(f=>({id:f.id,name:f.label??f.name,number:f.number,...(f.quality?{quality:f.quality}:{})}))},event:event&&order(event)};
+    }).sort((a,b)=>{
+      if(!!a.event!==!!b.event)return (a.event?-1:1)*(top?1:-1);
+      if(a.event&&b.event)for(const [i,v] of a.event.entries())if(v!==b.event[i])return v-b.event[i]!;
+      return a.row.position-b.row.position||a.row.number-b.row.number;
+    }).map(s=>s.row);
+  }
+  // Server-side only: the decrypted upstream URI must never reach an API response.
+  tune(id:string) {requireThat(this.isVisible(id),'CHANNEL_NOT_FOUND','Channel not found.',404);const c=this.channel(id),p=this.provider(c);return {id:c.id,sourceId:c.source_id,name:this.nameOf(c,p,this.sportsSource(c.source_id)),number:c.number!,streamUrl:p.streamUrl};}
+  // Playlist logo first, then the mapped guide channel's icon. Server-side only, like stream URIs.
+  logo(id:string) {
+    requireThat(this.isVisible(id),'CHANNEL_NOT_FOUND','Channel not found.',404);const c=this.channel(id),p=this.provider(c);
+    const feedId=this.feedFor(id),data=feedId?this.guideData(id,feedId):undefined;
+    // The provider's own name drives library matching; an administrator rename is display-only.
+    return {name:p.name,tvgId:p.tvgId,urls:[/^https?:\/\//i.test(p.logo)?p.logo:undefined,data?.xml?.channels.find(x=>x.id===data.mapping?.xmlId)?.icon].filter((u):u is string=>!!u)};
+  }
+  isVisible(id:string) {return !!this.db.prepare(`SELECT 1 FROM iptv_channels c JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=? AND ${viewable}`).get(id);}
+  // Health checks also cover pending and health-hidden channels, so this skips the visibility rule. Server-side only.
+  streamFor(id:string) {const c=this.channel(id);requireThat(c.present&&!c.conflict&&c.approval!=='ignored','CHANNEL_NOT_FOUND','Channel not found.',404);return {id:c.id,sourceId:c.source_id,streamUrl:this.provider(c).streamUrl};}
+  reviewChannels(actor:string,sourceId:string,expectedRevision:number,ids:string[],approval:'approved'|'ignored') {
+    return this.db.transaction(()=>{
+      const source=this.source(sourceId);this.check(source,expectedRevision);
+      requireThat(source.kind==='m3u'&&ids.length>0&&ids.length<=100&&new Set(ids).size===ids.length,'INVALID_REVIEW','Select between 1 and 100 unique pending channels.');
+      const selected=ids.map(id=>this.channel(id));
+      requireThat(selected.every(c=>c.source_id===sourceId&&c.approval==='pending'&&c.present&&!c.conflict),'REVIEW_CHANGED','Only present, unambiguous pending channels from this source can be reviewed together.',409);
+      for(const channel of selected)this.editChannel(actor,channel.id,{expectedRevision:this.source(sourceId).revision,approval});
+      return this.status(sourceId);
+    })();
+  }
+  editChannel(actor:string,id:string,input:z.input<typeof channelEdit>,now=Date.now()) {
+    const v=channelEdit.parse(input);
+    this.db.transaction(()=>{let c=this.channel(id);const row=this.source(c.source_id);this.check(row,v.expectedRevision);
+      if(v.acceptIdentity) {
+        const snapshot=this.snapshot<M3uSnapshot>(row),resolved=snapshot?identities(snapshot):[],matches=snapshot?.channels.filter((_,i)=>resolved[i]!.identity===c.identity)??[];
+        requireThat(c.present&&matches.length===1&&!c.identity.startsWith('unresolved:'),'IDENTITY_UNRESOLVED','A unique provider identity is required for reconciliation.');
+        this.db.prepare('UPDATE iptv_channels SET encrypted_provider=?,conflict=0 WHERE id=?').run(this.vault.seal(JSON.stringify(matches[0]),`iptv:channel:${id}`),id);c=this.channel(id);
+      }
+      requireThat(v.approval!=='approved'||(!c.conflict&&c.present),'IDENTITY_UNRESOLVED','Only present, unambiguous channels may be approved.');
+      const approval=v.approval??c.approval;
+      requireThat(approval==='approved'||(v.number===undefined&&v.position===undefined),'CHANNEL_NOT_APPROVED','Approve the channel before allocating a lineup position.');
+      if(approval==='approved')this.reserve(id,v.number,v.position);
+      // An administrator's own decision is kept when sports events are turned off again.
+      this.db.prepare('DELETE FROM sports_admitted WHERE channel_id=?').run(id);
+      this.db.prepare('UPDATE iptv_channels SET approval=?,enabled=?,display_name=?,stack_key=? WHERE id=?').run(approval,v.enabled===undefined?c.enabled:Number(v.enabled),v.displayName===undefined?c.display_name:v.displayName,v.stack===undefined?c.stack_key:v.stack,id);
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(row.id);this.audit(actor,'iptv_channel_changed',id,now);
+    })();return this.status(this.channel(id).source_id);
+  }
+  // Server-side only: names and listings of an event-driven source's channels, for event matching.
+  sportsChannels(sourceId:string,from:number,to:number) {
+    const cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>(),feedId=this.status(sourceId).feedId;
+    return this.channels(sourceId).filter(c=>c.present&&!c.conflict&&c.approval!=='ignored').map(c=>{
+      const p=this.provider(c),data=feedId?this.guideData(c.id,feedId,cache):undefined,xmlId=data?.mapping?.xmlId;
+      const programs=xmlId?(data!.xml?.programs??[]).filter(x=>x.channelId===xmlId&&x.end>from&&x.start<to).map(x=>({start:x.start,end:x.end,title:x.title,...(x.subtitle?{subtitle:x.subtitle}:{})})):[];
+      return {id:c.id,name:p.name,group:p.group,approval:c.approval,programs};
+    });
+  }
+  // Event channels are approved while their event is live or starting soon, and return to review when it
+  // is over, releasing their number unless a viewer favorited them. Channels an administrator approved
+  // or ignored are left alone.
+  syncEventApprovals(sourceId:string,now=Date.now()) {
+    return this.db.transaction(()=>{
+      const open='SELECT channel_id FROM sports_windows WHERE source_id=@source AND visible_from<=@now AND visible_until>@now';
+      const admit=(this.db.prepare(`SELECT id FROM iptv_channels WHERE source_id=@source AND approval='pending' AND present=1 AND conflict=0 AND id IN (${open})`).all({source:sourceId,now}) as {id:string}[]).map(r=>r.id);
+      const revoke=(this.db.prepare(`SELECT a.channel_id AS id FROM sports_admitted a JOIN iptv_channels c ON c.id=a.channel_id WHERE c.source_id=@source AND (a.channel_id NOT IN (${open}) OR c.present=0 OR c.conflict=1)`).all({source:sourceId,now}) as {id:string}[]).map(r=>r.id);
+      for(const id of admit){this.reserve(id,this.eventNumber(id));this.db.prepare("UPDATE iptv_channels SET approval='approved' WHERE id=?").run(id);this.db.prepare('INSERT OR IGNORE INTO sports_admitted VALUES(?)').run(id);}
+      for(const id of revoke){
+        this.db.prepare("UPDATE iptv_channels SET approval='pending' WHERE id=? AND approval='approved'").run(id);
+        this.db.prepare('DELETE FROM lineup_numbers WHERE channel_id=? AND channel_id NOT IN (SELECT channel_id FROM iptv_favorites)').run(id);
+        this.db.prepare('DELETE FROM sports_admitted WHERE channel_id=?').run(id);
+      }
+      if(admit.length||revoke.length){this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);this.audit('system:sports','sports_approvals_synced',sourceId,now);}
+      return {approved:admit.length,returned:revoke.length};
+    })();
+  }
+  // Event channels take the lowest free number in the Live Sports block, when one is set. A channel that kept its
+  // number (a viewer favorited it) keeps it.
+  private eventNumber(id:string) {
+    const start=readSportsSettings(this.db).numberStart;
+    if(!start||this.db.prepare('SELECT 1 FROM lineup_numbers WHERE channel_id=?').get(id))return undefined;
+    const used=new Set((this.db.prepare('SELECT number FROM lineup_numbers WHERE number>=?').all(start) as {number:number}[]).map(n=>n.number));
+    let number=start;while(used.has(number))number++;return number;
+  }
+  // Moves the event channels the schedule admitted into the number block, in guide order. Favorited channels keep
+  // their numbers, since viewers may know them. Returns how many moved.
+  renumberEvents() {
+    const start=readSportsSettings(this.db).numberStart;if(!start)return 0;
+    return this.db.transaction(()=>{
+      const rows=this.db.prepare('SELECT n.channel_id AS id,n.position FROM lineup_numbers n JOIN sports_admitted a ON a.channel_id=n.channel_id WHERE n.channel_id NOT IN (SELECT channel_id FROM iptv_favorites)').all() as {id:string;position:number}[];
+      const guide=this.stacks().flatMap(s=>s.feeds.map(f=>f.id)),index=new Map(guide.map((id,i)=>[id,i]));
+      rows.sort((a,b)=>(index.get(a.id)??guide.length)-(index.get(b.id)??guide.length));
+      const remove=this.db.prepare('DELETE FROM lineup_numbers WHERE channel_id=?'),put=this.db.prepare('INSERT INTO lineup_numbers VALUES(?,?,?)');
+      for(const row of rows)remove.run(row.id);
+      const used=new Set((this.db.prepare('SELECT number FROM lineup_numbers WHERE number>=?').all(start) as {number:number}[]).map(n=>n.number));
+      let number=start;
+      for(const row of rows){while(used.has(number))number++;put.run(row.id,number++,row.position);}
+      return rows.length;
+    })();
+  }
+  favorite(account:string,id:string,value:boolean) {
+    requireThat(this.isVisible(id),'CHANNEL_NOT_FOUND','Channel not found.',404);
+    if(value)this.db.prepare('INSERT OR IGNORE INTO iptv_favorites VALUES(?,?)').run(account,id);
+    // A stack is a favorite while any of its feeds is, so removing it clears every feed.
+    else for(const feed of this.stacks().find(s=>s.feeds.some(f=>f.id===id))?.feeds??[{id}])this.db.prepare('DELETE FROM iptv_favorites WHERE account_id=? AND channel_id=?').run(account,feed.id);
+  }
+  favorites(account:string) {const ids=new Set((this.db.prepare('SELECT channel_id FROM iptv_favorites WHERE account_id=?').all(account) as {channel_id:string}[]).map(c=>c.channel_id));return this.visible().filter(c=>ids.has(c.id));}
+  bindFeed(actor:string,sourceId:string,feedId:string,expected:number,now=Date.now()) {
+    this.db.transaction(()=>{const source=this.source(sourceId),feed=this.source(feedId);this.check(source,expected);requireThat(source.kind==='m3u'&&feed.kind==='xmltv','MAPPING_SCOPE','Link an M3U source to an XMLTV feed.');
+      this.db.prepare('INSERT INTO iptv_source_feeds VALUES(?,?) ON CONFLICT(source_id) DO UPDATE SET feed_id=excluded.feed_id').run(sourceId,feedId);
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);this.audit(actor,'iptv_feed_linked',sourceId,now);
+    })();return this.status(sourceId);
+  }
+  saveGuide(actor:string,sourceId:string,expected:number,input:{endpoint?:SourceEndpoint;intervalHours:number},now=Date.now()) {
+    return this.db.transaction(()=>{
+      const source=this.source(sourceId);this.check(source,expected);
+      requireThat(source.kind==='m3u','MAPPING_SCOPE','Add a program guide to an M3U source.');
+      const interval=hours.parse(input.intervalHours),endpoint=input.endpoint?validateEndpoint(input.endpoint):undefined;
+      const oldId=this.status(sourceId).feedId,old=oldId?this.source(oldId):undefined;
+      requireThat(old||endpoint,'GUIDE_ENDPOINT_REQUIRED','Enter an EPG URL.');
+      // Legacy feeds can be shared. Copy their saved data before editing so other playlists are unaffected.
+      const shared=old&&!!this.db.prepare('SELECT 1 FROM iptv_source_feeds WHERE feed_id=? AND source_id<>?').get(old.id,sourceId);
+      let feedId=old?.id;
+      if(!old||shared) {
+        const feed=this.create(actor,{kind:'xmltv',name:`${source.name.slice(0,114)} · EPG`,endpoint:endpoint??(old?.encrypted_endpoint?this.endpoint(old.id):undefined)},now);
+        feedId=feed.id;
+        if(old) {
+          const snapshot=this.snapshot<XmlSnapshot>(old);
+          if(snapshot)this.db.prepare('UPDATE iptv_sources SET encrypted_snapshot=?,last_attempt=?,last_success=?,last_error=?,retry_after=? WHERE id=?').run(this.vault.seal(JSON.stringify(snapshot),`iptv:snapshot:${feedId}`),old.last_attempt,old.last_success,old.last_error,old.retry_after,feedId);
+          const mappings=this.db.prepare('SELECT m.channel_id,m.value FROM iptv_mappings m JOIN iptv_channels c ON c.id=m.channel_id WHERE c.source_id=? AND m.feed_id=?').all(sourceId,old.id) as {channel_id:string;value:string}[];
+          for(const mapping of mappings)this.db.prepare('INSERT INTO iptv_mappings VALUES(?,?,?)').run(mapping.channel_id,feedId,JSON.stringify({...JSON.parse(mapping.value),feedId}));
+          this.db.prepare('DELETE FROM iptv_mappings WHERE feed_id=? AND channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(old.id,sourceId);
+        }
+      } else if(endpoint)this.replaceEndpoint(actor,old.id,old.revision,endpoint,now);
+      const feed=this.status(feedId!);
+      this.policy(actor,feed.id,{expectedRevision:feed.revision,intervalHours:interval},now);
+      this.bindFeed(actor,sourceId,feed.id,expected,now);
+      return {source:this.status(sourceId),guide:this.status(feed.id)};
+    })();
+  }
+  removeGuide(actor:string,sourceId:string,expected:number,now=Date.now()) {
+    return this.db.transaction(()=>{
+      const source=this.source(sourceId);this.check(source,expected);
+      requireThat(source.kind==='m3u','MAPPING_SCOPE','Remove a program guide from an M3U source.');
+      const feedId=this.status(sourceId).feedId;
+      this.db.prepare('DELETE FROM iptv_source_feeds WHERE source_id=?').run(sourceId);
+      this.db.prepare('DELETE FROM iptv_mappings WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(sourceId);
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);
+      this.audit(actor,'iptv_feed_unlinked',sourceId,now);
+      if(feedId&&!this.db.prepare('SELECT 1 FROM iptv_source_feeds WHERE feed_id=?').get(feedId))this.remove(actor,feedId,this.source(feedId).revision,now);
+      return this.status(sourceId);
+    })();
+  }
+  feedFor(channelId:string) {const channel=this.channel(channelId),row=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(channel.source_id) as {feed_id:string}|undefined;return row?.feed_id;}
+  private guideData(id:string,feedId:string,cache?:Map<string,M3uSnapshot|XmlSnapshot|undefined>) {
+    requireThat(this.feedFor(id)===feedId,'MAPPING_SCOPE','The feed is not linked to this M3U source.');
+    // Source rows carry the encrypted snapshot (megabytes for a guide), so a cached snapshot skips reading the row.
+    const c=this.channel(id),kind=this.db.prepare('SELECT kind FROM iptv_sources WHERE id=?').get(feedId) as {kind:string}|undefined;requireThat(kind,'SOURCE_NOT_FOUND','Source not found.',404);requireThat(kind.kind==='xmltv','MAPPING_SCOPE','Select an XMLTV feed.');
+    const read=<T extends M3uSnapshot|XmlSnapshot>(sourceId:string):T|undefined=>{if(cache?.has(sourceId))return cache.get(sourceId) as T|undefined;const value=this.snapshot<T>(this.source(sourceId));cache?.set(sourceId,value);return value;};
+    const source={id:c.source_id},xml=read<XmlSnapshot>(feedId),snapshot=read<M3uSnapshot>(c.source_id),stored=this.db.prepare('SELECT value FROM iptv_mappings WHERE channel_id=? AND feed_id=?').get(id,feedId) as {value:string}|undefined;
+    const manual=stored?JSON.parse(stored.value) as GuideMapping:undefined,scope={sourceId:source.id,feedId,channelId:id};
+    const mapping=xml&&snapshot&&!c.conflict&&c.present?resolveGuideMapping(scope,this.provider(c),snapshot.channels,xml,manual):undefined;
+    return {c,xml,manual,mapping,scope,snapshot};
+  }
+  mappingReview(id:string,feedId:string) {const {c,xml,manual,mapping,snapshot}=this.guideData(id,feedId);return {mapping,reviewRevision:manual?.revision??0,candidates:xml&&snapshot&&!c.conflict?mappingCandidates(this.provider(c),snapshot.channels,xml):{suggestions:[]}};}
+  map(actor:string,id:string,feedId:string,xmlId:string,expectedRevision:number,now=Date.now()) {
+    return this.db.transaction(()=>{const {c,xml,manual,scope}=this.guideData(id,feedId);requireThat(xml&&!c.conflict&&c.present,'MAPPING_CONFLICT','Channel or guide identity is unavailable or ambiguous.');
+      const mapping=approveMapping({role:'admin',accountId:actor,...scope,xmlId,expectedRevision},manual,scope,xml);
+      this.db.prepare('INSERT INTO iptv_mappings VALUES(?,?,?) ON CONFLICT(channel_id,feed_id) DO UPDATE SET value=excluded.value').run(id,feedId,JSON.stringify(mapping));this.audit(actor,'iptv_mapping_approved',id,now);return mapping;
+    })();
+  }
+  guide(id:string,feedId:string|undefined,start:number,end:number) {
+    requireThat(this.isVisible(id),'CHANNEL_NOT_FOUND','Channel not found.',404);
+    const event=this.eventRows(id,start,end);if(event||!feedId)return event??guideWindow([],undefined,start,end);
+    const {c,xml,mapping}=this.guideData(id,feedId);return guideWindow(xml?.programs??[],mapping?.xmlId,start,end,c.display_name??this.provider(c).name);
+  }
+  // A live sports event an event channel carries, as its guide listing: the event itself, led in by a
+  // "starting soon" slot from when the channel appears, and blank afterwards rather than "No guide data".
+  // A window taken from the EPG alone keeps the EPG.
+  private eventRows(id:string,start:number,end:number) {
+    const w=this.db.prepare("SELECT title,league,start,end,visible_from FROM sports_windows WHERE channel_id=? AND matched_by<>'epg'").get(id) as {title:string;league:string;start:number;end:number;visible_from:number}|undefined;
+    if(!w)return undefined;
+    const event:Program={channelId:'sports',start:w.start,end:w.end,title:w.title,...(w.league?{category:w.league}:{})};
+    const programs=w.visible_from<w.start?[{...event,start:w.visible_from,end:w.start,subtitle:'Starting soon',status:'starting_soon' as const},event]:[event];
+    return guideWindow(programs,'sports',start,end).map(row=>row.program?row:{...row,blank:true as const});
+  }
+  guidePage(account:string,filter:'all'|'iptv'|'custom'|'favorites',start:number,end:number,offset:number,limit:number,q='',channelId?:string) {
+    const favorites=new Set((this.db.prepare('SELECT channel_id FROM iptv_favorites WHERE account_id=?').all(account) as {channel_id:string}[]).map(c=>c.channel_id));
+    const search=q.trim().toLocaleLowerCase();
+    const channels=filter==='custom'?[]:this.stacks().filter(c=>(filter!=='favorites'||c.feeds.some(f=>favorites.has(f.id)))&&(!channelId||c.feeds.some(f=>f.id===channelId))&&(!search||c.name.toLocaleLowerCase().includes(search)||c.feeds.some(f=>f.name.toLocaleLowerCase().includes(search)||String(f.number).includes(search)))),cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>();
+    return {start,end,offset,limit,total:channels.length,hasMore:offset+limit<channels.length,channels:channels.slice(offset,offset+limit).map(channel=>{
+      // Feeds of one station share a schedule: use the first feed with a guide match.
+      let data:ReturnType<IptvStore['guideData']>|undefined;
+      for(const feed of channel.feeds){const feedId=this.feedFor(feed.id),candidate=feedId?this.guideData(feed.id,feedId,cache):undefined;data??=candidate;if(candidate?.mapping){data=candidate;break;}}
+      // Any channel may match the logo library, so the logo route decides; the UI falls back to a monogram.
+      const {hasLogo:_,...rest}=channel,logo=true;
+      return {...rest,logo,type:'iptv' as const,favorite:channel.feeds.some(f=>favorites.has(f.id)),programs:this.eventRows(channel.id,start,end)??guideWindow(data?.xml?.programs??[],data?.mapping?.xmlId,start,end,channel.name)};
+    })};
+  }
+}
