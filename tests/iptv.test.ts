@@ -31,7 +31,10 @@ test('guide exact ID automatic candidates; approximate matches require source-sc
   assert.throws(() => approveMapping(input, approved, scope, x));
   const duplicate = {...x, channels: [...x.channels, x.channels[0]!]};
   assert.equal(mappingCandidates(s.channels[0]!, s.channels, duplicate).exactId, undefined);
-  assert.equal(mappingCandidates(s.channels[0]!, [...s.channels, s.channels[0]!], x).exactId, undefined);
+  assert.equal(mappingCandidates(s.channels[0]!, [...s.channels, s.channels[0]!], x).exactId, 'news.uk');
+  const unrelated={...s.channels[0]!,name:'Unrelated station'};
+  assert.equal(mappingCandidates(s.channels[0]!, [...s.channels, unrelated], x).exactId, undefined);
+  assert.equal(resolveGuideMapping(mappedScope,s.channels[0]!,[...s.channels,unrelated],x,approved)?.xmlId,'sports-guide','manual mappings survive shared IDs');
 });
 test('cached guide uses actual intervals with exact gaps and no age cutoff', () => {
   const s = parseXmltv(xml), start = Date.UTC(2026, 9, 17, 10, 30), end = Date.UTC(2026, 9, 17, 14);

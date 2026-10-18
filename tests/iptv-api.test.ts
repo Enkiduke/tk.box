@@ -14,6 +14,30 @@ import { registerIptv } from '../apps/server/src/iptv-api.js';
 import { SourceRefresh } from '../apps/server/src/services/source-refresh.js';
 import { RestrictedSourceFetcher } from '../apps/server/src/providers/source-fetch.js';
 
+test('identity review exposes sanitized choices and accepts only a current candidate from that source',async()=>{
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
+  const identity=new IdentityService(db,vault,plex),owner=await identity.finish((await identity.start()).binding);assert.ok(owner);
+  const headers={origin:'http://127.0.0.1:3000',cookie:`tk.box_local=${owner.cookie}`},store=new IptvStore(db,vault);
+  const source=store.create('owner',{kind:'m3u',name:'Identity review'});
+  const text=(paths:string[])=>Buffer.from('#EXTM3U\n'+paths.map(p=>`#EXTINF:-1 tvg-id="cnn.us",US: CNN HD\nhttps://provider.invalid/${p}?token=fixture-secret`).join('\n'));
+  try {
+    store.ingest('owner',source.id,0,text(['old-a','old-b']));
+    const channels=store.adminChannels(source.id);
+    store.ingest('owner',source.id,store.status(source.id).revision,text(['new-a','new-b']));
+    const url=`/api/v1/admin/iptv/channels/${channels[0]!.id}/identity`;
+    assert.equal((await app.inject({url})).statusCode,401);
+    const response=await app.inject({url,headers});assert.equal(response.statusCode,200);
+    assert.ok(!response.body.includes('fixture-secret'));assert.ok(!response.body.includes('provider.invalid'));
+    const review=response.json();assert.equal(review.reason,'ambiguous');assert.equal(review.candidates.length,2);
+    const payload={expectedRevision:review.revision,action:'match',candidate:review.candidates[0].key};
+    assert.equal((await app.inject({method:'POST',url,headers,payload:{...payload,expectedRevision:review.revision-1}})).statusCode,409);
+    assert.equal((await app.inject({method:'POST',url,headers,payload:{...payload,candidate:'0'.repeat(64)}})).statusCode,400);
+    const accepted=await app.inject({method:'POST',url,headers,payload});assert.equal(accepted.statusCode,200);assert.ok(!accepted.body.includes('fixture-secret'));
+    assert.equal(store.adminChannels(source.id).find(c=>c.id===channels[0]!.id)!.conflict,false);
+    assert.equal((await app.inject({method:'POST',url,headers,payload})).statusCode,409,'a choice cannot be replayed at the old revision');
+  } finally {await app.close();db.close();}
+});
+
 test('EPG URL creation, immediate refresh and channel linking publish compressed XMLTV without exposing credentials',async()=>{
   const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32))),app=Fastify();
   const xml='<tv><channel id="station"><display-name>Station</display-name></channel><programme channel="station" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Remote programme</title></programme></tv>';
@@ -71,6 +95,9 @@ test('IPTV HTTP boundaries enforce owner mutations, unlisted isolation, scoped g
     let list=await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')});assert.equal(list.json().channels.length,0);
     assert.equal((await app.inject({url:`/api/v1/admin/iptv/sources/${source.id}/channels`,headers:headers('viewer')})).statusCode,403);
     const pending=await app.inject({url:`/api/v1/admin/iptv/sources/${source.id}/channels`,headers:headers('owner')});assert.ok(!pending.body.includes('fixture-secret'));const channel=pending.json().channels[0];
+    assert.equal((await app.inject({url:`/api/v1/admin/iptv/channels/${channel.id}/identity`,headers:headers('viewer')})).statusCode,403);
+    assert.equal((await app.inject({method:'POST',url:`/api/v1/admin/iptv/channels/${channel.id}/identity`,headers:headers('viewer'),payload:{expectedRevision:1,action:'new'}})).statusCode,403);
+    assert.equal((await app.inject({method:'POST',url:`/api/v1/admin/iptv/channels/${channel.id}/identity`,headers:{...headers('owner'),origin:'https://attacker.invalid'},payload:{expectedRevision:1,action:'new'}})).statusCode,403);
     assert.equal((await app.inject({method:'PUT',url:`/api/v1/iptv/channels/${channel.id}/favorite`,headers:headers('viewer'),payload:{favorite:true}})).statusCode,404);
     assert.equal((await app.inject({url:`/api/v1/iptv/channels/${channel.id}/guide?start=0&end=1000`,headers:headers('viewer')})).statusCode,404);
     const approved=await app.inject({method:'PATCH',url:`/api/v1/admin/iptv/channels/${channel.id}`,headers:headers('owner'),payload:{expectedRevision:1,listing:'always',number:101}});assert.equal(approved.statusCode,200);

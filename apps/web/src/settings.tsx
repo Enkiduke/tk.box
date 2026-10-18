@@ -31,7 +31,7 @@ const states:Record<ListingState,{label:string;tone:''|'ok'|'warning'|'danger';d
   no_guide:{label:'No guide data',tone:'warning',detail:'Nothing in the guide now or within the look-ahead.'},
   no_event:{label:'No event on',tone:'',detail:'An event channel; lists while its event is live or starting soon.'},
   hidden:{label:'Hidden',tone:'',detail:'Hidden by an administrator.'},
-  conflict:{label:'Identity conflict',tone:'warning',detail:'Its provider ID changed or is duplicated; reconcile it to list it.'},
+  conflict:{label:'Identity conflict',tone:'warning',detail:'The playlist changed and its saved feed cannot be matched confidently. Review the entries to resolve it.'},
   missing:{label:'Missing',tone:'',detail:'No longer in the playlist. Its number and favorites are kept.'}};
 const unlisted:ListingState[]=['unverified','failing','no_guide','no_event','conflict'];
 const listedCount=(s:Summary)=>(s.listed??0)+(s.always??0);
@@ -86,6 +86,26 @@ function Mapping({source,channel,onClose,changed}:{source:Source;channel:Channel
   return <Modal title="Channel guide match" onClose={onClose}><h2>{channel.name}</h2>{!source.feedId?<Empty title="No guide linked">Add an EPG to this source first, under Guide.</Empty>:review.loading?<Loading/>:review.error?<ErrorNotice message={review.error.message} retry={review.reload}/>:review.data&&<><p>Current guide: <strong>{review.data.mapping?.xmlId??'No guide data'}</strong>{review.data.mapping&&` · ${review.data.mapping.method==='admin'?'Chosen by an administrator':'Exact ID match'}`}</p>{review.data.candidates.suggestions.length>0&&<div className="form-stack"><div><h3>Suggested matches</h3><p className="muted small">Suggestions are inactive until you choose one.</p></div><div className="button-row">{review.data.candidates.suggestions.map(c=><button key={c.xmlId} type="button" aria-pressed={xmlId===c.xmlId} onClick={()=>setXmlId(c.xmlId)}>{c.xmlId}</button>)}</div></div>}<form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(()=>api(`/admin/iptv/channels/${channel.id}/mapping`,'POST',{feedId:source.feedId,xmlId,expectedRevision:review.data!.reviewRevision}));}}><label>XMLTV channel ID<input value={xmlId} onChange={e=>setXmlId(e.target.value)} required maxLength={1024}/></label>{mutation.error&&<ErrorNotice message={mutation.error}/>}<button className="primary" disabled={mutation.busy||!xmlId}>Use this guide channel</button></form></>}</Modal>;
 }
 const listingOptions:[Listing,string,string][]=[['auto','Automatic','Follows this source’s listing rules.'],['always','Always list','Listed even if checks fail, guide data is missing or no event is on.'],['hidden','Hidden','Never listed for viewers.']];
+function IdentityReview({channel,onClose,changed}:{channel:Channel;onClose:()=>void;changed:()=>void}) {
+  type Review={revision:number;reason:'changed'|'ambiguous'|'legacy';current:{name:string;tvgId:string;group:string};candidates:{key:string;name:string;tvgId:string;group:string;quality:string|null}[]};
+  const review=useApi<Review>(`/admin/iptv/channels/${channel.id}/identity`),mutation=useMutation(changed),[candidate,setCandidate]=useState(''),[separate,setSeparate]=useState(false);
+  useEffect(()=>{setCandidate(review.data?.candidates.length===1?review.data.candidates[0]!.key:'');},[review.data]);
+  const resolve=(action:'match'|'new')=>void mutation.run(async()=>{
+    await api(`/admin/iptv/channels/${channel.id}/identity`,'POST',{expectedRevision:review.data!.revision,action,...(action==='match'?{candidate,separate}:{})});onClose();
+  });
+  return <Modal title="Review feed identity" onClose={()=>{if(!mutation.busy)onClose();}}><h2>{channel.name}</h2>
+    {review.loading?<Loading/>:review.error?<ErrorNotice message={review.error.message} retry={review.reload}/>:review.data&&<>
+      <p>{review.data.reason==='changed'?'The provider changed both this feed’s name and its stream address. Confirm whether it is still the same feed.':review.data.reason==='ambiguous'?'Several playlist entries could belong to this saved feed. Choose which entry should keep its number, favorites and settings.':'Review the incoming entry for this saved feed.'}</p>
+      <p className="muted small">Saved entry: {review.data.current.name} · {review.data.current.tvgId||'No guide ID'} · {review.data.current.group||'Uncategorized'}</p>
+      <fieldset className="listing-choices"><legend>Incoming playlist entries</legend>{review.data.candidates.map((p,i)=><label key={p.key} className={`listing-choice ${candidate===p.key?'selected':''}`}><input type="radio" name="identity-candidate" value={p.key} checked={candidate===p.key} disabled={mutation.busy} onChange={()=>setCandidate(p.key)}/><span><strong>{p.name}</strong><small>{[`Feed ${i+1}`,p.quality,p.tvgId||'No guide ID',p.group||'Uncategorized'].filter(Boolean).join(' · ')}</small></span></label>)}</fieldset>
+      <label className="checkbox-label"><input type="checkbox" checked={separate} disabled={mutation.busy} onChange={e=>setSeparate(e.target.checked)}/>Keep the selected feed as its own channel</label>
+      <p className="muted small">Other entries are imported as separate feeds when their identities are clear. Compatible station names group automatically; sharing a guide ID alone does not group different stations. You can change grouping under Edit.</p>
+      {mutation.error&&<ErrorNotice message={mutation.error}/>}
+      <div className="button-row"><button className="primary" disabled={mutation.busy||!candidate} onClick={()=>resolve('match')}>Use selected entry</button><button disabled={mutation.busy||!review.data.candidates.length} onClick={()=>resolve('new')}>Import as new feeds</button></div>
+      <p className="muted small">Import as new feeds keeps this saved feed as missing, with its number, favorites and settings retained. They are not transferred to the new feeds.</p>
+    </>}
+  </Modal>;
+}
 function EditChannel({source,channel,onClose,changed}:{source:Source;channel:Channel;onClose:()=>void;changed:()=>void}) {
   const [name,setName]=useState(channel.name),[number,setNumber]=useState(channel.number?.toString()??''),[position,setPosition]=useState(channel.position?.toString()??''),[listing,setListing]=useState(channel.listing),[providerName,setProviderName]=useState(false),mutation=useMutation(changed);
   const [stackMode,setStackMode]=useState(channel.stack===null?'auto':channel.stack===''?'separate':'custom'),[stack,setStack]=useState(channel.stack||'');
@@ -95,7 +115,7 @@ function EditChannel({source,channel,onClose,changed}:{source:Source;channel:Cha
       <label>Display name<input value={name} onChange={e=>setName(e.target.value)} required maxLength={200}/></label>
       <label className="checkbox-label"><input type="checkbox" checked={providerName} onChange={e=>setProviderName(e.target.checked)}/>Use the provider’s name on future refreshes</label>
       <div className="form-columns"><label>Channel number<input type="number" min="1" max="999999" value={number} onChange={e=>setNumber(e.target.value)}/></label><label>Lineup position<input type="number" min="0" max="999999" value={position} onChange={e=>setPosition(e.target.value)}/></label></div>
-      <div className="form-columns"><label>Feed stacking<select value={stackMode} onChange={e=>setStackMode(e.target.value)}><option value="auto">Automatic · by station name</option><option value="custom">Stack with a station</option><option value="separate">Keep as its own channel</option></select><small>{stackMode==='auto'?`Groups with other “${channel.stackKey.startsWith('solo:')?channel.name:channel.stackKey}” feeds. FHD, then HD, plays by default.`:stackMode==='separate'?'Never grouped with other feeds.':'Feeds with the same station name share one guide row.'}</small></label>{stackMode==='custom'&&<label>Station name<input value={stack} onChange={e=>setStack(e.target.value)} required maxLength={120} placeholder="CNN"/></label>}</div>
+      <div className="form-columns"><label>Feed stacking<select value={stackMode} onChange={e=>setStackMode(e.target.value)}><option value="auto">Automatic · by name or schedule</option><option value="custom">Stack with a station</option><option value="separate">Keep as its own channel</option></select><small>{stackMode==='auto'?'Groups feeds by station name or identical guide schedules within this source. FHD, then HD, plays by default.':stackMode==='separate'?'Never grouped with other feeds.':'Feeds with the same station name share one guide row.'}</small></label>{stackMode==='custom'&&<label>Station name<input value={stack} onChange={e=>setStack(e.target.value)} required maxLength={120} placeholder="CNN"/></label>}</div>
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row"><button disabled={mutation.busy} className="primary">Save channel</button><button type="button" onClick={onClose}>Cancel</button></div>
     </form></Modal>;
@@ -267,7 +287,7 @@ const filters:[string,string,(c:Channel)=>boolean][]=[['all','All channels',()=>
   ...(Object.keys(states) as ListingState[]).map(s=>[s,states[s].label,(c:Channel)=>c.state===s] as [string,string,(c:Channel)=>boolean])];
 const PAGE=100;
 function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source:Source;channels:ReturnType<typeof useApi<ChannelsView>>;health:Record<string,Health>;filter:string;setFilter:(f:string)=>void;changed:()=>void}) {
-  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[inspect,setInspect]=useState<Channel>(),[notice,setNotice]=useState('');
+  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[identity,setIdentity]=useState<Channel>(),[inspect,setInspect]=useState<Channel>(),[notice,setNotice]=useState('');
   const mutation=useMutation(changed);
   useEffect(()=>{setSelected([]);},[source.revision]);
   useEffect(()=>{setNotice('');},[selected]);
@@ -279,7 +299,6 @@ function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source
   // Hidden channels are never checked, so the count can be lower than the selection.
   const check=()=>void mutation.run(async()=>{const r=await api<{queued:number}>(`/admin/iptv/sources/${source.id}/health/check-channels`,'POST',{ids:selected});setNotice(r.queued?`${r.queued} check${r.queued===1?'':'s'} queued. This list updates as they finish.${r.queued<selected.length?' Hidden channels are not checked.':''}`:'Hidden channels are not checked.');});
   const bulk=(listing:Listing)=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/channels/listing`,'POST',{expectedRevision:source.revision,ids:selected,listing}));
-  const update=(channel:Channel,value:Record<string,unknown>)=>void mutation.run(()=>api(`/admin/iptv/channels/${channel.id}`,'PATCH',{expectedRevision:source.revision,...value}));
   return <>
     <div className="channel-toolbar">
       <label className="search-field"><Icon name="search" size={16}/><input aria-label="Find a channel" placeholder="Find by name, provider ID, category or number" value={search} maxLength={120} onChange={e=>{setSearch(e.target.value);setSelected([]);}}/></label>
@@ -294,11 +313,12 @@ function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source
         <td className="number-cell">{c.number??'—'}</td>
         <td><StateBadge channel={c}/>{c.listing!=='auto'&&c.state!=='hidden'&&c.state!=='always'&&<small>Set to {c.listing==='always'?'always list':'hidden'}</small>}</td>
         <td className="health-cell">{c.present&&!c.conflict&&c.listing!=='hidden'?<HealthBadge health={health[c.id]}/>:<span className="muted small">—</span>}</td>
-        <td><div className="row-actions">{c.conflict&&c.present&&c.tvgId&&<button disabled={mutation.busy} onClick={()=>update(c,{acceptIdentity:true})}>Reconcile</button>}<button onClick={()=>setEdit(c)}>Edit</button><button disabled={c.conflict||!source.feedId} title={source.feedId?undefined:'Add an EPG first'} onClick={()=>setMapping(c)}>Guide</button>{c.present&&!c.conflict&&c.listing!=='hidden'&&<button onClick={()=>setInspect(c)}>Check</button>}</div></td>
+        <td><div className="row-actions">{c.conflict&&c.present&&<button disabled={mutation.busy} onClick={()=>setIdentity(c)}>Review identity</button>}<button onClick={()=>setEdit(c)}>Edit</button><button disabled={c.conflict||!source.feedId} title={source.feedId?undefined:'Add an EPG first'} onClick={()=>setMapping(c)}>Guide</button>{c.present&&!c.conflict&&c.listing!=='hidden'&&<button onClick={()=>setInspect(c)}>Check</button>}</div></td>
       </tr>)}</tbody></table></div>
       <div className="list-footer"><span className="muted small">Showing {visible.length} of {filtered.length}</span>{shown<filtered.length&&<button onClick={()=>setShown(n=>n+PAGE)}>Show {Math.min(PAGE,filtered.length-shown)} more</button>}</div>
     </>}
     {mapping&&<Mapping source={source} channel={mapping} changed={changed} onClose={()=>setMapping(undefined)}/>}
+    {identity&&<IdentityReview channel={identity} changed={changed} onClose={()=>setIdentity(undefined)}/>}
     {inspect&&<ChannelHealthDialog channel={inspect} health={health[inspect.id]} changed={changed} onClose={()=>setInspect(undefined)}/>}
     {edit&&<EditChannel source={source} channel={edit} changed={changed} onClose={()=>setEdit(undefined)}/>}
   </>;

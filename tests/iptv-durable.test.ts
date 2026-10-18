@@ -132,14 +132,15 @@ test('complete missing snapshots hide immediately; suspicious drops require revi
     const count=db.prepare('SELECT COUNT(*) AS n FROM iptv_channels').get() as {n:number};assert.equal(count.n,4);
   }finally{db.close();}
 });
-test('renames with stable stream identity survive, recycled/duplicate IDs quarantine until explicit reconciliation',()=>{
+test('renames with stable stream identity survive, recycled IDs need review and exact repeats deduplicate',()=>{
   const {db,store}=fixture();try {
     const s=store.create('owner',{kind:'m3u',name:'Fixture'});store.ingest('owner',s.id,0,playlist(['a']));openListing(store,s.id);const id=store.visible()[0]!.id;
     store.ingest('owner',s.id,revision(store,s.id),playlist(['a'],' renamed'));assert.equal(store.visible()[0]!.id,id);
     const recycled=Buffer.from(playlist(['a'],' recycled').toString().replace('streams.invalid/a','other.invalid/new'));
     store.ingest('owner',s.id,revision(store,s.id),recycled);assert.equal(store.visible().length,0);assert.equal(store.adminChannels(s.id)[0]!.state,'conflict');
     store.editChannel('owner',id,{expectedRevision:revision(store,s.id),acceptIdentity:true});assert.equal(store.visible()[0]!.id,id);
-    store.ingest('owner',s.id,revision(store,s.id),playlist(['a','a']));assert.equal(store.visible().length,0);assert.throws(()=>store.editChannel('owner',id,{expectedRevision:revision(store,s.id),acceptIdentity:true}),{code:'IDENTITY_UNRESOLVED'});
+    store.ingest('owner',s.id,revision(store,s.id),playlist(['a','a']));assert.equal(store.visible().length,0);
+    store.editChannel('owner',id,{expectedRevision:revision(store,s.id),acceptIdentity:true});assert.equal(store.visible().length,1);assert.equal(store.visible()[0]!.id,id);
   }finally{db.close();}
 });
 test('manual guide mappings persist through refresh failures, never cross source bindings or yield invented coverage',()=>{

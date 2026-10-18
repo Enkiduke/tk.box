@@ -15,11 +15,12 @@ function fixture() {const db=openDatabase(':memory:'),store=new IptvStore(db,new
 // No channel checks run here, so list channels without waiting for a first passing check.
 function listAll(store:IptvStore,source:string) {store.setListingPolicy('owner',source,{...store.listingPolicy(source),requireCheck:false,expectedRevision:store.status(source).revision});}
 
-test('station keys ignore region prefixes, quality tags and feed letters but keep distinct stations apart',()=>{
-  for(const name of [...cnn,'US CNN (A)','US: CNN'])assert.equal(stackKey(name),'cnn',name);
-  for(const name of ['US MSNBC (H)','US MSNBC (A)','US MSNBC (S)','US: MSNBC FHD'])assert.equal(stackKey(name),'msnbc',name);
-  assert.equal(stackKey('US: CNN International HD'),'cnn international');
-  assert.equal(stackKey('UK| BBC One FHD'),'bbc one');
+test('station keys retain regions and variants while ignoring quality tags and known feed letters',()=>{
+  for(const name of [...cnn,'US CNN (A)','US: CNN'])assert.equal(stackKey(name),'us:cnn',name);
+  for(const name of ['US MSNBC (H)','US MSNBC (A)','US MSNBC (S)','US: MSNBC FHD'])assert.equal(stackKey(name),'us:msnbc',name);
+  assert.equal(stackKey('US: CNN International HD'),'us:cnn international');
+  assert.equal(stackKey('UK| BBC One FHD'),'uk:bbc one');
+  for(const pair of [['US: CNN HD','CA: CNN HD'],['CNN East HD','CNN West SD'],['BBC One HD','BBC One +1 HD'],['CNN (EN)','CNN (FR)'],['CNN +1','CNN -1']])assert.notEqual(stackKey(pair[0]!),stackKey(pair[1]!));
   assert.deepEqual(['US: CNN FHD','US: CNN HD','US: CNN 4K','US: CNN','US: CNN SD'].map(quality),['FHD','HD','4K',undefined,'SD']);
   const ranked=['US: CNN SD','US: CNN','US: CNN FHD (Backup)','US: CNN HD','US: CNN FHD'].sort((a,b)=>feedRank(b)-feedRank(a));
   assert.deepEqual(ranked,['US: CNN FHD','US: CNN FHD (Backup)','US: CNN HD','US: CNN','US: CNN SD']);
@@ -29,8 +30,8 @@ test('entries without a provider ID are reviewable by unique name and survive re
   const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
   store.ingest('owner',s.id,0,playlist(...cnn.map(n=>entry(n)),entry('Twin'),entry('Twin')+'?second'));
   const channels=store.adminChannels(s.id);
-  assert.equal(channels.filter(c=>!c.conflict&&c.listing==='auto').length,cnn.length);
-  assert.equal(channels.filter(c=>c.conflict).length,2,'duplicate names stay ambiguous');
+  assert.equal(channels.filter(c=>!c.conflict&&c.listing==='auto').length,cnn.length+2);
+  assert.equal(channels.filter(c=>c.conflict).length,0,'same-name feeds have separate internal identities');
   listAll(store,s.id);const before=store.visible().map(c=>c.id).sort();
   store.ingest('owner',s.id,store.status(s.id).revision,playlist(...cnn.map(n=>entry(n)),entry('Twin'),entry('Twin')+'?second'));
   assert.deepEqual(store.visible().map(c=>c.id).sort(),before,'same records after refresh');
@@ -75,7 +76,7 @@ test('a confirmed health failure hides the primary feed and promotes the next, t
   const {db,store}=fixture(),health=new HealthStore(db),s=store.create('owner',{kind:'m3u',name:'Fixture'});
   const result=(verdict:'online'|'offline'):ProbeResult=>({verdict,reason:verdict==='online'?'OK':'HTTP_NOT_FOUND',elapsedMs:10,frames:100,mediaSeconds:7,frozen:false,silent:false,informative:false,thumbnail:false});
   try{
-    store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: CNN HD (Backup)')));listAll(store,s.id);
+    store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD','cnn.us'),entry('US: CNN HD (Backup)','cnn.us')));listAll(store,s.id);
     const station=store.stacks()[0]!,primary=station.id,backup=station.feeds[1]!.id;
     health.record(backup,result('online'));
     health.record(primary,result('offline'));
