@@ -469,10 +469,13 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .watch-button:hover:not(:disabled){background:#fff;color:#0c0c10}
 .guide-program .watch-inline{margin-left:6px;font-size:11px;font-weight:700;color:var(--accent)}
 .guide-programs{position:relative;min-height:50px}
-.guide-program{position:absolute;top:4px;bottom:4px;display:block;min-width:0;padding:5px 10px;border:0;border-right:3px solid var(--surface);border-radius:8px;background:var(--surface-2);text-align:left;white-space:normal;overflow:hidden;font-weight:400}
+.guide-program{position:absolute;top:4px;bottom:4px;display:block;min-width:0;padding:4px 10px 7px;border:0;border-right:3px solid var(--surface);border-radius:8px;background:var(--surface-2);text-align:left;white-space:normal;overflow:hidden;font-weight:400}
 .guide-program:hover{background:var(--surface-3)}
-.guide-program strong{display:block;font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-bottom:1px}
-.guide-program span{font-size:11.5px;color:var(--muted);white-space:nowrap}
+.guide-program strong{display:block;font-size:13px;line-height:17px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-bottom:1px}
+.guide-program span{display:block;font-size:11.5px;line-height:14px;color:var(--muted);white-space:nowrap}
+/* Program text sits above the now-line; the shadow clears the line behind the letters. */
+.guide-program.airing strong,.guide-program.airing span{position:relative;z-index:2;text-shadow:0 0 3px #2e2715,0 0 3px #2e2715}
+.guide-program.airing:hover strong,.guide-program.airing:hover span{text-shadow:0 0 3px #3a311a,0 0 3px #3a311a}
 .guide-program.blank{background:transparent;pointer-events:none}
 .guide-program.no-guide{background:transparent;color:var(--dim);font-style:italic;box-shadow:inset 0 0 0 1px var(--line)}
 .guide-program.airing{background:#2e2715;box-shadow:inset 3px 0 0 var(--accent)}
