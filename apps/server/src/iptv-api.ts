@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { IptvStore, sourceCreate, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing } from './persistence/iptv-store.js';
+import { IptvStore, sourceCreate, sourceOrder, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { sourceEndpoint } from './providers/source-fetch.js';
 import { AppError } from './errors.js';
@@ -15,6 +15,7 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   const channelParams=(p:unknown)=>z.object({id}).parse(p).id;
   app.get('/api/v1/admin/iptv/sources',async req=>{await admin(req);return {sources:store.list().map(s=>({...s,running:refresh.active(s.id)}))};});
   app.post('/api/v1/admin/iptv/sources',async req=>{const {grant}=await admin(req);return store.create(grant.accountId,sourceCreate.parse(req.body));});
+  app.put('/api/v1/admin/iptv/sources/order',async req=>{const {grant}=await admin(req);return {sources:store.reorder(grant.accountId,sourceOrder.parse(req.body)).map(s=>({...s,running:refresh.active(s.id)}))};});
   app.delete('/api/v1/admin/iptv/sources/:id',async req=>{
     const {grant}=await admin(req),input=z.object({expectedRevision:revision}).strict().parse(req.body);
     return refresh.remove(grant.accountId,sourceParams(req.params),input.expectedRevision);

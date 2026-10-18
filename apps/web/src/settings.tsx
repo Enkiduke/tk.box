@@ -427,14 +427,16 @@ function IptvAppSettings() {
 function SourceSettings() {
   const sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');
   const choose=(id:string)=>{setSelected(id);remember('source',id);setImportError('');};
-  const playlists=sources.data?.sources.filter(s=>s.kind==='m3u')??[],source=playlists.find(s=>s.id===selected);
+  const playlists=sources.data?.sources.filter(s=>s.kind==='m3u')??[],source=playlists.find(s=>s.id===selected),ordering=useMutation(sources.reload);
+  // Saved right away: this is the order the Live TV guide groups channels in.
+  const reorder=(i:number,by:number)=>void ordering.run(()=>api('/admin/iptv/sources/order','PUT',{ids:move(playlists.map(s=>s.id),i,by)}));
   if(source)return <>{importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}<SourceDetail key={source.id} source={source} sources={sources.data!.sources} changed={sources.reload} removed={()=>choose('')} back={()=>choose('')}/></>;
   return <>
     <SectionHead title="IPTV" description="Live TV settings for the whole server, and the playlists that supply its channels."/>
     <IptvAppSettings/>
-    <div className="section-heading"><div><h3>Sources</h3><p className="muted small">Playlists, their program guides and how their channels are listed.</p></div><button className="primary" onClick={()=>setCreate(true)}>Add source</button></div>
-    {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}
-    {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map(s=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id}><button className="source-row" onClick={()=>choose(s.id)}>
+    <div className="section-heading"><div><h3>Sources</h3><p className="muted small">Playlists, their program guides and how their channels are listed. Live TV groups channels by source, in this order.</p></div><button className="primary" onClick={()=>setCreate(true)}>Add source</button></div>
+    {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}{ordering.error&&<ErrorNotice message={ordering.error}/>}
+    {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map((s,i)=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id} className="source-item">{playlists.length>1&&<span className="source-move"><button type="button" className="icon-button" aria-label={`Move ${s.name} up`} disabled={i===0||ordering.busy} onClick={()=>reorder(i,-1)}>↑</button><button type="button" className="icon-button" aria-label={`Move ${s.name} down`} disabled={i===playlists.length-1||ordering.busy} onClick={()=>reorder(i,1)}>↓</button></span>}<button className="source-row" onClick={()=>choose(s.id)}>
       <span className={`status-dot ${attention?'danger':s.lastSuccess?'ok':''}`} aria-hidden="true"/>
       <span className="source-row-main"><strong>{s.name}</strong><small>{s.remote?`Remote · every ${s.intervalHours}h`:'File upload'} · {s.lastSuccess?`Imported ${date(s.lastSuccess)}`:'Waiting for import'}</small></span>
       <span className="source-row-tags">{s.candidateDigest&&<span className="badge warning">Review needed</span>}{s.lastError&&<span className="badge danger">{code(s.lastError)}</span>}<span className={`badge ${guide?guide.lastError?'danger':'ok':''}`}>{guide?guide.lastError?'EPG error':'EPG':'No EPG'}</span></span>
