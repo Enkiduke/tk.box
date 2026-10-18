@@ -3,10 +3,8 @@ import type { Db } from './database.js';
 import { requireThat } from '../errors.js';
 import { hamming, SIMILAR, type ProbeResult } from '../services/stream-probe.js';
 import { sportsDormant } from './sports-store.js';
+import { guideMissing, healthHidden } from './listing.js';
 
-// SQL predicate (channel alias `c`): a confirmed failing channel of a source that hides failures.
-// Shared with the listing rule, where an administrator's "always list" wins.
-export const healthHidden = `EXISTS(SELECT 1 FROM iptv_channel_health h LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id WHERE h.channel_id=c.id AND COALESCE(p.hide_failing,1)=1 AND h.status IN ('offline','placeholder'))`;
 export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168), connections: z.number().int().min(1).max(8), hideFailing: z.boolean() }).strict();
 export type HealthPolicy = z.infer<typeof healthPolicy>;
 export type HealthStatus = 'unchecked' | 'online' | 'offline' | 'placeholder';
@@ -18,8 +16,10 @@ type Row = { channel_id: string; status: HealthStatus; reason: string | null; de
 const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, connections: 1, hideFailing: true };
 const CONFIRM_MS = 90_000, RETRY_MS = 15 * 60_000, DEFER_MS = 5 * 60_000, YIELD_MS = 60_000, REACHABLE_MS = 12 * 3600_000, PEER_MS = 48 * 3600_000;
 const eligible = "c.present=1 AND c.conflict=0 AND c.listing<>'hidden'";
-// Event channels are only worth a connection shortly before and during their event.
-const isDue = `((h.priority=1 AND h.due<=@now) OR (COALESCE(p.interval_hours,24)>0 AND COALESCE(h.due,0)<=@now)) AND NOT ${sportsDormant}`;
+// Only channels a passing check would list are worth a connection: no event channel outside its event, and no
+// regular channel kept out by a missing guide. "Always list" channels are listed regardless, so they are checked.
+const listable = `(c.listing='always' OR NOT (${sportsDormant} OR ${guideMissing}))`;
+const isDue = `((h.priority=1 AND h.due<=@now) OR (COALESCE(p.interval_hours,24)>0 AND COALESCE(h.due,0)<=@now)) AND ${listable}`;
 const joins = 'FROM iptv_channels c LEFT JOIN iptv_channel_health h ON h.channel_id=c.id LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id';
 
 export class HealthStore {
@@ -52,7 +52,7 @@ export class HealthStore {
   }
   // On an event-driven source, only channels that are live or starting soon are worth checking.
   queueSource(sourceId: string, now = Date.now()) {
-    return this.db.prepare(`INSERT INTO iptv_channel_health(channel_id,due,priority) SELECT c.id,@now,1 FROM iptv_channels c WHERE c.source_id=@source AND ${eligible} AND NOT ${sportsDormant} ON CONFLICT(channel_id) DO UPDATE SET due=excluded.due,priority=1`).run({ now, source: sourceId }).changes;
+    return this.db.prepare(`INSERT INTO iptv_channel_health(channel_id,due,priority) SELECT c.id,@now,1 FROM iptv_channels c WHERE c.source_id=@source AND ${eligible} AND ${listable} ON CONFLICT(channel_id) DO UPDATE SET due=excluded.due,priority=1`).run({ now, source: sourceId }).changes;
   }
   // An event channel's earlier result says nothing about tonight's event: check it when it starts showing
   // as starting soon and again at the scheduled start, when providers usually switch the feed on.
@@ -135,11 +135,13 @@ export class HealthStore {
     })();
   }
   summary(sourceId: string, now = Date.now()) {
-    const rows = this.db.prepare(`SELECT COALESCE(h.status,'unchecked') AS status,COUNT(*) AS n,SUM(CASE WHEN ${isDue} THEN 1 ELSE 0 END) AS due,SUM(CASE WHEN h.priority=1 AND h.due>@now THEN 1 ELSE 0 END) AS confirming ${joins} WHERE c.source_id=@source AND ${eligible} GROUP BY 1`).all({ source: sourceId, now }) as { status: HealthStatus; n: number; due: number; confirming: number }[];
+    const rows = this.db.prepare(`SELECT COALESCE(h.status,'unchecked') AS status,COUNT(*) AS n,SUM(CASE WHEN ${listable} THEN 1 ELSE 0 END) AS listable,SUM(CASE WHEN ${isDue} THEN 1 ELSE 0 END) AS due,SUM(CASE WHEN h.priority=1 AND h.due>@now THEN 1 ELSE 0 END) AS confirming ${joins} WHERE c.source_id=@source AND ${eligible} GROUP BY 1`).all({ source: sourceId, now }) as { status: HealthStatus; n: number; listable: number; due: number; confirming: number }[];
     const count = (s: HealthStatus) => rows.find(r => r.status === s)?.n ?? 0;
     const hidden = (this.db.prepare(`SELECT COUNT(*) AS n FROM iptv_channels c WHERE c.source_id=? AND c.listing='auto' AND c.present=1 AND c.conflict=0 AND ${healthHidden}`).get(sourceId) as { n: number }).n;
     const times = this.db.prepare('SELECT MAX(h.checked_at) AS checked,MAX(h.last_online) AS online FROM iptv_channel_health h JOIN iptv_channels c ON c.id=h.channel_id WHERE c.source_id=?').get(sourceId) as { checked: number | null; online: number | null };
-    return { online: count('online'), offline: count('offline'), placeholder: count('placeholder'), unchecked: count('unchecked'), hidden,
+    return { online: count('online'), offline: count('offline'), placeholder: count('placeholder'),
+      // Channels that could not be listed now are not waiting for a check.
+      unchecked: rows.find(r => r.status === 'unchecked')?.listable ?? 0, hidden,
       due: rows.reduce((n, r) => n + (r.due ?? 0), 0), confirming: rows.reduce((n, r) => n + (r.confirming ?? 0), 0),
       lastChecked: times.checked, lastOnline: times.online, slates: this.slates(sourceId).length };
   }

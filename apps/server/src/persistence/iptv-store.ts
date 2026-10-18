@@ -6,7 +6,7 @@ import { requireThat } from '../errors.js';
 import { validateEndpoint, sourceEndpoint, type SourceEndpoint } from '../providers/source-fetch.js';
 import { readSportsSettings, eventRank } from './sports-store.js';
 import { listed, listingState, listingPolicy, readListingPolicy, alwaysOnMatch, type Listing, type ListingState } from './listing.js';
-import { hasEvents, looksLikeEvents, groupLooksLikeEvents, byGroup, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
+import { hasEvents, byGroup, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
 import { stackKey, quality, feedRank } from '../services/channel-stacks.js';
 import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
 
@@ -24,9 +24,6 @@ export const channelEdit=z.object({expectedRevision:z.number().int().nonnegative
 export const listingEdit=listingPolicy.extend({expectedRevision:z.number().int().nonnegative()}).strict();
 export const groupEdit=z.object({expectedRevision:z.number().int().nonnegative(),name:z.string().max(500),mode:z.enum(['auto','regular','events']),guideExempt:z.boolean()}).strict();
 export const bulkListing=z.object({expectedRevision:z.number().int().nonnegative(),ids:z.array(z.string().uuid()).min(1).max(500),listing:listingValue}).strict();
-// Whether a category set to "auto" follows events. A playlist without categories is one group: with sports events on,
-// all of it follows events, as it did before categories were told apart.
-const autoEvents=(names:string[],single:boolean,sports:boolean)=>single?sports||looksLikeEvents(names):groupLooksLikeEvents(names);
 // Guide placeholders that do not count as a program for "has guide data".
 const GUIDE_FILLER=/^\s*(no (program(me)?s?|programming|information|info|data|listings?|epg)( available)?|to be (announced|determined)|tba|tbd|off ?air|sign ?off|close ?down|channel off ?air)\s*\.?\s*$/i;
 // Provider IDs identify entries. Without one, an exact name that is unique in the snapshot does; a renamed
@@ -167,13 +164,13 @@ export class IptvStore {
       this.relist(sourceId,now);return this.listingPolicy(sourceId);
     })();
   }
-  // A playlist's categories: whether each follows events (detected, or set by an administrator) and needs guide data.
+  // A playlist's categories: whether each follows events (all of them on a sports source, unless an administrator says otherwise) and needs guide data.
   groups(sourceId:string) {
     const sports=this.sportsEnabled(sourceId),settings=new Map((this.db.prepare('SELECT name,mode,guide_exempt FROM iptv_groups WHERE source_id=?').all(sourceId) as {name:string;mode:'auto'|'regular'|'events';guide_exempt:number}[]).map(g=>[g.name,g]));
     const rows=this.db.prepare(`SELECT c.*,(${listingState}) AS state FROM iptv_channels c WHERE c.source_id=? AND c.present=1`).all(sourceId) as (ChannelRow&{state:ListingState})[];
-    const all=rows.map(c=>({...this.provider(c),state:c.state,event:!!c.event})),groups=byGroup(all),single=groups.size===1;
-    return [...groups].map(([name,channels])=>{const s=settings.get(name),detected=autoEvents(channels.map(c=>c.name),single,sports);
-      return {name,channels:channels.length,listed:channels.filter(c=>c.state==='listed'||c.state==='always').length,mode:s?.mode??'auto',detected:detected?'events' as const:'regular' as const,events:sports&&channels.some(c=>c.event),guideExempt:!!s?.guide_exempt};
+    const all=rows.map(c=>({...this.provider(c),state:c.state,event:!!c.event})),groups=byGroup(all);
+    return [...groups].map(([name,channels])=>{const s=settings.get(name);
+      return {name,channels:channels.length,listed:channels.filter(c=>c.state==='listed'||c.state==='always').length,mode:s?.mode??'auto',detected:sports?'events' as const:'regular' as const,events:sports&&channels.some(c=>c.event),guideExempt:!!s?.guide_exempt};
     }).sort((a,b)=>a.name.localeCompare(b.name));
   }
   setGroup(actor:string,sourceId:string,input:z.input<typeof groupEdit>,now=Date.now()) {
@@ -191,8 +188,9 @@ export class IptvStore {
   private classify(sourceId:string) {
     const sports=this.sportsEnabled(sourceId),settings=new Map((this.db.prepare('SELECT name,mode,guide_exempt FROM iptv_groups WHERE source_id=?').all(sourceId) as {name:string;mode:string;guide_exempt:number}[]).map(g=>[g.name,g]));
     const always=alwaysOnMatch(readListingPolicy(this.db,sourceId).alwaysOn),channels=this.channels(sourceId).map(c=>({row:c,...this.provider(c)}));
-    const present=byGroup(channels.filter(c=>c.row.present)),single=present.size===1,events=new Map<string,boolean>();
-    for(const [name,list] of present){const mode=settings.get(name)?.mode??'auto';events.set(name,mode==='events'||(mode==='auto'&&autoEvents(list.map(c=>c.name),single,sports)));}
+    const present=byGroup(channels.filter(c=>c.row.present)),events=new Map<string,boolean>();
+    // On a source flagged for sports and live events, every category follows events unless an administrator marks it regular.
+    for(const name of present.keys()){const mode=settings.get(name)?.mode??'auto';events.set(name,mode==='events'||(mode==='auto'&&sports));}
     const put=this.db.prepare('UPDATE iptv_channels SET event=?,guide_exempt=? WHERE id=? AND (event<>? OR guide_exempt<>?)');
     for(const c of channels){const event=Number(sports&&(events.get(c.group)??c.row.event===1)),exempt=Number(!!settings.get(c.group)?.guide_exempt||always(c.name)||always(c.group));put.run(event,exempt,c.row.id,event,exempt);}
   }

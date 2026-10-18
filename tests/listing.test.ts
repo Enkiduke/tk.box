@@ -91,16 +91,18 @@ test('always-on patterns match whole words only', () => {
   for (const name of ['Channel 1247', 'News 24', 'Sports 247a']) assert.equal(match(name), false, name);
 });
 
-test('event categories follow their events while regular categories in the same playlist list as usual', () => {
+test('event categories follow their events while categories marked regular in the same playlist list as usual', () => {
   const { db, iptv, sports } = fixture();
   try {
     const s = iptv.create('owner', { kind: 'm3u', name: 'Mixed' });
     iptv.ingest('owner', s.id, 0, playlist(entry('p1', 'PPV 1: UFC 333', 'PPV Events'), entry('p2', 'PPV 2: Smith vs Jones', 'PPV Events'), entry('p3', 'PPV 3', 'PPV Events'),
       entry('cnn', 'CNN', 'News'), entry('bbc', 'BBC World', 'News')));
-    // One event category is enough to turn sports events on, for that category only.
+    // One event category is enough to flag the source for sports events.
     assert.equal(sports.policy(s.id).enabled, true);
     const byGroup = Object.fromEntries(iptv.groups(s.id).map(g => [g.name, g]));
-    assert.deepEqual([byGroup['PPV Events']!.detected, byGroup['PPV Events']!.events, byGroup['News']!.detected, byGroup['News']!.events], ['events', true, 'regular', false]);
+    assert.deepEqual([byGroup['PPV Events']!.detected, byGroup['PPV Events']!.events, byGroup['News']!.detected, byGroup['News']!.events], ['events', true, 'events', true]);
+    // Every category of a sports source follows events until an administrator marks it regular.
+    iptv.setGroup('owner', s.id, { expectedRevision: iptv.status(s.id).revision, name: 'News', mode: 'regular', guideExempt: false });
     assert.deepEqual(states(iptv, s.id), { p1: 'no_event', p2: 'no_event', p3: 'no_event', cnn: 'unverified', bbc: 'unverified' });
     // Event channels hold no number until their event; regular ones keep theirs.
     assert.deepEqual(Object.fromEntries(iptv.adminChannels(s.id).map(c => [c.tvgId, c.number !== null])), { p1: false, p2: false, p3: false, cnn: true, bbc: true });
@@ -112,6 +114,29 @@ test('event categories follow their events while regular categories in the same 
     // Turning sports events off makes every category regular.
     sports.setPolicy('owner', s.id, { enabled: false, leadMinutes: 30 });
     assert.ok(iptv.adminChannels(s.id).every(c => !c.event));
+  } finally { db.close(); }
+});
+
+test('every category of a sports source follows events unless marked regular, and checks skip what cannot list', () => {
+  const { db, iptv, health, sports } = fixture();
+  try {
+    const s = iptv.create('owner', { kind: 'm3u', name: 'Provider' });
+    iptv.ingest('owner', s.id, 0, playlist(...Array.from({ length: 6 }, (_, i) => entry(`e${i}`, `ESPN+ 0${i + 1}`, 'Slots')), entry('cnn', 'CNN', 'News'), entry('bbc', 'BBC World', 'News')));
+    // Not flagged: slots without event names are regular channels waiting for a check.
+    assert.equal(sports.policy(s.id).enabled, false);
+    assert.equal(states(iptv, s.id).e0, 'unverified'); assert.equal(health.summary(s.id).unchecked, 8);
+    // Flagged as sports and live events: nothing is regular by default, and slots wait for an event, not a check.
+    sports.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
+    assert.ok(iptv.groups(s.id).every(g => g.detected === 'events'));
+    assert.ok(Object.values(states(iptv, s.id)).every(v => v === 'no_event'));
+    assert.equal(health.summary(s.id).unchecked, 0); assert.equal(health.queueSource(s.id), 0); assert.equal(health.due(s.id, 50, new Set()).length, 0);
+    // An administrator marks a category regular; only its channels wait for a check.
+    iptv.setGroup('owner', s.id, { expectedRevision: iptv.status(s.id).revision, name: 'News', mode: 'regular', guideExempt: false });
+    assert.deepEqual([states(iptv, s.id).cnn, states(iptv, s.id).e0], ['unverified', 'no_event']);
+    assert.equal(health.summary(s.id).unchecked, 2); assert.equal(health.due(s.id, 50, new Set()).length, 2);
+    // A regular channel kept out by a missing guide is not checked either.
+    rules(iptv, s.id, { requireGuide: true });
+    assert.equal(health.summary(s.id).unchecked, 0); assert.equal(health.due(s.id, 50, new Set()).length, 0);
   } finally { db.close(); }
 });
 
