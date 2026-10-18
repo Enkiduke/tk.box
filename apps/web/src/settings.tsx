@@ -416,14 +416,13 @@ function IptvAppSettings() {
   if(view.loading&&!data)return <Loading/>;
   if(view.error&&!data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!data)return null;
-  const used=data.connections.viewers+data.connections.checks;
-  return <Card title="Settings">
-    <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/iptv/settings','PUT',{expectedRevision:data.revision,maxConnections:max});setSaved(true);});}}>
-      <label>Max connections<input type="number" min="1" max="16" required value={max} onChange={e=>{setMax(Number(e.target.value));setSaved(false);}}/><small>How many streams your provider lets this server open at once, across every source. Viewers always come first: channel checks only use connections nobody is watching on. {used} of {data.connections.limit} in use now ({plural(data.connections.viewers,'viewer')}, {plural(data.connections.checks,'check')}).</small></label>
-      {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button>{saved&&<span role="status" className="success">Saved.</span>}</div>
-    </form>
-  </Card>;
+  const used=data.connections.viewers+data.connections.checks,changed=max!==data.maxConnections;
+  return <form className="setting-line" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/iptv/settings','PUT',{expectedRevision:data.revision,maxConnections:max});setSaved(true);});}}>
+    <label htmlFor="iptv-max-connections" className="grow"><strong>Max connections</strong><small className="muted">Shared by all sources · viewers before checks · {used} of {data.connections.limit} in use</small></label>
+    {mutation.error&&<span className="danger small">{mutation.error}</span>}{saved&&!changed&&<span role="status" className="success small">Saved</span>}
+    {changed&&<button className="primary" disabled={mutation.busy}>Save</button>}
+    <input id="iptv-max-connections" type="number" min="1" max="16" required value={max} onChange={e=>{setMax(Number(e.target.value));setSaved(false);}}/>
+  </form>;
 }
 function SourceSettings() {
   const sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');

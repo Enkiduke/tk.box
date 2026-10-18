@@ -784,6 +784,9 @@ input[type=checkbox].switch:disabled{opacity:.4;cursor:default}
 .meter span{display:block;height:100%;background:#4fc47e}
 
 /* Sources */
+.setting-line{display:flex;align-items:center;gap:14px;padding:14px 20px;margin-bottom:28px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.setting-line label{display:flex;flex-direction:column;gap:2px;margin:0}
+.setting-line input{width:72px;text-align:center}
 .source-rows{margin:0;padding:0;list-style:none;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 .source-rows li+li{border-top:1px solid var(--line)}
 .source-row{width:100%;justify-content:flex-start;gap:16px;padding:18px 20px;border:0;border-radius:0;background:transparent;text-align:left;white-space:normal;font-weight:400}
