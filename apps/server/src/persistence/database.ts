@@ -100,6 +100,11 @@ export function openDatabase(path: string) {
       db.prepare('INSERT OR IGNORE INTO iptv_settings VALUES(1,0,?)').run(JSON.stringify({ maxConnections: n ?? 1 }));
       db.prepare('INSERT INTO migrations VALUES(10)').run();
     }
+    // Sources are ordered by the administrator; the guide lists their channels in that order. Starts in creation order.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=11').get()) {
+      db.exec('ALTER TABLE iptv_sources ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0; UPDATE iptv_sources SET sort_order=rowid;');
+      db.prepare('INSERT INTO migrations VALUES(11)').run();
+    }
   })();
   return db;
 }

@@ -18,6 +18,7 @@ type Feed={id:string;sourceId:string;name:string;number:number;position:number;h
 const viewable=listed;
 const hours=z.number().int().min(1).max(168);
 export const sourceCreate=z.object({kind:z.enum(['m3u','xmltv']),name:z.string().trim().min(1).max(120),endpoint:sourceEndpoint.optional()}).strict();
+export const sourceOrder=z.object({ids:z.array(z.string().uuid()).max(64)}).strict();
 export const sourcePolicy=z.object({expectedRevision:z.number().int().nonnegative(),intervalHours:hours}).strict();
 const listingValue=z.enum(['auto','always','hidden']);
 export const channelEdit=z.object({expectedRevision:z.number().int().nonnegative(),listing:listingValue.optional(),displayName:z.string().trim().min(1).max(200).nullable().optional(),number:z.number().int().min(1).max(999999).optional(),position:z.number().int().min(0).max(999999).optional(),acceptIdentity:z.boolean().optional(),stack:z.string().trim().max(120).nullable().optional()}).strict();
@@ -44,13 +45,26 @@ export class IptvStore {
   private check(row:SourceRow,expected:number) {requireThat(row.revision===expected,'REVISION_CONFLICT','Source changed. Reload and retry.',409);}
   private snapshot<T>(row:SourceRow):T|undefined {return row.encrypted_snapshot ? JSON.parse(this.vault.open(row.encrypted_snapshot,`iptv:snapshot:${row.id}`)) as T : undefined;}
   status(id:string) {const r=this.source(id),feed=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(id) as {feed_id:string}|undefined;return {id:r.id,kind:r.kind,name:r.name,revision:r.revision,intervalHours:r.interval_hours,remote:!!r.encrypted_endpoint,lastAttempt:r.last_attempt,lastSuccess:r.last_success,nextDue:r.next_due,lastError:r.last_error,retryAfter:r.retry_after,candidateDigest:r.candidate_digest,feedId:feed?.feed_id};}
-  list() {return (this.db.prepare('SELECT id FROM iptv_sources ORDER BY id').all() as {id:string}[]).map(r=>this.status(r.id));}
+  private sourceOrder() {return (this.db.prepare('SELECT id FROM iptv_sources ORDER BY sort_order,rowid').all() as {id:string}[]).map(r=>r.id);}
+  list() {return this.sourceOrder().map(id=>this.status(id));}
+  // The guide lists each playlist's channels together, in this order.
+  reorder(actor:string,input:z.input<typeof sourceOrder>,now=Date.now()) {
+    const v=sourceOrder.parse(input);
+    return this.db.transaction(()=>{
+      const playlists=(this.db.prepare("SELECT id FROM iptv_sources WHERE kind='m3u'").all() as {id:string}[]).map(r=>r.id);
+      requireThat(v.ids.length===playlists.length&&new Set(v.ids).size===v.ids.length&&v.ids.every(id=>playlists.includes(id)),'REVISION_CONFLICT','Sources changed. Reload and retry.',409);
+      const set=this.db.prepare('UPDATE iptv_sources SET sort_order=? WHERE id=?');
+      v.ids.forEach((id,i)=>set.run(i,id));
+      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor,'iptv_sources_reordered',now,JSON.stringify({ids:v.ids}));
+      return this.list();
+    })();
+  }
   create(actor:string,input:z.input<typeof sourceCreate>,now=Date.now()) {
     const v=sourceCreate.parse(input),id=randomUUID();
     requireThat(this.list().length<64,'SOURCE_LIMIT','Source limit reached.',409);
     const endpoint=v.endpoint ? validateEndpoint(v.endpoint) : undefined,interval=v.kind==='m3u'?12:6;
     this.db.transaction(()=>{
-      this.db.prepare('INSERT INTO iptv_sources(id,kind,name,interval_hours,encrypted_endpoint,next_due) VALUES(?,?,?,?,?,?)').run(id,v.kind,v.name,interval,endpoint ? this.vault.seal(JSON.stringify(endpoint),`iptv:endpoint:${id}`) : null,endpoint ? now : null);
+      this.db.prepare('INSERT INTO iptv_sources(id,kind,name,interval_hours,encrypted_endpoint,next_due,sort_order) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM iptv_sources))').run(id,v.kind,v.name,interval,endpoint ? this.vault.seal(JSON.stringify(endpoint),`iptv:endpoint:${id}`) : null,endpoint ? now : null);
       this.audit(actor,'iptv_source_created',id,now);
     })();return this.status(id);
   }
@@ -267,9 +281,10 @@ export class IptvStore {
   visible() {return this.feeds().map(({rank:_,online:__,label:___,event:____,...feed})=>feed);}
   // One lineup row per station within a source, like identity. The default feed is the best quality (FHD, then HD), primary before
   // backup, then a feed confirmed working; the row keeps the earliest lineup position of its feeds.
-  // Live event rows form one block, above or below the rest (Live Sports settings), ordered by sport, league, then start.
+  // Rows are grouped by source in the administrator's order. Within a source, live event rows form one block, above or
+  // below the rest (Live Sports settings), ordered by sport, league, then start.
   stacks() {
-    const settings=readSportsSettings(this.db),rankOf=eventRank(settings),top=settings.placement==='top';
+    const settings=readSportsSettings(this.db),rankOf=eventRank(settings),top=settings.placement==='top',sources=new Map(this.sourceOrder().map((id,i)=>[id,i]));
     const order=(e:NonNullable<Feed['event']>)=>[...rankOf(e.sport,e.league),e.start];
     const groups=new Map<string,Feed[]>();
     for(const feed of this.feeds()){const group=groups.get(feed.stack);if(group)group.push(feed);else groups.set(feed.stack,[feed]);}
@@ -278,6 +293,7 @@ export class IptvStore {
       const {rank:_,online:__,label:___,event:____,...primary}=feeds[0]!,event=feeds.find(f=>f.event)?.event;
       return {row:{...primary,position,feeds:feeds.map(f=>({id:f.id,name:f.label??f.name,number:f.number,...(f.quality?{quality:f.quality}:{})}))},event:event&&order(event)};
     }).sort((a,b)=>{
+      const bySource=sources.get(a.row.sourceId)!-sources.get(b.row.sourceId)!;if(bySource)return bySource;
       if(!!a.event!==!!b.event)return (a.event?-1:1)*(top?1:-1);
       if(a.event&&b.event)for(const [i,v] of a.event.entries())if(v!==b.event[i])return v-b.event[i]!;
       return a.row.position-b.row.position||a.row.number-b.row.number;
@@ -474,7 +490,10 @@ export class IptvStore {
     const favorites=new Set((this.db.prepare('SELECT channel_id FROM iptv_favorites WHERE account_id=?').all(account) as {channel_id:string}[]).map(c=>c.channel_id));
     const search=q.trim().toLocaleLowerCase();
     const channels=filter==='custom'?[]:this.stacks().filter(c=>(filter!=='favorites'||c.feeds.some(f=>favorites.has(f.id)))&&(!channelId||c.feeds.some(f=>f.id===channelId))&&(!search||c.name.toLocaleLowerCase().includes(search)||c.feeds.some(f=>f.name.toLocaleLowerCase().includes(search)||String(f.number).includes(search)))),cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>();
-    return {start,end,offset,limit,total:channels.length,hasMore:offset+limit<channels.length,channels:channels.slice(offset,offset+limit).map(channel=>{
+    // Every source with a matching channel, in guide order, so the client can head each group (across pages too).
+    const counts=new Map<string,number>();for(const c of channels)counts.set(c.sourceId,(counts.get(c.sourceId)??0)+1);
+    const sources=[...counts].map(([id,count])=>({id,name:this.source(id).name,count}));
+    return {start,end,offset,limit,total:channels.length,hasMore:offset+limit<channels.length,sources,channels:channels.slice(offset,offset+limit).map(channel=>{
       // Feeds of one station share a schedule: use the first feed with a guide match.
       let data:ReturnType<IptvStore['guideData']>|undefined;
       for(const feed of channel.feeds){const feedId=this.feedFor(feed.id),candidate=feedId?this.guideData(feed.id,feedId,cache):undefined;data??=candidate;if(candidate?.mapping){data=candidate;break;}}
