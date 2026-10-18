@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="news.uk" tvg-name="News UK" group-title="News, UK",News UK
+https://provider.invalid/live/news.m3u8
+#EXTINF:0 tvg-id="sport.uk" group-title="Sports",Sport UK
+https://provider.invalid/live/sport.ts
+#EXTINF:7200 tvg-id="movie" group-title="Movies",A Movie
+https://provider.invalid/movie/1.mp4

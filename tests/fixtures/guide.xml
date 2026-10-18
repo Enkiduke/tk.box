@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="news.uk"><display-name>News UK</display-name></channel>
+  <channel id="sports-guide"><display-name>Sport UK</display-name></channel>
+  <programme channel="news.uk" start="20261017120000 +0100" stop="20261017123000 +0100"><title>News &amp; Weather</title></programme>
+  <programme channel="news.uk" start="20261017130000 +0100" stop="20261017140000 +0100"><title>Afternoon</title></programme>
+  <programme channel="sports-guide" start="20261017120000 +0100" stop="20261017140000 +0100"><title>Match</title></programme>
+</tv>

@@ -1,0 +1,28 @@
+[Unit]
+Description=tk.box media platform (Milestone 0 foundation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tk.box
+Group=tk.box
+WorkingDirectory=/opt/tk.box
+EnvironmentFile=/etc/tk.box/tk.box.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/tk.box/dist/apps/server/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=tk.box
+CacheDirectory=tk.box
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tk.box /var/cache/tk.box
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
