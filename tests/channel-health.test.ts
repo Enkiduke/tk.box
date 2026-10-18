@@ -138,15 +138,14 @@ test('The scheduler respects provider connections, yields to viewers and trusts 
   }));
   const settle = () => new Promise(done => setTimeout(done, 20));
   try {
-    let relays = 0;
-    service.relays = { count: () => relays, live: id => id === ids[4] };
+    service.relays = { live: id => id === ids[4] };
     service.pump(); await settle();
     assert.equal(running.size, 1, 'default policy is one provider connection');
-    // A viewer tuning on this source takes the connection back.
-    service.claim(source); relays = 1; await settle();
+    // A viewer tuning on this source takes the connection back once the check has exited.
+    const viewer = await service.connections.viewer(source);
     assert.equal(aborted.length, 1); assert.equal(service.active(source), 0);
     service.pump(); await settle(); assert.equal(running.size, 0, 'no check while the viewer holds the only connection');
-    relays = 0;
+    viewer.release();
     health.setPolicy('owner', source, { intervalHours: 24, connections: 3, hideFailing: true });
     service.pump(); await settle();
     assert.equal(running.size, 3);

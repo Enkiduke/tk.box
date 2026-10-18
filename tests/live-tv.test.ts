@@ -12,6 +12,7 @@ import { Vault } from '../apps/server/src/security/vault.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { EncoderBudget } from '../apps/server/src/streaming/policy.js';
 import { LiveTv } from '../apps/server/src/services/live-tv.js';
+import { ProviderConnections } from '../apps/server/src/streaming/provider-connections.js';
 import { AppError } from '../apps/server/src/errors.js';
 
 const ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg', ffprobe = process.env.FFPROBE_PATH ?? 'ffprobe';
@@ -19,15 +20,17 @@ const available = spawnSync(ffmpeg, ['-version']).status === 0 && spawnSync(ffpr
 // Endless generated MPEG-TS per request, like a raw IPTV channel. MPEG-2/AC-3 needs a video encode; H.264/MP2 only audio.
 const profiles: Record<string, string[]> = { '/mpeg2.ts': ['-c:v', 'mpeg2video', '-b:v', '2M', '-c:a', 'ac3'], '/h264.ts': ['-c:v', 'libx264', '-preset', 'ultrafast', '-g', '25', '-c:a', 'mp2'] };
 async function channelServer() {
+  const streams = { open: 0, peak: 0 };
   const server = createServer((req, res) => {
     const args = profiles[req.url?.split('?')[0] ?? ''];
     if (!args) { res.writeHead(404).end(); return; }
     res.writeHead(200, { 'content-type': 'video/mp2t' });
+    streams.peak = Math.max(streams.peak, ++streams.open); res.on('close', () => streams.open--);
     const child = spawn(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-re', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', ...args, '-f', 'mpegts', 'pipe:1'], { stdio: ['ignore', 'pipe', 'ignore'] });
     child.stdout.pipe(res); res.on('close', () => child.kill('SIGKILL'));
   });
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
-  return { server, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  return { server, streams, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 function lineup(urls: string[]) {
   const store = new IptvStore(openDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Live' });
@@ -59,6 +62,23 @@ test('live relays copy H.264, encode other video, share one upstream per channel
 
     live.stop(first.id, 'viewer-a'); assert.equal(live.count, 1, 'another viewer keeps the relay');
     live.stop(second.id, 'viewer-b'); assert.equal(live.count, 0);
+  } finally { live.close(); server.close(); }
+});
+
+test('live relays stay within the provider connection limit and switching waits for the old stream to close', { skip: !available && 'FFmpeg unavailable', timeout: 120000 }, async () => {
+  const { server, streams, origin } = await channelServer(), cache = mkdtempSync(join(tmpdir(), 'tk.box-live-'));
+  const { store, ids } = lineup([`${origin}/h264.ts`, `${origin}/h264.ts?b`]);
+  const live = new LiveTv(store, new EncoderBudget(() => 1), cache, ffmpeg, ffprobe);
+  live.connections = new ProviderConnections(() => 1);
+  try {
+    const a = await live.start('viewer-a', ids[0]!);
+    await assert.rejects(live.start('viewer-b', ids[1]!), rejects('LIVE_CONNECTIONS_FULL'));
+    const shared = await live.start('viewer-b', ids[0]!);
+    // Both leave, then one switches channel at once: the new relay waits for the old FFmpeg to exit.
+    live.stop(a.id, 'viewer-a'); live.stop(shared.id, 'viewer-b');
+    const b = await live.start('viewer-b', ids[1]!);
+    assert.equal(streams.peak, 1, 'never more than one upstream stream');
+    live.stop(b.id, 'viewer-b');
   } finally { live.close(); server.close(); }
 });
 

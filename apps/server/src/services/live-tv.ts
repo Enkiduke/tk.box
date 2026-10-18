@@ -7,6 +7,7 @@ import { AppError, requireThat } from '../errors.js';
 import { opaque } from '../security/vault.js';
 import { runProcess } from '../streaming/ffmpeg.js';
 import { assertVideoEncode, type EncoderBudget } from '../streaming/policy.js';
+import { ProviderConnections, type ConnectionLease } from '../streaming/provider-connections.js';
 import type { IptvStore } from '../persistence/iptv-store.js';
 
 export type LiveDelivery = 'remux' | 'transcode';
@@ -14,9 +15,9 @@ export type LiveSource = { videoCodec?: string; audioCodec?: string; width?: num
 type Relay = {
   key: string; channelId: string; sourceId: string; url: string; dir: string; viewers: Set<string>; child?: ChildProcess; exited: boolean;
   encode: boolean; release: () => void; restarts: number; live: boolean; stopped: boolean; ready: Promise<void>; source?: LiveSource; stderr: string;
+  lease?: ConnectionLease; cancel: AbortController;
 };
-// Channel checks share the provider's connections with relays; see ChannelHealth.
-export type LiveObserver = { claim?: (sourceId: string) => void; tuned?: (channelId: string) => void; tuneFailed?: (channelId: string) => void };
+export type LiveObserver = { tuned?: (channelId: string) => void; tuneFailed?: (channelId: string) => void };
 type Viewer = { id: string; hash: string; channelId: string; seen: number };
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const probeSchema = z.object({ streams: z.array(z.object({ codec_type: z.string(), codec_name: z.string().optional(), width: z.number().optional(), height: z.number().optional(), pix_fmt: z.string().optional() })) });
@@ -29,13 +30,15 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 // reads HLS or raw MPEG-TS upstream and writes a short local HLS window: H.264
 // video is copied, anything else is encoded within the shared CPU budget, and
 // audio is always AAC because browsers cannot decode AC-3/MP2 from IPTV feeds.
-// Upstream URIs stay server-side; the browser only sees this session's paths.
+// Upstream URIs stay server-side; the browser only sees this session's paths. Each relay holds
+// one of its source's provider connections (shared with channel checks) until FFmpeg exits.
 export class LiveTv {
   private relays = new Map<string, Relay>();
   private viewers = new Map<string, Viewer>();
   private root: string;
   private timer: NodeJS.Timeout;
   observer: LiveObserver = {};
+  connections = new ProviderConnections(() => Number.POSITIVE_INFINITY);
   constructor(private store: IptvStore, private budget: EncoderBudget, cacheDir: string, private ffmpeg = 'ffmpeg', private ffprobe = 'ffprobe',
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private options = { maxRelays: 8, maxPerViewer: 4, idleMs: 45000, readyMs: 30000 }) {
     this.root = join(cacheDir, 'live', `${process.pid}-${opaque().slice(0, 8)}`);
@@ -49,8 +52,7 @@ export class LiveTv {
     if (!relay) {
       requireThat(this.relays.size < this.options.maxRelays, 'LIVE_CAPACITY_REACHED', 'Too many channels are being watched right now. Please try again shortly.', 503);
       const key = opaque().slice(0, 16);
-      this.observer.claim?.(channel.sourceId);
-      relay = { key, channelId, sourceId: channel.sourceId, url: channel.streamUrl, dir: join(this.root, key), viewers: new Set(), exited: true, encode: false, release: () => {}, restarts: 0, live: false, stopped: false, ready: Promise.resolve(), stderr: '' };
+      relay = { key, channelId, sourceId: channel.sourceId, url: channel.streamUrl, dir: join(this.root, key), viewers: new Set(), exited: true, encode: false, release: () => {}, restarts: 0, live: false, stopped: false, ready: Promise.resolve(), stderr: '', cancel: new AbortController() };
       this.relays.set(channelId, relay);
       const created = relay;
       created.ready = this.prepare(created);
@@ -101,11 +103,12 @@ export class LiveTv {
   stopWhere(matches: (v: { id: string; hash: string }) => boolean) { for (const v of [...this.viewers.values()]) if (matches(v)) this.stop(v.id, v.hash); }
   close() { clearInterval(this.timer); for (const relay of [...this.relays.values()]) this.destroy(relay); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   get count() { return this.relays.size; }
-  sourceRelays(sourceId: string) { return [...this.relays.values()].filter(r => r.sourceId === sourceId && !r.stopped).length; }
   isLive(channelId: string) { return !!this.relays.get(channelId)?.live; }
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
 
   private async prepare(relay: Relay) {
+    relay.lease = await this.connections.viewer(relay.sourceId, relay.cancel.signal);
+    if (relay.stopped) { relay.lease.release(); throw new AppError('MEDIA_CANCELLED', 'Live session was stopped.', 409); }
     await mkdir(relay.dir, { recursive: true, mode: 0o700 });
     this.spawn(relay, false); await this.waitReady(relay);
     const source = await this.probe(relay), video = source.videoCodec;
@@ -178,10 +181,12 @@ export class LiveTv {
   }
   private destroy(relay: Relay) {
     if (relay.stopped) return;
-    relay.stopped = true; relay.release();
+    relay.stopped = true; relay.release(); relay.cancel.abort();
+    const lease = relay.lease; lease?.closing();
     if (this.relays.get(relay.channelId) === relay) this.relays.delete(relay.channelId);
     for (const id of relay.viewers) this.viewers.delete(id);
-    void this.kill(relay).then(() => rm(relay.dir, { recursive: true, force: true, maxRetries: 5 })).catch(() => {});
+    // The connection is only free once FFmpeg has exited and closed its upstream socket.
+    void this.kill(relay).finally(() => lease?.release()).then(() => rm(relay.dir, { recursive: true, force: true, maxRetries: 5 })).catch(() => {});
   }
   // Windows of processes that ended without closing (crash, forced stop) are removed.
   private async reapStale(parent: string) {
