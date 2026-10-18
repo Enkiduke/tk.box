@@ -1,6 +1,7 @@
 import { gunzipSync } from 'node:zlib';
 import { SaxesParser } from 'saxes';
 import { AppError, requireThat } from '../errors.js';
+import { stackKey } from '../services/channel-stacks.js';
 
 const MAX_BYTES = 16 * 1024 * 1024;
 export type M3uChannel = { tvgId: string; name: string; group: string; logo: string; streamUrl: string };
@@ -122,7 +123,6 @@ export function parseXmltv(input: Buffer | string): XmlSnapshot {
 const normalized = (s: string) => s.normalize('NFKC').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 export type GuideMapping = { sourceId: string; feedId: string; channelId: string; xmlId: string; method: 'exact_id' | 'admin'; reviewedBy?: string; revision: number };
 export function resolveGuideMapping(scope: {sourceId: string; feedId: string; channelId: string}, channel: M3uChannel, sourceChannels: M3uChannel[], xml: XmlSnapshot, current?: GuideMapping): GuideMapping | undefined {
-  if (channel.tvgId && sourceChannels.filter(c => c.tvgId === channel.tvgId).length !== 1) return undefined;
   if (current) {
     const valid = current.sourceId === scope.sourceId && current.feedId === scope.feedId && current.channelId === scope.channelId && xml.channels.filter(c => c.id === current.xmlId).length === 1;
     if (current.method === 'admin') return valid ? current : undefined;
@@ -130,10 +130,13 @@ export function resolveGuideMapping(scope: {sourceId: string; feedId: string; ch
   const exactId = exactGuideId(channel, sourceChannels, xml);
   return exactId ? {...scope, xmlId: exactId, method: 'exact_id', revision: current?.xmlId === exactId ? current.revision : (current?.revision ?? 0) + 1} : undefined;
 }
-// The guide channel whose id is this channel's tvg-id, when both are unique. Resolving runs for every channel on
+// Multiple feeds may share one guide ID. It is automatic only when their station names agree;
+// unrelated stations reusing an ID still require a manual guide choice. Resolving runs for every channel on
 // each sports rematch, so it skips mappingCandidates' name suggestions, which normalize every guide name.
 function exactGuideId(channel: M3uChannel, sourceChannels: M3uChannel[], xml: XmlSnapshot) {
-  if (!channel.tvgId || sourceChannels.filter(c => c.tvgId === channel.tvgId).length !== 1) return undefined;
+  if (!channel.tvgId) return undefined;
+  const station=stackKey(channel.name),siblings=sourceChannels.filter(c=>c.tvgId===channel.tvgId);
+  if(siblings.length>1&&(!station||siblings.some(c=>stackKey(c.name)!==station)))return undefined;
   return xml.channels.filter(c => c.id === channel.tvgId).length === 1 ? channel.tvgId : undefined;
 }
 export function mappingCandidates(channel: M3uChannel, sourceChannels: M3uChannel[], xml: XmlSnapshot) {

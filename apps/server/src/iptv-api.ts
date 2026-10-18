@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { IptvStore, sourceCreate, sourceOrder, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing } from './persistence/iptv-store.js';
+import { IptvStore, sourceCreate, sourceOrder, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing, identityResolution } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { sourceEndpoint } from './providers/source-fetch.js';
 import { AppError } from './errors.js';
@@ -40,6 +40,8 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   app.put('/api/v1/admin/iptv/sources/:id/listing',async req=>{const {grant}=await admin(req),source=sourceParams(req.params);store.setListingPolicy(grant.accountId,source,listingEdit.parse(req.body));return {policy:store.listingPolicy(source),summary:store.listingSummary(source),groups:store.groups(source),source:store.status(source)};});
   app.put('/api/v1/admin/iptv/sources/:id/groups',async req=>{const {grant}=await admin(req),source=sourceParams(req.params);store.setGroup(grant.accountId,source,groupEdit.parse(req.body));return {policy:store.listingPolicy(source),summary:store.listingSummary(source),groups:store.groups(source),source:store.status(source)};});
   app.patch('/api/v1/admin/iptv/channels/:id',async req=>{const {grant}=await admin(req);return store.editChannel(grant.accountId,channelParams(req.params),channelEdit.parse(req.body));});
+  app.get('/api/v1/admin/iptv/channels/:id/identity',async req=>{await admin(req);return store.identityReview(channelParams(req.params));});
+  app.post('/api/v1/admin/iptv/channels/:id/identity',async req=>{const {grant}=await admin(req);return store.resolveIdentity(grant.accountId,channelParams(req.params),identityResolution.parse(req.body));});
   app.post('/api/v1/admin/iptv/sources/:id/feed',async req=>{
     const {grant}=await admin(req),input=z.object({expectedRevision:revision,feedId:id}).strict().parse(req.body);
     return store.bindFeed(grant.accountId,sourceParams(req.params),input.feedId,input.expectedRevision);
