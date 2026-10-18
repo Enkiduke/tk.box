@@ -64,6 +64,10 @@ export class HealthStore {
           OR (h.status IN ('offline','placeholder') AND h.checked_at<@now-${10 * 60_000}))
       ON CONFLICT(channel_id) DO UPDATE SET due=excluded.due,priority=1`).run({ source: sourceId, now }).changes;
   }
+  // Selected channels of one source. Hidden, missing and conflicting channels are never checked and are skipped.
+  queueChannels(sourceId: string, ids: string[], now = Date.now()) {
+    return this.db.transaction(() => ids.filter(id => this.sourceOf(id) === sourceId).map(id => this.save(id, { due: now, priority: 1 })).length)();
+  }
   queueChannel(channelId: string, due = Date.now()) {
     requireThat(this.sourceOf(channelId), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
     this.save(channelId, { due, priority: 1 });

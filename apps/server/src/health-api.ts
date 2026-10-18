@@ -23,6 +23,10 @@ export function registerChannelHealth(app: FastifyInstance, iptv: IptvStore, sto
   app.post('/api/v1/admin/iptv/sources/:id/health/check', async req => {
     await admin(req); z.object({}).strict().parse(req.body); const id = m3u(params(req.params)); return { queued: service.queueSource(id), ...view(id) };
   });
+  app.post('/api/v1/admin/iptv/sources/:id/health/check-channels', async req => {
+    await admin(req); const { ids } = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) }).strict().parse(req.body), id = m3u(params(req.params));
+    return { queued: service.queueChannels(id, [...new Set(ids)]), ...view(id) };
+  });
   app.delete('/api/v1/admin/iptv/sources/:id/health/slates', async req => {
     const { grant } = await admin(req); z.object({}).strict().parse(req.body); const id = m3u(params(req.params)); store.clearSlates(grant.accountId, id); service.pump(); return view(id);
   });

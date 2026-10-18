@@ -290,14 +290,17 @@ const filters:[string,string,(c:Channel)=>boolean][]=[['all','All channels',()=>
   ...(Object.keys(states) as ListingState[]).map(s=>[s,states[s].label,(c:Channel)=>c.state===s] as [string,string,(c:Channel)=>boolean])];
 const PAGE=100;
 function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source:Source;channels:ReturnType<typeof useApi<ChannelsView>>;health:Record<string,Health>;filter:string;setFilter:(f:string)=>void;changed:()=>void}) {
-  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[inspect,setInspect]=useState<Channel>();
+  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[inspect,setInspect]=useState<Channel>(),[notice,setNotice]=useState('');
   const mutation=useMutation(changed);
   useEffect(()=>{setSelected([]);},[source.revision]);
+  useEffect(()=>{setNotice('');},[selected]);
   useEffect(()=>{setShown(PAGE);},[filter,search]);
   const entries=channels.data?.channels??[],match=filters.find(f=>f[0]===filter)?.[2]??(()=>true),q=search.toLocaleLowerCase();
   const filtered=entries.filter(c=>match(c)&&(!q||[c.name,c.tvgId,c.group,String(c.number??'')].some(v=>v.toLocaleLowerCase().includes(q))));
   const visible=filtered.slice(0,shown),selectable=filtered.slice(0,500).map(c=>c.id),stackSize=new Map<string,number>();
   for(const c of entries)stackSize.set(c.stackKey,(stackSize.get(c.stackKey)??0)+1);
+  // Hidden channels are never checked, so the count can be lower than the selection.
+  const check=()=>void mutation.run(async()=>{const r=await api<{queued:number}>(`/admin/iptv/sources/${source.id}/health/check-channels`,'POST',{ids:selected});setNotice(r.queued?`${r.queued} check${r.queued===1?'':'s'} queued. This list updates as they finish.${r.queued<selected.length?' Hidden channels are not checked.':''}`:'Hidden channels are not checked.');});
   const bulk=(listing:Listing)=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/channels/listing`,'POST',{expectedRevision:source.revision,ids:selected,listing}));
   const update=(channel:Channel,value:Record<string,unknown>)=>void mutation.run(()=>api(`/admin/iptv/channels/${channel.id}`,'PATCH',{expectedRevision:source.revision,...value}));
   return <>
@@ -305,7 +308,7 @@ function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source
       <label className="search-field"><Icon name="search" size={16}/><input aria-label="Find a channel" placeholder="Find by name, provider ID, category or number" value={search} maxLength={120} onChange={e=>{setSearch(e.target.value);setSelected([]);}}/></label>
       <select aria-label="Show channels" value={filter} onChange={e=>{setFilter(e.target.value);setSelected([]);}}>{filters.map(([f,label,test])=>{const n=entries.filter(test).length;return (f==='all'||n>0||f===filter)&&<option key={f} value={f}>{label} · {n}</option>;})}</select>
     </div>
-    {selected.length>0&&<div className="bulk-bar" role="region" aria-label="Selected channels"><strong>{selected.length} selected</strong><div className="button-row"><button disabled={mutation.busy} onClick={()=>bulk('auto')}>List automatically</button><button disabled={mutation.busy} onClick={()=>bulk('always')}>Always list</button><button disabled={mutation.busy} onClick={()=>bulk('hidden')}>Hide</button><button className="text-button" onClick={()=>setSelected([])}>Clear</button></div></div>}
+    {selected.length>0&&<div className="bulk-bar" role="region" aria-label="Selected channels"><strong>{selected.length} selected</strong><div className="button-row"><button disabled={mutation.busy} onClick={check}>Check now</button><button disabled={mutation.busy} onClick={()=>bulk('auto')}>List automatically</button><button disabled={mutation.busy} onClick={()=>bulk('always')}>Always list</button><button disabled={mutation.busy} onClick={()=>bulk('hidden')}>Hide</button><button className="text-button" onClick={()=>setSelected([])}>Clear</button></div>{notice&&<p role="status" className="success">{notice}</p>}</div>}
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     {channels.loading&&!channels.data?<Loading/>:channels.error?<ErrorNotice message={channels.error.message} retry={channels.reload}/>:!filtered.length?<Empty title="No channels in this view">{entries.length?'Try another filter or search.':'Import a playlist to see its channels.'}</Empty>:<>
       <div className="table-scroll"><table className="channel-table"><thead><tr><th className="selection-cell"><input type="checkbox" aria-label={`Select ${selectable.length===filtered.length?'all':'the first 500'} channels in this view`} disabled={mutation.busy} checked={selectable.length>0&&selectable.every(id=>selected.includes(id))} onChange={e=>setSelected(e.target.checked?selectable:[])}/></th><th>Channel</th><th>No.</th><th>Listing</th><th>Check</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{visible.map(c=><tr key={c.id} className={selected.includes(c.id)?'selected':''}>

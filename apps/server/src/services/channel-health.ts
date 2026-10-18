@@ -31,6 +31,7 @@ export class ChannelHealth {
   active(sourceId?: string) { return [...this.checks.values()].filter(c => !c.abort.signal.aborted && (!sourceId || c.sourceId === sourceId)).length; }
   checking(channelId: string) { return this.checks.has(channelId); }
   queueSource(sourceId: string) { const queued = this.health.queueSource(sourceId); this.pump(); return queued; }
+  queueChannels(sourceId: string, ids: string[]) { const queued = this.health.queueChannels(sourceId, ids); this.pump(); return queued; }
   queueChannel(channelId: string) { this.health.queueChannel(channelId); this.pump(); }
   // A viewer is about to open a connection to this source.
   claim(sourceId: string) {
