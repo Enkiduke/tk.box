@@ -34,6 +34,10 @@ test('FFmpeg log analysis classifies transport failures, frozen silent screens, 
   const live = parseAnalysis(head + stats);
   assert.deepEqual(live.video, { codec: 'h264', width: 1920, height: 1080 }); assert.equal(live.audio, 'aac'); assert.equal(live.frames, 175); assert.equal(live.mediaSeconds, 7);
   assert.equal(classify(live, 'ok').verdict, 'online');
+  // FFmpeg 8 ends with the time of the one-frame fingerprint output, not the sample's.
+  const ffmpeg8 = parseAnalysis('  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 59.94 fps, 59.94 tbr, 90k tbn, start 135.324533\n'
+    + 'frame=  182 fps=0.0 q=-0.0 q=-0.0 size=N/A time=00:00:03.03 bitrate=N/A speed=6.28x elapsed=0:00:00.48\nframe=  420 fps=0.0 q=-0.0 Lq=-0.0 size=N/A time=00:00:00.01 bitrate=N/A speed=0.017x elapsed=0:00:00.98\n');
+  assert.ok(Math.abs(ffmpeg8.mediaSeconds - 7) < 0.1); assert.equal(classify(ffmpeg8, 'ok').verdict, 'online');
   const frozen = parseAnalysis(head + '[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 0.04\n[silencedetect @ 0x2] silence_start: 0\n' + stats + '\n[silencedetect @ 0x2] silence_end: 7 | silence_duration: 7\n');
   assert.ok(frozen.freezeCoverage > 0.9 && frozen.silenceCoverage > 0.9);
   assert.deepEqual(classify(frozen, 'ok'), { verdict: 'placeholder', reason: 'FROZEN_SILENT', frozen: true, silent: true });

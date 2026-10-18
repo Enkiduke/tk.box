@@ -62,13 +62,17 @@ export function parseAnalysis(stderr: string): Analysis {
   const videoLine = streams.find(l => / Video: /.test(l)), audioLine = streams.find(l => / Audio: /.test(l));
   const size = videoLine && /, (\d{2,5})x(\d{2,5})[ ,]/.exec(videoLine);
   const video = videoLine ? { codec: / Video: ([\w-]+)/.exec(videoLine)?.[1] ?? 'unknown', ...(size ? { width: Number(size[1]), height: Number(size[2]) } : {}) } : undefined;
-  const stats = [...stderr.matchAll(/frame=\s*(\d+)/g)].at(-1), time = [...stderr.matchAll(/time=\s*(-?\d+):(\d{2}):(\d{2}(?:\.\d+)?)/g)].at(-1);
-  const mediaSeconds = time ? Math.max(0, Number(time[1]) * 3600 + Number(time[2]) * 60 + Number(time[3])) : 0;
+  const stats = [...stderr.matchAll(/frame=\s*(\d+)/g)].at(-1), frames = stats ? Number(stats[1]) : 0;
+  // The final progress line is not reliable: with several outputs, FFmpeg 8 reports the time of one that
+  // stopped after a single frame. Take the furthest time seen, or the decoded video frames at the input rate.
+  const times = [...stderr.matchAll(/time=\s*(-?\d+):(\d{2}):(\d{2}(?:\.\d+)?)/g)].map(t => Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]));
+  const fps = videoLine ? Number(/, ([\d.]+) fps/.exec(videoLine)?.[1] ?? 0) : 0;
+  const mediaSeconds = Math.max(0, ...times, fps > 0 ? frames / fps : 0);
   const freeze = intervals(stderr, /freezedetect\.freeze_start:\s*(-?[\d.]+)/, /freezedetect\.freeze_end:\s*(-?[\d.]+)/);
   const silence = intervals(stderr, /silence_start:\s*(-?[\d.]+)/, /silence_end:\s*(-?[\d.]+)/);
   const opened = [...stderr.matchAll(/Opening '([^']+)' for reading/g)].map(m => { try { return new URL(m[1]!).pathname; } catch { return ''; } });
   return {
-    frames: stats ? Number(stats[1]) : 0, mediaSeconds, hasVideo: !!videoLine, hasAudio: !!audioLine, video, audio: audioLine ? / Audio: ([\w-]+)/.exec(audioLine)?.[1] : undefined,
+    frames, mediaSeconds, hasVideo: !!videoLine, hasAudio: !!audioLine, video, audio: audioLine ? / Audio: ([\w-]+)/.exec(audioLine)?.[1] : undefined,
     freezeCoverage: coverage(freeze, mediaSeconds), silenceCoverage: coverage(silence, mediaSeconds),
     error: failures.find(([pattern]) => pattern.test(stderr))?.[1], placeholderUrl: opened.some(p => placeholderPath.test(p)),
     noVideoOutput: /does not contain any stream|Stream map '0:v:0' matches no streams/.test(stderr)
@@ -110,7 +114,7 @@ export function hamming(a: string, b: string) {
 }
 export const SIMILAR = 6;
 
-function args(url: string, sample: number, video: boolean, thumbnail?: string) {
+export function args(url: string, sample: number, video: boolean, thumbnail?: string) {
   const out = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-protocol_whitelist', 'http,https,tcp,tls,crypto', '-user_agent', userAgent,
     '-rw_timeout', '10000000', '-threads', '1', '-t', String(sample), '-i', url,
     // Detectors run on a tiny copy: freeze comparison is cheaper and compression noise is smoothed away.
