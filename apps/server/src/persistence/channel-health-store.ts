@@ -5,8 +5,8 @@ import { hamming, SIMILAR, type ProbeResult } from '../services/stream-probe.js'
 import { sportsDormant } from './sports-store.js';
 
 // SQL predicate (channel alias `c`): a confirmed failing channel of a source that hides failures.
-// Administrator exemptions always win. Shared with IptvStore's viewer visibility rule.
-export const healthHidden = `EXISTS(SELECT 1 FROM iptv_channel_health h LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id WHERE h.channel_id=c.id AND COALESCE(p.hide_failing,1)=1 AND h.exempt=0 AND h.status IN ('offline','placeholder'))`;
+// Shared with the listing rule, where an administrator's "always list" wins.
+export const healthHidden = `EXISTS(SELECT 1 FROM iptv_channel_health h LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id WHERE h.channel_id=c.id AND COALESCE(p.hide_failing,1)=1 AND h.status IN ('offline','placeholder'))`;
 export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168), connections: z.number().int().min(1).max(8), hideFailing: z.boolean() }).strict();
 export type HealthPolicy = z.infer<typeof healthPolicy>;
 export type HealthStatus = 'unchecked' | 'online' | 'offline' | 'placeholder';
@@ -17,7 +17,7 @@ type Row = { channel_id: string; status: HealthStatus; reason: string | null; de
 // expired account never empties the lineup. One success restores a channel.
 const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, connections: 1, hideFailing: true };
 const CONFIRM_MS = 90_000, RETRY_MS = 15 * 60_000, DEFER_MS = 5 * 60_000, YIELD_MS = 60_000, REACHABLE_MS = 12 * 3600_000, PEER_MS = 48 * 3600_000;
-const eligible = "c.present=1 AND c.conflict=0 AND c.approval<>'ignored'";
+const eligible = "c.present=1 AND c.conflict=0 AND c.listing<>'hidden'";
 // Event channels are only worth a connection shortly before and during their event.
 const isDue = `((h.priority=1 AND h.due<=@now) OR (COALESCE(p.interval_hours,24)>0 AND COALESCE(h.due,0)<=@now)) AND NOT ${sportsDormant}`;
 const joins = 'FROM iptv_channels c LEFT JOIN iptv_channel_health h ON h.channel_id=c.id LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id';
@@ -45,9 +45,9 @@ export class HealthStore {
     return this.policy(sourceId);
   }
   dueSources(now = Date.now()) { return (this.db.prepare(`SELECT DISTINCT c.source_id AS id ${joins} WHERE ${eligible} AND ${isDue}`).all({ now }) as { id: string }[]).map(r => r.id); }
-  // Requested checks first, then approved channels (what viewers see), then the oldest results.
+  // Requested checks first, then channels that have played (what viewers see), then the oldest results.
   due(sourceId: string, limit: number, skip: Set<string>, now = Date.now()) {
-    return (this.db.prepare(`SELECT c.id ${joins} WHERE c.source_id=@source AND ${eligible} AND ${isDue} ORDER BY COALESCE(h.priority,0) DESC, c.approval='approved' DESC, COALESCE(h.due,0), c.id LIMIT @limit`)
+    return (this.db.prepare(`SELECT c.id ${joins} WHERE c.source_id=@source AND ${eligible} AND ${isDue} ORDER BY COALESCE(h.priority,0) DESC, h.last_online IS NOT NULL DESC, COALESCE(h.due,0), c.id LIMIT @limit`)
       .all({ source: sourceId, now, limit: limit + skip.size }) as { id: string }[]).map(r => r.id).filter(id => !skip.has(id)).slice(0, limit);
   }
   // On an event-driven source, only channels that are live or starting soon are worth checking.
@@ -130,14 +130,10 @@ export class HealthStore {
       this.audit(actor, 'iptv_offline_slates_cleared', sourceId, now);
     })();
   }
-  setExempt(actor: string, channelId: string, exempt: boolean, now = Date.now()) {
-    requireThat(this.sourceOf(channelId), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
-    this.db.transaction(() => { this.save(channelId, { exempt: Number(exempt) }); this.audit(actor, 'iptv_health_exemption_changed', channelId, now); })();
-  }
   summary(sourceId: string, now = Date.now()) {
     const rows = this.db.prepare(`SELECT COALESCE(h.status,'unchecked') AS status,COUNT(*) AS n,SUM(CASE WHEN ${isDue} THEN 1 ELSE 0 END) AS due,SUM(CASE WHEN h.priority=1 AND h.due>@now THEN 1 ELSE 0 END) AS confirming ${joins} WHERE c.source_id=@source AND ${eligible} GROUP BY 1`).all({ source: sourceId, now }) as { status: HealthStatus; n: number; due: number; confirming: number }[];
     const count = (s: HealthStatus) => rows.find(r => r.status === s)?.n ?? 0;
-    const hidden = (this.db.prepare(`SELECT COUNT(*) AS n FROM iptv_channels c WHERE c.source_id=? AND c.approval='approved' AND c.present=1 AND c.conflict=0 AND c.enabled=1 AND ${healthHidden}`).get(sourceId) as { n: number }).n;
+    const hidden = (this.db.prepare(`SELECT COUNT(*) AS n FROM iptv_channels c WHERE c.source_id=? AND c.listing='auto' AND c.present=1 AND c.conflict=0 AND ${healthHidden}`).get(sourceId) as { n: number }).n;
     const times = this.db.prepare('SELECT MAX(h.checked_at) AS checked,MAX(h.last_online) AS online FROM iptv_channel_health h JOIN iptv_channels c ON c.id=h.channel_id WHERE c.source_id=?').get(sourceId) as { checked: number | null; online: number | null };
     return { online: count('online'), offline: count('offline'), placeholder: count('placeholder'), unchecked: count('unchecked'), hidden,
       due: rows.reduce((n, r) => n + (r.due ?? 0), 0), confirming: rows.reduce((n, r) => n + (r.confirming ?? 0), 0),
@@ -147,7 +143,7 @@ export class HealthStore {
     const rows = this.db.prepare('SELECT h.* FROM iptv_channel_health h JOIN iptv_channels c ON c.id=h.channel_id WHERE c.source_id=?').all(sourceId) as Row[];
     return new Map(rows.map(r => {
       const detail = r.detail ? JSON.parse(r.detail) as { video?: { codec: string; width?: number; height?: number }; still?: boolean; thumbnail?: boolean } : {};
-      return [r.channel_id, { status: r.status, reason: r.reason, checkedAt: r.checked_at, lastOnline: r.last_online, failures: r.failures, exempt: !!r.exempt, queued: !!r.priority,
+      return [r.channel_id, { status: r.status, reason: r.reason, checkedAt: r.checked_at, lastOnline: r.last_online, failures: r.failures, queued: !!r.priority,
         still: !!detail.still, video: detail.video, thumbnail: !!detail.thumbnail, fingerprint: !!r.fingerprint }] as const;
     }));
   }

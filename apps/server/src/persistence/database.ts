@@ -74,6 +74,24 @@ export function openDatabase(path: string) {
       if (!(db.prepare(`PRAGMA table_info(${table})`).all() as {name: string}[]).some(c => c.name === 'league_key')) db.exec(`ALTER TABLE ${table} ADD COLUMN league_key TEXT`);
     db.exec('CREATE TABLE IF NOT EXISTS sports_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL)');
     db.prepare('INSERT OR IGNORE INTO migrations VALUES(8)').run();
+    // Listing replaces approval: channels list themselves by per-source rules. `listing` is the administrator's override,
+    // `event` and `guide_exempt` are derived from the channel's group and name. The old approval and enabled columns
+    // are no longer read; ignored or disabled channels become hidden and health exemptions become "always list".
+    if (!(db.prepare('PRAGMA table_info(iptv_channels)').all() as {name: string}[]).some(c => c.name === 'listing')) {
+      db.exec(`ALTER TABLE iptv_channels ADD COLUMN listing TEXT NOT NULL DEFAULT 'auto' CHECK(listing IN ('auto','always','hidden'));
+        ALTER TABLE iptv_channels ADD COLUMN event INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE iptv_channels ADD COLUMN guide_exempt INTEGER NOT NULL DEFAULT 0;
+        UPDATE iptv_channels SET listing='hidden' WHERE approval='ignored' OR enabled=0;
+        UPDATE iptv_channels SET listing='always' WHERE listing='auto' AND id IN (SELECT channel_id FROM iptv_channel_health WHERE exempt=1);
+        UPDATE iptv_channels SET event=1 WHERE source_id IN (SELECT source_id FROM sports_policies WHERE enabled=1);`);
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS iptv_listing_policies(source_id TEXT PRIMARY KEY REFERENCES iptv_sources(id), require_check INTEGER NOT NULL,
+        require_guide INTEGER NOT NULL, guide_hours INTEGER NOT NULL CHECK(guide_hours BETWEEN 0 AND 24), always_on TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS iptv_groups(source_id TEXT NOT NULL REFERENCES iptv_sources(id), name TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK(mode IN ('auto','regular','events')), guide_exempt INTEGER NOT NULL, PRIMARY KEY(source_id,name));
+      CREATE TABLE IF NOT EXISTS iptv_guide_coverage(channel_id TEXT NOT NULL REFERENCES iptv_channels(id), start INTEGER NOT NULL, end INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS iptv_guide_coverage_channel ON iptv_guide_coverage(channel_id,end);`);
+    db.prepare('INSERT OR IGNORE INTO migrations VALUES(9)').run();
   })();
   return db;
 }

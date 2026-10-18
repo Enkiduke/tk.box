@@ -3,7 +3,7 @@ import type { HealthStore } from '../persistence/channel-health-store.js';
 import { allowed, type SportsStore } from '../persistence/sports-store.js';
 import { SourceFetchError } from '../providers/source-fetch.js';
 import { espnEvents, espnDay, espnUrl, tsdbEvents, tsdbUrls, tsdbDayUrl, fetchJson } from '../providers/sports-feeds.js';
-import { channelWindow, learnZones, looksLikeEvents, eventShare, type SportsEvent, type Window } from './sports-match.js';
+import { channelWindow, learnZones, hasEvents, eventShare, type SportsEvent, type Window } from './sports-match.js';
 
 export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: string; zone: string; nameHours: number; tickMs: number };
 type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[] };
@@ -63,10 +63,10 @@ export class SportsSchedule {
       }
       if (fetched) { this.lastSync = Date.now(); this.stale = true; this.store.prune(); }
       if (this.stale || Date.now() - this.lastMatch >= 5 * MINUTE) this.match();
-      // Every minute: approve what just went live or is starting soon, retire what ended, check what appeared.
+      // Every minute: number what just went live or is starting soon, release what ended, check what appeared.
       for (const source of sources) {
-        const synced = this.iptv.syncEventApprovals(source.id);
-        if (synced.approved || synced.returned) this.log('sports approvals updated', { sourceId: source.id, ...synced });
+        const synced = this.iptv.syncNumbers(source.id);
+        if (synced.numbered || synced.released) this.log('sports channels updated', { sourceId: source.id, ...synced });
         this.health.queueEvents(source.id);
       }
       this.pump();
@@ -81,9 +81,9 @@ export class SportsSchedule {
     for (const source of this.iptv.list()) {
       if (source.kind !== 'm3u' || this.store.hasPolicy(source.id) || this.detected.get(source.id) === source.revision) continue;
       this.detected.set(source.id, source.revision);
-      const names = this.iptv.adminChannels(source.id).filter(c => c.present).map(c => c.name);
+      const channels = this.iptv.adminChannels(source.id).filter(c => c.present), names = channels.map(c => c.name);
       const share = Math.round(eventShare(names) * 100);
-      if (!looksLikeEvents(names)) { this.log('playlist is not an event playlist', { sourceId: source.id, channels: names.length, eventLikePercent: share }); continue; }
+      if (!hasEvents(channels)) { this.log('playlist is not an event playlist', { sourceId: source.id, channels: names.length, eventLikePercent: share }); continue; }
       this.store.setPolicy('system:sports', source.id, { enabled: true, leadMinutes: 30 }, now);
       this.log('sports playlist detected', { sourceId: source.id, channels: names.length, eventLikePercent: share });
       this.stale = true;
@@ -103,7 +103,7 @@ export class SportsSchedule {
         windows.set(channel.id, window);
       }
       this.store.replaceWindows(source.id, source.lead_minutes, windows);
-      this.iptv.syncEventApprovals(source.id, now);
+      this.iptv.syncNumbers(source.id, now);
       this.log('sports channels matched', { sourceId: source.id, events: events.length, windows: windows.size, zones: Object.fromEntries(zones) });
     }
     this.lastMatch = now; this.stale = false;

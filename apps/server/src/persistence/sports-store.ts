@@ -4,13 +4,12 @@ import { requireThat } from '../errors.js';
 import { AppError } from '../errors.js';
 import { SPORTS, stackKey, type SportsEvent, type Window } from '../services/sports-match.js';
 
-const NOW = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
-const sportsSource = 'EXISTS(SELECT 1 FROM sports_policies sp WHERE sp.source_id=c.source_id AND sp.enabled=1)';
-// SQL predicate (channel alias `c`): a channel of an event-driven source with no event on right now.
-// Shared with IptvStore's viewer visibility rule, like healthHidden.
-export const sportsHidden = `(${sportsSource} AND NOT EXISTS(SELECT 1 FROM sports_windows w WHERE w.channel_id=c.id AND w.visible_from<=${NOW} AND w.visible_until>${NOW}))`;
+export const NOW = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
+// SQL predicate (channel alias `c`): an event channel (its group follows events) with no event on right now.
+// Shared with the listing rule, like healthHidden.
+export const sportsHidden = `(c.event=1 AND NOT EXISTS(SELECT 1 FROM sports_windows w WHERE w.channel_id=c.id AND w.visible_from<=${NOW} AND w.visible_until>${NOW}))`;
 // Channel checks only spend connections on event channels that are live or starting soon (`@now` bound by HealthStore).
-export const sportsDormant = `(${sportsSource} AND NOT EXISTS(SELECT 1 FROM sports_windows w WHERE w.channel_id=c.id AND w.visible_from<=@now AND w.visible_until>@now))`;
+export const sportsDormant = `(c.event=1 AND NOT EXISTS(SELECT 1 FROM sports_windows w WHERE w.channel_id=c.id AND w.visible_from<=@now AND w.visible_until>@now))`;
 export const sportsPolicy = z.object({ enabled: z.boolean(), leadMinutes: z.number().int().min(0).max(720) }).strict();
 export type SportsPolicy = z.infer<typeof sportsPolicy>;
 // Shown for a short while after the final whistle, so a viewer is not cut off mid-celebration.
@@ -46,7 +45,8 @@ type EventRow = { id: string; source: SportsEvent['source']; sport: string; leag
 type WindowRow = { channel_id: string; event_id: string | null; title: string; league: string; start: number; end: number; visible_from: number; visible_until: number; state: string | null; matched_by: Window['matchedBy']; sport: string | null; league_key: string | null };
 
 export class SportsStore {
-  constructor(private db: Db) {}
+  // `changed` reclassifies a source's channels into regular and event channels (IptvStore.relist).
+  constructor(private db: Db, private changed: (sourceId: string) => void = () => {}) {}
   policy(sourceId: string): SportsPolicy {
     const row = this.db.prepare('SELECT enabled,lead_minutes FROM sports_policies WHERE source_id=?').get(sourceId) as { enabled: number; lead_minutes: number } | undefined;
     return { enabled: !!row?.enabled, leadMinutes: row?.lead_minutes ?? 30 };
@@ -56,16 +56,11 @@ export class SportsStore {
     requireThat(source, 'SOURCE_NOT_FOUND', 'Source not found.', 404); requireThat(source.kind === 'm3u', 'INVALID_POLICY', 'Sports events apply to M3U sources only.');
     this.db.transaction(() => {
       this.db.prepare('INSERT INTO sports_policies VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,lead_minutes=excluded.lead_minutes').run(sourceId, Number(v.enabled), v.leadMinutes);
-      if (!v.enabled) {
-        // Channels the schedule approved go back to review, so turning this off never floods the lineup.
-        const scope = 'SELECT a.channel_id FROM sports_admitted a JOIN iptv_channels c ON c.id=a.channel_id WHERE c.source_id=?';
-        this.db.prepare(`DELETE FROM lineup_numbers WHERE channel_id IN (${scope}) AND channel_id NOT IN (SELECT channel_id FROM iptv_favorites)`).run(sourceId);
-        this.db.prepare(`UPDATE iptv_channels SET approval='pending' WHERE id IN (${scope}) AND approval='approved'`).run(sourceId);
-        this.db.prepare('DELETE FROM sports_admitted WHERE channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(sourceId);
-        this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
-        this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);
-      }
+      // Turned off, every group is regular again: its channels list by the regular rules.
+      if (!v.enabled) this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_policy_changed', now, JSON.stringify({ id: sourceId }));
+      this.changed(sourceId);
     })();
     return this.policy(sourceId);
   }

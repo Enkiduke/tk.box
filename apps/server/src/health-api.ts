@@ -27,9 +27,6 @@ export function registerChannelHealth(app: FastifyInstance, iptv: IptvStore, sto
     const { grant } = await admin(req); z.object({}).strict().parse(req.body); const id = m3u(params(req.params)); store.clearSlates(grant.accountId, id); service.pump(); return view(id);
   });
   app.post('/api/v1/admin/iptv/channels/:id/health/check', async req => { await admin(req); z.object({}).strict().parse(req.body); service.queueChannel(params(req.params)); return { status: 'queued' }; });
-  app.patch('/api/v1/admin/iptv/channels/:id/health', async req => {
-    const { grant } = await admin(req), input = z.object({ exempt: z.boolean() }).strict().parse(req.body); store.setExempt(grant.accountId, params(req.params), input.exempt); return { status: 'saved' };
-  });
   app.post('/api/v1/admin/iptv/channels/:id/health/slate', async req => {
     const { grant } = await admin(req); z.object({}).strict().parse(req.body); return store.markSlate(grant.accountId, params(req.params));
   });

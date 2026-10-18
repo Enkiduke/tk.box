@@ -91,7 +91,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   registerChannelHealth(app, iptv, healthStore, health, admin);
   // Sports events: event-driven sources show a channel only while the event it names is on.
   const list = (value: string | undefined, fallback: string[]) => { const items = (value ?? '').split(',').map(s => s.trim()).filter(Boolean); return items.length ? items : fallback; };
-  const sportsStore = new SportsStore(db), sports = new SportsSchedule(iptv, sportsStore, healthStore, () => health.pump(),
+  const sportsStore = new SportsStore(db, id => iptv.relist(id)), sports = new SportsSchedule(iptv, sportsStore, healthStore, () => health.pump(),
     {espn: list(config.SPORTS_ESPN_LEAGUES, DEFAULT_ESPN), tsdb: list(config.SPORTS_TSDB_LEAGUES, DEFAULT_TSDB), tsdbKey: config.THESPORTSDB_API_KEY ?? '123', zone: config.SPORTS_NAME_TIMEZONE ?? 'America/New_York', nameHours: 3, tickMs: 60000},
     (message, detail) => app.log.info(detail, message));
   registerSports(app, iptv, sportsStore, sports, admin);

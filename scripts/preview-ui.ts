@@ -77,16 +77,19 @@ const store=new IptvStore(db,vault),source=store.create('1',{kind:'m3u',name:'Pr
 // Optional --stream=<url> arguments give the first channels real streams for live playback checks.
 const streams=process.argv.slice(2).filter(arg=>arg.startsWith('--stream=')).map(arg=>arg.slice(9));
 // Extra feeds without provider IDs stack under World News; the FHD feed becomes its default.
-const feeds=['World News FHD','World News SD (Backup)'];
-store.ingest('1',source.id,0,Buffer.from('#EXTM3U\n'+names.map((name,i)=>`#EXTINF:-1 tvg-id="ch${i}",${name}\n${streams[i]??`https://fixture.invalid/${i}`}`).join('\n')+'\n'+feeds.map((name,i)=>`#EXTINF:-1,${name}\n${streams[i+1]??`https://fixture.invalid/feed${i}`}`).join('\n')));
-for(const c of store.adminChannels(source.id)){const i=names.indexOf(c.name);store.editChannel('1',c.id,{expectedRevision:store.status(source.id).revision,approval:'approved',number:i<0?201+feeds.indexOf(c.name):101+i,position:i<0?100:i});}
+const feeds=['World News FHD','World News SD (Backup)'],groups=['News','Movies','Documentary','Music','Documentary','Lifestyle'];
+store.ingest('1',source.id,0,Buffer.from('#EXTM3U\n'+names.map((name,i)=>`#EXTINF:-1 tvg-id="ch${i}" group-title="${groups[i]}",${name}\n${streams[i]??`https://fixture.invalid/${i}`}`).join('\n')+'\n'+feeds.map((name,i)=>`#EXTINF:-1 group-title="News",${name}\n${streams[i+1]??`https://fixture.invalid/feed${i}`}`).join('\n')));
+// The preview never plays its fixture streams, so its channels list without waiting for a first check.
+store.setListingPolicy('1',source.id,{...store.listingPolicy(source.id),requireCheck:false,expectedRevision:store.status(source.id).revision});
+for(const c of store.adminChannels(source.id)){const i=names.indexOf(c.name);store.editChannel('1',c.id,{expectedRevision:store.status(source.id).revision,number:i<0?201+feeds.indexOf(c.name):101+i,position:i<0?100:i});}
 const feed=store.create('1',{kind:'xmltv',name:'Preview guide'}),start=Math.floor(Date.now()/1800000)*1800000-3600000;
 const xmlTime=(t:number)=>new Date(t).toISOString().replace(/[-:T]/g,'').slice(0,14)+' +0000';
 const xml='<tv>'+names.map((name,i)=>`<channel id="ch${i}"><display-name>${name.replaceAll('&','&amp;')}</display-name></channel>`).join('')+names.map((_,i)=>Array.from({length:12},(_,j)=>`<programme channel="ch${i}" start="${xmlTime(start+j*1800000)}" stop="${xmlTime(start+(j+1)*1800000)}"><title>${titles[(i+j)%titles.length]}</title></programme>`).join('')).join('')+'</tv>';
 store.ingest('1',feed.id,0,Buffer.from(xml));store.bindFeed('1',source.id,feed.id,store.status(source.id).revision);
 for(const c of store.visible().slice(0,3))store.favorite('1',c.id,true);
-const pending=store.create('1',{kind:'m3u',name:'Pending review preview'});
-store.ingest('1',pending.id,0,Buffer.from('#EXTM3U\n'+['Culture One','Culture Two','Arts Daily','Encore'].map((name,i)=>`#EXTINF:-1 tvg-id="pending${i}",${name}\nhttps://fixture.invalid/pending${i}`).join('\n')));
+// Waits for channel checks: nothing here is listed until a channel plays.
+const pending=store.create('1',{kind:'m3u',name:'Awaiting checks preview'});
+store.ingest('1',pending.id,0,Buffer.from('#EXTM3U\n'+['Culture One','Culture Two','Arts Daily 24/7','Encore'].map((name,i)=>`#EXTINF:-1 tvg-id="pending${i}" group-title="${i<2?'Culture':'Arts'}",${name}\nhttps://fixture.invalid/pending${i}`).join('\n')));
 const app=await buildApp(config,db,vault,plex,false,namespace);
 app.get('/__preview',async(_req,reply)=>reply.setCookie(`${namespace}_local`,session.cookie,{httpOnly:true,sameSite:'lax',path:'/'}).redirect('/#home'));
 await app.listen({host:'127.0.0.1',port});

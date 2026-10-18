@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { IptvStore, sourceCreate, sourcePolicy, channelEdit } from './persistence/iptv-store.js';
+import { IptvStore, sourceCreate, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { sourceEndpoint } from './providers/source-fetch.js';
 import { AppError } from './errors.js';
@@ -31,11 +31,12 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     const {grant}=await admin(req),input=z.object({expectedRevision:revision,digest:z.string().regex(/^[a-f0-9]{64}$/)}).strict().parse(req.body);
     const id=sourceParams(req.params),result=store.acceptCandidate(grant.accountId,id,input.expectedRevision,input.digest);refresh.published(id);return result;
   });
-  app.get('/api/v1/admin/iptv/sources/:id/channels',async req=>{await admin(req);return {channels:store.adminChannels(sourceParams(req.params))};});
-  app.post('/api/v1/admin/iptv/sources/:id/channels/review',async req=>{
-    const {grant}=await admin(req),input=z.object({expectedRevision:revision,ids:z.array(id).min(1).max(100),approval:z.enum(['approved','ignored'])}).strict().parse(req.body);
-    return store.reviewChannels(grant.accountId,sourceParams(req.params),input.expectedRevision,input.ids,input.approval);
-  });
+  app.get('/api/v1/admin/iptv/sources/:id/channels',async req=>{await admin(req);const source=sourceParams(req.params);return {channels:store.adminChannels(source),summary:store.listingSummary(source)};});
+  app.post('/api/v1/admin/iptv/sources/:id/channels/listing',async req=>{const {grant}=await admin(req);return store.setListing(grant.accountId,sourceParams(req.params),bulkListing.parse(req.body));});
+  // Listing rules: which of this source's channels list themselves (there is no approval step).
+  app.get('/api/v1/admin/iptv/sources/:id/listing',async req=>{await admin(req);const source=sourceParams(req.params);return {policy:store.listingPolicy(source),summary:store.listingSummary(source),groups:store.groups(source)};});
+  app.put('/api/v1/admin/iptv/sources/:id/listing',async req=>{const {grant}=await admin(req),source=sourceParams(req.params);store.setListingPolicy(grant.accountId,source,listingEdit.parse(req.body));return {policy:store.listingPolicy(source),summary:store.listingSummary(source),groups:store.groups(source),source:store.status(source)};});
+  app.put('/api/v1/admin/iptv/sources/:id/groups',async req=>{const {grant}=await admin(req),source=sourceParams(req.params);store.setGroup(grant.accountId,source,groupEdit.parse(req.body));return {policy:store.listingPolicy(source),summary:store.listingSummary(source),groups:store.groups(source),source:store.status(source)};});
   app.patch('/api/v1/admin/iptv/channels/:id',async req=>{const {grant}=await admin(req);return store.editChannel(grant.accountId,channelParams(req.params),channelEdit.parse(req.body));});
   app.post('/api/v1/admin/iptv/sources/:id/feed',async req=>{
     const {grant}=await admin(req),input=z.object({expectedRevision:revision,feedId:id}).strict().parse(req.body);
@@ -85,6 +86,6 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     return {rows:store.guide(channel,store.feedFor(channel),input.start,input.end)};
   });
   const timer=setInterval(()=>{void refresh.tick().catch(()=>{});},15000);timer.unref();
-  app.addHook('onReady',async()=>{await refresh.tick();});
+  app.addHook('onReady',async()=>{store.relistAll();await refresh.tick();});
   app.addHook('preClose',async()=>{clearInterval(timer);await refresh.close();});
 }
