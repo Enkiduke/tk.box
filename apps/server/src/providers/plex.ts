@@ -55,6 +55,13 @@ const leafContainer = z.object({ MediaContainer: z.object({ librarySectionID: pl
   grandparentTitle: z.string().max(500).optional(), grandparentRatingKey: plexId.optional(), parentRatingKey: plexId.optional(),
   Media: z.array(z.object({ duration: z.number().nonnegative().optional(), videoCodec: z.string().max(40).optional(), width: z.number().positive().optional(), height: z.number().positive().optional(), container: z.string().max(40).optional() })).default([]),
 })).default([]) }) });
+type Leaf = z.infer<typeof leafContainer>['MediaContainer']['Metadata'][number];
+const tooLarge = 'That selection has more than 5,000 programs. Pick a smaller collection, category or show.';
+const collectionContainer = z.object({ MediaContainer: z.object({ librarySectionID: plexId.optional(), Metadata: z.array(z.object({
+  ratingKey: plexId, type: z.string(), title: z.string().max(500), subtype: z.string().max(20).optional(), librarySectionID: plexId.optional(), childCount: z.coerce.number().int().nonnegative().optional(),
+})).max(1000).default([]) }) });
+// What a channel selection was: one title, or a group (show, season, collection or category) that expands into many.
+export type ChannelRoot = { id: string; type: 'movie' | 'show' | 'season' | 'episode' | 'collection' | 'genre'; title: string; season?: number };
 export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; seasonId?: string; season?: number; episode?: number; year?: number; date?: string; durationMs: number;
   video?: { codec?: string; width?: number; height?: number; container?: string } };
 export type PlexGrant = { accountId: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
@@ -231,28 +238,71 @@ export class PlexAdapter {
     });
     return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
   }
-  // A movie, episode, season or whole show as the playable items a custom channel would air, in season then
-  // episode order, with the media details needed to judge channel playback. Read with the administrator's grant.
-  async channelMedia(grant:PlexGrant,id:string) {
-    const {node,section}=await this.catalogNode(grant,id),items:ChannelMedia[]=[];
+  // A movie, episode, season, whole show, collection or category as the playable items a custom channel would air,
+  // with the media details needed to judge channel playback. Read with the administrator's grant. Shows and seasons
+  // come in season then episode order. A collection keeps its Plex order and a category (genre) is A–Z; each show in
+  // either expands in place, in episode order. Collections are `collection:<id>`, categories `genre:<library>:<genre>`.
+  async channelMedia(grant:PlexGrant,id:string):Promise<{root:ChannelRoot;items:ChannelMedia[]}> {
+    const items:ChannelMedia[]=[];
+    const collection=/^collection:(\d{1,20})$/.exec(id),genre=/^genre:(\d{1,20}):(\d{1,20})$/.exec(id);
+    if(collection||genre) {
+      let section:string,title:string,path:string;const params:Record<string,string>={};
+      if(collection) {
+        const key=collection[1]!,container=collectionContainer.parse(await this.json(new URL(`/library/metadata/${key}`,this.config.PLEX_URL),grant.serverToken)).MediaContainer;
+        const record=container.Metadata[0];requireThat(container.Metadata.length===1&&record?.ratingKey===key&&record.type==='collection','MEDIA_NOT_FOUND','That collection is unavailable.',404);
+        section=record.librarySectionID??container.librarySectionID??'';requireThat(section,'PLEX_ACCESS_DENIED','Collection library could not be verified.',403);
+        this.library(grant,section);title=record.title;path=`/library/collections/${key}/children`;
+      } else {
+        section=genre![1]!;const library=this.library(grant,section),match=(await this.catalogGenres(grant,section)).genres.find(g=>g.id===genre![2]);
+        requireThat(match,'MEDIA_NOT_FOUND','That category is unavailable.',404);
+        title=`${match.title} ${library.type==='movie'?'movies':'shows'}`;path=`/library/sections/${section}/all`;
+        Object.assign(params,{type:library.type==='movie'?'1':'2',genre:match.id,sort:'titleSort:asc'});
+      }
+      for(const leaf of await this.leaves(grant,path,section,params)) {
+        if(leaf.type==='show')for(const episode of await this.leaves(grant,`/library/metadata/${leaf.ratingKey}/allLeaves`,section))this.pushMedia(items,episode);
+        else this.pushMedia(items,leaf);
+      }
+      return {root:{id,type:collection?'collection':'genre',title},items};
+    }
+    const {node,section}=await this.catalogNode(grant,id);
     const path=node.type==='show'?`/library/metadata/${id}/allLeaves`:node.type==='season'?`/library/metadata/${id}/children`:`/library/metadata/${id}`;
+    for(const leaf of await this.leaves(grant,path,section,{},node.type==='movie'||node.type==='episode'))this.pushMedia(items,leaf);
+    return {root:{id,type:node.type,title:node.type==='season'&&node.parentTitle?`${node.parentTitle} · ${node.title}`:node.title,season:node.type==='season'?node.index:undefined},items};
+  }
+  // Every page of a Plex listing, checked to stay inside the library. Capped so one selection can't flood a channel.
+  private async leaves(grant:PlexGrant,path:string,section:string,params:Record<string,string>={},single=false) {
+    const out:Leaf[]=[];
     for(let offset=0;;offset+=200) {
       const url=new URL(path,this.config.PLEX_URL);
+      for(const [k,v] of Object.entries(params))url.searchParams.set(k,v);
       url.searchParams.set('X-Plex-Container-Start',String(offset));url.searchParams.set('X-Plex-Container-Size','200');
       url.searchParams.set('excludeElements','Role,Director,Writer,Country,Guid,Collection,Producer,Genre,Similar,Field');
       const container=leafContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
       for(const leaf of container.Metadata) {
         requireThat((leaf.librarySectionID??container.librarySectionID??section)===section,'PLEX_ACCESS_DENIED','Plex returned media outside the library.',403);
-        if(leaf.type!=='movie'&&leaf.type!=='episode')continue;
-        const media=leaf.Media[0];
-        items.push({mediaId:leaf.ratingKey,kind:leaf.type,title:leaf.title,showTitle:leaf.grandparentTitle,showId:leaf.grandparentRatingKey,seasonId:leaf.parentRatingKey,
-          season:leaf.type==='episode'?leaf.parentIndex:undefined,episode:leaf.type==='episode'?leaf.index:undefined,year:leaf.year,date:leaf.originallyAvailableAt,
-          durationMs:Math.round(media?.duration??leaf.duration??0),video:media&&{codec:media.videoCodec,width:media.width,height:media.height,container:media.container}});
+        out.push(leaf);
       }
-      requireThat(items.length<=5000,'SELECTION_TOO_LARGE','That selection has more than 5,000 programs.',413);
-      if(node.type==='movie'||node.type==='episode'||container.Metadata.length<200||(container.totalSize!==undefined&&offset+200>=container.totalSize))break;
+      requireThat(out.length<=5000,'SELECTION_TOO_LARGE',tooLarge,413);
+      if(single||container.Metadata.length<200||(container.totalSize!==undefined&&offset+200>=container.totalSize))break;
     }
-    return {root:{id,type:node.type,title:node.type==='season'&&node.parentTitle?`${node.parentTitle} · ${node.title}`:node.title,season:node.type==='season'?node.index:undefined},items};
+    return out;
+  }
+  private pushMedia(items:ChannelMedia[],leaf:Leaf) {
+    if(leaf.type!=='movie'&&leaf.type!=='episode')return;
+    requireThat(items.length<5000,'SELECTION_TOO_LARGE',tooLarge,413);
+    const media=leaf.Media[0];
+    items.push({mediaId:leaf.ratingKey,kind:leaf.type,title:leaf.title,showTitle:leaf.grandparentTitle,showId:leaf.grandparentRatingKey,seasonId:leaf.parentRatingKey,
+      season:leaf.type==='episode'?leaf.parentIndex:undefined,episode:leaf.type==='episode'?leaf.index:undefined,year:leaf.year,date:leaf.originallyAvailableAt,
+      durationMs:Math.round(media?.duration??leaf.duration??0),video:media&&{codec:media.videoCodec,width:media.width,height:media.height,container:media.container}});
+  }
+  // The Plex collections of a movie or TV library, for the channel picker.
+  async channelCollections(grant:PlexGrant,libraryId:string) {
+    this.library(grant,libraryId);
+    const url=new URL(`/library/sections/${libraryId}/collections`,this.config.PLEX_URL);
+    url.searchParams.set('X-Plex-Container-Start','0');url.searchParams.set('X-Plex-Container-Size','1000');
+    const container=collectionContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+    return {collections:container.Metadata.filter(c=>c.type==='collection'&&(c.librarySectionID??container.librarySectionID??libraryId)===libraryId)
+      .map(c=>({id:`collection:${c.ratingKey}`,title:c.title,count:c.childCount,kind:c.subtype==='show'?'show' as const:'movie' as const}))};
   }
   async artwork(grant:PlexGrant,id:string,kind:'poster'|'backdrop') {
     const {node}=await this.catalogNode(grant,id),path=artworkPath(kind==='backdrop'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);

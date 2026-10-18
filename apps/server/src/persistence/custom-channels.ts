@@ -3,9 +3,9 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import { requireThat } from '../errors.js';
 import { ChannelScheduler, resolveSlot, type Entry, type Slot, type Timeline } from '../services/scheduler.js';
-import { arrange, insertNew, natural, MAX_ENTRIES, type ArrangeInput } from '../services/arrange.js';
+import { arrange, insertGrouped, insertNew, natural, MAX_ENTRIES, type ArrangeInput } from '../services/arrange.js';
 import { eligibleVideoEncode } from '../streaming/policy.js';
-import type { ChannelMedia } from '../providers/plex.js';
+import type { ChannelMedia, ChannelRoot } from '../providers/plex.js';
 import type { Program } from '../providers/iptv.js';
 
 // Why an entry cannot be published: nothing playable, no runtime, or it would need a video encode the server refuses.
@@ -13,10 +13,14 @@ export type EntryIssue = 'no_media' | 'no_duration' | 'incompatible';
 export type DraftEntry = { entryId: string; mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; season?: number; episode?: number;
   year?: number; date?: string; durationMs: number; sourceId?: string; issue?: EntryIssue; addedAuto?: number };
 type Row = { id: string; name: string; summary: string; logo_url: string | null; enabled: number; created_at: number; updated_at: number; revision: number; draft: string; published: string | null; number: number | null; position: number | null };
-type SourceRow = { id: string; kind: 'show' | 'season'; plex_id: string; title: string; specials: number; auto_add: number; last_checked: number | null; last_result: string | null; last_error: string | null; seeded: number };
+export type SourceKind = 'show' | 'season' | 'collection' | 'genre';
+// Collections and categories can hold movies and many shows, so new titles of any kind join them.
+const grouped = (kind: string) => kind === 'collection' || kind === 'genre';
+const isSource = (type: ChannelRoot['type']): type is SourceKind => type === 'show' || type === 'season' || grouped(type);
+type SourceRow = { id: string; kind: SourceKind; plex_id: string; title: string; specials: number; auto_add: number; last_checked: number | null; last_result: string | null; last_error: string | null; seeded: number };
 // What one check of a show or season found: episodes added, and new ones held back for the administrator.
 export type SyncResult = { added: number; titles: string[]; review: { title: string; issue: EntryIssue }[]; seeded?: boolean; waiting?: boolean };
-export type Selection = { root: { id: string; type: 'movie' | 'show' | 'season' | 'episode'; title: string; season?: number }; items: ChannelMedia[] };
+export type Selection = { root: ChannelRoot; items: ChannelMedia[] };
 export type GuideSlot = { start: number; end: number; program: Program | null; blank?: true };
 
 const revision = z.number().int().nonnegative();
@@ -24,7 +28,7 @@ const logoUrl = z.string().trim().max(2000).url().refine(u => /^https?:\/\//i.te
 export const customCreate = z.object({ name: z.string().trim().min(1).max(120), number: z.number().int().min(1).max(999999).optional(), summary: z.string().trim().max(1000).default(''), logoUrl: logoUrl.optional() }).strict();
 export const customEdit = z.object({ expectedRevision: revision, name: z.string().trim().min(1).max(120).optional(), number: z.number().int().min(1).max(999999).optional(), summary: z.string().trim().max(1000).optional(), logoUrl: logoUrl.optional(), enabled: z.boolean().optional() }).strict();
 export const customOrder = z.object({ ids: z.array(z.string().uuid()).max(1000) }).strict();
-export const draftAdd = z.object({ expectedRevision: revision, ids: z.array(z.string().regex(/^\d+$/).max(20)).min(1).max(100), at: z.number().int().nonnegative().optional(), specials: z.boolean().default(false) }).strict();
+export const draftAdd = z.object({ expectedRevision: revision, ids: z.array(z.string().regex(/^(?:\d{1,20}|collection:\d{1,20}|genre:\d{1,20}:\d{1,20})$/)).min(1).max(100), at: z.number().int().nonnegative().optional(), specials: z.boolean().default(false), autoAdd: z.boolean().default(false) }).strict();
 export const draftOrder = z.object({ expectedRevision: revision, entryIds: z.array(z.string().uuid()).max(MAX_ENTRIES) }).strict();
 export const draftEntries = z.object({ expectedRevision: revision, entryIds: z.array(z.string().uuid()).min(1).max(MAX_ENTRIES) }).strict();
 export const draftRevision = z.object({ expectedRevision: revision }).strict();
@@ -139,17 +143,19 @@ export class CustomChannelStore {
       let skipped = 0, specials = 0;
       for (const { root, items } of selections) {
         let sourceId: string | undefined;
-        if (root.type === 'show' || root.type === 'season') {
+        if (isSource(root.type)) {
           const kind = root.type, existing = this.db.prepare('SELECT id FROM custom_sources WHERE channel_id=? AND kind=? AND plex_id=?').get(id, kind, root.id) as { id: string } | undefined;
           sourceId = existing?.id ?? randomUUID();
-          if (!existing) this.db.prepare('INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials,seeded) VALUES(?,?,?,?,?,?,1)').run(sourceId, id, kind, root.id, root.title, Number(v.specials));
+          if (!existing) this.db.prepare('INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials,auto_add,seeded) VALUES(?,?,?,?,?,?,?,1)').run(sourceId, id, kind, root.id, root.title, Number(v.specials), Number(v.autoAdd));
+          else if (v.autoAdd) this.db.prepare('UPDATE custom_sources SET auto_add=1 WHERE id=?').run(sourceId);
           const seen = this.db.prepare('INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)');
           for (const m of items) seen.run(sourceId, m.mediaId);
         }
-        // Specials (season 0) join a whole show only when asked for; an explicitly chosen season 0 is kept.
+        // Specials (season 0) join a whole show, collection or category only when asked for; an explicitly chosen
+        // season 0 is kept. Collections keep Plex's order and categories are A–Z, each show already in episode order.
         const ordered = root.type === 'show' || root.type === 'season' ? [...items].sort((a, b) => natural(a, b)) : items;
         for (const m of ordered) {
-          if (root.type === 'show' && m.season === 0 && !v.specials) { specials++; continue; }
+          if ((root.type === 'show' || grouped(root.type)) && m.season === 0 && !v.specials) { specials++; continue; }
           if (present.has(m.mediaId)) { skipped++; continue; }
           present.add(m.mediaId);
           const issue = entryIssue(m);
@@ -235,6 +241,19 @@ export class CustomChannelStore {
     this.audit(actor, enabled ? 'custom_auto_add_on' : 'custom_auto_add_off', { id, sourceId }, now);
     return this.detail(id, now);
   }
+  // Takes a show, season, collection or category off the channel: its programs leave the draft (publish to put that
+  // on air) and it stops being checked for new titles.
+  removeSource(actor: string, id: string, sourceId: string, input: z.input<typeof draftRevision>, now = Date.now()) {
+    const v = draftRevision.parse(input);
+    return this.db.transaction(() => {
+      const row = this.row(id); this.check(row, v.expectedRevision);
+      const result = this.db.prepare('DELETE FROM custom_sources WHERE id=? AND channel_id=?').run(sourceId, id);
+      requireThat(result.changes === 1, 'SOURCE_NOT_FOUND', 'That source is no longer on this channel.', 404);
+      this.saveDraft(id, this.draft(row).filter(e => e.sourceId !== sourceId), now);
+      this.audit(actor, 'custom_source_removed', { id, sourceId }, now);
+      return this.detail(id, now);
+    })();
+  }
   autoSources(channelId?: string) {
     return (this.db.prepare(`SELECT s.id,s.channel_id AS channelId,s.plex_id AS plexId FROM custom_sources s WHERE s.auto_add=1${channelId ? ' AND s.channel_id=?' : ''} ORDER BY s.last_checked IS NOT NULL,s.last_checked`).all(...(channelId ? [channelId] : [])) as { id: string; channelId: string; plexId: string }[]);
   }
@@ -263,23 +282,25 @@ export class CustomChannelStore {
         return save({ added: 0, titles: [], review: [], seeded: true });
       }
       const row = this.row(source.channel_id), draft = this.draft(row), added: DraftEntry[] = [], review: SyncResult['review'] = [];
-      for (const m of [...items].sort(natural)) {
-        if (seen.has(m.mediaId) || m.kind !== 'episode') continue;
-        if (source.kind === 'show' && m.season === 0 && !source.specials) { mark.run(sourceId, m.mediaId); continue; }
+      const group = grouped(source.kind);
+      for (const m of group ? items : [...items].sort(natural)) {
+        if (seen.has(m.mediaId) || (m.kind !== 'episode' && !group)) continue;
+        if ((source.kind === 'show' || group) && m.season === 0 && !source.specials) { mark.run(sourceId, m.mediaId); continue; }
         // Missing runtime or a refused encode would corrupt the schedule: hold it back and try again next check.
         const issue = entryIssue(m);
         if (issue) { review.push({ title: `${m.showTitle ?? ''} ${label({ ...m, entryId: '', durationMs: m.durationMs }) ?? m.title}`.trim(), issue }); continue; }
         mark.run(sourceId, m.mediaId);
         // An episode the administrator already put on the channel by hand is only marked seen.
         if (draft.some(e => e.mediaId === m.mediaId)) continue;
-        added.push({ entryId: randomUUID(), mediaId: m.mediaId, kind: 'episode', title: m.title, showTitle: m.showTitle, showId: m.showId, season: m.season, episode: m.episode,
+        added.push({ entryId: randomUUID(), mediaId: m.mediaId, kind: m.kind, title: m.title, showTitle: m.showTitle, showId: m.showId, season: m.season, episode: m.episode,
           year: m.year, date: m.date, durationMs: m.durationMs, sourceId, addedAuto: now });
       }
-      const result: SyncResult = { added: added.length, titles: added.map(e => `${e.showTitle ?? ''} ${label(e)}`.trim()), review };
+      const result: SyncResult = { added: added.length, titles: added.map(e => e.kind === 'movie' ? e.title : `${e.showTitle ?? ''} ${label(e)}`.trim()), review };
       if (!added.length) return save(result);
-      this.saveDraft(row.id, insertNew(draft, sourceId, added), now);
+      const insert = group ? insertGrouped : insertNew;
+      this.saveDraft(row.id, insert(draft, sourceId, added), now);
       if (row.published) {
-        const published = insertNew(JSON.parse(row.published) as DraftEntry[], sourceId, added);
+        const published = insert(JSON.parse(row.published) as DraftEntry[], sourceId, added);
         requireThat(published.length <= MAX_ENTRIES, 'DRAFT_TOO_LARGE', `A channel can hold at most ${MAX_ENTRIES.toLocaleString()} programs.`, 413);
         this.scheduler.publish(row.id, published.map(toEntry), this.scheduler.revision(row.id), now, actor);
         this.db.prepare('UPDATE custom_channels SET published=? WHERE id=?').run(JSON.stringify(published), row.id);

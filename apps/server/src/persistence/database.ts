@@ -127,6 +127,23 @@ export function openDatabase(path: string) {
         CREATE TABLE custom_source_episodes(source_id TEXT NOT NULL REFERENCES custom_sources(id) ON DELETE CASCADE, plex_id TEXT NOT NULL, PRIMARY KEY(source_id,plex_id));`);
       db.prepare('INSERT INTO migrations VALUES(13)').run();
     }
+    // Collections and categories (Plex genres) become channel sources too. SQLite can't widen a CHECK in place, so the
+    // table is rebuilt; the seen-episode rows are copied aside first because dropping a parent would cascade them away.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=14').get()) {
+      db.exec(`CREATE TEMP TABLE seen_backup AS SELECT * FROM custom_source_episodes;
+        DROP TABLE custom_source_episodes;
+        CREATE TABLE custom_sources_v14(id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES custom_channels(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('show','season','collection','genre')), plex_id TEXT NOT NULL, title TEXT NOT NULL, specials INTEGER NOT NULL DEFAULT 0,
+          auto_add INTEGER NOT NULL DEFAULT 0, last_checked INTEGER, last_result TEXT, last_error TEXT, seeded INTEGER NOT NULL DEFAULT 0, UNIQUE(channel_id,kind,plex_id));
+        INSERT INTO custom_sources_v14(id,channel_id,kind,plex_id,title,specials,auto_add,last_checked,last_result,last_error,seeded)
+          SELECT id,channel_id,kind,plex_id,title,specials,auto_add,last_checked,last_result,last_error,seeded FROM custom_sources;
+        DROP TABLE custom_sources;
+        ALTER TABLE custom_sources_v14 RENAME TO custom_sources;
+        CREATE TABLE custom_source_episodes(source_id TEXT NOT NULL REFERENCES custom_sources(id) ON DELETE CASCADE, plex_id TEXT NOT NULL, PRIMARY KEY(source_id,plex_id));
+        INSERT INTO custom_source_episodes SELECT * FROM seen_backup;
+        DROP TABLE seen_backup;`);
+      db.prepare('INSERT INTO migrations VALUES(14)').run();
+    }
   })();
   return db;
 }
