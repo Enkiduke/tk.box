@@ -2,7 +2,11 @@
 
 Updated October 17, 2026. **Milestone 0 foundations implemented; integration acceptance remains OPEN.** Live remote Plex owner setup is verified; production deployment and real media/provider streaming acceptance remain open.
 
-## Latest pass: custom channels, phase 1
+## Latest pass: custom channels, phase 2 (playout)
+
+- Custom channels can be watched (October 18, 2026). The first viewer starts a shared station that joins the airing program at its clock position, and each following program starts on schedule behind an HLS discontinuity. The station stops when the last viewer leaves. H.264 is copied; other video at 1080p or below is encoded within the shared encoder budget. Media is read from disk in same-host mode, otherwise through a loopback-only proxy, so the Plex token stays out of FFmpeg's arguments. No Plex timeline or watch state is ever written. Details and limits: [Custom channels](CUSTOM_CHANNELS.md#build-phases).
+
+## Previous pass: custom channels, phase 1
 
 - Settings → Channels (October 18, 2026): create, number, order, disable and delete custom channels. A Plex picker adds movies, whole shows, seasons or episodes. The program list supports drag or arrow reordering, repeats, removal and arrange tools (shuffle, block shuffle, interleave, sort by show or date, remove repeats or specials, repeat the list). Drafts are separate from what's on air, and a publish preview shows the handoff. Publishing takes effect when the airing program ends. Design and phases: [Custom channels](CUSTOM_CHANNELS.md).
 - Published channels appear in the Live TV guide (all, Custom Channels and Favorites filters), with exact program times. They can be favorited but not yet watched; playout is phase 2.

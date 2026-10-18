@@ -35,6 +35,8 @@ import { DEFAULT_ESPN, DEFAULT_TSDB } from './providers/sports-feeds.js';
 import { registerSports } from './sports-api.js';
 import { CustomChannelStore } from './persistence/custom-channels.js';
 import { registerCustomChannels } from './custom-api.js';
+import { CustomTv } from './services/custom-tv.js';
+import { PartProxy } from './providers/part-proxy.js';
 
 export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box') {
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
@@ -110,17 +112,20 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   registerSports(app, iptv, sportsStore, sports, admin);
   refresh.published = () => sports.invalidate();
   app.addHook('onReady', async () => { void sports.tick(); });
+  // Custom channels share the live session routes; their sessions belong to CustomTv.
+  const parts = new PartProxy(plex), customTv = new CustomTv(custom, plex, localMedia, parts, budget, config.CACHE_DIR, config.FFMPEG_PATH, (message, detail) => app.log.warn(detail, message));
   app.post('/api/v1/live/sessions', {config: {rateLimit: {max: 30, timeWindow: 60000}}}, async req => {
-    const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash} = await auth(req);
-    return live.start(hash, input.channelId);
+    const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash, grant} = await auth(req);
+    return custom.exists(input.channelId) ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId);
   });
   // Playlists reauthorize fully, like VOD; segments use the local session check.
   app.get<{Params: {id: string; file: string}}>('/api/v1/live/sessions/:id/:file', {config: {rateLimit: {max: 1200, timeWindow: 60000}}}, async (req, reply) => {
-    if (req.params.file === 'index.m3u8') { const {hash} = await auth(req); return reply.type('application/vnd.apple.mpegurl').send(await live.playlist(req.params.id, hash)); }
-    const segment = await live.segment(req.params.id, identity.session(req.cookies[sessionCookie]), req.params.file);
+    const service = customTv.has(req.params.id) ? customTv : undefined;
+    if (req.params.file === 'index.m3u8') { const {hash, grant} = await auth(req); return reply.type('application/vnd.apple.mpegurl').send(await (service ? service.playlist(req.params.id, hash, grant) : live.playlist(req.params.id, hash))); }
+    const segment = await (service ?? live).segment(req.params.id, identity.session(req.cookies[sessionCookie]), req.params.file);
     return reply.type('video/mp2t').header('content-length', String(segment.size)).send(segment.body);
   });
-  app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); return {status: 'stopped'}; });
+  app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); return {status: 'stopped'}; });
   registerCatalog(app,plex,auth);
   app.get('/health', async () => ({status: 'ok'}));
   app.get('/api/v1/setup', async () => ({plexConfigured: config.plexConfigured, milestone: 0}));
@@ -137,7 +142,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.post('/api/v1/auth/logout', async (req, reply) => {
     const token = req.cookies[sessionCookie];
-    if (token) {const {digest} = await import('./security/vault.js'); const hash = digest(token); stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); live.stopWhere(v => v.hash === hash);}
+    if (token) {const {digest} = await import('./security/vault.js'); const hash = digest(token); stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); live.stopWhere(v => v.hash === hash); customTv.stopWhere(v => v.hash === hash);}
     identity.logout(token); reply.clearCookie(sessionCookie, cookieOpts); return {status: 'signed_out'};
   });
   app.get('/api/v1/me', async req => { const {grant} = await auth(req); return {accountId: grant.accountId, role: grant.role,libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type))}; });
@@ -251,7 +256,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   };
   if (existsSync(webRoot)) await registerAssets(webRoot,'');
   const reaper = setInterval(() => identity.reap(), 30000); reaper.unref();
-  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); health.close(); sports.close();});
+  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); customTv.close(); parts.close(); health.close(); sports.close();});
   app.addHook('onClose', async () => { clearInterval(reaper); });
   return app;
 }

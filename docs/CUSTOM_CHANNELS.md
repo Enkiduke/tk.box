@@ -103,6 +103,15 @@ Status: phase 1 is implemented (October 18, 2026). Code: `persistence/custom-cha
 - Runtimes come from Plex's media duration. Phase 2 must check them against the actual file before streaming.
 - Show and season selections are already recorded as sources. The auto-add toggle stays hidden until phase 4, so the UI never shows an option that does nothing.
 
+Phase 2 is implemented: `services/custom-tv.ts` and `providers/part-proxy.ts`, tested by `tests/custom-tv.test.ts` with real FFmpeg. Custom channels tune through the same `/api/v1/live/sessions` routes as IPTV, so the player is unchanged. How it works now, and its current limits:
+
+- A station reruns its loop at every program end and asks the schedule what's airing. Publishing therefore takes effect with no extra signal, and each program starts from the clock position at that moment, so startup time never accumulates.
+- If a file is missing, fails or ends early, a plain dark slate with silence fills the rest of its slot. There is no text on the slate yet.
+- Segments are 2 seconds long, so a tune takes about 2–3 seconds. Viewers watch roughly one HLS window behind the clock, as with IPTV.
+- The first audio track is used. The player's "now playing" title comes from the guide at tune time and doesn't update at program boundaries yet.
+- Plex is read with the grant of the most recent viewer to tune or refresh. Each viewer's own library access is checked on every playlist.
+- Not yet verified: real Plex media on the Linux host, or the HTTP part proxy (this sandbox blocks loopback sockets).
+
 1. **Channels and programming.** Migration, store, admin API, Channel Manager UI with picker, arrange tools, drafts, publish and preview. Custom rows in the guide (not yet tunable). Tests: arrange tools, the auto-add insertion rule, publish/rebase.
 2. **Playout.** Station pipeline, tune, boundaries, idle stop, viewer authorization, unavailable slate. Requires a real check on the Linux host with real Plex files.
 3. **Pause/Resume/Go Live.** Viewer cursors, retention setting, expiry, admin cache diagnostics.
