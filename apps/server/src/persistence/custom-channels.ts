@@ -225,6 +225,7 @@ export class CustomChannelStore {
   // Viewer side: enabled channels that have gone on air.
   private viewable(now: number) { return this.rows().filter(r => r.enabled && r.number !== null && (this.scheduler.startedAt(r.id) ?? Infinity) <= now); }
   isVisible(id: string, now = Date.now()) { return this.viewable(now).some(r => r.id === id); }
+  tune(id: string) { requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404); const r = this.row(id); return { id: r.id, name: r.name, number: r.number! }; }
   exists(id: string) { return !!this.db.prepare('SELECT 1 FROM custom_channels WHERE id=?').get(id); }
   stations(account: string, favoritesOnly: boolean, search: string, channelId?: string, now = Date.now()) {
     const favorites = new Set((this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id));
