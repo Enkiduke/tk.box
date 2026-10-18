@@ -2,7 +2,11 @@
 
 Updated October 17, 2026. **Milestone 0 foundations implemented; integration acceptance remains OPEN.** Live remote Plex owner setup is verified; production deployment and real media/provider streaming acceptance remain open.
 
-## Latest pass: custom channels, phase 3 (Pause, Resume, Go Live)
+## Latest pass: custom channels, phase 4 (automatic new episodes)
+
+- Each show or season on a custom channel can automatically add new episodes (off by default, toggled per selection in the Shows tab). New episodes take their place in season and episode order, or follow the show's last entry if the list was rearranged. Removed episodes never come back. Each addition goes on air at the end of the current program and merges with any publish already waiting. Episodes with no runtime or that can't be played are held back. Checks run hourly and on demand, as a signed-in administrator; no Plex token is stored for this.
+
+## Previous pass: custom channels, phase 3 (Pause, Resume, Go Live)
 
 - On custom channels the player's Pause button pins that viewer's position, and Play continues from there, behind live, showing how far behind. Go Live jumps back to what's on now. Other viewers and the schedule aren't affected. Segments are shared and kept by broadcast time only while someone needs them, up to the pause retention setting (default 30 minutes), the per-channel disk cap and a free-space floor. Past that, the viewer sees "Buffer expired" with Go Live. Settings → Playback shows buffer use and warns before retention is lowered. IPTV stays strictly live.
 

@@ -37,6 +37,7 @@ import { CustomChannelStore } from './persistence/custom-channels.js';
 import { registerCustomChannels } from './custom-api.js';
 import { CustomTv } from './services/custom-tv.js';
 import { PartProxy } from './providers/part-proxy.js';
+import { EpisodeSync } from './services/episode-sync.js';
 
 export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box') {
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
@@ -89,7 +90,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const iptv = new IptvStore(db,vault);
   const refresh = new SourceRefresh(iptv), custom = new CustomChannelStore(db);
   registerIptv(app,iptv,refresh,auth,admin,undefined,undefined,custom);
-  registerCustomChannels(app,custom,plex,admin);
+  const episodes = new EpisodeSync(custom, plex, () => identity.adminGrant(config.PLEX_OWNER_ACCOUNT_ID ? [config.PLEX_OWNER_ACCOUNT_ID] : []), (message, detail) => app.log.info(detail, message));
+  registerCustomChannels(app,custom,plex,admin,episodes);
+  app.addHook('onReady', async () => { episodes.start(); });
   const live = new LiveTv(iptv, budget, config.CACHE_DIR, config.FFMPEG_PATH, config.FFPROBE_PATH, (message, detail) => app.log.warn(detail, message));
   // Channel checks hide channels that fail to play or show a provider's offline screen.
   const healthStore = new HealthStore(db), health = new ChannelHealth(iptv, healthStore, config.CACHE_DIR, config.FFMPEG_PATH, (message, detail) => app.log.info(detail, message));
@@ -266,7 +269,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   };
   if (existsSync(webRoot)) await registerAssets(webRoot,'');
   const reaper = setInterval(() => identity.reap(), 30000); reaper.unref();
-  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); customTv.close(); parts.close(); health.close(); sports.close();});
+  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); customTv.close(); parts.close(); episodes.close(); health.close(); sports.close();});
   app.addHook('onClose', async () => { clearInterval(reaper); });
   return app;
 }

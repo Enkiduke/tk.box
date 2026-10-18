@@ -120,6 +120,14 @@ Phase 3 is implemented as well: Pause, Resume and Go Live, in `services/custom-t
 - Settings shows buffer use, the longest buffered window and viewers behind live, warns before retention is lowered, and flags low disk.
 - Not verified in a browser yet. Restoring a paused session after a page reload is out of scope (spec: LATER).
 
+Phase 4 completes the plan: automatic new episodes, in `services/episode-sync.ts` and `CustomChannelStore.applySync`, with `insertNew` in `services/arrange.ts`. How it works:
+
+- Each show or season selection has its own toggle in the editor's Shows tab, off by default. Turning it off keeps episodes already added.
+- Every selection remembers each episode it has seen (`custom_source_episodes`, filled when the show is added). Only episodes it has never seen count as new, so an episode the administrator removed is never added back; adding it by hand from the picker still works. Selections made before this phase are seeded from Plex on their first check and add nothing.
+- Specials join automatically only for a whole show added with specials. A new episode with no runtime, no file, or a refused encode is held for review and retried on later checks.
+- New episodes go into the draft and, on a channel that is on air, into the published list, which republishes at the end of the airing program. If an administrator's publish is already waiting for that boundary, the new episode is merged into it rather than replacing it. Entries show a "New episode" badge, and `audit` records each addition.
+- Checks run about hourly and from **Check for new episodes**. They use a signed-in administrator's current session; with none signed in, the check reports that it is waiting. No long-lived Plex token is stored. A failed check leaves programs and schedule unchanged.
+
 1. **Channels and programming.** Migration, store, admin API, Channel Manager UI with picker, arrange tools, drafts, publish and preview. Custom rows in the guide (not yet tunable). Tests: arrange tools, the auto-add insertion rule, publish/rebase.
 2. **Playout.** Station pipeline, tune, boundaries, idle stop, viewer authorization, unavailable slate. Requires a real check on the Linux host with real Plex files.
 3. **Pause/Resume/Go Live.** Viewer cursors, retention setting, expiry, admin cache diagnostics.

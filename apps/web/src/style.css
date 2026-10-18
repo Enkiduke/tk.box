@@ -947,3 +947,9 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .player-expired{position:absolute;top:50%;left:50%;z-index:4;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;max-width:min(420px,calc(100% - 32px));padding:22px 26px;border-radius:14px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--glass-line);text-align:center}
 .player-expired strong{font-size:17px}
 .player-expired span{font-size:13.5px;color:var(--muted);line-height:1.5}
+/* Channel Manager Shows tab: automatic new episodes per show or season. */
+.show-source{padding:14px 20px}
+.show-source .switch-row{padding:0}
+.show-detail{margin:8px 0 0;line-height:1.5}
+.warning-text{color:#f2cf7a}
+.program-toolbar .grow-left{flex:1;min-width:240px;line-height:1.5}

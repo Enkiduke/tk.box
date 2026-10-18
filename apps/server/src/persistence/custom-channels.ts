@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import { requireThat } from '../errors.js';
 import { ChannelScheduler, resolveSlot, type Entry, type Slot, type Timeline } from '../services/scheduler.js';
-import { arrange, natural, MAX_ENTRIES, type ArrangeInput } from '../services/arrange.js';
+import { arrange, insertNew, natural, MAX_ENTRIES, type ArrangeInput } from '../services/arrange.js';
 import { eligibleVideoEncode } from '../streaming/policy.js';
 import type { ChannelMedia } from '../providers/plex.js';
 import type { Program } from '../providers/iptv.js';
@@ -11,9 +11,11 @@ import type { Program } from '../providers/iptv.js';
 // Why an entry cannot be published: nothing playable, no runtime, or it would need a video encode the server refuses.
 export type EntryIssue = 'no_media' | 'no_duration' | 'incompatible';
 export type DraftEntry = { entryId: string; mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; season?: number; episode?: number;
-  year?: number; date?: string; durationMs: number; sourceId?: string; issue?: EntryIssue };
+  year?: number; date?: string; durationMs: number; sourceId?: string; issue?: EntryIssue; addedAuto?: number };
 type Row = { id: string; name: string; summary: string; logo_url: string | null; enabled: number; created_at: number; updated_at: number; revision: number; draft: string; published: string | null; number: number | null; position: number | null };
-type SourceRow = { id: string; kind: 'show' | 'season'; plex_id: string; title: string; specials: number; auto_add: number; last_checked: number | null; last_result: string | null; last_error: string | null };
+type SourceRow = { id: string; kind: 'show' | 'season'; plex_id: string; title: string; specials: number; auto_add: number; last_checked: number | null; last_result: string | null; last_error: string | null; seeded: number };
+// What one check of a show or season found: episodes added, and new ones held back for the administrator.
+export type SyncResult = { added: number; titles: string[]; review: { title: string; issue: EntryIssue }[]; seeded?: boolean; waiting?: boolean };
 export type Selection = { root: { id: string; type: 'movie' | 'show' | 'season' | 'episode'; title: string; season?: number }; items: ChannelMedia[] };
 export type GuideSlot = { start: number; end: number; program: Program | null; blank?: true };
 
@@ -85,7 +87,8 @@ export class CustomChannelStore {
   list(now = Date.now()) { return this.rows().map(r => this.summary(r, now)); }
   detail(id: string, now = Date.now()) {
     const row = this.row(id), sources = this.db.prepare('SELECT * FROM custom_sources WHERE channel_id=? ORDER BY title').all(id) as SourceRow[];
-    return { ...this.summary(row, now), entries: this.draft(row), sources: sources.map(s => ({ id: s.id, kind: s.kind, plexId: s.plex_id, title: s.title })) };
+    return { ...this.summary(row, now), entries: this.draft(row), sources: sources.map(s => ({ id: s.id, kind: s.kind, plexId: s.plex_id, title: s.title, specials: !!s.specials, autoAdd: !!s.auto_add, lastChecked: s.last_checked,
+      lastResult: s.last_result ? JSON.parse(s.last_result) as SyncResult : null, lastError: s.last_error, programs: this.draft(row).filter(e => e.sourceId === s.id).length })) };
   }
   create(actor: string, input: z.input<typeof customCreate>, now = Date.now()) {
     const v = customCreate.parse(input), id = randomUUID();
@@ -139,7 +142,9 @@ export class CustomChannelStore {
         if (root.type === 'show' || root.type === 'season') {
           const kind = root.type, existing = this.db.prepare('SELECT id FROM custom_sources WHERE channel_id=? AND kind=? AND plex_id=?').get(id, kind, root.id) as { id: string } | undefined;
           sourceId = existing?.id ?? randomUUID();
-          if (!existing) this.db.prepare('INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials) VALUES(?,?,?,?,?,?)').run(sourceId, id, kind, root.id, root.title, Number(v.specials));
+          if (!existing) this.db.prepare('INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials,seeded) VALUES(?,?,?,?,?,?,1)').run(sourceId, id, kind, root.id, root.title, Number(v.specials));
+          const seen = this.db.prepare('INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)');
+          for (const m of items) seen.run(sourceId, m.mediaId);
         }
         // Specials (season 0) join a whole show only when asked for; an explicitly chosen season 0 is kept.
         const ordered = root.type === 'show' || root.type === 'season' ? [...items].sort((a, b) => natural(a, b)) : items;
@@ -219,6 +224,68 @@ export class CustomChannelStore {
       const timeline: Timeline = this.scheduler.publish(id, this.publishable(row), v.expectedPublication, now, actor);
       this.db.prepare('UPDATE custom_channels SET published=draft WHERE id=?').run(id); this.touch(id, now);
       return { channel: this.detail(id, now), effectiveAt: timeline.effectiveAt, reason: timeline.reason };
+    })();
+  }
+
+  // Automatic new episodes. Off by default for every selection; turning it on never touches existing programs.
+  setAutoAdd(actor: string, id: string, sourceId: string, enabled: boolean, now = Date.now()) {
+    this.row(id);
+    const result = this.db.prepare('UPDATE custom_sources SET auto_add=? WHERE id=? AND channel_id=?').run(Number(enabled), sourceId, id);
+    requireThat(result.changes === 1, 'SOURCE_NOT_FOUND', 'That show is no longer on this channel.', 404);
+    this.audit(actor, enabled ? 'custom_auto_add_on' : 'custom_auto_add_off', { id, sourceId }, now);
+    return this.detail(id, now);
+  }
+  autoSources(channelId?: string) {
+    return (this.db.prepare(`SELECT s.id,s.channel_id AS channelId,s.plex_id AS plexId FROM custom_sources s WHERE s.auto_add=1${channelId ? ' AND s.channel_id=?' : ''} ORDER BY s.last_checked IS NOT NULL,s.last_checked`).all(...(channelId ? [channelId] : [])) as { id: string; channelId: string; plexId: string }[]);
+  }
+  syncWaiting(sourceId: string, now = Date.now()) {
+    this.db.prepare('UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify({ added: 0, titles: [], review: [], waiting: true } satisfies SyncResult), sourceId);
+  }
+  syncFailed(sourceId: string, error: string, now = Date.now()) {
+    // The last good list and schedule stay as they are; the next check retries.
+    this.db.prepare('UPDATE custom_sources SET last_checked=?,last_error=? WHERE id=?').run(now, error.slice(0, 200), sourceId);
+  }
+  // Applies one check's Plex listing. Genuinely new playable episodes join the draft and, on a channel that is on air,
+  // the published list too, which republishes at the end of the airing program like any edit. A publication still
+  // waiting for its boundary is merged into, not replaced, so the administrator's curation is never lost.
+  applySync(actor: string, sourceId: string, items: ChannelMedia[], now = Date.now()): SyncResult {
+    return this.db.transaction(() => {
+      const source = this.db.prepare('SELECT * FROM custom_sources WHERE id=?').get(sourceId) as (SourceRow & { channel_id: string }) | undefined;
+      requireThat(source, 'SOURCE_NOT_FOUND', 'That show is no longer on this channel.', 404);
+      const seen = new Set((this.db.prepare('SELECT plex_id FROM custom_source_episodes WHERE source_id=?').all(sourceId) as { plex_id: string }[]).map(r => r.plex_id));
+      const mark = this.db.prepare('INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)'), save = (result: SyncResult) => {
+        this.db.prepare('UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify(result), sourceId); return result;
+      };
+      // A selection made before episodes were tracked learns what exists now, and adds nothing.
+      if (!source.seeded) {
+        for (const m of items) mark.run(sourceId, m.mediaId);
+        this.db.prepare('UPDATE custom_sources SET seeded=1 WHERE id=?').run(sourceId);
+        return save({ added: 0, titles: [], review: [], seeded: true });
+      }
+      const row = this.row(source.channel_id), draft = this.draft(row), added: DraftEntry[] = [], review: SyncResult['review'] = [];
+      for (const m of [...items].sort(natural)) {
+        if (seen.has(m.mediaId) || m.kind !== 'episode') continue;
+        if (source.kind === 'show' && m.season === 0 && !source.specials) { mark.run(sourceId, m.mediaId); continue; }
+        // Missing runtime or a refused encode would corrupt the schedule: hold it back and try again next check.
+        const issue = entryIssue(m);
+        if (issue) { review.push({ title: `${m.showTitle ?? ''} ${label({ ...m, entryId: '', durationMs: m.durationMs }) ?? m.title}`.trim(), issue }); continue; }
+        mark.run(sourceId, m.mediaId);
+        // An episode the administrator already put on the channel by hand is only marked seen.
+        if (draft.some(e => e.mediaId === m.mediaId)) continue;
+        added.push({ entryId: randomUUID(), mediaId: m.mediaId, kind: 'episode', title: m.title, showTitle: m.showTitle, showId: m.showId, season: m.season, episode: m.episode,
+          year: m.year, date: m.date, durationMs: m.durationMs, sourceId, addedAuto: now });
+      }
+      const result: SyncResult = { added: added.length, titles: added.map(e => `${e.showTitle ?? ''} ${label(e)}`.trim()), review };
+      if (!added.length) return save(result);
+      this.saveDraft(row.id, insertNew(draft, sourceId, added), now);
+      if (row.published) {
+        const published = insertNew(JSON.parse(row.published) as DraftEntry[], sourceId, added);
+        requireThat(published.length <= MAX_ENTRIES, 'DRAFT_TOO_LARGE', `A channel can hold at most ${MAX_ENTRIES.toLocaleString()} programs.`, 413);
+        this.scheduler.publish(row.id, published.map(toEntry), this.scheduler.revision(row.id), now, actor);
+        this.db.prepare('UPDATE custom_channels SET published=? WHERE id=?').run(JSON.stringify(published), row.id);
+      }
+      this.audit(actor, 'custom_episodes_added', { id: row.id, sourceId, entries: added.map(e => e.entryId), mediaIds: added.map(e => e.mediaId) }, now);
+      return save(result);
     })();
   }
 

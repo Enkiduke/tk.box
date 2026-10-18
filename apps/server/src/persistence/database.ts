@@ -119,6 +119,14 @@ export function openDatabase(path: string) {
           PRIMARY KEY(account_id,channel_id));`);
       db.prepare('INSERT INTO migrations VALUES(12)').run();
     }
+    // Automatic new episodes: each show or season selection remembers every episode it has seen, so an episode the
+    // administrator removed is never re-added. `seeded` marks sources whose seen set is complete (older ones are
+    // seeded from Plex, adding nothing, the first time they are checked).
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=13').get()) {
+      db.exec(`ALTER TABLE custom_sources ADD COLUMN seeded INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE custom_source_episodes(source_id TEXT NOT NULL REFERENCES custom_sources(id) ON DELETE CASCADE, plex_id TEXT NOT NULL, PRIMARY KEY(source_id,plex_id));`);
+      db.prepare('INSERT INTO migrations VALUES(13)').run();
+    }
   })();
   return db;
 }

@@ -60,6 +60,17 @@ export class IdentityService {
     requireThat(grant.accountId === row.account_id, 'ACCESS_DENIED', 'Plex account identity changed.', 403);
     return { hash, grant };
   }
+  // A current administrator grant for background work, from the newest session of the given accounts that Plex still
+  // authorizes as an administrator. Undefined when no administrator is signed in.
+  async adminGrant(accountIds: string[], now = Date.now()) {
+    if (!accountIds.length) return undefined;
+    const rows = this.db.prepare(`SELECT hash FROM sessions WHERE account_id IN (${accountIds.map(() => '?').join(',')}) AND expires>? ORDER BY expires DESC LIMIT 3`).all(...accountIds, now) as {hash: string}[];
+    for (const {hash} of rows) {
+      const grant = await this.authenticateHash(hash, now).then(r => r.grant, () => undefined);
+      if (grant?.role === 'admin') return grant;
+    }
+    return undefined;
+  }
   logout(cookie?: string) { if (cookie) this.db.prepare('DELETE FROM sessions WHERE hash=?').run(digest(cookie)); }
   reap(now = Date.now()) {
     this.db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);

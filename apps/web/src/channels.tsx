@@ -3,7 +3,7 @@ import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/inde
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,invalidate,duration,clock} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
-import {Card,SectionHead,Switch,move,plural,useMutation} from './settings-ui.js';
+import {Card,SectionHead,Switch,code,move,plural,useMutation} from './settings-ui.js';
 
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
 // Every edit changes the draft; Publish hands over at the end of whatever is airing.
@@ -11,8 +11,10 @@ type Slot={title:string;subtitle?:string;start:number;end:number;entryId:string}
 type Summary={id:string;name:string;summary:string;logoUrl:string|null;enabled:boolean;number:number|null;position:number|null;revision:number;programs:number;runtimeMs:number;issues:number;
   live:boolean;startedAt?:number;current?:Slot;pending?:{effectiveAt:number;next:string;nextSubtitle?:string};changed:boolean;publicationRevision:number};
 type Issue='no_media'|'no_duration'|'incompatible';
-type Entry={entryId:string;mediaId:string;kind:'movie'|'episode';title:string;showTitle?:string;showId?:string;season?:number;episode?:number;year?:number;date?:string;durationMs:number;sourceId?:string;issue?:Issue};
-type Detail=Summary&{entries:Entry[];sources:{id:string;kind:'show'|'season';plexId:string;title:string}[]};
+type Entry={entryId:string;mediaId:string;kind:'movie'|'episode';title:string;showTitle?:string;showId?:string;season?:number;episode?:number;year?:number;date?:string;durationMs:number;sourceId?:string;issue?:Issue;addedAuto?:number};
+type SyncResult={added:number;titles:string[];review:{title:string;issue:Issue}[];seeded?:boolean;waiting?:boolean};
+type Source={id:string;kind:'show'|'season';plexId:string;title:string;specials:boolean;autoAdd:boolean;lastChecked:number|null;lastResult:SyncResult|null;lastError:string|null;programs:number};
+type Detail=Summary&{entries:Entry[];sources:Source[]};
 type Preview={current?:Slot;effectiveAt:number;reason:'INITIAL'|'SUCCESSOR'|'FIRST_ENTRY';upcoming:Slot[];replacesPending:boolean;publicationRevision:number};
 type AddResult={channel:Detail;added:number;skipped:number;specials:number;issues:number};
 const base='/admin/custom-channels';
@@ -71,7 +73,7 @@ function CreateChannel({onClose,created}:{onClose:()=>void;created:(c:Detail)=>v
   </Modal>;
 }
 
-const tabs=[['programs','Programs'],['details','Details']] as const;
+const tabs=[['programs','Programs'],['shows','Shows'],['details','Details']] as const;
 function ChannelEditor({id,back}:{id:string;back:()=>void}) {
   const detail=useApi<Detail>(`${base}/${id}`),[local,setLocal]=useState<Detail>(),[tab,setTab]=useState<string>('programs'),[publish,setPublish]=useState(false),[notice,setNotice]=useState('');
   const mutation=useMutation(changed);
@@ -94,9 +96,9 @@ function ChannelEditor({id,back}:{id:string;back:()=>void}) {
       </div>
     </div>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}{notice&&<p className="success" role="status">{notice}</p>}
-    <div className="subtabs" role="tablist" aria-label={`${view.name} settings`}>{tabs.map(([t,label])=><button key={t} role="tab" aria-selected={tab===t} onClick={()=>setTab(t)}>{label}{t==='programs'&&<span className="count">{view.entries.length}</span>}</button>)}</div>
+    <div className="subtabs" role="tablist" aria-label={`${view.name} settings`}>{tabs.map(([t,label])=><button key={t} role="tab" aria-selected={tab===t} onClick={()=>setTab(t)}>{label}{t==='programs'&&<span className="count">{view.entries.length}</span>}{t==='shows'&&view.sources.length>0&&<span className="count">{view.sources.length}</span>}</button>)}</div>
     <div role="tabpanel" className="source-panel">
-      {tab==='programs'?<ProgramsPanel view={view} busy={mutation.busy} apply={apply} setNotice={setNotice}/>:<DetailsPanel view={view} saved={c=>{setLocal(c);setNotice('Channel details saved.');}} removed={()=>{changed();back();}}/>}
+      {tab==='programs'?<ProgramsPanel view={view} busy={mutation.busy} apply={apply} setNotice={setNotice}/>:tab==='shows'?<ShowsPanel view={view} updated={c=>setLocal(c)} setNotice={setNotice}/>:<DetailsPanel view={view} saved={c=>{setLocal(c);setNotice('Channel details saved.');}} removed={()=>{changed();back();}}/>}
     </div>
     {publish&&<PublishDialog view={view} onClose={()=>setPublish(false)} published={(c,at)=>{setLocal(c);setPublish(false);setNotice(at>Date.now()+1000?`Published. The new list takes over at ${when(at)}, when the current program ends.`:'Published. The channel is on air.');}}/>}
   </section>;
@@ -131,6 +133,7 @@ function ProgramsPanel({view,busy,apply,setNotice}:{view:Detail;busy:boolean;app
         <span className="program-index" aria-hidden="true">{i+1}</span>
         <Thumb src={poster(e)}/>
         <span className="program-text">{e.kind==='episode'?<><strong>{e.showTitle??'Episode'}</strong><small>{episodeLabel(e)} · {e.title}</small></>:<><strong>{e.title}</strong><small>Movie{e.year?` · ${e.year}`:''}</small></>}</span>
+        {e.addedAuto&&<span className="badge" title={`Added automatically ${new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(e.addedAuto)}`}>New episode</span>}
         {e.issue&&<span className="badge danger" title={e.issue==='incompatible'?issueHelp:undefined}>{issues[e.issue]}</span>}
         <span className="program-runtime">{duration(e.durationMs)}</span>
         <span className="sports-move"><button type="button" className="icon-button" aria-label={`Move ${e.title} up`} disabled={busy||i===0} onClick={()=>order(move(ids,i,-1))}>↑</button><button type="button" className="icon-button" aria-label={`Move ${e.title} down`} disabled={busy||i===entries.length-1} onClick={()=>order(move(ids,i,1))}>↓</button><button type="button" className="icon-button" aria-label={`Remove ${e.title}`} disabled={busy} onClick={()=>remove([e.entryId])}><Icon name="close" size={14}/></button></span>
@@ -221,6 +224,35 @@ function PickList({pages,loading,more,loadMore,sentinel,empty,picked,toggle,open
     </label>
     {browsable&&<button className="pick-open" onClick={()=>open(item)} aria-label={`Browse ${item.title}`}>{item.type==='show'?'Seasons':'Episodes'}<Icon name="next" size={14}/></button>}
   </li>;})}</ul><div ref={sentinel} className="list-more">{more?<button onClick={loadMore}>Load more</button>:loading&&'Loading…'}</div></>;
+}
+
+// Automatic new episodes, per show or season added to the channel. Off until turned on; turning it off keeps
+// the episodes already added. New episodes go on air at the end of whatever is airing, with no publish needed.
+const holds:Record<Issue,string>={no_media:'no playable file yet',no_duration:'runtime unknown',incompatible:'can’t play on a channel'};
+function syncSummary(s:Source) {
+  if(s.lastError)return `Last check failed (${code(s.lastError)}). Programs are unchanged; it will try again.`;
+  const r=s.lastResult;if(!r||!s.lastChecked)return s.autoAdd?'Not checked yet':undefined;
+  const at=new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(s.lastChecked);
+  if(r.waiting)return `Waiting for an administrator to sign in to check Plex · ${at}`;
+  if(r.seeded)return `Now tracking this show’s episodes · ${at}`;
+  return r.added?`Added ${plural(r.added,'episode')} · ${at}`:`Up to date · checked ${at}`;
+}
+function ShowsPanel({view,updated,setNotice}:{view:Detail;updated:(c:Detail)=>void;setNotice:(s:string)=>void}) {
+  const mutation=useMutation(changed),enabled=view.sources.filter(s=>s.autoAdd).length;
+  const toggle=(s:Source,on:boolean)=>void mutation.run(async()=>{setNotice('');updated(await api<Detail>(`${base}/${view.id}/sources/${s.id}`,'PUT',{autoAdd:on}));});
+  const check=()=>void mutation.run(async()=>{setNotice('');const r=await api<{checked:number;added:number;failed:number;channel:Detail}>(`${base}/${view.id}/sync`,'POST',{});updated(r.channel);
+    setNotice([r.added?`Added ${plural(r.added,'new episode')}.`:'No new episodes.',r.added&&view.live?'They go on air at the end of the current program.':'',r.failed?`${plural(r.failed,'show')} couldn’t be checked.`:''].filter(Boolean).join(' '));});
+  if(!view.sources.length)return <Empty title="No shows yet">Add a whole show or a season under Programs to choose whether its new episodes are added automatically.</Empty>;
+  return <>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    <div className="program-toolbar"><span className="muted small grow-left">New episodes are checked about every hour, join their show in season and episode order, and go on air at the end of the current program. Episodes you remove are never added back.</span>
+      <button disabled={mutation.busy||!enabled} onClick={check} title={enabled?undefined:'Turn on automatic new episodes for a show first'}><Icon name="restart" size={16}/>{mutation.busy?'Checking…':'Check for new episodes'}</button></div>
+    <ul className="source-rows">{view.sources.map(s=>{const summary=syncSummary(s),review=s.lastResult?.review??[];return <li key={s.id} className="show-source">
+      <Switch label={s.title} description={<>{s.kind==='show'?`Whole show${s.specials?' with specials':''}`:'One season only'} · {plural(s.programs,'program')} on this channel{summary&&<><br/>{summary}</>}</>} checked={s.autoAdd} disabled={mutation.busy} onChange={on=>toggle(s,on)}/>
+      {s.autoAdd&&!!s.lastResult?.titles.length&&<p className="muted small show-detail">Last added: {s.lastResult.titles.slice(0,5).join(', ')}{s.lastResult.titles.length>5&&` and ${s.lastResult.titles.length-5} more`}</p>}
+      {review.length>0&&<p className="small show-detail warning-text">Waiting for review: {review.slice(0,5).map(r=>`${r.title} (${holds[r.issue]})`).join(', ')}{review.length>5&&` and ${review.length-5} more`}. These are tried again on the next check.</p>}
+    </li>;})}</ul>
+  </>;
 }
 
 function PublishDialog({view,onClose,published}:{view:Detail;onClose:()=>void;published:(c:Detail,effectiveAt:number)=>void}) {

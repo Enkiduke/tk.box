@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../apps/server/src/persistence/database.js';
 import { CustomChannelStore, entryIssue, type Selection } from '../apps/server/src/persistence/custom-channels.js';
-import { arrange, type ArrangeEntry } from '../apps/server/src/services/arrange.js';
+import { arrange, insertNew, type ArrangeEntry } from '../apps/server/src/services/arrange.js';
 import type { ChannelMedia } from '../apps/server/src/providers/plex.js';
 
 const ep = (show: string, season: number, episode: number): ArrangeEntry => ({ entryId: `${show}${season}-${episode}`, mediaId: `${show}${season}${episode}`, kind: 'episode', title: `${show} ${season}x${episode}`, showId: show, showTitle: show, season, episode });
@@ -82,5 +82,72 @@ test('drafts expand shows in order, skip repeats, and publish at the next progra
     assert.deepEqual(discarded.entries.map(e => e.entryId), [c!.entryId, a!.entryId]);
     store.remove('admin', channel.id, discarded.revision, 14000);
     assert.equal(store.list().length, 0); assert.equal((db.prepare('SELECT count(*) AS n FROM publications').get() as { n: number }).n, 0);
+  } finally { db.close(); }
+});
+
+test('new episodes join their show in order, or after it once curated', () => {
+  const list = [ep('A', 1, 1), ep('A', 1, 3), movie('M'), ep('B', 1, 1)].map(e => ({ ...e, sourceId: e.showId === 'A' ? 'a' : undefined }));
+  const fresh = { ...ep('A', 1, 2), sourceId: 'a' }, later = { ...ep('A', 2, 1), sourceId: 'a' };
+  assert.deepEqual(ids(insertNew(list, 'a', [later, fresh])), ['A1-1', 'A1-2', 'A1-3', 'A2-1', 'M', 'B1-1']);
+  // Interleaved with other programming: existing positions stay, new episodes follow the show's last entry.
+  const mixed = [list[0]!, list[2]!, list[1]!, list[3]!];
+  assert.deepEqual(ids(insertNew(mixed, 'a', [fresh])), ['A1-1', 'M', 'A1-3', 'A1-2', 'B1-1']);
+  // Hand-reordered (not natural order): same rule.
+  const reordered = [list[1]!, list[0]!, list[2]!];
+  assert.deepEqual(ids(insertNew(reordered, 'a', [fresh])), ['A1-3', 'A1-1', 'A1-2', 'M']);
+  assert.deepEqual(ids(insertNew([movie('M')], 'a', [fresh])), ['M', 'A1-2']);
+});
+
+test('automatic new episodes add only genuinely new playable episodes and publish at the boundary', () => {
+  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  try {
+    const channel = store.create('admin', { name: 'Sitcom' }, 0);
+    const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2), episode('e3', 1, 3)] };
+    let detail = store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['100'] }, [show], 0).channel;
+    const source = detail.sources[0]!;
+    assert.equal(source.autoAdd, false, 'off by default');
+    // Remove e2 by hand, then publish [e1, e3] at 0: e1 0–10s, e3 10–20s.
+    detail = store.setOrder('admin', channel.id, { expectedRevision: detail.revision, entryIds: detail.entries.filter(e => e.mediaId !== 'e2').map(e => e.entryId) }, 0);
+    store.publish('admin', channel.id, { expectedRevision: detail.revision, expectedPublication: 0 }, 0);
+    store.setAutoAdd('admin', channel.id, source.id, true, 1000);
+    // Plex now also has e4, a special, and e5 with no runtime yet.
+    const listing = [...show.items, episode('e4', 1, 4), episode('s1', 0, 1), media('e5', { kind: 'episode', showId: 'show', showTitle: 'Show', season: 1, episode: 5, durationMs: 0 })];
+    const result = store.applySync('system:auto-add', source.id, listing, 12000);
+    assert.equal(result.added, 1); assert.deepEqual(result.review.map(r => r.issue), ['no_duration']);
+    detail = store.detail(channel.id, 12000);
+    assert.deepEqual(detail.entries.map(e => e.mediaId), ['e1', 'e3', 'e4'], 'the removed e2 and the special stay out');
+    assert.ok(detail.entries[2]!.addedAuto);
+    assert.equal(detail.changed, false, 'draft and published list gained the same episode');
+    // e3 airs 10–20s and finishes; e4 follows it at 20s; nothing airing was cut.
+    assert.equal(store.scheduler.current(channel.id, 19999).entry.title, 'Show');
+    assert.equal(store.scheduler.current(channel.id, 20000).entry.mediaId, 'e4');
+    // A second check adds nothing new; e5 is retried once it has a runtime.
+    assert.equal(store.applySync('system:auto-add', source.id, listing, 13000).added, 0);
+    assert.equal(store.applySync('system:auto-add', source.id, [...show.items, episode('e4', 1, 4), episode('e5', 1, 5)], 14000).added, 1);
+  } finally { db.close(); }
+});
+
+test('auto-add merges into a waiting publication and seeds older selections without adding', () => {
+  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  try {
+    const channel = store.create('admin', { name: 'Mix' }, 0);
+    const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] };
+    let detail = store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['100', '7'] }, [show, { root: { id: '7', type: 'movie', title: 'Film' }, items: [media('m1')] }], 0).channel;
+    store.publish('admin', channel.id, { expectedRevision: detail.revision, expectedPublication: 0 }, 0);
+    // The administrator reorders to [m1, e1, e2] during e1; it waits for e1 to end at 10s.
+    detail = store.detail(channel.id, 5000);
+    const [e1, e2, m1] = detail.entries;
+    detail = store.setOrder('admin', channel.id, { expectedRevision: detail.revision, entryIds: [m1!.entryId, e1!.entryId, e2!.entryId] }, 5000);
+    store.publish('admin', channel.id, { expectedRevision: detail.revision, expectedPublication: 1 }, 5000);
+    const source = detail.sources[0]!;
+    store.setAutoAdd('admin', channel.id, source.id, true, 6000);
+    store.applySync('system:auto-add', source.id, [...show.items, episode('e3', 1, 3)], 6000);
+    const pending = store.scheduler.pending(channel.id, 6000)!;
+    assert.equal(pending.effectiveAt, 10000, 'still hands over when e1 ends');
+    assert.deepEqual(pending.entries.map(e => e.mediaId), ['e2', 'e3', 'm1', 'e1'], 'the curated order survives, with e3 after e2');
+    // A selection from before episodes were tracked is seeded on its first check, adding nothing.
+    db.prepare('UPDATE custom_sources SET seeded=0').run(); db.prepare('DELETE FROM custom_source_episodes').run();
+    const seeded = store.applySync('system:auto-add', source.id, [...show.items, episode('e3', 1, 3), episode('e9', 1, 9)], 7000);
+    assert.equal(seeded.seeded, true); assert.equal(seeded.added, 0);
   } finally { db.close(); }
 });
