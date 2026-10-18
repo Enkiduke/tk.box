@@ -2,12 +2,12 @@ import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IptvStore } from '../persistence/iptv-store.js';
 import type { HealthStore } from '../persistence/channel-health-store.js';
+import { ProviderConnections, type ConnectionLease } from '../streaming/provider-connections.js';
 import { probeStream, type Prober } from './stream-probe.js';
 
-// What the live relay layer tells the checker. Provider plans often allow only one or two
-// simultaneous connections, so viewers always come first: a check never takes a connection a
-// relay holds, and a new viewer makes running checks on that source give theirs back.
-export type RelayUsage = { count: (sourceId: string) => number; live: (channelId: string) => boolean };
+// What the live relay layer tells the checker. Connections themselves are shared through
+// ProviderConnections: a check only starts on a free one, and a new viewer cancels checks.
+export type RelayUsage = { live: (channelId: string) => boolean };
 type Check = { sourceId: string; abort: AbortController };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -18,7 +18,8 @@ export class ChannelHealth {
   private timer: NodeJS.Timeout;
   private closed = false;
   private dir: string;
-  relays: RelayUsage = { count: () => 0, live: () => false };
+  relays: RelayUsage = { live: () => false };
+  connections = new ProviderConnections(id => this.health.policy(id).connections);
   constructor(private store: IptvStore, private health: HealthStore, cacheDir: string, private ffmpeg = 'ffmpeg',
     private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private options = { maxChecks: 4, sampleSeconds: 7, tickMs: 5000 }, private probe: Prober = probeStream) {
@@ -33,35 +34,25 @@ export class ChannelHealth {
   queueSource(sourceId: string) { const queued = this.health.queueSource(sourceId); this.pump(); return queued; }
   queueChannels(sourceId: string, ids: string[]) { const queued = this.health.queueChannels(sourceId, ids); this.pump(); return queued; }
   queueChannel(channelId: string) { this.health.queueChannel(channelId); this.pump(); }
-  // A viewer is about to open a connection to this source.
-  claim(sourceId: string) {
-    const limit = this.health.policy(sourceId).connections;
-    for (const check of this.checks.values()) {
-      if (check.sourceId !== sourceId || check.abort.signal.aborted) continue;
-      if (this.active(sourceId) + this.relays.count(sourceId) + 1 <= limit) break;
-      check.abort.abort();
-    }
-  }
   tuned(channelId: string) { this.health.relayOnline(channelId); }
   // A failed tune is a strong hint; verify it now rather than waiting for the next sweep.
   tuneFailed(channelId: string) { try { this.queueChannel(channelId); } catch { /* left the lineup */ } }
   pump(now = Date.now()) {
     if (this.closed) return;
     for (const sourceId of this.health.dueSources(now)) {
-      const room = Math.min(this.options.maxChecks - this.active(), this.health.policy(sourceId).connections - this.active(sourceId) - this.relays.count(sourceId));
       if (this.options.maxChecks - this.active() <= 0) break;
-      if (room <= 0) continue;
-      // Channels already playing are settled from their relay and do not use up a slot.
-      let started = 0;
-      for (const channelId of this.health.due(sourceId, room + this.options.maxChecks * 2, new Set(this.checks.keys()), now)) {
-        if (started >= room) break;
+      // Channels already playing are settled from their relay and do not use up a connection.
+      for (const channelId of this.health.due(sourceId, this.options.maxChecks * 3, new Set(this.checks.keys()), now)) {
         if (this.relays.live(channelId)) { this.health.relayOnline(channelId, now); continue; }
-        this.start(channelId, sourceId); started++;
+        if (this.options.maxChecks - this.active() <= 0) break;
+        const check: Check = { sourceId, abort: new AbortController() };
+        const lease = this.connections.tryCheck(sourceId, () => check.abort.abort());
+        if (!lease) break;
+        this.start(channelId, check, lease);
       }
     }
   }
-  private start(channelId: string, sourceId: string) {
-    const check: Check = { sourceId, abort: new AbortController() };
+  private start(channelId: string, check: Check, lease: ConnectionLease) {
     this.checks.set(channelId, check);
     void (async () => {
       try {
@@ -76,6 +67,8 @@ export class ChannelHealth {
         // The channel was removed, ignored or conflicted while queued. Nothing to record.
         if (!this.closed) this.log('channel check skipped', { channelId, code: (error as { code?: string }).code });
       } finally {
+        // The probe settles only after FFmpeg exits, so the connection is really closed here.
+        lease.release();
         if (this.checks.get(channelId) === check) this.checks.delete(channelId);
         if (!this.closed) setImmediate(() => this.pump());
       }

@@ -86,8 +86,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const live = new LiveTv(iptv, budget, config.CACHE_DIR, config.FFMPEG_PATH, config.FFPROBE_PATH, (message, detail) => app.log.warn(detail, message));
   // Channel checks hide channels that fail to play or show a provider's offline screen.
   const healthStore = new HealthStore(db), health = new ChannelHealth(iptv, healthStore, config.CACHE_DIR, config.FFMPEG_PATH, (message, detail) => app.log.info(detail, message));
-  health.relays = {count: id => live.sourceRelays(id), live: id => live.isLive(id)};
-  live.observer = {claim: id => health.claim(id), tuned: id => health.tuned(id), tuneFailed: id => health.tuneFailed(id)};
+  // Viewers and checks draw from one per-source connection limit; viewers always come first.
+  live.connections = health.connections;
+  health.relays = {live: id => live.isLive(id)};
+  live.observer = {tuned: id => health.tuned(id), tuneFailed: id => health.tuneFailed(id)};
   registerChannelHealth(app, iptv, healthStore, health, admin);
   // Sports events: event-driven sources show a channel only while the event it names is on.
   const list = (value: string | undefined, fallback: string[]) => { const items = (value ?? '').split(',').map(s => s.trim()).filter(Boolean); return items.length ? items : fallback; };

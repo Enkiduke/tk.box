@@ -125,7 +125,7 @@ function EditChannel({source,channel,onClose,changed}:{source:Source;channel:Cha
 }
 
 type Health={status:'unchecked'|'online'|'offline'|'placeholder';reason:string|null;checkedAt:number|null;lastOnline:number|null;failures:number;queued:boolean;still:boolean;video?:{codec:string;width?:number;height?:number};thumbnail:boolean;fingerprint:boolean;checking:boolean};
-type HealthView={policy:{intervalHours:number;connections:number;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;channels:Record<string,Health>};
+type HealthView={policy:{intervalHours:number;connections:number;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;connections:{limit:number;viewers:number;checks:number};channels:Record<string,Health>};
 const reasons:Record<string,string>={OK:'Playing',STILL_PICTURE:'Still picture with sound',LIVE_RELAY:'Playing for a viewer',FROZEN_SILENT:'Frozen picture with no sound',SILENT_AUDIO:'No sound',PLACEHOLDER_FILE:'Provider placeholder video',KNOWN_SLATE:'Matches a marked offline screen',SHARED_SLATE:'Same frozen screen as other channels',HTTP_NOT_FOUND:'Not found (HTTP 404)',HTTP_FORBIDDEN:'Access denied by provider',HTTP_SERVER_ERROR:'Provider server error',HTTP_ERROR:'Provider HTTP error',DNS_FAILED:'Stream host not found',CONNECTION_REFUSED:'Connection refused',TIMEOUT:'Timed out',INVALID_STREAM:'Not a playable stream',CONNECTION_LOST:'Connection dropped',STREAM_ENDED:'Stream stopped early',NO_MEDIA:'No video or audio'};
 const failing=(h?:Health)=>h?.status==='offline'||h?.status==='placeholder';
 function HealthBadge({health}:{health?:Health}) {
@@ -147,14 +147,14 @@ function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<ty
         <p className="muted small" role="status">{busy?`Checking · ${data!.checking} in progress, ${s.due} waiting`:s.lastChecked?`Last check ${date(s.lastChecked)}`:'No checks yet'}{s.confirming?` · ${plural(s.confirming,'failure')} awaiting a recheck`:''}{s.hidden?` · ${plural(s.hidden,'channel')} hidden for failing`:''}{s.slates?` · ${plural(s.slates,'marked offline screen')}`:''}</p>
         {s.lastChecked&&(!s.lastOnline||s.lastOnline<Date.now()-12*3600000)&&<div className="notice"><span>No channel from this provider has played in the last 12 hours, so failures are not being applied. The provider may be down or refusing this server.</span></div>}
       </Card>
-      <Card title="Check settings">
+      <Card title="Connections and checks" description={`${data!.connections.viewers+data!.connections.checks} of ${data!.connections.limit} in use now · ${data!.connections.viewers} watching, ${data!.connections.checks} checking`}>
         <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{intervalHours:interval,connections,hideFailing:hide});setSaved(true);});}}>
           <Switch label="Hide channels that fail checks" description="Turn off to keep failing channels listed (they are still checked and reported here)." checked={hide} onChange={v=>{setHide(v);setSaved(false);}}/>
           <div className="form-columns">
             <label>Check every (hours)<input type="number" min="0" max="168" required value={interval} onChange={e=>{setInterval(Number(e.target.value));setSaved(false);}}/><small>0 checks only on request.</small></label>
-            <label>Provider connections<input type="number" min="1" max="8" required value={connections} onChange={e=>{setConnections(Number(e.target.value));setSaved(false);}}/><small>Checks pause while viewers use them.</small></label>
+            <label>Max connections<input type="number" min="1" max="8" required value={connections} onChange={e=>{setConnections(Number(e.target.value));setSaved(false);}}/><small>Your provider’s stream limit. Viewers and checks share it; viewers always come first.</small></label>
           </div>
-          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save check settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
+          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
         </form>
       </Card>
     </>}
