@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDatabase } from '../apps/server/src/persistence/database.js';
 import { CustomChannelStore, entryIssue, type Selection } from '../apps/server/src/persistence/custom-channels.js';
 import { arrange, insertNew, type ArrangeEntry } from '../apps/server/src/services/arrange.js';
@@ -150,4 +153,45 @@ test('auto-add merges into a waiting publication and seeds older selections with
     const seeded = store.applySync('system:auto-add', source.id, [...show.items, episode('e3', 1, 3), episode('e9', 1, 9)], 7000);
     assert.equal(seeded.seeded, true); assert.equal(seeded.added, 0);
   } finally { db.close(); }
+});
+test('collections and categories add movies and shows, keep up with new titles, and can be removed whole', () => {
+  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  try {
+    const channel = store.create('admin', { name: 'Holiday' }, 0);
+    const other = (id: string, season: number, n: number) => media(id, { kind: 'episode', showId: 'other', showTitle: 'Other', season, episode: n });
+    const collection: Selection = { root: { id: 'collection:9', type: 'collection', title: 'Holiday' }, items: [media('m1'), episode('e1', 1, 1), episode('e2', 1, 2), episode('s1', 0, 1)] };
+    let { channel: detail, specials } = store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['collection:9', '7'] }, [collection, { root: { id: '7', type: 'movie', title: 'Solo' }, items: [media('solo')] }], 0);
+    assert.equal(specials, 1, 'specials stay out unless asked for');
+    assert.deepEqual(detail.entries.map(e => e.mediaId), ['m1', 'e1', 'e2', 'solo'], 'Plex order is kept');
+    const source = detail.sources[0]!;
+    assert.equal(source.kind, 'collection');
+    store.setAutoAdd('admin', channel.id, source.id, true, 1000);
+    // Plex now has e3 of the show already on the channel, a new movie, and a new show.
+    const result = store.applySync('system:auto-add', source.id, [...collection.items, media('m2'), episode('e3', 1, 3), other('o1', 1, 1)], 2000);
+    assert.equal(result.added, 3);
+    detail = store.detail(channel.id, 2000);
+    assert.deepEqual(detail.entries.map(e => e.mediaId), ['m1', 'e1', 'e2', 'e3', 'm2', 'o1', 'solo'], 'e3 joins its show; the rest follow the collection');
+    assert.ok(detail.entries.every(e => e.mediaId === 'solo' || e.sourceId === source.id), 'entries keep their source');
+    detail = store.removeSource('admin', channel.id, source.id, { expectedRevision: detail.revision }, 3000);
+    assert.deepEqual(detail.entries.map(e => e.mediaId), ['solo']); assert.equal(detail.sources.length, 0);
+  } finally { db.close(); }
+});
+
+test('the source migration keeps every source and its seen episodes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tk-migrate-')), path = join(dir, 'db.sqlite');
+  try {
+    let db = openDatabase(path);
+    const store = new CustomChannelStore(db), channel = store.create('admin', { name: 'Sitcom' }, 0);
+    store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['100'] }, [{ root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] }], 0);
+    // Run version 14 again on reopen: dropping the old table must not cascade the seen episodes away.
+    db.prepare('DELETE FROM migrations WHERE version=14').run(); db.close();
+    db = openDatabase(path);
+    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+    assert.equal(count('SELECT COUNT(*) AS n FROM custom_sources'), 1);
+    assert.equal(count('SELECT COUNT(*) AS n FROM custom_source_episodes'), 2);
+    db.prepare("INSERT INTO custom_sources(id,channel_id,kind,plex_id,title) VALUES('g',?,'genre','genre:1:2','Comedy movies')").run(channel.id);
+    db.prepare('DELETE FROM custom_channels').run();
+    assert.equal(count('SELECT COUNT(*) AS n FROM custom_source_episodes'), 0, 'the foreign key still cascades');
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

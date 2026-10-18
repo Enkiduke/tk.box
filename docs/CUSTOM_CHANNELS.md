@@ -9,7 +9,7 @@ A custom channel is an administrator-made, ordered list of Plex movies and episo
 In scope:
 
 - Channel Manager: create, rename, number, order, disable and delete channels, with a logo and summary.
-- An in-app Plex picker for movies, whole shows, seasons and single episodes. Shows and seasons expand in season, then episode, order.
+- An in-app Plex picker for movies, whole shows, seasons, single episodes, Plex collections and categories (Plex genres). Shows and seasons expand in season, then episode, order. A collection keeps its Plex order and a category is A–Z, with each show in them expanded in episode order.
 - Program list editing: add, remove, drag or keyboard reorder, intentional repeats, total runtime.
 - **Arrange tools** (taken from dizqueTV), which only rewrite the draft list: shuffle, block shuffle (keeps runs of N episodes of a show together), sort by show, sort by release date, interleave shows evenly, remove duplicates, remove specials, replicate the list N times.
 - Drafts, preview and publishing that takes effect at the next program boundary. Per-show **Automatically add new episodes**.
@@ -38,7 +38,7 @@ Existing tables reused: `channels` and `publications` (scheduler), `lineup_numbe
 
 - `custom_channels(id, name, summary, logo, enabled, created_at, revision)`, with the number and position in `lineup_numbers`.
 - `custom_drafts(channel_id, revision, value)`. The draft is the editable list, stored as JSON: `{entries:[{entryId, mediaId, kind, title, show?, season?, episode?, durationMs, sourceId?, origin:'manual'|'auto'}]}`. The draft revision guards against concurrent edits.
-- `custom_sources(id, channel_id, kind:'show'|'season', plex_id, auto_add, last_checked, last_result, last_error)` records each show or season selection.
+- `custom_sources(id, channel_id, kind:'show'|'season'|'collection'|'genre', plex_id, auto_add, last_checked, last_result, last_error)` records each show or season selection.
 - `custom_exclusions(source_id, plex_id)` stores episodes the administrator removed, so auto-add never brings them back.
 - Published revisions stay in `publications.value`, as the existing `Timeline` (an immutable entry list plus `effectiveAt`, `cutoverAfterEntryId`, `nextEntryId` and `reason`). The publishing administrator and supersessions are recorded in `audit`.
 
@@ -93,6 +93,13 @@ Favorites move to a source-neutral table, or `iptv_favorites` stops requiring an
 
 - **Settings → Channels:** a channel list with number, name, status (Live, Pending · goes live at …, Draft, Disabled) and reorder controls. The editor has four tabs: Details; Programs (picker on the left, program list on the right, arrange-tools menu, runtime total, warnings); Shows (auto-add toggles, last check, errors); and Publish (preview and handoff). Playback & Buffering holds retention, with a warning before a reduction and cache usage.
 - **Live TV:** custom rows in the guide, using the Plex poster as the channel logo when none is set. The player shows Pause/Resume/Go Live and a "behind live" indicator only for custom channels.
+
+## Collections, categories and the editor (October 18, 2026)
+
+- Selections are `collection:<id>` and `genre:<library>:<genre>` alongside plain Plex IDs (`PlexAdapter.channelMedia`). Both are recorded as sources (migration 14 widens the `kind` check), capped at 5,000 programs, and leave specials out unless asked.
+- Auto-add works for them too and adds new movies as well as episodes (`insertGrouped`): a new episode of a show already on the channel joins that show; new movies and new shows follow the source's last entry.
+- A whole source can be removed at once (`DELETE …/sources/:sourceId`), which drops its programs from the draft.
+- Editor: one status per channel, a three-step setup for empty channels, a sticky publish bar whenever the draft differs from what's on air, a find-in-list filter, select-all, one-step Undo after a reordering Arrange tool, and a **Shows & collections** tab (formerly Shows). The picker browses by Titles, Collections or Categories, shows the selection as removable chips, and can turn on auto-add and add to the top of the list.
 
 ## Build phases
 

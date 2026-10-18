@@ -46,6 +46,24 @@ export function insertNew<T extends ArrangeEntry & { sourceId?: string }>(list: 
   return [...list.slice(0, last + 1), ...fresh, ...list.slice(last + 1)];
 }
 
+// New titles of a collection or category. An episode of a show that is already on the channel from this selection
+// joins that show by the rule above; anything else (movies, new shows) follows the selection's last entry, in Plex order.
+export function insertGrouped<T extends ArrangeEntry & { sourceId?: string }>(list: T[], sourceId: string, added: T[]): T[] {
+  let next = list; const shows = new Map<string, T[]>(), rest: T[] = [];
+  for (const e of added) {
+    const show = e.kind === 'episode' && e.showId && list.some(x => x.sourceId === sourceId && x.showId === e.showId) ? e.showId : undefined;
+    if (show) shows.set(show, [...shows.get(show) ?? [], e]); else rest.push(e);
+  }
+  // A per-show key lets insertNew treat that show's entries as their own block.
+  for (const [show, episodes] of shows) {
+    const key = `\0${sourceId}:${show}`, tag = (e: T): T => e.sourceId === sourceId && e.showId === show ? { ...e, sourceId: key } : e;
+    next = insertNew(next.map(tag), key, episodes.map(tag)).map(e => e.sourceId === key ? { ...e, sourceId } : e);
+  }
+  if (!rest.length) return next;
+  const last = next.map(e => e.sourceId).lastIndexOf(sourceId);
+  return last < 0 ? [...next, ...rest] : [...next.slice(0, last + 1), ...rest, ...next.slice(last + 1)];
+}
+
 export function arrange<T extends ArrangeEntry>(entries: T[], input: ArrangeInput, newId: () => string, random: () => number = Math.random): T[] {
   const list = [...entries];
   switch (input.tool) {

@@ -37,6 +37,15 @@ export function registerCustomChannels(app: FastifyInstance, store: CustomChanne
     if (input.autoAdd) await sync.source({ id: params.sourceId, plexId: store.detail(params.id).sources.find(s => s.id === params.sourceId)!.plexId }, grant, grant.accountId).catch(() => {});
     return store.detail(params.id);
   });
+  app.delete(`${base}/:id/sources/:sourceId`, async req => {
+    const { grant } = await admin(req), params = z.object({ id: z.string().uuid(), sourceId: z.string().uuid() }).parse(req.params);
+    return store.removeSource(grant.accountId, params.id, params.sourceId, draftRevision.parse(req.body));
+  });
+  // The picker's Collections view; categories reuse the catalog's genre list.
+  app.get(`${base}/libraries/:library/collections`, async req => {
+    const { grant } = await admin(req), { library } = z.object({ library: z.string().regex(/^\d{1,20}$/) }).parse(req.params);
+    return plex.channelCollections(grant, library);
+  });
   app.post(`${base}/:id/sync`, { config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async req => {
     const { grant } = await admin(req), channel = id(req.params); z.object({}).strict().parse(req.body);
     return { ...await sync.channel(channel, grant, grant.accountId), channel: store.detail(channel) };

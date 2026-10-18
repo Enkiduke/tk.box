@@ -953,3 +953,54 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .show-detail{margin:8px 0 0;line-height:1.5}
 .warning-text{color:#f2cf7a}
 .program-toolbar .grow-left{flex:1;min-width:240px;line-height:1.5}
+/* Channel Manager: setup steps, number tiles, the publish bar, list header, picker tray and source rows. */
+.channel-tile{flex:none;display:grid;place-items:center;min-width:44px;height:44px;padding:0 8px;border-radius:10px;background:var(--surface-3);color:var(--accent);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.list-note{margin:0 0 10px}
+.program-list+.list-note,.list-footer+.list-note{margin:10px 0 0}
+.channel-intro{display:flex;flex-direction:column;align-items:flex-start;gap:18px;padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.channel-intro h3{margin:0;font-size:18px}
+.channel-intro.compact{padding:24px}
+.channel-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;width:100%;margin:0;padding:0;list-style:none}
+.channel-steps li{display:flex;gap:12px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.channel-steps li.current{border-color:var(--accent)}
+.channel-steps li>span:last-child{display:flex;flex-direction:column;gap:4px}
+.channel-steps strong{font-size:14px}
+.channel-steps small{font-size:12.5px;line-height:1.45;color:var(--muted)}
+.step-number{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--surface-3);color:var(--muted);font-size:12px;font-weight:700}
+.channel-steps li.current .step-number{background:var(--accent);color:var(--accent-ink)}
+.channel-editor .source-title p{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.channel-editor{padding-bottom:96px}
+.publish-bar{position:sticky;bottom:16px;z-index:6;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 20px;margin-top:20px;padding:14px 18px;border:1px solid #6b5420;border-radius:12px;background:#221d10;box-shadow:0 12px 40px #000a}
+.publish-bar>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.publish-bar small{font-size:12.5px;color:var(--muted)}
+.program-toolbar .program-filter{flex:1;min-width:200px;max-width:360px;margin-left:auto}
+.program-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:0 12px 6px}
+.program-head .checkbox-label{min-height:32px;font-size:13px;font-weight:600}
+.program-head input{width:auto}
+.program-none{padding:24px 12px}
+.picker-library{flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.picker-library select{width:auto}
+.picker-crumbs .link-button{display:inline-flex;align-items:center;gap:4px;font-size:13px}
+.picker-empty{padding:24px 16px}
+.pick-tray{display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-height:96px;overflow:auto}
+.pick-chip{display:inline-flex;align-items:center;gap:6px;max-width:260px;padding:4px 8px 4px 10px;border-radius:999px;background:var(--surface-3);border:1px solid var(--line-strong);font-size:12.5px;font-weight:550}
+.pick-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick-chip:hover{border-color:var(--muted)}
+.picker-options{display:flex;flex-wrap:wrap;gap:4px 20px}
+.picker-options .checkbox-label{min-height:30px;font-size:13.5px}
+.picker-options input{width:auto}
+.arrange-choices{border:0;margin:0;padding:0}
+.arrange-choices legend{margin-bottom:6px;padding:0;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.arrange-option{flex-direction:row!important;align-items:center;gap:8px!important;margin-top:6px;font-size:13px;color:var(--muted)}
+.arrange-option input{width:72px;padding:4px 8px}
+.show-source-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.danger-text{color:var(--danger)}
+.danger-text:hover:not(:disabled){color:#ffb4a8}
+.logo-field{display:flex;align-items:center;gap:10px}
+.logo-preview{flex:none;width:40px;height:40px;object-fit:contain;border-radius:6px;background:var(--surface-3)}
+@media (max-width:640px){
+  .channel-steps{grid-template-columns:1fr}
+  .program-toolbar .program-filter{max-width:none;margin-left:0;flex-basis:100%}
+  .publish-bar{bottom:8px}
+  .publish-bar .button-row{width:100%}
+}
