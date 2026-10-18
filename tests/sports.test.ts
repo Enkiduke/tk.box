@@ -73,10 +73,12 @@ test('an event-driven source shows only channels whose event is on, numbers them
   schedule.match(now); schedule.close();
   const byName = new Map(iptv.adminChannels(s.id).map(c => [c.name, c]));
   assert.deepEqual(names.map(n => byName.get(n)!.number !== null), [true, false, false, false, false], 'only the live game is numbered; later events wait until starting soon');
-  assert.deepEqual(names.map(n => byName.get(n)!.state), ['listed', 'no_event', 'no_event', 'no_event', 'no_event']);
-  // Only the live game is airing at 17:30 UTC (now is real time inside SQL, so compare against windows directly).
+  // Only the live game is airing at 17:30 UTC. Listing state uses the real clock inside SQL, so it is checked against
+  // the windows at the real time rather than at the fixture's now.
   const windows = store.windows(s.id);
   assert.equal(windows.size, 3);
+  const open = (id: string, at = Date.now()) => { const w = windows.get(id); return !!w && w.visible_from <= at && w.visible_until > at; };
+  assert.deepEqual(names.map(n => byName.get(n)!.state), names.map(n => open(byName.get(n)!.id) ? 'listed' : 'no_event'));
   const live = windows.get(byName.get(names[0]!)!.id)!;
   assert.equal(live.visible_from, Date.parse('2026-10-18T16:30:00Z'));
   assert.ok(live.visible_until >= live.end);
@@ -264,13 +266,14 @@ function liveSports() {
   const epl = espnEvents('soccer/eng.1', { leagues: [{ abbreviation: 'EPL' }], events: [{ id: '9001', name: 'Chelsea at Arsenal', date: new Date(t - 30 * 60_000).toISOString(), status: { type: { state: 'in' } }, competitions: [{ competitors: [team('Arsenal', 'ARS'), team('Chelsea', 'CHE')] }] }] });
   const live = (e: SportsEvent): SportsEvent => ({ ...e, start: t - HOUR, end: t + 2 * HOUR, state: 'in' });
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' }), names = ['PPV 1: Texans vs Jaguars', 'PPV 2: UFC 333', 'Soccer 1: Arsenal vs Chelsea', `Event 9: Big Fight Night ${written}`];
-  iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="ls${i}",${n}\nhttps://streams.invalid/ls${i}`).join('\n')));
+  const playlist = (extra = '') => Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="ls${i}",${n}\nhttps://streams.invalid/ls${i}`).join('\n') + extra);
+  iptv.ingest('owner', s.id, 0, playlist());
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   store.upsert([live(nfl[0]!), live(ufc[0]!), ...epl], t);
   const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
   schedule.close();
   const save = (patch: Partial<SportsSettings>) => { const { revision, ...current } = store.settings(); store.setSettings('owner', revision, { ...current, ...patch }); schedule.match(t); };
-  return { iptv, store, save };
+  return { iptv, store, save, source: s.id, playlist };
 }
 
 test('live sports: only selected leagues are shown, and unscheduled channels follow their own switch', () => {
@@ -287,11 +290,11 @@ test('live sports: only selected leagues are shown, and unscheduled channels fol
 });
 
 test('live sports: event rows follow sport and league priority, sit above or below other channels, and use their number block', () => {
-  const { iptv, save } = liveSports();
-  const regular = iptv.create('owner', { kind: 'm3u', name: 'Regular' });
-  iptv.ingest('owner', regular.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="cnn",CNN\nhttps://streams.invalid/cnn'));
-  const cnn = iptv.adminChannels(regular.id)[0]!;
-  iptv.editChannel('owner', cnn.id, { expectedRevision: iptv.status(regular.id).revision, listing: 'always' });
+  // The guide is grouped by source, so placement is relative to the other channels of the same source.
+  const { iptv, save, source, playlist } = liveSports();
+  iptv.ingest('owner', source, iptv.status(source).revision, playlist('\n#EXTINF:-1 tvg-id="cnn",CNN\nhttps://streams.invalid/cnn'));
+  const cnn = iptv.adminChannels(source).find(c => c.name === 'CNN')!;
+  iptv.editChannel('owner', cnn.id, { expectedRevision: iptv.status(source).revision, listing: 'always' });
   save({ sportOrder: ['soccer', 'mma', 'football'], placement: 'top', numberStart: 500 });
   const rows = () => iptv.stacks().map(c => c.name);
   assert.deepEqual(rows(), ['Arsenal vs Chelsea', 'UFC 333', 'Texans vs Jaguars', 'Big Fight Night', 'CNN'], 'sport order, unscheduled last, events above');
