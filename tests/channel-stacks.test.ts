@@ -5,6 +5,8 @@ import { openDatabase } from '../apps/server/src/persistence/database.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { stackKey, quality, feedRank } from '../apps/server/src/services/channel-stacks.js';
+import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
+import type { ProbeResult } from '../apps/server/src/services/stream-probe.js';
 
 const entry=(name:string,id='')=>`#EXTINF:-1${id?` tvg-id="${id}"`:''} group-title="US News",${name}\nhttps://streams.invalid/${encodeURIComponent(name)}`;
 const playlist=(...lines:string[])=>Buffer.from('#EXTM3U\n'+lines.join('\n'));
@@ -67,4 +69,23 @@ test('administrators can keep a feed separate or stack it under another station'
   store.editChannel('owner',byName('HLN HD').id,{expectedRevision:store.status(s.id).revision,stack:'US: CNN'});
   const stacks=store.stacks();assert.equal(stacks.length,2);
   assert.deepEqual(stacks.find(c=>c.stack.endsWith(':cnn'))!.feeds.map(f=>f.name),['US: CNN FHD','HLN HD']);
+});
+
+test('a confirmed health failure hides the primary feed and promotes the next, then success restores it',()=>{
+  const {db,store}=fixture(),health=new HealthStore(db),s=store.create('owner',{kind:'m3u',name:'Fixture'});
+  const result=(verdict:'online'|'offline'):ProbeResult=>({verdict,reason:verdict==='online'?'OK':'HTTP_NOT_FOUND',elapsedMs:10,frames:100,mediaSeconds:7,frozen:false,silent:false,informative:false,thumbnail:false});
+  try{
+    store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: CNN HD (Backup)')));listAll(store,s.id);
+    const station=store.stacks()[0]!,primary=station.id,backup=station.feeds[1]!.id;
+    health.record(backup,result('online'));
+    health.record(primary,result('offline'));
+    assert.equal(store.stacks()[0]!.id,primary,'the first failure waits for confirmation');
+    health.record(primary,result('offline'));
+    const promoted=store.stacks()[0]!;
+    assert.equal(promoted.id,backup);assert.equal(promoted.stack,station.stack);
+    assert.deepEqual(promoted.feeds.map(f=>f.id),[backup]);
+    assert.ok(store.adminChannels(s.id).some(c=>c.id===primary),'failed feed is retained for future checks');
+    health.record(primary,result('online'));
+    assert.equal(store.stacks()[0]!.id,primary);assert.equal(store.stacks()[0]!.feeds.length,2);
+  }finally{db.close();}
 });

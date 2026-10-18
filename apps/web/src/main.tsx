@@ -6,6 +6,7 @@ import {useApi,useRoute,useScrolled,link,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type MediaTracks,type SourceInfo} from './player.js';
 import {Icon,ErrorNotice,Loading,Empty,ActionNotice} from './components.js';
 import {refreshCatalog} from './media-actions.js';
+import {LiveFailover,type LiveSession} from './live-failover.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 // Administration is rarely visited, so it loads on demand.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
@@ -13,7 +14,6 @@ import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type Watch
 import './style.css';
 
 type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;source?:SourceInfo;item:CatalogItem};
-type LiveSession={kind:'live';id:string;streamUrl:string;delivery:Delivery;source?:SourceInfo;channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]};program?:string};
 type Session=VodSession|LiveSession;
 const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['live','Live TV']] as const;
 function App() {
@@ -21,6 +21,7 @@ function App() {
   const me=identity.error&&[401,403].includes(identity.error.status)?undefined:identity.data;
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
   const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switchingAudio,setSwitchingAudio]=useState(false),[authUrl,setAuthUrl]=useState('');
+  const failover=useRef(new LiveFailover()),[switchingLive,setSwitchingLive]=useState(false);
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
   const itemId=route.params.get('item');
@@ -35,6 +36,7 @@ function App() {
   useEffect(()=>{if(!authUrl)return;let running=false;const timer=setInterval(()=>{if(running)return;running=true;void checkAuth().catch(e=>{if(e instanceof ApiClientError&&['AUTH_EXPIRED','PLEX_ACCESS_DENIED'].includes(e.code)){setAuthUrl('');setError(e.message);}}).finally(()=>{running=false;});},3000);return()=>clearInterval(timer);},[authUrl]);
   async function action(fn:()=>Promise<void>) {if(locking.current)return;locking.current=true;setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{locking.current=false;setBusy(false);}}
   async function stop() {
+    failover.current.cancel();setSwitchingLive(false);
     const active=sessionRef.current,position=player.current?.stop();sessionRef.current=undefined;setSession(undefined);
     if(!active)return;
     if(active.kind==='live'){await api(`/live/sessions/${active.id}`,'DELETE');return;}
@@ -52,10 +54,23 @@ function App() {
   // The server answers once the channel's relay has its first segment, so playback starts promptly.
   const watchChannel=useCallback<WatchChannel>((channel,program)=>void action(async()=>{
     await stop();returnTo.current=link('live',Object.fromEntries(routeRef.current.params));
+    failover.current=new LiveFailover();
     const created=await api<Omit<LiveSession,'kind'|'program'>>('/live/sessions','POST',{channelId:channel.id});
     // Keep the station's feed list so the player can switch feeds without a guide lookup.
-    setSession({...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}});window.location.hash='watch';
+    const next:LiveSession={...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}};sessionRef.current=next;setSession(next);window.location.hash='watch';
   }),[]);
+  const playbackError=(message:string)=>{
+    const current=sessionRef.current;
+    if(current?.kind!=='live'||!current.channel.stack){setError(message);return;}
+    const recovery=failover.current,isCurrent=()=>sessionRef.current===current&&failover.current===recovery;
+    player.current?.stop();setSwitchingLive(true);setError('');
+    void recovery.recover(current,isCurrent).then(next=>{
+      if(!isCurrent())return;
+      if(next){sessionRef.current=next;setSession(next);invalidate('/guide');invalidate('/iptv/channels');}
+      else setError(`${message} No available backup feed could be started.`);
+    }).catch(e=>{if(isCurrent())setError((e as Error).message);})
+      .finally(()=>{if(failover.current===recovery)setSwitchingLive(false);});
+  };
   // Another audio track needs a new playback session (Plex HLS) resumed at the current position.
   const changeAudio=(audioStreamId:string,timeMs:number)=>void action(async()=>{
     const current=sessionRef.current;if(current?.kind!=='vod')return;
@@ -88,7 +103,7 @@ function App() {
     rememberFeed(current.channel.stack,id);watchChannel(tuneTarget(current.channel,id),current.program);
   };
   const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
-  useEffect(()=>{if(identity.error&&[401,403].includes(identity.error.status)){player.current?.stop();setSession(undefined);}},[identity.error]);
+  useEffect(()=>{if(identity.error&&[401,403].includes(identity.error.status)){failover.current.cancel();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
   const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>setError(e.message));};
   const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item;
   const subtitle=channel?[`CH ${channel.channel.number}`,channel.program].filter(Boolean).join(' · '):item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
@@ -116,7 +131,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} source={session?.source} subtitleBase={vod&&`/api/v1/playback/sessions/${vod.id}/subtitles/`} audioSwitching={switchingAudio} onAudioChange={vod&&changeAudio} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={setError}/>
+    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} source={session?.source} subtitleBase={vod&&`/api/v1/playback/sessions/${vod.id}/subtitles/`} audioSwitching={switchingAudio} liveSwitching={switchingLive} onAudioChange={vod&&changeAudio} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={playbackError}/>
     {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error}/>}
   </div>;
 }

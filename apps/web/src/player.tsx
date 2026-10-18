@@ -4,6 +4,7 @@ import {Icon} from './components.js';
 import {timecode} from './hooks.js';
 import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
 import {readPreference} from './storage.js';
+import {LivePlaybackWatchdog} from './live-failover.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
 export type Delivery='direct'|'remux'|'transcode';
 export type SubtitleTrack={id:string;label:string;language?:string;forced:boolean;selected:boolean;supported:boolean};
@@ -27,8 +28,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,liveSwitching,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
@@ -37,39 +38,43 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const clear=()=>{const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
   useImperativeHandle(handle,()=>({stop:clear}),[]);
   useEffect(()=>{
-    const video=ref.current!,generation={active:!!url,started:false};state.current=generation;setShift(0);let hls:Hls|undefined,last=0,seekOnLoad=true;
+    const video=ref.current!,generation={active:!!url,started:false};state.current=generation;setShift(0);let hls:Hls|undefined,last=0,seekOnLoad=true,failureReported=false;
+    const fail=(message:string)=>{if(!generation.active||failureReported)return;failureReported=true;hls?.stopLoad();onError(message);};
     const progress=(kind:'playing'|'paused'|'stopped')=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind);};
     const sync=()=>setView({playing:!video.paused,waiting:!video.paused&&video.readyState<3,time:video.currentTime,duration:video.duration,buffered:video.buffered.length?video.buffered.end(video.buffered.length-1):0,volume:video.volume,muted:video.muted});
     const loaded=()=>{if(generation.active&&seekOnLoad&&startOffsetMs>0&&Number.isFinite(video.duration))video.currentTime=Math.min(startOffsetMs/1000,Math.max(0,video.duration-.1));sync();};
     const playing=()=>{generation.started=true;progress('playing');sync();};
     const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
-    const pause=()=>{progress('paused');sync();},ended=()=>{progress('stopped');sync();},error=()=>{if(generation.active&&video.error?.code!==1)onError('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
+    const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else progress('stopped');sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
     const events={loadedmetadata:loaded,play:playing,timeupdate:time,pause,ended,error,waiting:sync,playing:sync,volumechange:sync,progress:sync,seeked:sync} as const;
     for(const [name,listener] of Object.entries(events))video.addEventListener(name,listener);
     if(url) {
       // Recent Chromium answers "maybe" for native HLS, but hls.js over MSE is the tested path; native HLS is the fallback without MSE.
       const mse='MediaSource' in window||'ManagedMediaSource' in window;
       if(url.endsWith('.m3u8')&&(mse||!video.canPlayType('application/vnd.apple.mpegurl')))void import('hls.js').then(({default:Controller})=>{
-        if(!generation.active)return;if(!Controller.isSupported()){onError('This browser cannot play this stream.');return;}
+        if(!generation.active)return;if(!Controller.isSupported()){fail('This browser cannot play this stream.');return;}
         // hls.js starts at the resume point itself, so it never fetches segments from the beginning first.
         // Subtitles come from tk.box's own WebVTT track, so embedded 608 captions would only duplicate them.
         // Live channels join at the live edge and ride out short relay restarts.
         seekOnLoad=false;const controller=new Controller(live?{liveDurationInfinity:true,enableCEA708Captions:false}:{startPosition:startOffsetMs/1000,enableCEA708Captions:false});hls=controller;let networkRetries=0,mediaRecovered=false;
         controller.on(Controller.Events.ERROR,(_event,data)=>{
-          if(!data.fatal||!generation.active)return;
-          if(data.type===Controller.ErrorTypes.NETWORK_ERROR&&networkRetries++<(live?8:3)){window.setTimeout(()=>{if(generation.active)controller.startLoad();},live?1500:0);return;}
+          if(!data.fatal||!generation.active||failureReported)return;
+          if(data.type===Controller.ErrorTypes.NETWORK_ERROR&&networkRetries++<(live?8:3)){window.setTimeout(()=>{if(generation.active&&!failureReported)controller.startLoad();},live?1500:0);return;}
           if(data.type===Controller.ErrorTypes.MEDIA_ERROR&&(!mediaRecovered||live)){mediaRecovered=true;controller.recoverMediaError();return;}
-          onError('Playback could not continue. The stream stopped responding or is incompatible with this browser.');controller.destroy();
+          fail('Playback could not continue. The stream stopped responding or is incompatible with this browser.');controller.destroy();
         });
         controller.on(Controller.Events.FRAG_LOADED,()=>{networkRetries=0;});
         controller.on(Controller.Events.INIT_PTS_FOUND,(_event,data)=>{if(generation.active&&data.id==='main')setShift(timelineShift(data.initPTS,data.timescale));});
         controller.loadSource(url);controller.attachMedia(video);void video.play().catch(()=>{});
-      }).catch(()=>{if(generation.active)onError('The streaming player could not be loaded.');});
+      }).catch(()=>{fail('The streaming player could not be loaded.');});
       else {video.src=url;void video.play().catch(()=>{});}
     }
     // Paused sessions keep the server-side stream alive and the Plex position current.
     const heartbeat=window.setInterval(()=>{if(video.paused&&!video.ended)progress('paused');},60000);
-    return()=>{generation.active=false;clearInterval(heartbeat);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();video.removeAttribute('src');video.load();};
+    const watchdog=new LivePlaybackWatchdog(),stallCheck=live&&url&&feeds?window.setInterval(()=>{
+      if(generation.active&&!failureReported&&watchdog.check(performance.now(),video.currentTime,video.paused||video.seeking))fail('The live stream stopped advancing.');
+    },2000):undefined;
+    return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();video.removeAttribute('src');video.load();};
   },[url]);
   // Each title starts from the viewer's subtitle preference, then Plex's selection. Plex stream IDs
   // are unique per server, so a restart of the same title (an audio switch) keeps the current subtitles.
@@ -135,7 +140,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
     {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} shift={shift} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
-    {view.waiting&&<span className="player-spinner spinner" role="status" aria-label="Buffering"/>}
+    {(view.waiting||liveSwitching)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':'Buffering'}/>}
     {docked?<div className="mini-controls">
       <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
       <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
@@ -149,9 +154,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
-      {!view.playing&&!view.waiting&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
+      {!view.playing&&!view.waiting&&!liveSwitching&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
       {audioSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching audio…</div>}
+      {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
       {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
         {panel==='channels'?channels:panel==='subtitles'?<>
