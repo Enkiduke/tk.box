@@ -20,7 +20,8 @@ const ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg', available = spawnSync(ffmpeg
 function lineup(count: number) {
   const db = openDatabase(':memory:'), store = new IptvStore(db, new Vault(randomBytes(32))), health = new HealthStore(db), source = store.create('owner', { kind: 'm3u', name: 'Live' });
   store.ingest('owner', source.id, 0, Buffer.from('#EXTM3U\n' + Array.from({ length: count }, (_, i) => `#EXTINF:-1 tvg-id="c${i}",Channel ${i}\nhttps://streams.invalid/${i}.ts`).join('\n')));
-  for (const c of store.adminChannels(source.id)) store.editChannel('owner', c.id, { expectedRevision: store.status(source.id).revision, approval: 'approved' });
+  // These tests are about hiding failures, so channels list before their first check.
+  store.setListingPolicy('owner', source.id, { ...store.listingPolicy(source.id), requireCheck: false, expectedRevision: store.status(source.id).revision });
   const ids = Array.from({ length: count }, (_, i) => store.adminChannels(source.id).find(c => c.name === `Channel ${i}`)!.id);
   return { db, store, health, source: source.id, ids, visible: () => store.visible().map(c => c.id) };
 }
@@ -86,8 +87,8 @@ test('Failures are confirmed before hiding, only while the provider serves other
   } finally { db.close(); }
 });
 
-test('Shared and learned offline screens, exemptions and the hide policy', () => {
-  const { db, health, source, ids, visible } = lineup(6);
+test('Shared and learned offline screens, always-listed channels and the hide policy', () => {
+  const { db, store, health, source, ids, visible } = lineup(6);
   try {
     health.record(ids[5]!, result('online'));
     const still = (extra: Partial<ProbeResult> = {}) => result('online', { reason: 'STILL_PICTURE', frozen: true, informative: true, fingerprint: slate, ...extra });
@@ -104,7 +105,7 @@ test('Shared and learned offline screens, exemptions and the hide policy', () =>
     assert.deepEqual(health.markSlate('owner', ids[3]!), { matched: 1 });
     assert.ok(!visible().includes(ids[3]!));
     assert.equal(health.record(ids[4]!, result('online', { informative: true, fingerprint: 'f0f0f0f0f0f0f0f1' }))!.status, 'placeholder');
-    health.setExempt('owner', ids[4]!, true); assert.ok(visible().includes(ids[4]!));
+    store.editChannel('owner', ids[4]!, { expectedRevision: store.status(source).revision, listing: 'always' }); assert.ok(visible().includes(ids[4]!));
     health.setPolicy('owner', source, { intervalHours: 24, connections: 1, hideFailing: false });
     assert.equal(visible().length, 6);
     health.setPolicy('owner', source, { intervalHours: 24, connections: 1, hideFailing: true });

@@ -35,7 +35,7 @@ test('EPG URL creation, immediate refresh and channel linking publish compressed
     const playlist=store.create('owner',{kind:'m3u',name:'Channels'});
     store.ingest('owner',playlist.id,0,Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="station",Station\nhttps://streams.invalid/station'));
     const channel=store.adminChannels(playlist.id)[0]!;
-    store.editChannel('owner',channel.id,{expectedRevision:1,approval:'approved'});
+    store.editChannel('owner',channel.id,{expectedRevision:1,listing:'always'});
     const linked=await app.inject({method:'POST',url:`/api/v1/admin/iptv/sources/${playlist.id}/feed`,payload:{expectedRevision:2,feedId:feed.id}});
     assert.equal(linked.statusCode,200);
     const start=Date.UTC(2026,9,17,12),guideUrl=`/api/v1/iptv/channels/${channel.id}/guide?start=${start}&end=${start+3600000}`;
@@ -48,7 +48,7 @@ test('EPG URL creation, immediate refresh and channel linking publish compressed
   } finally {await app.close();db.close();}
 });
 
-test('IPTV HTTP boundaries enforce owner mutations, pending isolation, scoped guides and viewer-local favorites',async()=>{
+test('IPTV HTTP boundaries enforce owner mutations, unlisted isolation, scoped guides and viewer-local favorites',async()=>{
   const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
   const identity=new IdentityService(db,vault,plex),ownerLink=await identity.start(),owner=await identity.finish(ownerLink.binding);assert.ok(owner);
   fixture.options.accountId=2;const viewerLink=await identity.start(),viewer=await identity.finish(viewerLink.binding);assert.ok(viewer);
@@ -56,7 +56,7 @@ test('IPTV HTTP boundaries enforce owner mutations, pending isolation, scoped gu
   try {
     assert.equal((await app.inject({url:'/api/v1/iptv/channels'})).statusCode,401);
     assert.equal((await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources',headers:headers('viewer'),payload:{kind:'m3u',name:'blocked'}})).statusCode,403);
-    assert.equal((await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources/00000000-0000-4000-8000-000000000000/channels/review',headers:headers('viewer'),payload:{expectedRevision:0,ids:[],approval:'approved'}})).statusCode,403);
+    assert.equal((await app.inject({method:'PUT',url:'/api/v1/admin/iptv/sources/00000000-0000-4000-8000-000000000000/listing',headers:headers('viewer'),payload:{expectedRevision:0,requireCheck:false,requireGuide:false,guideHours:2,alwaysOn:[]}})).statusCode,403);
     const created=await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources',headers:headers('owner'),payload:{kind:'m3u',name:'Upload'}});assert.equal(created.statusCode,200);const source=created.json();
     const sourceGuideUrl=`/api/v1/admin/iptv/sources/${source.id}/guide`;
     const guidePayload={expectedRevision:0,endpoint:{url:'https://provider.invalid/guide.xml'},intervalHours:6};
@@ -65,7 +65,7 @@ test('IPTV HTTP boundaries enforce owner mutations, pending isolation, scoped gu
     assert.equal((await app.inject({method:'PUT',url:sourceGuideUrl,headers:{...headers('owner'),origin:'https://attacker.invalid'},payload:guidePayload})).statusCode,403);
     assert.equal((await app.inject({method:'PUT',url:sourceGuideUrl,headers:headers('owner'),payload:{...guidePayload,expectedRevision:99}})).statusCode,409);
     assert.equal((await app.inject({method:'PUT',url:sourceGuideUrl,headers:headers('owner'),payload:{...guidePayload,intervalHours:0}})).statusCode,400);
-    assert.equal(source.autoAddNewChannels,false);assert.equal(source.intervalHours,12);assert.equal(source.remote,false);
+    assert.equal(source.intervalHours,12);assert.equal(source.remote,false);
     const text='#EXTM3U\n#EXTINF:-1 tvg-id="station",Fixture station\nhttps://provider.invalid/live?credential=fixture-secret';
     const uploaded=await app.inject({method:'POST',url:`/api/v1/admin/iptv/sources/${source.id}/upload`,headers:headers('owner'),payload:{expectedRevision:0,text}});assert.equal(uploaded.statusCode,200);
     let list=await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')});assert.equal(list.json().channels.length,0);
@@ -73,7 +73,7 @@ test('IPTV HTTP boundaries enforce owner mutations, pending isolation, scoped gu
     const pending=await app.inject({url:`/api/v1/admin/iptv/sources/${source.id}/channels`,headers:headers('owner')});assert.ok(!pending.body.includes('fixture-secret'));const channel=pending.json().channels[0];
     assert.equal((await app.inject({method:'PUT',url:`/api/v1/iptv/channels/${channel.id}/favorite`,headers:headers('viewer'),payload:{favorite:true}})).statusCode,404);
     assert.equal((await app.inject({url:`/api/v1/iptv/channels/${channel.id}/guide?start=0&end=1000`,headers:headers('viewer')})).statusCode,404);
-    const approved=await app.inject({method:'PATCH',url:`/api/v1/admin/iptv/channels/${channel.id}`,headers:headers('owner'),payload:{expectedRevision:1,approval:'approved',number:101}});assert.equal(approved.statusCode,200);
+    const approved=await app.inject({method:'PATCH',url:`/api/v1/admin/iptv/channels/${channel.id}`,headers:headers('owner'),payload:{expectedRevision:1,listing:'always',number:101}});assert.equal(approved.statusCode,200);
     list=await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')});assert.equal(list.json().channels[0].number,101);assert.ok(!list.body.includes('provider.invalid'));
     assert.equal((await app.inject({method:'PUT',url:`/api/v1/iptv/channels/${channel.id}/favorite`,headers:{...headers('viewer'),origin:'https://attacker.invalid'},payload:{favorite:true}})).statusCode,403);
     assert.equal((await app.inject({method:'PUT',url:`/api/v1/iptv/channels/${channel.id}/favorite`,headers:headers('viewer'),payload:{favorite:true}})).statusCode,200);
@@ -95,14 +95,19 @@ test('IPTV HTTP boundaries enforce owner mutations, pending isolation, scoped gu
     assert.equal((await app.inject({url:`/api/v1/guide?start=${start}&end=${end}&channel=invalid`,headers:headers('viewer')})).statusCode,400);
     for(const [role,filter] of [['owner','favorites'],['viewer','custom']] as const)assert.equal((await app.inject({url:`/api/v1/guide?start=${start}&end=${end}&filter=${filter}`,headers:headers(role)})).json().channels.length,0);
     assert.equal((await app.inject({url:`/api/v1/guide?start=${start}&end=${end}&filter=pending`,headers:headers('viewer')})).statusCode,400);
-    const reviewSource=(await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources',headers:headers('owner'),payload:{kind:'m3u',name:'Bulk review'}})).json();
+    const reviewSource=(await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources',headers:headers('owner'),payload:{kind:'m3u',name:'Listing rules'}})).json();
     await app.inject({method:'POST',url:`/api/v1/admin/iptv/sources/${reviewSource.id}/upload`,headers:headers('owner'),payload:{expectedRevision:0,text:'#EXTM3U\n#EXTINF:-1 tvg-id="one",One\nhttps://fixture.invalid/one\n#EXTINF:-1 tvg-id="two",Two\nhttps://fixture.invalid/two'}});
     const reviewIds=(await app.inject({url:`/api/v1/admin/iptv/sources/${reviewSource.id}/channels`,headers:headers('owner')})).json().channels.map((c:{id:string})=>c.id);
-    const reviewUrl=`/api/v1/admin/iptv/sources/${reviewSource.id}/channels/review`;
-    assert.equal((await app.inject({method:'POST',url:reviewUrl,headers:headers('owner'),payload:{expectedRevision:1,ids:[],approval:'approved'}})).statusCode,400);
-    assert.equal((await app.inject({method:'POST',url:reviewUrl,headers:headers('owner'),payload:{expectedRevision:0,ids:reviewIds,approval:'approved'}})).statusCode,409);
-    assert.equal((await app.inject({method:'POST',url:reviewUrl,headers:headers('owner'),payload:{expectedRevision:1,ids:reviewIds,approval:'approved'}})).statusCode,200);
+    // Unchecked channels wait for a first passing check until the source stops asking for one.
+    assert.equal((await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')})).json().channels.length,1);
+    const rules=await app.inject({method:'PUT',url:`/api/v1/admin/iptv/sources/${reviewSource.id}/listing`,headers:headers('owner'),payload:{expectedRevision:1,requireCheck:false,requireGuide:false,guideHours:2,alwaysOn:['24/7']}});
+    assert.equal(rules.statusCode,200);assert.deepEqual(rules.json().summary,{listed:2});assert.equal(rules.json().groups.length,1);
     assert.equal((await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')})).json().channels.length,3);
+    const bulkUrl=`/api/v1/admin/iptv/sources/${reviewSource.id}/channels/listing`;
+    assert.equal((await app.inject({method:'POST',url:bulkUrl,headers:headers('owner'),payload:{expectedRevision:2,ids:[],listing:'hidden'}})).statusCode,400);
+    assert.equal((await app.inject({method:'POST',url:bulkUrl,headers:headers('owner'),payload:{expectedRevision:1,ids:reviewIds.slice(0,1),listing:'hidden'}})).statusCode,409);
+    assert.equal((await app.inject({method:'POST',url:bulkUrl,headers:headers('owner'),payload:{expectedRevision:2,ids:reviewIds.slice(0,1),listing:'hidden'}})).statusCode,200);
+    assert.equal((await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')})).json().channels.length,2);
     fixture.options.authorized=false;assert.equal((await app.inject({url:'/api/v1/iptv/channels',headers:headers('viewer')})).statusCode,403);
     assert.ok(!fixture.calls.some(c=>c.path==='/:/timeline'));
   }finally{await app.close();db.close();}

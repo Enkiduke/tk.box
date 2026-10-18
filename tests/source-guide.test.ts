@@ -15,7 +15,7 @@ function fixture() {
   const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));
   const add=(name:string)=>{
     const source=store.create('owner',{kind:'m3u',name});store.ingest('owner',source.id,0,playlist);
-    const channel=store.adminChannels(source.id)[0]!;store.editChannel('owner',channel.id,{expectedRevision:1,approval:'approved'});
+    const channel=store.adminChannels(source.id)[0]!;store.editChannel('owner',channel.id,{expectedRevision:1,listing:'always'});
     return {source:store.status(source.id),channel};
   };
   return {db,store,add};

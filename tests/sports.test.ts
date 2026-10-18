@@ -62,8 +62,8 @@ test('names and listings: written dates, EPG events and provider placeholders', 
   assert.deepEqual([epg?.matchedBy, epg?.eventId], ['epg_event', 'espn:401872997']);
 });
 
-test('an event-driven source shows only channels whose event is on, admits them and lists the event in the guide', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db);
+test('an event-driven source shows only channels whose event is on, numbers them and lists the event in the guide', () => {
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db);
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   const names = ['NFL 03: Texans vs Jaguars', 'NFL 04: Falcons vs Bears', 'PPV 2: Texans vs Jaguars 08/16', 'ESPN+ 041', 'PPV 1: UFC 333'];
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="ev${i}" group-title="Sports",${n}\nhttps://streams.invalid/${i}`).join('\n')));
@@ -72,21 +72,22 @@ test('an event-driven source shows only channels whose event is on, admits them 
   const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'America/New_York', nameHours: 3, tickMs: 3600_000 });
   schedule.match(now); schedule.close();
   const byName = new Map(iptv.adminChannels(s.id).map(c => [c.name, c]));
-  assert.deepEqual(names.map(n => byName.get(n)!.approval), ['approved', 'pending', 'pending', 'pending', 'pending'], 'only the live game is approved; later events wait until starting soon');
+  assert.deepEqual(names.map(n => byName.get(n)!.number !== null), [true, false, false, false, false], 'only the live game is numbered; later events wait until starting soon');
+  assert.deepEqual(names.map(n => byName.get(n)!.state), ['listed', 'no_event', 'no_event', 'no_event', 'no_event']);
   // Only the live game is airing at 17:30 UTC (now is real time inside SQL, so compare against windows directly).
   const windows = store.windows(s.id);
   assert.equal(windows.size, 3);
   const live = windows.get(byName.get(names[0]!)!.id)!;
   assert.equal(live.visible_from, Date.parse('2026-10-18T16:30:00Z'));
   assert.ok(live.visible_until >= live.end);
-  // Turned off, the source behaves like any other: windows are cleared.
+  // Turned off, the source behaves like any other: windows are cleared and its channels follow the regular rules.
   store.setPolicy('owner', s.id, { enabled: false, leadMinutes: 30 });
   assert.equal(store.windows(s.id).size, 0);
-  assert.ok(iptv.adminChannels(s.id).every(c => c.approval === 'pending'), 'channels it approved return to review');
+  assert.ok(iptv.adminChannels(s.id).every(c => !c.event && c.number !== null && c.state === 'unverified'), 'regular channels wait for a first check');
 });
 
 test('viewer visibility and checks follow the window in real time', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",PPV 1: Texans vs Jaguars\nhttps://streams.invalid/a\n#EXTINF:-1 tvg-id="b",PPV 2: Falcons vs Bears\nhttps://streams.invalid/b'));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
@@ -135,7 +136,7 @@ test('real provider names: league shows count while the league plays, team-chann
 });
 
 test('feeds of one event combine into one selectable row, with or without a scheduled event', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' }), day = new Date(t);
   const when = `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][day.getUTCMonth()]} ${day.getUTCDate()} ${String(day.getUTCHours()).padStart(2, '0')}:00 UTC`;
@@ -161,7 +162,7 @@ test('feeds of one event combine into one selectable row, with or without a sche
 });
 
 test('the guide leads into an event with "starting soon" and is blank after it, for event matches only', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",NFL 02: Texans vs Jaguars\nhttps://streams.invalid/a'));
@@ -177,8 +178,8 @@ test('the guide leads into an event with "starting soon" and is blank after it, 
   assert.ok(after.length && after.every(r => r.program === null && 'blank' in r && r.blank), 'blank after the event, not "No guide data"');
 });
 
-test('a sports playlist is detected on import, checked and approved only while live or starting soon, then retired', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+test('a sports playlist is detected on import, checked and numbered only while live or starting soon, then retired', () => {
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   // Mostly idle event slots and old listings, like a real sports category.
   const names = ['NFL 01: Texans vs Jaguars', 'NFL 02: Falcons vs Bears', ...Array.from({ length: 40 }, (_, i) => `PPV ${i + 1}: Old Fight ${i} vs Someone 08/16`)];
@@ -192,19 +193,19 @@ test('a sports playlist is detected on import, checked and approved only while l
   const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
   schedule.match(t);
   const ids = new Map(iptv.adminChannels(s.id).map(c => [c.name, c.id]));
-  const approved = () => iptv.adminChannels(s.id).filter(c => c.approval === 'approved').map(c => c.name).sort();
+  const approved = () => iptv.adminChannels(s.id).filter(c => c.number !== null).map(c => c.name).sort();
   assert.deepEqual(approved(), ['NFL 01: Texans vs Jaguars', 'NFL 02: Falcons vs Bears'], 'live and starting soon (20 minutes away, 30-minute lead)');
   assert.equal(health.queueEvents(s.id, t), 2);
   assert.deepEqual(health.due(s.id, 100, new Set(), t).sort(), [ids.get(names[0]!)!, ids.get(names[1]!)!].sort());
-  // Hours later the first game is over: it returns to review and gives back its number.
+  // Hours later the first game is over: it is unlisted and gives back its number.
   const later = t + 3 * HOUR;
-  assert.deepEqual(iptv.syncEventApprovals(s.id, later), { approved: 0, returned: 1 });
+  assert.deepEqual(iptv.syncNumbers(s.id, later), { numbered: 0, released: 1 });
   assert.deepEqual(approved(), ['NFL 02: Falcons vs Bears']);
   assert.equal(iptv.adminChannels(s.id).find(c => c.name === names[0])!.number, null);
-  // An administrator's own approval is never undone by the schedule.
+  // A channel an administrator always lists keeps its number whatever the schedule says.
   const old = ids.get(names[5]!)!;
-  iptv.editChannel('owner', old, { expectedRevision: iptv.status(s.id).revision, approval: 'approved' });
-  iptv.syncEventApprovals(s.id, later);
+  iptv.editChannel('owner', old, { expectedRevision: iptv.status(s.id).revision, listing: 'always' });
+  iptv.syncNumbers(s.id, later);
   assert.ok(approved().includes(names[5]!));
   // A regular playlist is not detected.
   const tv = iptv.create('owner', { kind: 'm3u', name: 'TV' });
@@ -245,7 +246,7 @@ test('event channels without a logo get an icon for their sport', async () => {
   assert.match(sportIcon('soccer'), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>.*<\/svg>$/);
   assert.doesNotMatch(Object.values({ a: sportIcon('boxing'), b: sportIcon('sports') }).join(''), /<script|on\w+=|href/i);
   // The store reports the sport of a visible event channel's window.
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",NFL 02: Texans vs Jaguars\nhttps://streams.invalid/a'));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
@@ -256,7 +257,7 @@ test('event channels without a logo get an icon for their sport', async () => {
 
 // Live Sports settings: three leagues airing now plus a channel known only by the time in its name.
 function liveSports() {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db), health = new HealthStore(db), t = Date.now();
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const at = new Date(t - 20 * 60_000), written = `${at.getUTCMonth() + 1}/${at.getUTCDate()} ${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
   const team = (name: string, abbreviation: string) => ({ team: { displayName: name, shortDisplayName: name, name, location: name, abbreviation } });
   const epl = espnEvents('soccer/eng.1', { leagues: [{ abbreviation: 'EPL' }], events: [{ id: '9001', name: 'Chelsea at Arsenal', date: new Date(t - 30 * 60_000).toISOString(), status: { type: { state: 'in' } }, competitions: [{ competitors: [team('Arsenal', 'ARS'), team('Chelsea', 'CHE')] }] }] });
@@ -289,7 +290,7 @@ test('live sports: event rows follow sport and league priority, sit above or bel
   const regular = iptv.create('owner', { kind: 'm3u', name: 'Regular' });
   iptv.ingest('owner', regular.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="cnn",CNN\nhttps://streams.invalid/cnn'));
   const cnn = iptv.adminChannels(regular.id)[0]!;
-  iptv.editChannel('owner', cnn.id, { expectedRevision: iptv.status(regular.id).revision, approval: 'approved' });
+  iptv.editChannel('owner', cnn.id, { expectedRevision: iptv.status(regular.id).revision, listing: 'always' });
   save({ sportOrder: ['soccer', 'mma', 'football'], placement: 'top', numberStart: 500 });
   const rows = () => iptv.stacks().map(c => c.name);
   assert.deepEqual(rows(), ['Arsenal vs Chelsea', 'UFC 333', 'Texans vs Jaguars', 'Big Fight Night', 'CNN'], 'sport order, unscheduled last, events above');

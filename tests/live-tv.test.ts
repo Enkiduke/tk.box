@@ -32,7 +32,7 @@ async function channelServer() {
 function lineup(urls: string[]) {
   const store = new IptvStore(openDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Live' });
   store.ingest('owner', source.id, 0, Buffer.from('#EXTM3U\n' + urls.map((url, i) => `#EXTINF:-1 tvg-id="c${i}",Channel ${i}\n${url}`).join('\n')));
-  for (const c of store.adminChannels(source.id)) store.editChannel('owner', c.id, { expectedRevision: store.status(source.id).revision, approval: 'approved' });
+  for (const c of store.adminChannels(source.id)) store.editChannel('owner', c.id, { expectedRevision: store.status(source.id).revision, listing: 'always' });
   const visible = store.visible();
   return { store, ids: urls.map((_, i) => visible.find(c => c.name === `Channel ${i}`)!.id) };
 }

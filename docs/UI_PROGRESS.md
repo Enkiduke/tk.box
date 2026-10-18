@@ -8,7 +8,7 @@ Implemented October 17, 2026. The local Nevu and Nodecast snapshots informed the
 - Movies/TV: library selection, title search, genre/year/content-rating filters, unwatched browsing, ascending/descending sorts, continuous grid/list browsing, A–Z jumps and filter reset. Choices persist per account/media type in the current browser, with explicit URL values taking precedence. Filtering occurs on Plex before pagination.
 - Details: backdrop/poster, rating, genres, watched/resume state, series/season/episode hierarchy and parent navigation. Playback uses the existing original direct-VOD session API.
 - Guide: the four established channel filters, channel name/number search before pagination, targeted channel links, date and two/four-hour windows, sticky station column, current-time line/progress, program and now/next dialogs, favorites and empty-state recovery. Per-account filter memory lasts for the browser session. Deep links default to All Channels so a remembered Favorites filter cannot hide a searched station.
-- Sources: searchable review by name, provider ID, group or number; select up to 100 eligible pending rows; approve or ignore selected channels atomically. Source revision, scope, presence and identity conflicts are validated before admission. Database errors roll back admissions, number reservations, revision increments and audit entries together.
+- Sources (replaced October 18, 2026 by automatic listing; see [Channel listing](IPTV_INGESTION.md#channel-listing)): searchable review by name, provider ID, group or number; select up to 100 eligible pending rows; approve or ignore selected channels atomically. Source revision, scope, presence and identity conflicts are validated before admission. Database errors roll back admissions, number reservations, revision increments and audit entries together.
 - Accessibility: mobile icon links keep accessible names; Settings remains available; dialog/keyboard behavior uses native dialogs; Ctrl+K focuses global search; Skip to content focuses the main element without triggering the hash router.
 
 ## API additions
@@ -16,7 +16,7 @@ Implemented October 17, 2026. The local Nevu and Nodecast snapshots informed the
 - `GET /api/v1/catalog/libraries/:id/genres` returns only `{genres:[{id,title}]}` from an authorized library.
 - Catalog item queries accept a constrained numeric `genre` and `shelf=unwatched`, preserving page limits, sorting and grant checks.
 - `GET /api/v1/guide` accepts bounded `q` and an optional UUID `channel`; search/channel scope and Favorites are applied before paging, over viewer-visible stations only.
-- `POST /api/v1/admin/iptv/sources/:id/channels/review` takes `{expectedRevision,ids,approval}` where approval is `approved` or `ignored`, and there are 1–100 unique, eligible pending channel IDs. Viewer calls fail with 403; stale or ineligible selections make no changes.
+- Removed October 18, 2026, replaced by `POST /api/v1/admin/iptv/sources/:id/channels/listing`: `POST /api/v1/admin/iptv/sources/:id/channels/review` took `{expectedRevision,ids,approval}` where approval is `approved` or `ignored`, and there are 1–100 unique, eligible pending channel IDs. Viewer calls fail with 403; stale or ineligible selections make no changes.
 
 ## Verification
 

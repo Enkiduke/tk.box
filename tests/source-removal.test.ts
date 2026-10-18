@@ -20,7 +20,7 @@ function fixture() {
   const addPlaylist=(name:string)=>{
     const source=store.create('owner',{kind:'m3u',name});store.ingest('owner',source.id,0,playlist);
     const channel=store.adminChannels(source.id)[0]!;
-    store.editChannel('owner',channel.id,{expectedRevision:1,approval:'approved'});
+    store.editChannel('owner',channel.id,{expectedRevision:1,listing:'always'});
     store.bindFeed('owner',source.id,feed.id,2);store.map('owner',channel.id,feed.id,'guide',0);store.favorite('owner',channel.id,true);
     return {source:store.status(source.id),channel:store.adminChannels(source.id)[0]!};
   };

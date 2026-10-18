@@ -10,7 +10,8 @@ const entry=(name:string,id='')=>`#EXTINF:-1${id?` tvg-id="${id}"`:''} group-tit
 const playlist=(...lines:string[])=>Buffer.from('#EXTM3U\n'+lines.join('\n'));
 const cnn=['US: CNN SD','US CNN (S)','USA  CNN','US: CNN FHD (Backup)','US: CNN HD (Backup)','US: CNN FHD'];
 function fixture() {const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');return {db,store};}
-function approveAll(store:IptvStore,source:string) {for(const c of store.adminChannels(source))if(!c.conflict&&c.approval==='pending')store.editChannel('owner',c.id,{expectedRevision:store.status(source).revision,approval:'approved'});}
+// No channel checks run here, so list channels without waiting for a first passing check.
+function listAll(store:IptvStore,source:string) {store.setListingPolicy('owner',source,{...store.listingPolicy(source),requireCheck:false,expectedRevision:store.status(source).revision});}
 
 test('station keys ignore region prefixes, quality tags and feed letters but keep distinct stations apart',()=>{
   for(const name of [...cnn,'US CNN (A)','US: CNN'])assert.equal(stackKey(name),'cnn',name);
@@ -26,9 +27,9 @@ test('entries without a provider ID are reviewable by unique name and survive re
   const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
   store.ingest('owner',s.id,0,playlist(...cnn.map(n=>entry(n)),entry('Twin'),entry('Twin')+'?second'));
   const channels=store.adminChannels(s.id);
-  assert.equal(channels.filter(c=>!c.conflict&&c.approval==='pending').length,cnn.length);
+  assert.equal(channels.filter(c=>!c.conflict&&c.listing==='auto').length,cnn.length);
   assert.equal(channels.filter(c=>c.conflict).length,2,'duplicate names stay ambiguous');
-  approveAll(store,s.id);const before=store.visible().map(c=>c.id).sort();
+  listAll(store,s.id);const before=store.visible().map(c=>c.id).sort();
   store.ingest('owner',s.id,store.status(s.id).revision,playlist(...cnn.map(n=>entry(n)),entry('Twin'),entry('Twin')+'?second'));
   assert.deepEqual(store.visible().map(c=>c.id).sort(),before,'same records after refresh');
 });
@@ -36,7 +37,7 @@ test('entries without a provider ID are reviewable by unique name and survive re
 test('feeds of one station share a guide row that defaults to FHD and keeps every feed tunable',()=>{
   const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
   store.ingest('owner',s.id,0,playlist(...cnn.map(n=>entry(n)),entry('US: CNN','8249'),entry('US MSNBC (H)','MSNBC.us'),entry('US: MSNBC FHD')));
-  approveAll(store,s.id);
+  listAll(store,s.id);
   const stacks=store.stacks(),news=stacks.find(c=>c.stack.endsWith(':cnn'))!,msnbc=stacks.find(c=>c.stack.endsWith(':msnbc'))!;
   assert.equal(stacks.length,2);
   assert.equal(news.name,'US: CNN FHD');assert.equal(news.quality,'FHD');
@@ -59,7 +60,7 @@ test('feeds of one station share a guide row that defaults to FHD and keeps ever
 
 test('administrators can keep a feed separate or stack it under another station',()=>{
   const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
-  store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: CNN SD'),entry('HLN HD')));approveAll(store,s.id);
+  store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: CNN SD'),entry('HLN HD')));listAll(store,s.id);
   const byName=(n:string)=>store.adminChannels(s.id).find(c=>c.name===n)!;
   store.editChannel('owner',byName('US: CNN SD').id,{expectedRevision:store.status(s.id).revision,stack:''});
   assert.equal(store.stacks().length,3);
