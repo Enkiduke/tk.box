@@ -125,7 +125,7 @@ function EditChannel({source,channel,onClose,changed}:{source:Source;channel:Cha
 }
 
 type Health={status:'unchecked'|'online'|'offline'|'placeholder';reason:string|null;checkedAt:number|null;lastOnline:number|null;failures:number;queued:boolean;still:boolean;video?:{codec:string;width?:number;height?:number};thumbnail:boolean;fingerprint:boolean;checking:boolean};
-type HealthView={policy:{intervalHours:number;connections:number;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;connections:{limit:number;viewers:number;checks:number};channels:Record<string,Health>};
+type HealthView={policy:{intervalHours:number;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;channels:Record<string,Health>};
 const reasons:Record<string,string>={OK:'Playing',STILL_PICTURE:'Still picture with sound',LIVE_RELAY:'Playing for a viewer',FROZEN_SILENT:'Frozen picture with no sound',SILENT_AUDIO:'No sound',PLACEHOLDER_FILE:'Provider placeholder video',KNOWN_SLATE:'Matches a marked offline screen',SHARED_SLATE:'Same frozen screen as other channels',HTTP_NOT_FOUND:'Not found (HTTP 404)',HTTP_FORBIDDEN:'Access denied by provider',HTTP_SERVER_ERROR:'Provider server error',HTTP_ERROR:'Provider HTTP error',DNS_FAILED:'Stream host not found',CONNECTION_REFUSED:'Connection refused',TIMEOUT:'Timed out',INVALID_STREAM:'Not a playable stream',CONNECTION_LOST:'Connection dropped',STREAM_ENDED:'Stream stopped early',NO_MEDIA:'No video or audio'};
 const failing=(h?:Health)=>h?.status==='offline'||h?.status==='placeholder';
 function HealthBadge({health}:{health?:Health}) {
@@ -136,8 +136,8 @@ function HealthBadge({health}:{health?:Health}) {
   return <><span className={`dot-label ${tone}`}>{label}</span>{health&&(health.status!=='unchecked'||rechecking)&&health.reason&&<small>{reasons[health.reason]??code(health.reason)}</small>}{health?.checkedAt&&<small>Checked {date(health.checkedAt)}</small>}</>;
 }
 function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<typeof useApi<HealthView>>;changed:()=>void}) {
-  const data=health.data,[interval,setInterval]=useState(24),[connections,setConnections]=useState(1),[hide,setHide]=useState(true),[saved,setSaved]=useState(false),mutation=useMutation(()=>{health.reload();changed();});
-  useEffect(()=>{if(data){setInterval(data.policy.intervalHours);setConnections(data.policy.connections);setHide(data.policy.hideFailing);}},[data?.policy.intervalHours,data?.policy.connections,data?.policy.hideFailing]);
+  const data=health.data,[interval,setInterval]=useState(24),[hide,setHide]=useState(true),[saved,setSaved]=useState(false),mutation=useMutation(()=>{health.reload();changed();});
+  useEffect(()=>{if(data){setInterval(data.policy.intervalHours);setHide(data.policy.hideFailing);}},[data?.policy.intervalHours,data?.policy.hideFailing]);
   const s=data?.summary,busy=!!data&&(data.checking>0||data.summary.due>0);
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
@@ -147,14 +147,13 @@ function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<ty
         <p className="muted small" role="status">{busy?`Checking · ${data!.checking} in progress, ${s.due} waiting`:s.lastChecked?`Last check ${date(s.lastChecked)}`:'No checks yet'}{s.confirming?` · ${plural(s.confirming,'failure')} awaiting a recheck`:''}{s.hidden?` · ${plural(s.hidden,'channel')} hidden for failing`:''}{s.slates?` · ${plural(s.slates,'marked offline screen')}`:''}</p>
         {s.lastChecked&&(!s.lastOnline||s.lastOnline<Date.now()-12*3600000)&&<div className="notice"><span>No channel from this provider has played in the last 12 hours, so failures are not being applied. The provider may be down or refusing this server.</span></div>}
       </Card>
-      <Card title="Connections and checks" description={`${data!.connections.viewers+data!.connections.checks} of ${data!.connections.limit} in use now · ${data!.connections.viewers} watching, ${data!.connections.checks} checking`}>
-        <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{intervalHours:interval,connections,hideFailing:hide});setSaved(true);});}}>
+      <Card title="Check settings" description="Checks share the server’s provider connections with viewers and pause while viewers need them. Set the limit under IPTV.">
+        <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{intervalHours:interval,hideFailing:hide});setSaved(true);});}}>
           <Switch label="Hide channels that fail checks" description="Turn off to keep failing channels listed (they are still checked and reported here)." checked={hide} onChange={v=>{setHide(v);setSaved(false);}}/>
           <div className="form-columns">
             <label>Check every (hours)<input type="number" min="0" max="168" required value={interval} onChange={e=>{setInterval(Number(e.target.value));setSaved(false);}}/><small>0 checks only on request.</small></label>
-            <label>Max connections<input type="number" min="1" max="8" required value={connections} onChange={e=>{setConnections(Number(e.target.value));setSaved(false);}}/><small>Your provider’s stream limit. Viewers and checks share it; viewers always come first.</small></label>
           </div>
-          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
+          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save check settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
         </form>
       </Card>
     </>}
@@ -407,13 +406,34 @@ function SourceDetail({source,sources,changed,removed,back}:{source:Source;sourc
     {candidate&&<Candidate source={source} changed={refreshAll} onClose={()=>setCandidate(false)}/>}
   </section>;
 }
+type IptvSettingsView={revision:number;maxConnections:number;connections:{limit:number;viewers:number;checks:number}};
+// Server-wide: shared by every source, viewer and channel check.
+function IptvAppSettings() {
+  const view=useApi<IptvSettingsView>('/admin/iptv/settings'),[max,setMax]=useState(1),[saved,setSaved]=useState(false),mutation=useMutation(view.reload),data=view.data;
+  useEffect(()=>{if(data)setMax(data.maxConnections);},[data?.revision]);
+  // Usage changes as people tune in; keep it current while the page is open.
+  useEffect(()=>{const timer=window.setInterval(view.reload,10000);return()=>window.clearInterval(timer);},[]);
+  if(view.loading&&!data)return <Loading/>;
+  if(view.error&&!data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
+  if(!data)return null;
+  const used=data.connections.viewers+data.connections.checks;
+  return <Card title="Settings">
+    <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/iptv/settings','PUT',{expectedRevision:data.revision,maxConnections:max});setSaved(true);});}}>
+      <label>Max connections<input type="number" min="1" max="16" required value={max} onChange={e=>{setMax(Number(e.target.value));setSaved(false);}}/><small>How many streams your provider lets this server open at once, across every source. Viewers always come first: channel checks only use connections nobody is watching on. {used} of {data.connections.limit} in use now ({plural(data.connections.viewers,'viewer')}, {plural(data.connections.checks,'check')}).</small></label>
+      {mutation.error&&<ErrorNotice message={mutation.error}/>}
+      <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button>{saved&&<span role="status" className="success">Saved.</span>}</div>
+    </form>
+  </Card>;
+}
 function SourceSettings() {
   const sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');
   const choose=(id:string)=>{setSelected(id);remember('source',id);setImportError('');};
   const playlists=sources.data?.sources.filter(s=>s.kind==='m3u')??[],source=playlists.find(s=>s.id===selected);
   if(source)return <>{importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}<SourceDetail key={source.id} source={source} sources={sources.data!.sources} changed={sources.reload} removed={()=>choose('')} back={()=>choose('')}/></>;
   return <>
-    <SectionHead title="IPTV sources" description="Playlists, their program guides and how their channels are listed."><button className="primary" onClick={()=>setCreate(true)}>Add source</button></SectionHead>
+    <SectionHead title="IPTV" description="Live TV settings for the whole server, and the playlists that supply its channels."/>
+    <IptvAppSettings/>
+    <div className="section-heading"><div><h3>Sources</h3><p className="muted small">Playlists, their program guides and how their channels are listed.</p></div><button className="primary" onClick={()=>setCreate(true)}>Add source</button></div>
     {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}
     {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map(s=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id}><button className="source-row" onClick={()=>choose(s.id)}>
       <span className={`status-dot ${attention?'danger':s.lastSuccess?'ok':''}`} aria-hidden="true"/>
@@ -499,7 +519,7 @@ function AccountSettings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
     <Card><div className="account-row"><span className="account-avatar" aria-hidden="true">{me.accountId.slice(0,1).toUpperCase()}</span><div className="grow"><strong>Plex account {me.accountId}</strong><p className="muted small">{me.role==='admin'?'Administrator · manages sources and shared settings':'Viewer'}</p></div><button onClick={onLogout}>Sign out</button></div></Card>
   </>;
 }
-const sections=[['sources','IPTV sources','live'],['sports','Live Sports','star'],['playback','Playback','speed'],['account','Account','info']] as const;
+const sections=[['sources','IPTV','live'],['sports','Live Sports','star'],['playback','Playback','speed'],['account','Account','info']] as const;
 export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   const admin=me.role==='admin',[section,setSectionState]=useState(()=>admin?remembered('section','sources'):'account');
   const setSection=(s:string)=>{setSectionState(s);remember('section',s);};

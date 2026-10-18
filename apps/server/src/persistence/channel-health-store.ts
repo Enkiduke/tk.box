@@ -5,7 +5,7 @@ import { hamming, SIMILAR, type ProbeResult } from '../services/stream-probe.js'
 import { sportsDormant } from './sports-store.js';
 import { guideMissing, healthHidden } from './listing.js';
 
-export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168), connections: z.number().int().min(1).max(8), hideFailing: z.boolean() }).strict();
+export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168), hideFailing: z.boolean() }).strict();
 export type HealthPolicy = z.infer<typeof healthPolicy>;
 export type HealthStatus = 'unchecked' | 'online' | 'offline' | 'placeholder';
 type Row = { channel_id: string; status: HealthStatus; reason: string | null; detail: string | null; fingerprint: string | null; frozen: number; checked_at: number | null; last_online: number | null; failures: number; due: number; priority: number; exempt: number };
@@ -13,7 +13,7 @@ type Row = { channel_id: string; status: HealthStatus; reason: string | null; de
 // Every channel in a sweep is checked; failures are confirmed by a second check before anything is
 // hidden, and only count while the provider is demonstrably serving other channels, so an outage or
 // expired account never empties the lineup. One success restores a channel.
-const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, connections: 1, hideFailing: true };
+const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, hideFailing: true };
 const CONFIRM_MS = 90_000, RETRY_MS = 15 * 60_000, DEFER_MS = 5 * 60_000, YIELD_MS = 60_000, REACHABLE_MS = 12 * 3600_000, PEER_MS = 48 * 3600_000;
 const eligible = "c.present=1 AND c.conflict=0 AND c.listing<>'hidden'";
 // Only channels a passing check would list are worth a connection: no event channel outside its event, and no
@@ -32,14 +32,14 @@ export class HealthStore {
     this.db.prepare(`INSERT INTO iptv_channel_health(channel_id,${keys.join(',')}) VALUES(@channel_id,${keys.map(k => '@' + k).join(',')}) ON CONFLICT(channel_id) DO UPDATE SET ${keys.map(k => `${k}=excluded.${k}`).join(',')}`).run({ channel_id: channelId, ...values });
   }
   policy(sourceId: string): HealthPolicy {
-    const row = this.db.prepare('SELECT interval_hours,connections,hide_failing FROM iptv_health_policies WHERE source_id=?').get(sourceId) as { interval_hours: number; connections: number; hide_failing: number } | undefined;
-    return row ? { intervalHours: row.interval_hours, connections: row.connections, hideFailing: !!row.hide_failing } : { ...DEFAULT_POLICY };
+    const row = this.db.prepare('SELECT interval_hours,hide_failing FROM iptv_health_policies WHERE source_id=?').get(sourceId) as { interval_hours: number; hide_failing: number } | undefined;
+    return row ? { intervalHours: row.interval_hours, hideFailing: !!row.hide_failing } : { ...DEFAULT_POLICY };
   }
   setPolicy(actor: string, sourceId: string, input: z.input<typeof healthPolicy>, now = Date.now()) {
     const v = healthPolicy.parse(input), source = this.db.prepare('SELECT kind FROM iptv_sources WHERE id=?').get(sourceId) as { kind: string } | undefined;
     requireThat(source, 'SOURCE_NOT_FOUND', 'Source not found.', 404); requireThat(source.kind === 'm3u', 'INVALID_POLICY', 'Channel checks apply to M3U sources only.');
     this.db.transaction(() => {
-      this.db.prepare('INSERT INTO iptv_health_policies VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET interval_hours=excluded.interval_hours,connections=excluded.connections,hide_failing=excluded.hide_failing').run(sourceId, v.intervalHours, v.connections, Number(v.hideFailing));
+      this.db.prepare('INSERT INTO iptv_health_policies(source_id,interval_hours,connections,hide_failing) VALUES(?,?,1,?) ON CONFLICT(source_id) DO UPDATE SET interval_hours=excluded.interval_hours,hide_failing=excluded.hide_failing').run(sourceId, v.intervalHours, Number(v.hideFailing));
       this.audit(actor, 'iptv_health_policy_changed', sourceId, now);
     })();
     return this.policy(sourceId);
