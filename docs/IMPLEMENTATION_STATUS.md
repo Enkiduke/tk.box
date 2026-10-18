@@ -2,7 +2,13 @@
 
 Updated October 17, 2026. **Milestone 0 foundations implemented; integration acceptance remains OPEN.** Live remote Plex owner setup is verified; production deployment and real media/provider streaming acceptance remain open.
 
-## Latest pass: automatic channel listing and settings redesign
+## Latest pass: custom channels, phase 1
+
+- Settings → Channels (October 18, 2026): create, number, order, disable and delete custom channels. A Plex picker adds movies, whole shows, seasons or episodes. The program list supports drag or arrow reordering, repeats, removal and arrange tools (shuffle, block shuffle, interleave, sort by show or date, remove repeats or specials, repeat the list). Drafts are separate from what's on air, and a publish preview shows the handoff. Publishing takes effect when the airing program ends. Design and phases: [Custom channels](CUSTOM_CHANNELS.md).
+- Published channels appear in the Live TV guide (all, Custom Channels and Favorites filters), with exact program times. They can be favorited but not yet watched; playout is phase 2.
+- Programs that would need a forbidden encode (above 1080p and not H.264), or that have no file or runtime, are flagged when added and block publishing.
+
+## Previous pass: automatic channel listing and settings redesign
 
 - Removed channel approval (October 18, 2026). Channels list themselves by per-source rules: regular channels while they pass channel checks (optionally only after a first passing check, on by default) and, if the source asks for it, only while the guide has a program on now or within a look-ahead (default 2 hours), with always-on keyword (`24/7`) and per-category exceptions. Event categories list while their event is live or starting soon. Administrators can still hide a channel or always list it. Details: [Channel listing](IPTV_INGESTION.md#channel-listing).
 - Sports events now apply per playlist category, so one playlist can mix event categories with regular stations; Auto Add and bulk approval are gone.

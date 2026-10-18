@@ -96,6 +96,13 @@ Favorites move to a source-neutral table, or `iptv_favorites` stops requiring an
 
 ## Build phases
 
+Status: phase 1 is implemented (October 18, 2026). Code: `persistence/custom-channels.ts`, `services/arrange.ts`, `custom-api.ts`, `PlexAdapter.channelMedia` and `apps/web/src/channels.tsx`. Tests: `tests/custom-channels.test.ts`. Notes from building it:
+
+- Custom channels lead the Live TV guide as one group, in Channel Manager order, ahead of the IPTV sources. They are listed but not yet tunable.
+- Draft edits are server-side operations (add, order, repeat, arrange, discard). The browser sends only IDs, so runtimes and media details always come from Plex.
+- Runtimes come from Plex's media duration. Phase 2 must check them against the actual file before streaming.
+- Show and season selections are already recorded as sources. The auto-add toggle stays hidden until phase 4, so the UI never shows an option that does nothing.
+
 1. **Channels and programming.** Migration, store, admin API, Channel Manager UI with picker, arrange tools, drafts, publish and preview. Custom rows in the guide (not yet tunable). Tests: arrange tools, the auto-add insertion rule, publish/rebase.
 2. **Playout.** Station pipeline, tune, boundaries, idle stop, viewer authorization, unavailable slate. Requires a real check on the Linux host with real Plex files.
 3. **Pause/Resume/Go Live.** Viewer cursors, retention setting, expiry, admin cache diagnostics.

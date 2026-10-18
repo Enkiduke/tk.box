@@ -105,6 +105,20 @@ export function openDatabase(path: string) {
       db.exec('ALTER TABLE iptv_sources ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0; UPDATE iptv_sources SET sort_order=rowid;');
       db.prepare('INSERT INTO migrations VALUES(11)').run();
     }
+    // Custom channels: administrator-made program lists of Plex media. `draft` is the editable list and `published`
+    // the list as last published (before the scheduler rotates it). Schedules live in `channels`/`publications`,
+    // numbers in `lineup_numbers`. Sources record each show or season added, for automatic new episodes.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=12').get()) {
+      db.exec(`CREATE TABLE custom_channels(id TEXT PRIMARY KEY, name TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', logo_url TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+          draft TEXT NOT NULL DEFAULT '[]', published TEXT);
+        CREATE TABLE custom_sources(id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES custom_channels(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('show','season')), plex_id TEXT NOT NULL, title TEXT NOT NULL, specials INTEGER NOT NULL DEFAULT 0,
+          auto_add INTEGER NOT NULL DEFAULT 0, last_checked INTEGER, last_result TEXT, last_error TEXT, UNIQUE(channel_id,kind,plex_id));
+        CREATE TABLE custom_favorites(account_id TEXT NOT NULL REFERENCES users(account_id), channel_id TEXT NOT NULL REFERENCES custom_channels(id) ON DELETE CASCADE,
+          PRIMARY KEY(account_id,channel_id));`);
+      db.prepare('INSERT INTO migrations VALUES(12)').run();
+    }
   })();
   return db;
 }

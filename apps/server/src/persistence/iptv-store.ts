@@ -8,6 +8,7 @@ import { readSportsSettings, eventRank } from './sports-store.js';
 import { listed, listingState, listingPolicy, readListingPolicy, alwaysOnMatch, type Listing, type ListingState } from './listing.js';
 import { byGroup, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
 import { stackKey, quality, feedRank } from '../services/channel-stacks.js';
+import type { CustomChannelStore } from './custom-channels.js';
 import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
 
 type Kind='m3u'|'xmltv';
@@ -486,20 +487,24 @@ export class IptvStore {
     const programs=w.visible_from<w.start?[{...event,start:w.visible_from,end:w.start,subtitle:'Starting soon',status:'starting_soon' as const},event]:[event];
     return guideWindow(programs,'sports',start,end).map(row=>row.program?row:{...row,blank:true as const});
   }
-  guidePage(account:string,filter:'all'|'iptv'|'custom'|'favorites',start:number,end:number,offset:number,limit:number,q='',channelId?:string) {
+  // Custom channels lead the guide as their own group, then IPTV sources in the administrator's order.
+  guidePage(account:string,filter:'all'|'iptv'|'custom'|'favorites',start:number,end:number,offset:number,limit:number,q='',channelId?:string,custom?:CustomChannelStore) {
     const favorites=new Set((this.db.prepare('SELECT channel_id FROM iptv_favorites WHERE account_id=?').all(account) as {channel_id:string}[]).map(c=>c.channel_id));
     const search=q.trim().toLocaleLowerCase();
+    const customs=filter==='iptv'||!custom?[]:custom.stations(account,filter==='favorites',search,channelId);
     const channels=filter==='custom'?[]:this.stacks().filter(c=>(filter!=='favorites'||c.feeds.some(f=>favorites.has(f.id)))&&(!channelId||c.feeds.some(f=>f.id===channelId))&&(!search||c.name.toLocaleLowerCase().includes(search)||c.feeds.some(f=>f.name.toLocaleLowerCase().includes(search)||String(f.number).includes(search)))),cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>();
     // Every source with a matching channel, in guide order, so the client can head each group (across pages too).
     const counts=new Map<string,number>();for(const c of channels)counts.set(c.sourceId,(counts.get(c.sourceId)??0)+1);
-    const sources=[...counts].map(([id,count])=>({id,name:this.source(id).name,count}));
-    return {start,end,offset,limit,total:channels.length,hasMore:offset+limit<channels.length,sources,channels:channels.slice(offset,offset+limit).map(channel=>{
+    const sources=[...(customs.length?[{id:'custom',name:'Custom Channels',count:customs.length}]:[]),...[...counts].map(([id,count])=>({id,name:this.source(id).name,count}))];
+    const total=customs.length+channels.length;
+    const customRows=customs.slice(offset,offset+limit).map(c=>({...c,programs:custom!.programs(c.id,start,end)}));
+    return {start,end,offset,limit,total,hasMore:offset+limit<total,sources,channels:[...customRows,...channels.slice(Math.max(0,offset-customs.length),Math.max(0,offset+limit-customs.length)).map(channel=>{
       // Feeds of one station share a schedule: use the first feed with a guide match.
       let data:ReturnType<IptvStore['guideData']>|undefined;
       for(const feed of channel.feeds){const feedId=this.feedFor(feed.id),candidate=feedId?this.guideData(feed.id,feedId,cache):undefined;data??=candidate;if(candidate?.mapping){data=candidate;break;}}
       // Any channel may match the logo library, so the logo route decides; the UI falls back to a monogram.
       const {hasLogo:_,...rest}=channel,logo=true;
       return {...rest,logo,type:'iptv' as const,favorite:channel.feeds.some(f=>favorites.has(f.id)),programs:this.eventRows(channel.id,start,end)??guideWindow(data?.xml?.programs??[],data?.mapping?.xmlId,start,end,channel.name)};
-    })};
+    })]};
   }
 }
