@@ -31,7 +31,7 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 // video is copied, anything else is encoded within the shared CPU budget, and
 // audio is always AAC because browsers cannot decode AC-3/MP2 from IPTV feeds.
 // Upstream URIs stay server-side; the browser only sees this session's paths. Each relay holds
-// one of its source's provider connections (shared with channel checks) until FFmpeg exits.
+// one of the server's provider connections (shared with channel checks) until FFmpeg exits.
 export class LiveTv {
   private relays = new Map<string, Relay>();
   private viewers = new Map<string, Viewer>();
@@ -107,7 +107,7 @@ export class LiveTv {
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
 
   private async prepare(relay: Relay) {
-    relay.lease = await this.connections.viewer(relay.sourceId, relay.cancel.signal);
+    relay.lease = await this.connections.viewer(relay.cancel.signal);
     if (relay.stopped) { relay.lease.release(); throw new AppError('MEDIA_CANCELLED', 'Live session was stopped.', 409); }
     await mkdir(relay.dir, { recursive: true, mode: 0o700 });
     this.spawn(relay, false); await this.waitReady(relay);

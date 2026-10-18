@@ -12,7 +12,7 @@ type Access = (req: FastifyRequest) => Promise<{ grant: { accountId: string } }>
 export function registerChannelHealth(app: FastifyInstance, iptv: IptvStore, store: HealthStore, service: ChannelHealth, admin: Access) {
   const params = (p: unknown) => z.object({ id: z.string().uuid() }).parse(p).id;
   const m3u = (id: string) => { requireThat(iptv.status(id).kind === 'm3u', 'INVALID_POLICY', 'Channel checks apply to M3U sources only.'); return id; };
-  const view = (id: string) => ({ policy: store.policy(id), summary: store.summary(id), checking: service.active(id), connections: service.connections.usage(id) });
+  const view = (id: string) => ({ policy: store.policy(id), summary: store.summary(id), checking: service.active(id) });
   app.get('/api/v1/admin/iptv/sources/:id/health', async req => {
     await admin(req); const id = m3u(params(req.params)), health = store.forSource(id);
     return { ...view(id), channels: Object.fromEntries([...health].map(([channel, h]) => [channel, { ...h, checking: service.checking(channel) }])) };

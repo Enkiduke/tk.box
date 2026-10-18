@@ -19,7 +19,7 @@ export class ChannelHealth {
   private closed = false;
   private dir: string;
   relays: RelayUsage = { live: () => false };
-  connections = new ProviderConnections(id => this.health.policy(id).connections);
+  connections = new ProviderConnections(() => 1);
   constructor(private store: IptvStore, private health: HealthStore, cacheDir: string, private ffmpeg = 'ffmpeg',
     private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private options = { maxChecks: 4, sampleSeconds: 7, tickMs: 5000 }, private probe: Prober = probeStream) {
@@ -46,7 +46,7 @@ export class ChannelHealth {
         if (this.relays.live(channelId)) { this.health.relayOnline(channelId, now); continue; }
         if (this.options.maxChecks - this.active() <= 0) break;
         const check: Check = { sourceId, abort: new AbortController() };
-        const lease = this.connections.tryCheck(sourceId, () => check.abort.abort());
+        const lease = this.connections.tryCheck(() => check.abort.abort());
         if (!lease) break;
         this.start(channelId, check, lease);
       }

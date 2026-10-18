@@ -15,6 +15,7 @@ import { HealthStore } from '../apps/server/src/persistence/channel-health-store
 import { ChannelHealth } from '../apps/server/src/services/channel-health.js';
 import { registerChannelHealth } from '../apps/server/src/health-api.js';
 import { classify, dhash, hamming, parseAnalysis, probeStream, type ProbeResult } from '../apps/server/src/services/stream-probe.js';
+import { ProviderConnections } from '../apps/server/src/streaming/provider-connections.js';
 
 const ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg', available = spawnSync(ffmpeg, ['-version']).status === 0;
 function lineup(count: number) {
@@ -110,9 +111,9 @@ test('Shared and learned offline screens, always-listed channels and the hide po
     assert.ok(!visible().includes(ids[3]!));
     assert.equal(health.record(ids[4]!, result('online', { informative: true, fingerprint: 'f0f0f0f0f0f0f0f1' }))!.status, 'placeholder');
     store.editChannel('owner', ids[4]!, { expectedRevision: store.status(source).revision, listing: 'always' }); assert.ok(visible().includes(ids[4]!));
-    health.setPolicy('owner', source, { intervalHours: 24, connections: 1, hideFailing: false });
+    health.setPolicy('owner', source, { intervalHours: 24, hideFailing: false });
     assert.equal(visible().length, 6);
-    health.setPolicy('owner', source, { intervalHours: 24, connections: 1, hideFailing: true });
+    health.setPolicy('owner', source, { intervalHours: 24, hideFailing: true });
     health.clearSlates('owner', source);
     assert.equal(health.summary(source).slates, 0);
     assert.equal(health.forSource(source).get(ids[3]!)!.queued, true, 'channels hidden by a cleared screen are rechecked');
@@ -123,7 +124,7 @@ test('Source removal deletes health state', () => {
   const { db, store, health, source, ids } = lineup(2);
   try {
     health.record(ids[0]!, result('online', { informative: true, fingerprint: slate })); health.markSlate('owner', ids[0]!);
-    health.setPolicy('owner', source, { intervalHours: 6, connections: 2, hideFailing: true });
+    health.setPolicy('owner', source, { intervalHours: 6, hideFailing: true });
     store.remove('owner', source, store.status(source).revision);
     assert.equal((db.prepare('SELECT COUNT(*) AS n FROM iptv_channel_health').get() as { n: number }).n, 0);
     assert.equal((db.prepare('SELECT COUNT(*) AS n FROM iptv_offline_slates').get() as { n: number }).n, 0);
@@ -138,15 +139,17 @@ test('The scheduler respects provider connections, yields to viewers and trusts 
   }));
   const settle = () => new Promise(done => setTimeout(done, 20));
   try {
+    let limit = 1;
+    service.connections = new ProviderConnections(() => limit);
     service.relays = { live: id => id === ids[4] };
     service.pump(); await settle();
-    assert.equal(running.size, 1, 'default policy is one provider connection');
+    assert.equal(running.size, 1, 'one provider connection');
     // A viewer tuning on this source takes the connection back once the check has exited.
-    const viewer = await service.connections.viewer(source);
+    const viewer = await service.connections.viewer();
     assert.equal(aborted.length, 1); assert.equal(service.active(source), 0);
     service.pump(); await settle(); assert.equal(running.size, 0, 'no check while the viewer holds the only connection');
     viewer.release();
-    health.setPolicy('owner', source, { intervalHours: 24, connections: 3, hideFailing: true });
+    limit = 3;
     service.pump(); await settle();
     assert.equal(running.size, 3);
     for (const done of [...running.values()]) done(result('online')); running.clear(); await settle();
@@ -164,10 +167,10 @@ test('Health API is administrator-scoped and never returns stream locations', as
   registerChannelHealth(app, store, health, service, async () => { if (role !== 'admin') throw Object.assign(new Error('Administrator access required.'), { statusCode: 403 }); return { grant: { accountId: 'owner' } }; });
   try {
     const read = await app.inject({ url: `/api/v1/admin/iptv/sources/${source}/health` });
-    assert.equal(read.statusCode, 200); assert.equal(read.json().policy.connections, 1); assert.equal(read.json().summary.unchecked, 2);
+    assert.equal(read.statusCode, 200); assert.equal(read.json().summary.unchecked, 2);
     assert.ok(!read.body.includes('streams.invalid'));
-    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 0, connections: 2, hideFailing: true } })).json().policy.intervalHours, 0);
-    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 0, connections: 20, hideFailing: true } })).statusCode === 200, false);
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 0, hideFailing: true } })).json().policy.intervalHours, 0);
+    assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 999, hideFailing: true } })).statusCode === 200, false);
     assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/sources/${source}/health/check`, payload: {} })).json().queued, 2);
     // Selected channels; ids from elsewhere are ignored.
     assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/sources/${source}/health/check-channels`, payload: { ids: [ids[0], ids[0], '00000000-0000-4000-8000-000000000000'] } })).json().queued, 1);

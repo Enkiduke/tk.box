@@ -92,6 +92,14 @@ export function openDatabase(path: string) {
       CREATE TABLE IF NOT EXISTS iptv_guide_coverage(channel_id TEXT NOT NULL REFERENCES iptv_channels(id), start INTEGER NOT NULL, end INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS iptv_guide_coverage_channel ON iptv_guide_coverage(channel_id,end);`);
     db.prepare('INSERT OR IGNORE INTO migrations VALUES(9)').run();
+    // The provider connection limit is server-wide; it starts from the highest per-source limit set before.
+    // iptv_health_policies.connections is no longer read.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=10').get()) {
+      db.exec('CREATE TABLE IF NOT EXISTS iptv_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL)');
+      const { n } = db.prepare('SELECT MAX(connections) AS n FROM iptv_health_policies').get() as { n: number | null };
+      db.prepare('INSERT OR IGNORE INTO iptv_settings VALUES(1,0,?)').run(JSON.stringify({ maxConnections: n ?? 1 }));
+      db.prepare('INSERT INTO migrations VALUES(10)').run();
+    }
   })();
   return db;
 }

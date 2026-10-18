@@ -27,6 +27,8 @@ import { LiveTv } from './services/live-tv.js';
 import { HealthStore } from './persistence/channel-health-store.js';
 import { ChannelHealth } from './services/channel-health.js';
 import { registerChannelHealth } from './health-api.js';
+import { IptvSettingsStore, iptvSettings } from './persistence/iptv-settings.js';
+import { ProviderConnections } from './streaming/provider-connections.js';
 import { SportsStore } from './persistence/sports-store.js';
 import { SportsSchedule } from './services/sports-schedule.js';
 import { DEFAULT_ESPN, DEFAULT_TSDB } from './providers/sports-feeds.js';
@@ -86,8 +88,14 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const live = new LiveTv(iptv, budget, config.CACHE_DIR, config.FFMPEG_PATH, config.FFPROBE_PATH, (message, detail) => app.log.warn(detail, message));
   // Channel checks hide channels that fail to play or show a provider's offline screen.
   const healthStore = new HealthStore(db), health = new ChannelHealth(iptv, healthStore, config.CACHE_DIR, config.FFMPEG_PATH, (message, detail) => app.log.info(detail, message));
-  // Viewers and checks draw from one per-source connection limit; viewers always come first.
-  live.connections = health.connections;
+  // Every viewer and check, on any source, draws from one server-wide connection limit; viewers always come first.
+  const iptvConfig = new IptvSettingsStore(db), connections = new ProviderConnections(() => iptvConfig.get().maxConnections);
+  live.connections = connections; health.connections = connections;
+  app.get('/api/v1/admin/iptv/settings', async req => { await admin(req); return {...iptvConfig.get(), connections: connections.usage()}; });
+  app.put('/api/v1/admin/iptv/settings', async req => {
+    const {grant} = await admin(req), {expectedRevision, ...value} = iptvSettings.extend({expectedRevision: z.number().int().nonnegative()}).strict().parse(req.body);
+    const saved = iptvConfig.update(grant.accountId, expectedRevision, value); health.pump(); return {...saved, connections: connections.usage()};
+  });
   health.relays = {live: id => live.isLive(id)};
   live.observer = {tuned: id => health.tuned(id), tuneFailed: id => health.tuneFailed(id)};
   registerChannelHealth(app, iptv, healthStore, health, admin);
