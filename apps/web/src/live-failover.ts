@@ -2,7 +2,7 @@ import {api,ApiClientError} from './api.js';
 
 export type LiveFeed={id:string;name:string;number:number;quality?:string};
 type Station={id:string;name:string;number:number;stack?:string;feeds?:LiveFeed[]};
-export type LiveSession={kind:'live';id:string;streamUrl:string;delivery:'direct'|'remux'|'transcode';source?:{videoCodec?:string;audioCodec?:string;width?:number;height?:number};channel:Station;program?:string};
+export type LiveSession={kind:'live';id:string;streamUrl:string;delivery:'direct'|'remux'|'transcode';source?:{videoCodec?:string;audioCodec?:string;width?:number;height?:number};channel:Station;program?:string;timeshift?:boolean};
 
 // One instance per deliberate tune. Failed feeds stay excluded until the viewer tunes again.
 export class LiveFailover {

@@ -162,7 +162,7 @@ function ArrangeDialog({busy,onClose,run}:{busy:boolean;onClose:()=>void;run:(ar
     <h2>Arrange programs</h2>
     <p className="muted">Changes the draft only. Publish to put the new order on air, or discard changes to go back.</p>
     <form className="form-stack" onSubmit={e=>{e.preventDefault();run({tool,...(tool==='blockShuffle'?{size}:tool==='replicate'?{times}:{})});}}>
-      <div className="choice-list" role="radiogroup" aria-label="Arrange tool">{tools.map(([value,label,help])=><label key={value} className={`choice ${tool===value?'selected':''}`}><input type="radio" name="tool" checked={tool===value} onChange={()=>setTool(value)}/><span><strong>{label}</strong><small>{help}</small></span></label>)}</div>
+      <div className="arrange-choices" role="radiogroup" aria-label="Arrange tool">{tools.map(([value,label,help])=><label key={value} className={`arrange-choice ${tool===value?'selected':''}`}><input type="radio" name="tool" checked={tool===value} onChange={()=>setTool(value)}/><span><strong>{label}</strong><small>{help}</small></span></label>)}</div>
       {tool==='blockShuffle'&&<label>Episodes per block<input type="number" min="1" max="20" required value={size} onChange={e=>setSize(Number(e.target.value))}/></label>}
       {tool==='replicate'&&<label>Total copies of the list<input type="number" min="2" max="10" required value={times} onChange={e=>setTimes(Number(e.target.value))}/></label>}
       <div className="button-row"><button className="primary" disabled={busy}>Apply</button><button type="button" disabled={busy} onClick={onClose}>Cancel</button></div>

@@ -113,7 +113,17 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   refresh.published = () => sports.invalidate();
   app.addHook('onReady', async () => { void sports.tick(); });
   // Custom channels share the live session routes; their sessions belong to CustomTv.
-  const parts = new PartProxy(plex), customTv = new CustomTv(custom, plex, localMedia, parts, budget, config.CACHE_DIR, config.FFMPEG_PATH, (message, detail) => app.log.warn(detail, message));
+  const parts = new PartProxy(plex), customTv = new CustomTv(custom, plex, localMedia, parts, budget, config.CACHE_DIR, () => settings.get().pauseRetentionMinutes * 60000, config.SEGMENT_CACHE_MAX_BYTES,
+    config.FFMPEG_PATH, (message, detail) => app.log.warn(detail, message));
+  // Pause, Resume and Go Live exist only on custom channels; IPTV stays strictly live.
+  const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only custom channels can be paused.', 409); return run(); };
+  app.get<{Params: {id: string}}>('/api/v1/live/sessions/:id/state', async req => { const {hash} = await auth(req); return timeshift(req.params.id, () => customTv.state(req.params.id, hash)); });
+  app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/pause', async req => {
+    const {hash} = await auth(req), input = z.object({displayedUtc: z.number().finite()}).strict().parse(req.body);
+    return timeshift(req.params.id, () => customTv.pause(req.params.id, hash, input.displayedUtc));
+  });
+  app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/resume', async req => { const {hash} = await auth(req); z.object({}).strict().parse(req.body); return timeshift(req.params.id, () => customTv.resume(req.params.id, hash)); });
+  app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/go-live', async req => { const {hash} = await auth(req); z.object({}).strict().parse(req.body); return timeshift(req.params.id, () => customTv.goLive(req.params.id, hash)); });
   app.post('/api/v1/live/sessions', {config: {rateLimit: {max: 30, timeWindow: 60000}}}, async req => {
     const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash, grant} = await auth(req);
     return custom.exists(input.channelId) ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId);
@@ -231,7 +241,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     const {hash, grant} = await auth(req); await playback.progress(req.params.id, hash, grant, input.timeMs, input.state); transcodes.touch(req.params.id, hash, grant); return {status: 'synchronized'};
   });
   app.delete<{Params: {id: string}}>('/api/v1/playback/sessions/:id', async req => { const {hash} = await auth(req); playback.stop(req.params.id, hash); if (transcodes.has(req.params.id, hash)) transcodes.stop(req.params.id); stopStreams(s => s.id === req.params.id && s.hash === hash); return {status: 'stopped'}; });
-  app.get('/api/v1/admin/settings/playback', async req => { await admin(req); return {...settings.get(), activeVideoEncoders: budget.count}; });
+  app.get('/api/v1/admin/settings/playback', async req => { await admin(req); return {...settings.get(), activeVideoEncoders: budget.count, customBuffer: customTv.usage()}; });
   app.patch('/api/v1/admin/settings/playback', async req => {
     const {grant} = await admin(req), input = playbackSettings.extend({expectedRevision: z.number().int().nonnegative()}).strict().parse(req.body);
     const {expectedRevision, ...value} = input; return settings.update(grant.accountId, expectedRevision, value);

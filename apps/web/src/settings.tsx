@@ -422,14 +422,24 @@ function SourceSettings() {
     {create&&<CreateSource changed={sources.reload} created={(s,error)=>{choose(s.id);setImportError(error);}} onClose={()=>setCreate(false)}/>}
   </>;
 }
+type CustomBuffer={bytes:number;maxBytesPerChannel:number;stations:number;delayedViewers:number;bufferedMs:number;storagePressure:boolean};
+const size=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(1)} GB`:`${Math.round(bytes/1024**2)} MB`;
 function PlaybackSettingsForm() {
-  const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(data.reload);
+  const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number;customBuffer:CustomBuffer}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(data.reload);
   useEffect(()=>{if(data.data){setLimit(data.data.maxConcurrentCpuVideoTranscodes);setMinutes(data.data.pauseRetentionMinutes);}},[data.data?.revision]);
   return <><SectionHead title="Playback & buffering" description="The server-wide CPU encoder ceiling and how long paused custom channels are kept."/>
     {data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card>
       <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/settings/playback','PATCH',{expectedRevision:data.data!.revision,maxConcurrentCpuVideoTranscodes:limit,pauseRetentionMinutes:minutes});setSaved(true);});}}>
         <label>Maximum concurrent CPU video encoders<input type="number" min="1" max="16" required value={limit} onChange={e=>setLimit(Number(e.target.value))}/><small>{data.data.activeVideoEncoders} active app-managed encoders. Direct Play and remux do not use encoder slots. Video encoding stays limited to 1080p-or-lower sources; lowering the ceiling leaves running jobs alone.</small></label>
-        <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>Actual retained time can be shorter under storage limits.</small></label>
+        <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>How far behind the live broadcast a viewer can fall on a custom channel, counting time spent paused and time watching after Resume. It isn’t how long Pause can stay on. Disk limits can make the real window shorter.</small></label>
+        {minutes<data.data.pauseRetentionMinutes&&<div className="notice"><span>Lowering this applies right away. Anyone now more than {minutes} minutes behind live will see “Buffer expired” and need to Go Live.{data.data.customBuffer.delayedViewers>0&&` ${data.data.customBuffer.delayedViewers} viewer${data.data.customBuffer.delayedViewers===1?' is':'s are'} behind live right now.`}</span></div>}
+        <dl className="detail-grid">
+          <div><dt>Pause buffer in use</dt><dd>{data.data.customBuffer.stations?`${size(data.data.customBuffer.bytes)} across ${data.data.customBuffer.stations} channel${data.data.customBuffer.stations===1?'':'s'}`:'Nothing playing'}</dd></div>
+          <div><dt>Longest buffered window</dt><dd>{data.data.customBuffer.bufferedMs?`${Math.floor(data.data.customBuffer.bufferedMs/60000)} min ${Math.floor(data.data.customBuffer.bufferedMs/1000)%60} s`:'—'}</dd></div>
+          <div><dt>Viewers behind live</dt><dd>{data.data.customBuffer.delayedViewers}</dd></div>
+          <div><dt>Disk cap per channel</dt><dd>{size(data.data.customBuffer.maxBytesPerChannel)}</dd></div>
+        </dl>
+        {data.data.customBuffer.storagePressure&&<div className="notice error"><span>Disk space is low, so custom channels keep only about the last 90 seconds. Paused viewers may run out of buffer sooner than the setting allows.</span></div>}
         {mutation.error&&<ErrorNotice message={mutation.error}/>}
         <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button>{saved&&<span role="status" className="success">Saved.</span>}</div>
       </form>
