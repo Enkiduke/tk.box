@@ -178,13 +178,13 @@ test('the guide leads into an event with "starting soon" and is blank after it, 
   assert.ok(after.length && after.every(r => r.program === null && 'blank' in r && r.blank), 'blank after the event, not "No guide data"');
 });
 
-test('a sports playlist is detected on import, checked and numbered only while live or starting soon, then retired', () => {
+test('a sports source is checked and numbered only while live or starting soon, then retired; nothing is flagged on import', () => {
   const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
+  store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   // Mostly idle event slots and old listings, like a real sports category.
   const names = ['NFL 01: Texans vs Jaguars', 'NFL 02: Falcons vs Bears', ...Array.from({ length: 40 }, (_, i) => `PPV ${i + 1}: Old Fight ${i} vs Someone 08/16`)];
-  iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="p${i}",${n}\nhttps://streams.invalid/${i}`).join('\n')));
-  assert.equal(store.policy(s.id).enabled, true, 'detected as an event playlist');
+  iptv.ingest('owner', s.id, iptv.status(s.id).revision, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="p${i}",${n}\nhttps://streams.invalid/${i}`).join('\n')));
   // Before any match, nothing is due: no sweep of the whole playlist.
   assert.deepEqual(health.due(s.id, 100, new Set(), t), []);
   assert.equal(health.queueSource(s.id, t), 0, 'checking "all" checks only live and starting-soon channels');
@@ -207,10 +207,11 @@ test('a sports playlist is detected on import, checked and numbered only while l
   iptv.editChannel('owner', old, { expectedRevision: iptv.status(s.id).revision, listing: 'always' });
   iptv.syncNumbers(s.id, later);
   assert.ok(approved().includes(names[5]!));
-  // A regular playlist is not detected.
-  const tv = iptv.create('owner', { kind: 'm3u', name: 'TV' });
-  iptv.ingest('owner', tv.id, 0, Buffer.from('#EXTM3U\n' + Array.from({ length: 30 }, (_, i) => `#EXTINF:-1 tvg-id="c${i}",US: Channel ${String.fromCharCode(65 + i % 26)}${i} HD\nhttps://streams.invalid/tv${i}`).join('\n')));
-  assert.equal(store.policy(tv.id).enabled, false);
+  // The administrator chooses the source type: even a playlist of event slots stays regular until flagged.
+  const other = iptv.create('owner', { kind: 'm3u', name: 'Unflagged' });
+  iptv.ingest('owner', other.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="u${i}",${n}\nhttps://streams.invalid/u${i}`).join('\n')));
+  assert.equal(store.policy(other.id).enabled, false);
+  assert.ok(iptv.adminChannels(other.id).every(c => !c.event));
 });
 
 test('event channel names keep only the event; feed labels keep the provider slot', async () => {

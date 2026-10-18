@@ -75,16 +75,6 @@ test('the guide rule lists channels with a program on now or soon, except always
   } finally { db.close(); }
 });
 
-test('"24/7" channels are never mistaken for dated event listings', () => {
-  const { db, iptv, sports } = fixture();
-  try {
-    const s = iptv.create('owner', { kind: 'm3u', name: 'Loops' });
-    iptv.ingest('owner', s.id, 0, playlist(entry('a', 'Arts Daily 24/7', 'Arts'), entry('b', 'Encore', 'Arts'), entry('c', 'Comedy 24/7', 'Loops'), entry('d', 'Cartoons 24/7', 'Loops')));
-    assert.equal(sports.policy(s.id).enabled, false);
-    assert.ok(iptv.groups(s.id).every(g => g.detected === 'regular'));
-  } finally { db.close(); }
-});
-
 test('always-on patterns match whole words only', () => {
   const match = alwaysOnMatch(['24/7', '247']);
   for (const name of ['Movies 24/7', '24/7 Comedy', 'US: Cartoons (24/7)', 'Loop 247']) assert.equal(match(name), true, name);
@@ -97,8 +87,7 @@ test('event categories follow their events while categories marked regular in th
     const s = iptv.create('owner', { kind: 'm3u', name: 'Mixed' });
     iptv.ingest('owner', s.id, 0, playlist(entry('p1', 'PPV 1: UFC 333', 'PPV Events'), entry('p2', 'PPV 2: Smith vs Jones', 'PPV Events'), entry('p3', 'PPV 3', 'PPV Events'),
       entry('cnn', 'CNN', 'News'), entry('bbc', 'BBC World', 'News')));
-    // One event category is enough to flag the source for sports events.
-    assert.equal(sports.policy(s.id).enabled, true);
+    sports.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
     const byGroup = Object.fromEntries(iptv.groups(s.id).map(g => [g.name, g]));
     assert.deepEqual([byGroup['PPV Events']!.detected, byGroup['PPV Events']!.events, byGroup['News']!.detected, byGroup['News']!.events], ['events', true, 'events', true]);
     // Every category of a sports source follows events until an administrator marks it regular.

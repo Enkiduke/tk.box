@@ -79,7 +79,6 @@ export class SportsStore {
   leagues(from: number) {
     return this.db.prepare('SELECT league_key AS key,MAX(league) AS name,MAX(sport) AS sport,SUM(end>=?) AS upcoming FROM sports_events WHERE league_key IS NOT NULL GROUP BY league_key').all(from) as { key: string; name: string; sport: string; upcoming: number }[];
   }
-  hasPolicy(sourceId: string) { return !!this.db.prepare('SELECT 1 FROM sports_policies WHERE source_id=?').get(sourceId); }
   sources() { return (this.db.prepare("SELECT p.source_id AS id,p.lead_minutes FROM sports_policies p JOIN iptv_sources s ON s.id=p.source_id WHERE p.enabled=1 AND s.kind='m3u'").all() as { id: string; lead_minutes: number }[]); }
   // A live status only moves forward; the end follows it: still playing extends, finished closes.
   upsert(events: SportsEvent[], now = Date.now()) {
