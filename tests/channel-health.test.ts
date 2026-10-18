@@ -170,6 +170,9 @@ test('Health API is administrator-scoped and never returns stream locations', as
     assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 0, connections: 2, hideFailing: true } })).json().policy.intervalHours, 0);
     assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/admin/iptv/sources/${source}/health`, payload: { intervalHours: 0, connections: 20, hideFailing: true } })).statusCode === 200, false);
     assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/sources/${source}/health/check`, payload: {} })).json().queued, 2);
+    // Selected channels; ids from elsewhere are ignored.
+    assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/sources/${source}/health/check-channels`, payload: { ids: [ids[0], ids[0], '00000000-0000-4000-8000-000000000000'] } })).json().queued, 1);
+    assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/sources/${source}/health/check-channels`, payload: { ids: [] } })).statusCode === 200, false);
     assert.equal((await app.inject({ method: 'POST', url: `/api/v1/admin/iptv/channels/${ids[0]}/health/slate`, payload: {} })).statusCode, 409);
     assert.equal((await app.inject({ url: `/api/v1/admin/iptv/channels/${ids[0]}/health/thumbnail` })).statusCode, 404);
     role = 'viewer';
