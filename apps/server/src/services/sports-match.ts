@@ -243,27 +243,11 @@ export function channelTag(raw: string) {
   const qualifier = raw.split('|').map(s => s.trim()).find(s => /\b(home|away|alt(ernate)?|backup|spanish|english|french|feed|stream)\b/i.test(s) && !MATCHUP.test(` ${s} `));
   return [slot?.trim(), qualifier].filter(Boolean).join(' · ') || raw;
 }
-// An event playlist: many entries name a matchup, carry a date, or are numbered event slots ("PPV 12",
-// "Football Event 04"), instead of being stations. Detected on first import so a sports category never
-// starts by checking thousands of mostly idle channels.
-export function eventShare(names: string[]) {
-  if (!names.length) return 0;
-  // "24/7" marks an always-on channel, not the 24th of July.
-  const eventLike = names.map(n => n.replace(/\b24\s*[/x-]\s*7\b/gi, ' ')).filter(n => /\s(vs\.?|v|versus|@)\s/i.test(n) || /\b(ppv|event|events|fight|ufc|boxing|match|game)\s*\d{1,3}\b/i.test(n) || nameTime(n, Date.now())?.at !== undefined).length;
-  return eventLike / names.length;
-}
-export const looksLikeEvents = (names: string[]) => names.length >= 20 && eventShare(names) >= 0.2;
-// One category of a playlist follows events when much of it is event-like ("PPV 12", dated matchups), so a playlist can
-// mix event categories with regular stations. A tiny category must be event-like throughout.
-export const groupLooksLikeEvents = (names: string[]) => { const share = eventShare(names); return names.length >= 2 && share >= (names.length < 4 ? 1 : 0.4); };
 export function byGroup<T extends { group: string }>(channels: T[]) {
   const groups = new Map<string, T[]>();
   for (const c of channels) { const list = groups.get(c.group); if (list) list.push(c); else groups.set(c.group, [c]); }
   return groups;
 }
-// Whether a playlist has events: an event listing as a whole, or any event category.
-export const hasEvents = (channels: { name: string; group: string }[]) =>
-  looksLikeEvents(channels.map(c => c.name)) || [...byGroup(channels).values()].some(g => groupLooksLikeEvents(g.map(c => c.name)));
 // Channels carrying the same event share a guide row with selectable feeds. Scheduled events group by ID;
 // others by the matchup's two sides (or the title) on the same UTC day, so "FAWSL: Aston Villa vs Liverpool"
 // and "Aston Villa v Liverpool | Sunday" combine.

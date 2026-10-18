@@ -6,7 +6,7 @@ import { requireThat } from '../errors.js';
 import { validateEndpoint, sourceEndpoint, type SourceEndpoint } from '../providers/source-fetch.js';
 import { readSportsSettings, eventRank } from './sports-store.js';
 import { listed, listingState, listingPolicy, readListingPolicy, alwaysOnMatch, type Listing, type ListingState } from './listing.js';
-import { hasEvents, byGroup, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
+import { byGroup, eventChannelName, channelTag, sportOf, SPORTS, type Sport } from '../services/sports-match.js';
 import { stackKey, quality, feedRank } from '../services/channel-stacks.js';
 import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
 
@@ -134,11 +134,6 @@ export class IptvStore {
     return {revision:row.revision,digest:row.candidate_digest,incoming:snapshot.channels.map(c=>({tvgId:c.tvgId,name:c.name,group:c.group})),missing:this.channels(id).filter(c=>!ids.has(c.identity)).map(c=>({id:c.id,name:c.display_name??this.provider(c).name,number:c.number}))};
   }
   private publish(actor:string,row:SourceRow,parsed:M3uSnapshot|XmlSnapshot,now:number) {
-    // An event playlist imported without an explicit choice becomes event-driven before its channels exist,
-    // so channel checks never sweep it. The administrator's choice, once made, is kept.
-    if(row.kind==='m3u'&&!this.db.prepare('SELECT 1 FROM sports_policies WHERE source_id=?').get(row.id)&&hasEvents((parsed as M3uSnapshot).channels)) {
-      this.db.prepare('INSERT INTO sports_policies VALUES(?,1,30)').run(row.id);this.audit('system:sports','sports_policy_detected',row.id,now);
-    }
     if(row.kind==='m3u')this.reconcile(row,parsed as M3uSnapshot,now);
     this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(parsed),`iptv:snapshot:${row.id}`),now,now,row.encrypted_endpoint?now+row.interval_hours*3600000:null,row.id);
     this.audit(actor,'iptv_snapshot_published',row.id,now);
@@ -192,7 +187,9 @@ export class IptvStore {
     // On a source flagged for sports and live events, every category follows events unless an administrator marks it regular.
     for(const name of present.keys()){const mode=settings.get(name)?.mode??'auto';events.set(name,mode==='events'||(mode==='auto'&&sports));}
     const put=this.db.prepare('UPDATE iptv_channels SET event=?,guide_exempt=? WHERE id=? AND (event<>? OR guide_exempt<>?)');
-    for(const c of channels){const event=Number(sports&&(events.get(c.group)??c.row.event===1)),exempt=Number(!!settings.get(c.group)?.guide_exempt||always(c.name)||always(c.group));put.run(event,exempt,c.row.id,event,exempt);}
+    // A channel that becomes an event channel gives back its regular number, unless a viewer favorited it; it is numbered again while its event is on.
+    const release=this.db.prepare("DELETE FROM lineup_numbers WHERE channel_id=? AND channel_id NOT IN (SELECT channel_id FROM iptv_favorites) AND (SELECT listing FROM iptv_channels WHERE id=?)='auto'");
+    for(const c of channels){const event=Number(sports&&(events.get(c.group)??c.row.event===1)),exempt=Number(!!settings.get(c.group)?.guide_exempt||always(c.name)||always(c.group));put.run(event,exempt,c.row.id,event,exempt);if(event&&!c.row.event)release.run(c.row.id,c.row.id);}
   }
   // Merged intervals of real programs on each channel's guide, so the listing rule can ask "anything on soon?" in SQL.
   coverage(sourceId:string) {

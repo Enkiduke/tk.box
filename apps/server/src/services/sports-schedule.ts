@@ -3,7 +3,7 @@ import type { HealthStore } from '../persistence/channel-health-store.js';
 import { allowed, type SportsStore } from '../persistence/sports-store.js';
 import { SourceFetchError } from '../providers/source-fetch.js';
 import { espnEvents, espnDay, espnUrl, tsdbEvents, tsdbUrls, tsdbDayUrl, fetchJson } from '../providers/sports-feeds.js';
-import { channelWindow, learnZones, hasEvents, eventShare, type SportsEvent, type Window } from './sports-match.js';
+import { channelWindow, learnZones, type SportsEvent, type Window } from './sports-match.js';
 
 export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: string; zone: string; nameHours: number; tickMs: number };
 type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[] };
@@ -42,7 +42,6 @@ export class SportsSchedule {
     if (this.running || this.closed) return;
     this.running = true;
     try {
-      this.detect(now);
       const sources = this.store.sources();
       if (!sources.length) return;
       let fetched = 0;
@@ -73,21 +72,6 @@ export class SportsSchedule {
     } catch (error) {
       this.log('sports schedule failed', { code: (error as { code?: string }).code });
     } finally { this.running = false; }
-  }
-  // Playlists imported before detection existed, or by an import path that skipped it, have no choice
-  // recorded. Event playlists among them become event-driven; each revision is looked at once.
-  private detected = new Map<string, number>();
-  private detect(now: number) {
-    for (const source of this.iptv.list()) {
-      if (source.kind !== 'm3u' || this.store.hasPolicy(source.id) || this.detected.get(source.id) === source.revision) continue;
-      this.detected.set(source.id, source.revision);
-      const channels = this.iptv.adminChannels(source.id).filter(c => c.present), names = channels.map(c => c.name);
-      const share = Math.round(eventShare(names) * 100);
-      if (!hasEvents(channels)) { this.log('playlist is not an event playlist', { sourceId: source.id, channels: names.length, eventLikePercent: share }); continue; }
-      this.store.setPolicy('system:sports', source.id, { enabled: true, leadMinutes: 30 }, now);
-      this.log('sports playlist detected', { sourceId: source.id, channels: names.length, eventLikePercent: share });
-      this.stale = true;
-    }
   }
   // Every configured league is downloaded, shown or not: a channel naming a game of a hidden league must match that
   // game and be dropped, rather than fall back to the time in its name or a weaker match in a shown league.

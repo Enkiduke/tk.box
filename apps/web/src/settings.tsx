@@ -63,7 +63,7 @@ function StateBadge({channel}:{channel:Channel}) {
 }
 
 function CreateSource({onClose,created,changed}:{onClose:()=>void;created:(source:Source,error:string)=>void;changed:()=>void}) {
-  const [name,setName]=useState(''),[mode,setMode]=useState('remote'),[url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[file,setFile]=useState<File>(),[sports,setSports]=useState('auto');
+  const [name,setName]=useState(''),[mode,setMode]=useState('remote'),[url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[file,setFile]=useState<File>(),[sports,setSports]=useState('');
   const mutation=useMutation(changed);
   return <Modal title="Add IPTV source" onClose={()=>{if(!mutation.busy)onClose();}}>
     <h2>Add a source</h2>
@@ -77,10 +77,11 @@ function CreateSource({onClose,created,changed}:{onClose:()=>void;created:(sourc
       setUrl('');setHeaders('');
       let error='';
       try {
-        // Set before the first import, so event categories are never swept by channel checks.
-        if(sports!=='auto')await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled:sports==='events',leadMinutes:30});
+        // Set before the first import, so event channels are never swept by channel checks.
+        await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled:sports==='events',leadMinutes:30});
         if(mode==='remote')await api(`/admin/iptv/sources/${source.id}/refresh`,'POST',{});
-        else if(file)await api(`/admin/iptv/sources/${source.id}/upload`,'POST',{expectedRevision:source.revision,text:await file.text()});
+        // Setting the type changed the source's revision.
+        else if(file){const current=(await api<{sources:Source[]}>('/admin/iptv/sources')).sources.find(x=>x.id===source.id)!;await api(`/admin/iptv/sources/${source.id}/upload`,'POST',{expectedRevision:current.revision,text:await file.text()});}
       } catch {
         // Creation has succeeded. Show the saved source so retrying cannot create a duplicate.
         error=`The source was saved, but its first import failed. ${mode==='remote'?'Use Refresh now to retry, or replace its URL under Connection.':'Import a replacement file under Connection.'}`;
@@ -93,7 +94,7 @@ function CreateSource({onClose,created,changed}:{onClose:()=>void;created:(sourc
         <label>Playlist URL<input type="url" value={url} onChange={e=>setUrl(e.target.value)} required autoComplete="off" spellCheck={false} placeholder="https://provider.example/playlist.m3u"/><small>Credentials are stored encrypted and never reach viewers.</small></label>
         <details><summary>Provider request options</summary><div className="form-stack"><label>Request headers (JSON)<textarea value={headers} onChange={e=>setHeaders(e.target.value)} autoComplete="off" placeholder={'{"User-Agent":"tk.box"}'}/></label><label className="checkbox-label"><input type="checkbox" checked={insecure} onChange={e=>setInsecure(e.target.checked)}/>This provider requires unencrypted HTTP</label></div></details>
       </>:<label>Playlist file<input type="file" accept=".m3u,.m3u8" required onChange={e=>setFile(e.target.files?.[0])}/></label>}
-      <label>Sports events<select value={sports} onChange={e=>setSports(e.target.value)}><option value="auto">Detect automatically</option><option value="events">Sports and live events</option><option value="regular">Regular channels only</option></select><small>On a sports and live events source, every channel lists only while its name or guide shows an event that is live or about to start. Categories of regular channels can be marked so under Listing.</small></label>
+      <label>Source type<select value={sports} required onChange={e=>setSports(e.target.value)}><option value="" disabled>Choose…</option><option value="regular">Regular channels</option><option value="events">Sports and live events</option></select><small>On a sports and live events source, every channel lists only while its name or guide shows an event that is live or about to start. Categories of regular channels can be marked so under Listing.</small></label>
       <div className="button-row"><button className="primary" disabled={mutation.busy} type="submit">{mutation.busy?'Importing…':'Add source'}</button><button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button></div>
     </form>
   </Modal>;
@@ -173,7 +174,7 @@ function SportsPanel({source,changed}:{source:Source;changed:()=>void}) {
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <Card title="Sports events" description="For sources of sports and live events (PPV, “Football Event 04”, dated matchups). Each channel is matched to a scheduled game, fight or race using ESPN and TheSportsDB schedules, its name and the linked guide, and is listed and checked only while its event is live or starting soon. Every category follows events unless it is marked Regular channels under Listing; which leagues show, and in what order, under Live Sports.">
       <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled,leadMinutes:lead});setSaved(true);});}}>
-        <Switch label="Use sports events for this source" description="Playlists with event categories turn this on when first imported." checked={enabled} onChange={v=>{setEnabled(v);setSaved(false);}}/>
+        <Switch label="Use sports events for this source" description="Chosen when the source is added. Every category follows events unless it is marked Regular channels under Listing." checked={enabled} onChange={v=>{setEnabled(v);setSaved(false);}}/>
         <label className="narrow">List before the start (minutes)<input type="number" min="0" max="720" required value={lead} disabled={!enabled} onChange={e=>{setLead(Number(e.target.value));setSaved(false);}}/><small>Event channels appear as “Starting soon” this long before kick-off, and stay 15 minutes after the end.</small></label>
         <div className="button-row"><button className="primary" disabled={mutation.busy}>Save sports settings</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
       </form>
