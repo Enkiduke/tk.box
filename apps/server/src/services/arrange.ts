@@ -30,6 +30,22 @@ function groups<T extends ArrangeEntry>(entries: T[]) {
 }
 const dated = (e: ArrangeEntry) => e.date ?? (e.year !== undefined ? `${String(e.year).padStart(4, '0')}-99-99` : undefined);
 
+// Where new episodes of one show or season selection go, without disturbing the administrator's curation. If that
+// selection's entries still form one block in natural order, each new episode takes its natural place in the block.
+// Otherwise (interleaved or hand-reordered) they follow the selection's last entry. With none left, they go at the end.
+export function insertNew<T extends ArrangeEntry & { sourceId?: string }>(list: T[], sourceId: string, added: T[]): T[] {
+  const fresh = [...added].sort(natural), own = list.flatMap((e, i) => e.sourceId === sourceId ? [i] : []);
+  if (!own.length) return [...list, ...fresh];
+  const first = own[0]!, last = own.at(-1)!, block = own.map(i => list[i]!);
+  const ordered = block.every((e, i) => !i || natural(block[i - 1]!, e) <= 0);
+  if (last - first + 1 === own.length && ordered) {
+    const merged = [...block];
+    for (const e of fresh) { const at = merged.findIndex(x => natural(e, x) < 0); merged.splice(at < 0 ? merged.length : at, 0, e); }
+    return [...list.slice(0, first), ...merged, ...list.slice(last + 1)];
+  }
+  return [...list.slice(0, last + 1), ...fresh, ...list.slice(last + 1)];
+}
+
 export function arrange<T extends ArrangeEntry>(entries: T[], input: ArrangeInput, newId: () => string, random: () => number = Math.random): T[] {
   const list = [...entries];
   switch (input.tool) {
