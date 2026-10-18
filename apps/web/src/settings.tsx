@@ -1,8 +1,10 @@
-import {useEffect,useRef,useState,type ReactNode} from 'react';
+import {useEffect,useState} from 'react';
 import type {Principal,PlaybackSettings} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {Card,SectionHead,Stat,Switch,code,date,move,plural,remember,remembered,useMutation} from './settings-ui.js';
+import {CustomChannelSettings} from './channels.js';
 
 type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
@@ -13,31 +15,6 @@ type ChannelsView={channels:Channel[];summary:Summary};
 type Group={name:string;channels:number;listed:number;mode:'auto'|'regular'|'events';detected:'regular'|'events';events:boolean;guideExempt:boolean};
 type ListingPolicy={requireCheck:boolean;requireGuide:boolean;guideHours:number;alwaysOn:string[]};
 type ListingView={policy:ListingPolicy;summary:Summary;groups:Group[]};
-const date=(value:number|null)=>value===null?'—':new Intl.DateTimeFormat(undefined,{dateStyle:'short',timeStyle:'short'}).format(value);
-const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
-const code=(value:string)=>value.replaceAll('_',' ').toLowerCase();
-function useMutation(changed:()=>void) {
-  const [busy,setBusy]=useState(false),[error,setError]=useState('');
-  const lock=useRef(false);
-  return {busy,error,run:async(action:()=>Promise<unknown>)=>{if(lock.current)return false;lock.current=true;setBusy(true);setError('');try{await action();changed();return true;}catch(e){setError((e as Error).message);changed();return false;}finally{lock.current=false;setBusy(false);}}};
-}
-// Remembered per browser: which settings section and source tab were open last.
-const remembered=(key:string,fallback:string)=>{try{return localStorage.getItem(`tk.settings.${key}`)??fallback;}catch{return fallback;}};
-const remember=(key:string,value:string)=>{try{localStorage.setItem(`tk.settings.${key}`,value);}catch{/* private window */}};
-
-// Small building blocks shared by every settings section.
-function Switch({label,description,checked,disabled,onChange}:{label:string;description?:ReactNode;checked:boolean;disabled?:boolean;onChange:(value:boolean)=>void}) {
-  return <label className="switch-row"><span className="switch-text"><strong>{label}</strong>{description&&<small>{description}</small>}</span><input type="checkbox" role="switch" className="switch" checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/></label>;
-}
-function Stat({label,value,tone,hint}:{label:string;value:ReactNode;tone?:'ok'|'warning'|'danger';hint?:string}) {
-  return <div className={`stat ${tone??''}`}><span>{label}</span><strong>{value}</strong>{hint&&<small>{hint}</small>}</div>;
-}
-function SectionHead({title,description,children}:{title:string;description?:ReactNode;children?:ReactNode}) {
-  return <div className="settings-head"><div><h2>{title}</h2>{description&&<p className="muted">{description}</p>}</div>{children&&<div className="button-row">{children}</div>}</div>;
-}
-function Card({title,description,actions,children,className}:{title?:string;description?:ReactNode;actions?:ReactNode;children?:ReactNode;className?:string}) {
-  return <section className={`settings-card ${className??''}`}>{(title||actions)&&<div className="settings-card-head"><div>{title&&<h3>{title}</h3>}{description&&<p className="muted small">{description}</p>}</div>{actions&&<div className="button-row">{actions}</div>}</div>}{children}</section>;
-}
 function Keywords({value,onChange,disabled}:{value:string[];onChange:(value:string[])=>void;disabled?:boolean}) {
   const [draft,setDraft]=useState('');
   const add=()=>{const word=draft.trim();if(word&&!value.includes(word)&&value.length<30)onChange([...value,word]);setDraft('');};
@@ -462,7 +439,6 @@ type League={key:string;name:string;sport:string;configured:boolean;upcoming:num
 type SportsSettingsValue={leagueMode:'all'|'selected';leagues:string[];unscheduled:boolean;sportOrder:string[];leagueOrder:string[];placement:'top'|'bottom';numberStart:number|null};
 type SportsSettingsView={settings:SportsSettingsValue&{revision:number};leagues:League[];lastSync:number|null;lastError:string|null};
 const sportNames:Record<string,string>={football:'American football',basketball:'Basketball',baseball:'Baseball',hockey:'Hockey',soccer:'Soccer',mma:'MMA',boxing:'Boxing',wrestling:'Wrestling',racing:'Motorsport',golf:'Golf',tennis:'Tennis',rugby:'Rugby',cricket:'Cricket',cycling:'Cycling',darts:'Darts',curling:'Curling',sports:'Other sports'};
-const move=<T,>(list:T[],i:number,by:number)=>{const j=i+by;if(j<0||j>=list.length)return list;const next=[...list];[next[i],next[j]]=[next[j]!,next[i]!];return next;};
 // Server-wide: which leagues event channels are shown for, the order sports and leagues appear in, and their numbers.
 function LiveSportsSettings() {
   const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload);
@@ -520,16 +496,16 @@ function AccountSettings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
     <Card><div className="account-row"><span className="account-avatar" aria-hidden="true">{me.accountId.slice(0,1).toUpperCase()}</span><div className="grow"><strong>Plex account {me.accountId}</strong><p className="muted small">{me.role==='admin'?'Administrator · manages sources and shared settings':'Viewer'}</p></div><button onClick={onLogout}>Sign out</button></div></Card>
   </>;
 }
-const sections=[['sources','IPTV','live'],['sports','Live Sports','star'],['playback','Playback','speed'],['account','Account','info']] as const;
+const sections=[['channels','Channels','shows'],['sources','IPTV','live'],['sports','Live Sports','star'],['playback','Playback','speed'],['account','Account','info']] as const;
 export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   const admin=me.role==='admin',[section,setSectionState]=useState(()=>admin?remembered('section','sources'):'account');
   const setSection=(s:string)=>{setSectionState(s);remember('section',s);};
   const available=admin?sections:sections.filter(s=>s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
   return <div className="settings">
-    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Sources, live sports and shared playback settings.':'Your account and connection.'}</p></div>
+    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Custom channels, IPTV sources, live sports and shared playback settings.':'Your account and connection.'}</p></div>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">{available.map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>setSection(id)}><Icon name={icon} size={18}/>{label}</button>)}</nav>
-      <div className="settings-main">{current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='playback'?<PlaybackSettingsForm/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
+      <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='playback'?<PlaybackSettingsForm/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
     </div>
   </div>;
 }

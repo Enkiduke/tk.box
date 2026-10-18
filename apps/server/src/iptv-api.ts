@@ -7,9 +7,10 @@ import { AppError } from './errors.js';
 import { ChannelLogos } from './providers/channel-logos.js';
 import { LogoLibrary } from './providers/logo-library.js';
 import { sportIcon } from './providers/sport-icons.js';
+import type { CustomChannelStore } from './persistence/custom-channels.js';
 
 type Access=(req:FastifyRequest)=>Promise<{grant:{accountId:string}}>;
-export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceRefresh,auth:Access,admin:Access,logos=new ChannelLogos(),library=new LogoLibrary()) {
+export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceRefresh,auth:Access,admin:Access,logos=new ChannelLogos(),library=new LogoLibrary(),custom?:CustomChannelStore) {
   const id=z.string().uuid(), revision=z.number().int().nonnegative();
   const sourceParams=(p:unknown)=>z.object({id}).parse(p).id;
   const channelParams=(p:unknown)=>z.object({id}).parse(p).id;
@@ -62,10 +63,17 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   app.get('/api/v1/iptv/channels',async req=>{const {grant}=await auth(req);return {channels:store.stacks(),favorites:store.favorites(grant.accountId).map(c=>c.id)};});
   app.get('/api/v1/guide',async req=>{
     const {grant}=await auth(req),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int(),filter:z.enum(['all','iptv','custom','favorites']).default('all'),q:z.string().trim().max(120).default(''),channel:z.string().uuid().optional(),offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(30)}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
-    return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel);
+    return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel,custom);
   });
+  // Guide routes are shared by every channel kind; custom channel IDs are answered by the custom store.
   app.get('/api/v1/iptv/channels/:id/logo',async(req,reply)=>{
-    await auth(req);const hints=store.logo(channelParams(req.params));
+    await auth(req);
+    if(custom?.exists(channelParams(req.params))){
+      const url=custom.logo(channelParams(req.params)),image=url?await logos.get(url).catch(()=>undefined):undefined;
+      if(!image)throw new AppError('LOGO_UNAVAILABLE','Logo unavailable.',404);
+      return reply.type(image.type).header('Cache-Control','private, max-age=3600').send(image.bytes);
+    }
+    const hints=store.logo(channelParams(req.params));
     // Standardized library logo first, then the playlist logo, then the guide's channel icon.
     const urls=[await library.match(hints.name,hints.tvgId).catch(()=>undefined),...hints.urls].filter((u):u is string=>!!u);
     let image:{type:string;bytes:Buffer}|undefined;
@@ -77,7 +85,9 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     return reply.type(image.type).header('Cache-Control','private, max-age=86400').send(image.bytes);
   });
   app.put('/api/v1/iptv/channels/:id/favorite',async req=>{
-    const {grant}=await auth(req),input=z.object({favorite:z.boolean()}).strict().parse(req.body);store.favorite(grant.accountId,channelParams(req.params),input.favorite);return {status:'saved'};
+    const {grant}=await auth(req),input=z.object({favorite:z.boolean()}).strict().parse(req.body),channel=channelParams(req.params);
+    if(custom?.exists(channel))custom.favorite(grant.accountId,channel,input.favorite);else store.favorite(grant.accountId,channel,input.favorite);
+    return {status:'saved'};
   });
   app.get('/api/v1/iptv/channels/:id/guide',async req=>{
     await auth(req);const channel=channelParams(req.params),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int()}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
