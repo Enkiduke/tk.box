@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import type { Db } from './database.js';
-import { healthHidden } from './channel-health-store.js';
 import { sportsHidden, NOW } from './sports-store.js';
 
 // Channels list themselves: there is no approval step. A regular channel is listed while it plays (channel checks)
@@ -28,7 +27,9 @@ export function alwaysOnMatch(patterns: string[]) {
 }
 
 const policy = (column: string, fallback: number) => `COALESCE((SELECT lp.${column} FROM iptv_listing_policies lp WHERE lp.source_id=c.source_id),${fallback})`;
-// SQL predicates (channel alias `c`). A regular channel that has never played, on a source that waits for a first check.
+// SQL predicates (channel alias `c`). A confirmed failing channel of a source that hides failures.
+export const healthHidden = `EXISTS(SELECT 1 FROM iptv_channel_health h LEFT JOIN iptv_health_policies p ON p.source_id=c.source_id WHERE h.channel_id=c.id AND COALESCE(p.hide_failing,1)=1 AND h.status IN ('offline','placeholder'))`;
+// A regular channel that has never played, on a source that waits for a first check.
 export const unverified = `(c.event=0 AND ${policy('require_check', 1)}=1 AND NOT EXISTS(SELECT 1 FROM iptv_channel_health h WHERE h.channel_id=c.id AND h.last_online IS NOT NULL))`;
 // A regular channel with nothing in its guide from now until the look-ahead, on a source that requires guide data.
 export const guideMissing = `(c.event=0 AND c.guide_exempt=0 AND ${policy('require_guide', 0)}=1 AND NOT EXISTS(SELECT 1 FROM iptv_guide_coverage g WHERE g.channel_id=c.id AND g.end>${NOW} AND g.start<=${NOW}+${policy('guide_hours', DEFAULT_LISTING.guideHours)}*3600000))`;
