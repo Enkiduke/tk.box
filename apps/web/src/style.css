@@ -442,6 +442,14 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .player-flash{position:absolute;left:50%;top:50%;z-index:3;display:flex;flex-direction:column;align-items:center;gap:10px;transform:translate(-50%,-50%);pointer-events:none;animation:player-flash .7s var(--ease) forwards}
 .player-flash span{display:grid;place-items:center;width:76px;height:76px;border-radius:50%;background:rgba(10,10,14,.55);backdrop-filter:blur(10px)}
 .player-flash em{font-style:normal;font-size:14px;font-weight:650;padding:4px 12px;border-radius:999px;background:rgba(10,10,14,.6)}
+/* Skip Intro / Skip Credits: fixed above the controls, so it never moves out from under the pointer as they wake. */
+.player-skip{position:absolute;right:clamp(16px,3vw,44px);bottom:132px;z-index:3;display:flex;align-items:center;gap:6px;padding:8px 14px 8px 16px;border-radius:999px;border:1px solid var(--glass-line-hover);background:var(--glass);backdrop-filter:blur(14px);color:#fff;font-size:14px;font-weight:650;box-shadow:0 8px 24px rgba(0,0,0,.35);animation:panel-in .25s var(--ease);transition:background .15s,border-color .15s,color .15s}
+.player-skip:hover{background:var(--glass-hover);border-color:var(--accent);color:var(--accent)}
+.panel-switch{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;padding:6px 10px;font-size:14px;font-weight:500;color:#e8e8ee;cursor:pointer}
+.panel-switch input{appearance:none;position:relative;flex-shrink:0;width:36px;height:20px;margin:0;border-radius:999px;background:rgba(255,255,255,.22);cursor:pointer;transition:background .15s}
+.panel-switch input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s var(--ease)}
+.panel-switch input:checked{background:var(--accent)}
+.panel-switch input:checked::after{transform:translateX(16px)}
 @keyframes player-flash{0%{opacity:0;transform:translate(-50%,-50%) scale(.85)}20%{opacity:1;transform:translate(-50%,-50%) scale(1)}70%{opacity:1}100%{opacity:0;transform:translate(-50%,-50%) scale(1.08)}}
 .player-status{position:absolute;top:96px;left:50%;z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 16px;border-radius:999px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--glass-line);font-size:13px;font-weight:550;white-space:nowrap}
 .player-status .spinner{--ring:2px;width:16px;height:16px}

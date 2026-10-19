@@ -15,6 +15,8 @@ export const metadataSchema = z.object({
   title: z.string(), duration: z.number().positive(), type: z.enum(['movie', 'episode']),
   viewOffset: z.number().optional(),
   viewCount: z.number().int().nonnegative().optional(), lastViewedAt: z.number().optional(),
+  // Plex's detected intro and credits sections (requested with includeMarkers); `final` marks the closing credits.
+  Marker: z.array(z.object({ type: z.string().max(40), startTimeOffset: z.number().nonnegative(), endTimeOffset: z.number().nonnegative(), final: z.union([z.boolean(), z.number()]).optional() })).max(50).optional(),
   Media: z.array(z.object({ container: z.string(), videoCodec: z.string(), audioCodec: z.string().optional(), bitrate: z.number().positive().optional(),
     width: z.number().positive().optional(), height: z.number().positive().optional(),
     // `file` is the part's absolute path on the Plex host; same-host mode (LocalMedia) may read it from disk.
@@ -46,6 +48,12 @@ export function mediaTracks(item: PlexMetadata, playingAudio?: string) {
     audio: streams.filter(s => s.streamType === 2).map(s => ({ id: s.id, label: label(s), language: s.languageCode, selected: playingAudio === undefined ? !!s.selected : s.id === playingAudio })),
     subtitles: streams.filter(s => s.streamType === 3).map(s => ({ id: s.id, label: label(s), language: s.languageCode, forced: !!s.forced, selected: !!s.selected, supported: !!subtitleInputFormat(s.codec) && (!!s.key || s.index !== undefined) })),
   };
+}
+// The intro and credits sections the player offers to skip, in playback order. Commercial markers and empty ranges are dropped.
+export function mediaMarkers(item: PlexMetadata) {
+  return (item.Marker ?? []).flatMap(m => (m.type === 'intro' || m.type === 'credits') && m.endTimeOffset > m.startTimeOffset
+    ? [{ type: m.type as 'intro' | 'credits', startMs: m.startTimeOffset, endMs: Math.min(m.endTimeOffset, item.duration), final: !!m.final }] : [])
+    .sort((a, b) => a.startMs - b.startMs);
 }
 const decisionSchema = z.object({ MediaContainer: z.object({
   generalDecisionCode: z.coerce.number().optional(),
@@ -157,9 +165,10 @@ export class PlexAdapter {
     requireThat(!isOwner || resource.owned, 'PLEX_ACCESS_DENIED', 'Configured owner does not own this Plex server.', 403);
     return { accountId: account.id, role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
   }
-  async metadata(grant: PlexGrant, ratingKey: string) {
+  async metadata(grant: PlexGrant, ratingKey: string, options: { markers?: boolean } = {}) {
     requireThat(/^\d+$/.test(ratingKey), 'INVALID_MEDIA', 'Invalid Plex media identifier.');
-    const result = z.object({ MediaContainer: z.object({ Metadata: z.array(metadataSchema) }) }).parse(await this.json(new URL(`/library/metadata/${ratingKey}`, this.config.PLEX_URL), grant.serverToken));
+    const url = new URL(`/library/metadata/${ratingKey}`, this.config.PLEX_URL); if (options.markers) url.searchParams.set('includeMarkers', '1');
+    const result = z.object({ MediaContainer: z.object({ Metadata: z.array(metadataSchema) }) }).parse(await this.json(url, grant.serverToken));
     const item = result.MediaContainer.Metadata[0];
     requireThat(item && item.ratingKey === ratingKey && grant.libraries.some(l => l.key === item.librarySectionID), 'PLEX_ACCESS_DENIED', 'Media is not accessible to this account.', 403);
     return item;
