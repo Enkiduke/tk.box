@@ -4,6 +4,12 @@ A self-hosted media app for your Plex library and IPTV channels. One web UI for 
 
 > **Status:** early and in active development. Not production ready.
 
+![Home](docs/screenshots/home.webp)
+
+| Movies | Live TV |
+| --- | --- |
+| ![Movies library](docs/screenshots/movies.webp) | ![Live TV guide](docs/screenshots/live-tv.png) |
+
 ## Features
 
 - **Plex sign-in** with the official Plex PIN flow
