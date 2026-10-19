@@ -187,7 +187,8 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
   </section>;
 }
 // Drifts an endless row sideways at `speed` px/s. It holds still while the pointer is over the row, keyboard focus
-// is inside it, it is off screen, or the viewer prefers reduced motion; scrolling by hand still works while it is held.
+// is inside it, or it is off screen; scrolling by hand still works while it is held. It ignores the system's reduced-motion
+// preference on purpose: Settings › Home turns it off, and Windows reports reduced motion whenever animation effects are off.
 function useEndless(ref:{current:HTMLDivElement|null},on:boolean,speed:number) {
   const held=useRef({hover:false,focus:false}),position=useRef<number|undefined>(undefined);
   const sets=()=>Array.from(ref.current?.children??[]).filter(c=>c.classList.contains('row-set')).map(c=>c.firstElementChild as HTMLElement|null);
@@ -197,7 +198,6 @@ function useEndless(ref:{current:HTMLDivElement|null},on:boolean,speed:number) {
   const wrap=(x:number)=>{const w=setWidth();if(!w)return x;while(x<w)x+=w;while(x>=w*2)x-=w;return x;};
   useEffect(()=>{
     const el=ref.current;if(!on||!el)return;
-    const reduced=matchMedia('(prefers-reduced-motion: reduce)');
     let frame=0,last=0,visible=true;
     const seen=new IntersectionObserver(([entry])=>{visible=!!entry?.isIntersecting;});seen.observe(el);
     const tick=(time:number)=>{
@@ -206,8 +206,9 @@ function useEndless(ref:{current:HTMLDivElement|null},on:boolean,speed:number) {
       if(w>el.clientWidth){
         // Starting out, or picking up after a hold: continue from wherever the viewer left it.
         if(position.current===undefined||Math.abs(el.scrollLeft-position.current)>2)position.current=wrap(el.scrollLeft||w);
-        if(visible&&!held.current.hover&&!held.current.focus&&!reduced.matches&&!document.hidden){
-          position.current=wrap(position.current+speed*dt/1000);el.scrollLeft=position.current;
+        if(visible&&!held.current.hover&&!held.current.focus&&!document.hidden){
+          // Scroll positions round to whole pixels on 100% displays; the leftover fraction moves the cards instead, so slow speeds stay smooth.
+          position.current=wrap(position.current+speed*dt/1000);const whole=Math.floor(position.current);el.scrollLeft=whole;el.style.setProperty('--drift',`${whole-position.current}px`);
         }
       }
       frame=requestAnimationFrame(tick);

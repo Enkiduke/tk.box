@@ -152,6 +152,7 @@ main{min-height:100vh}
 /* Endless rows drift a fraction of a pixel a frame, which snapping would undo. */
 .row-endless{scroll-snap-type:none}
 .row-set{display:contents}
+.row-endless>.row-set>*{translate:var(--drift,0) 0}
 .row-wide .row-scroll,.row-wide{--card-w:clamp(230px,24vw,340px)}
 .row-arrow{position:absolute;top:16px;bottom:52px;z-index:3;width:calc(var(--gutter) - 4px);min-width:40px;padding:0;border:0;border-radius:0;background:rgba(12,12,16,.6);color:#fff;opacity:0;transition:opacity .2s,background .2s}
 .row-arrow.left{left:0}
