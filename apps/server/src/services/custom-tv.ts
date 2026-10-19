@@ -7,7 +7,7 @@ import { opaque } from '../security/vault.js';
 import { assertVideoEncode, type EncoderBudget } from '../streaming/policy.js';
 import { SegmentBuffer, ViewerCursor, renderManifest, type Segment } from '../streaming/buffer.js';
 import type { CustomChannelStore } from '../persistence/custom-channels.js';
-import { mediaTracks, type PlexAdapter, type PlexGrant } from '../providers/plex.js';
+import { customAudioMap, mediaTracks, type PlexAdapter, type PlexGrant } from '../providers/plex.js';
 import type { LocalMedia } from '../providers/local-media.js';
 import type { PartProxy } from '../providers/part-proxy.js';
 import type { Slot } from './scheduler.js';
@@ -235,7 +235,7 @@ export class CustomTv {
       s.opening = opening;
       // Copied video starts at the keyframe before the join point, which can be seconds earlier.
       if (!encode && offsetMs > 500) void this.keyframe(input, offsetMs).then(at => { if (at !== undefined) opening.mediaStartMs = at; });
-      return await this.exec(s, [...this.inputArgs(input, offsetMs), '-t', ((slot.end - now) / 1000).toFixed(3), '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
+      return await this.exec(s, [...this.inputArgs(input, offsetMs), '-t', ((slot.end - now) / 1000).toFixed(3), '-map', '0:v:0', '-map', customAudioMap(item), '-sn', '-dn',
         ...(encode ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-maxrate', '8M', '-bufsize', '16M', '-pix_fmt', 'yuv420p', '-threads', '2', '-force_key_frames', 'expr:gte(t,n_forced*2)'] : ['-c:v', 'copy']),
         '-c:a', 'aac', '-b:a', '160k', '-ac', '2']);
     } finally { release(); done(); }

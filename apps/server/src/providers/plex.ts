@@ -32,6 +32,13 @@ export function audioStreams(item: PlexMetadata) {
   const audio = (item.Media[0]?.Part[0]?.Stream ?? []).filter(s => s.streamType === 2);
   return { audio, fileDefault: audio.find(s => s.default) ?? audio[0], plexSelected: audio.find(s => s.selected) };
 }
+// The FFmpeg map for a custom channel's audio: English (the file's default English track first), else the file's
+// default, else the first track. Plex's stream index is the file's stream index.
+export function customAudioMap(item: PlexMetadata) {
+  const { audio, fileDefault } = audioStreams(item), english = audio.filter(s => /^en(g)?$/i.test(s.languageCode ?? ''));
+  const pick = english.find(s => s.default) ?? english[0] ?? fileDefault;
+  return pick?.index === undefined ? '0:a:0?' : `0:${pick.index}`;
+}
 // `playingAudio` replaces Plex's selection flag with the track this session actually delivers.
 export function mediaTracks(item: PlexMetadata, playingAudio?: string) {
   const streams = item.Media[0]?.Part[0]?.Stream ?? [], label = (s: (typeof streams)[number]) => s.extendedDisplayTitle ?? s.displayTitle ?? s.title ?? s.language ?? 'Unknown';
