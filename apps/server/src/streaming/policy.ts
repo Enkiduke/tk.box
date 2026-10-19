@@ -1,12 +1,9 @@
-import type { Quality, QualityOption } from '../../../../packages/contracts/src/index.js';
+import { qualityTiers, type Quality, type QualityOption } from '../../../../packages/contracts/src/index.js';
 import { AppError, requireThat } from '../errors.js';
 
 export type SourceVideo = { codec: string; width?: number; height?: number; container: string; audioCodec?: string; bitDepth?: number; bitrateKbps?: number };
 export type ClientCapabilities = { videoCodecs: string[]; audioCodecs: string[]; containers: string[] };
 export type Route = { kind: 'direct' | 'remux' | 'cpu'; maxHeight?: number; maxBitrateKbps?: number; audioEncode: boolean };
-// 1080p and 720p cap both output resolution and video bitrate, so a viewer on a slow
-// connection can ask for a lighter stream even when the source is already 1080p.
-export const qualityCaps = { '1080p': { height: 1080, bitrateKbps: 8000 }, '720p': { height: 720, bitrateKbps: 4000 } } as const;
 export function eligibleVideoEncode(s: SourceVideo) {
   const dims = [s.width, s.height];
   return dims.every(d => d !== undefined && Number.isInteger(d) && d > 0) && Math.max(s.width!, s.height!) <= 1920 && Math.min(s.width!, s.height!) <= 1080;
@@ -15,7 +12,9 @@ export function assertVideoEncode(s: SourceVideo) {
   requireThat(eligibleVideoEncode(s) && !!s.codec, 'QUALITY_NOT_PERMITTED', 'Video encoding requires verified 1080p-or-lower source video. 4K HEVC encoding is forbidden.', 422);
 }
 export function chooseRoute(source: SourceVideo, client: ClientCapabilities, quality: Quality = 'auto', protectedCopyApproved = false, directAllowed = true): Route {
-  const cap = quality === '720p' || quality === '1080p' ? qualityCaps[quality] : undefined, ceiling = cap?.height;
+  // A conversion tier caps resolution and video bitrate, so a viewer on a slow connection can
+  // ask for a lighter stream even when the source is already 1080p.
+  const cap = qualityTiers.find(t => t.id === quality), ceiling = cap?.height;
   const videoCompatible = client.videoCodecs.includes(`${source.codec}:${source.bitDepth ?? 8}`);
   const audioCompatible = !source.audioCodec || client.audioCodecs.includes(source.audioCodec);
   const knownDimensions = [source.width, source.height].every(v => v !== undefined && Number.isSafeInteger(v) && v > 0);
@@ -38,7 +37,7 @@ export function chooseRoute(source: SourceVideo, client: ClientCapabilities, qua
 // Encoder capacity changes moment to moment, so it is reported when a choice is made, not here.
 export function qualityOptions(source: SourceVideo, client: ClientCapabilities, protectedCopyApproved = false, directAllowed = true): QualityOption[] {
   const known = [source.width, source.height].every(v => v !== undefined && Number.isSafeInteger(v) && v > 0);
-  return (['auto', 'original', '1080p', '720p'] as const).map(quality => {
+  return (['auto', 'original', ...qualityTiers.map(t => t.id)] as Quality[]).map(quality => {
     try { return {quality, available: true, route: chooseRoute(source, client, quality, protectedCopyApproved, directAllowed).kind}; }
     catch (e) {
       if (!(e instanceof AppError)) throw e;
