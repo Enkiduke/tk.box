@@ -21,19 +21,22 @@ function interleave<T>(lists:T[][]) {const out:T[]=[];for(let i=0;i<Math.max(0,.
 function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
   const data=useApiAll<CatalogPage>(libraries.map(recent));
   const featured=interleave(data.data.map(p=>p?.items.filter(i=>i.backdropUrl)??[])).slice(0,6);
-  const [index,setIndex]=useState(0),[paused,setPaused]=useState(false),item=featured[index%Math.max(1,featured.length)];
-  // Advance every 8s; keyed on index so picking a dot restarts the clock. Reduced motion only drops the fades (CSS).
+  // The previous slide stays fully visible underneath while the new one fades in over it, so a switch never dips to black.
+  const [slide,setSlide]=useState({index:0,prev:-1}),[paused,setPaused]=useState(false);
+  const count=Math.max(1,featured.length),index=slide.index%count,prev=slide.prev<0?-1:slide.prev%count,item=featured[index];
+  const show=(next:(i:number)=>number)=>setSlide(s=>{const i=next(s.index%count);return i===s.index%count?s:{index:i,prev:s.index%count};});
+  // Advance every 8s (the dot's progress bar in CSS matches); keyed on index so picking a dot restarts the clock. Reduced motion only drops the fades (CSS).
   useEffect(()=>{
     if(paused||featured.length<2)return;
-    const timer=setInterval(()=>{if(!document.hidden)setIndex(i=>(i+1)%featured.length);},8000);
+    const timer=setInterval(()=>{if(!document.hidden)show(i=>(i+1)%featured.length);},8000);
     return()=>clearInterval(timer);
   },[paused,index,featured.length]);
-  // Warm the next backdrop so it is ready before the next rotation.
-  useEffect(()=>{const next=featured[(index+1)%Math.max(1,featured.length)];if(next?.backdropUrl)new Image().src=next.backdropUrl;},[index,featured.length]);
   if(!item)return data.loading?<div className="hero hero-loading" aria-busy="true"/>:<div className="hero-spacer"/>;
   // Pause only while the pointer is on the buttons or keyboard focus is inside, not for a mouse resting anywhere on the art.
-  return <section className="hero" aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
-    <FadeImage key={item.id} className="hero-art" src={item.backdropUrl} alt="" fetchPriority="high" decoding="async"/>
+  return <section className={`hero${paused?' hero-paused':''}`} aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
+    {featured.map((media,i)=><div key={media.id} className={`hero-slide${i===index?' is-active':i===prev?' is-prev':''}`}>
+      <FadeImage className="hero-art" src={media.backdropUrl} alt="" fetchPriority={i===index?'high':'low'} decoding="async"/>
+    </div>)}
     <div className="hero-shade"/>
     <div className="hero-content" key={`content-${item.id}`}>
       <p className="hero-kicker">{item.type==='movie'?'Movie':'TV Shows'} · Recently added</p>
@@ -46,7 +49,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
         <button className="secondary large" onClick={()=>onOpen(item.id)}><Icon name="info"/>More info</button>
       </div>
     </div>
-    {featured.length>1&&<div className="hero-dots" role="group" aria-label="Featured titles">{featured.map((media,i)=><button key={media.id} aria-label={`Show ${[heroTitle(media),heroSubtitle(media)].filter(Boolean).join(' · ')}`} aria-pressed={index%featured.length===i} onClick={()=>setIndex(i)}/>)}</div>}
+    {featured.length>1&&<div className="hero-dots" role="group" aria-label="Featured titles">{featured.map((media,i)=><button key={media.id} aria-label={`Show ${[heroTitle(media),heroSubtitle(media)].filter(Boolean).join(' · ')}`} aria-pressed={index===i} onClick={()=>show(()=>i)}/>)}</div>}
   </section>;
 }
 // Plex's On Deck mixes titles paused partway with the next episode of shows the viewer keeps
