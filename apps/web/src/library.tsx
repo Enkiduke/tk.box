@@ -68,8 +68,8 @@ export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProp
     <Hero libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
     <div className="rows">
       <OnDeckRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
-      <LiveNow onWatch={onWatch} busy={busy}/>
       {libraries.map(l=><LazyRow key={`recent-${l.key}`} title={`Recently added in ${l.title}`} path={recent(l)} href={link(page(l),{library:l.key,sort:'newest',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
+      <LiveNow onWatch={onWatch} busy={busy}/>
     </div>
   </div>;
 }
