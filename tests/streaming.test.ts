@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseRoute, EncoderBudget, eligibleVideoEncode } from '../apps/server/src/streaming/policy.js';
+import { chooseRoute, EncoderBudget, eligibleVideoEncode, qualityOptions, type SourceVideo } from '../apps/server/src/streaming/policy.js';
+import { StallMeter } from '../apps/web/src/stall-meter.js';
 import { hlsArgs,runProcess } from '../apps/server/src/streaming/ffmpeg.js';
 import { SharedPipelines, retryNetworkFailure } from '../apps/server/src/streaming/pipelines.js';
 const client = {videoCodecs: ['h264:8'], audioCodecs: ['aac'], containers: ['mp4', 'hls']};
@@ -13,6 +14,26 @@ test('Auto prefers direct then remux/audio-only then eligible software fallback'
   assert.equal(chooseRoute({...source, height: 720, width: 1280}, client, '1080p').kind, 'direct');
   assert.equal(chooseRoute(source, client, '720p').kind, 'cpu');
   assert.equal(eligibleVideoEncode({...source, width: 1080, height: 1920}), true);
+});
+test('1080p and 720p cap bitrate too, and the quality menu explains what is unavailable', () => {
+  const heavy = {...source, bitrateKbps: 20000};
+  assert.deepEqual(chooseRoute(heavy, client, '1080p'), {kind: 'cpu', maxHeight: 1080, maxBitrateKbps: 8000, audioEncode: true});
+  assert.equal(chooseRoute({...source, bitrateKbps: 6000}, client, '1080p').kind, 'direct');
+  assert.equal(chooseRoute({...source, height: 720, width: 1280, bitrateKbps: 6000}, client, '720p').kind, 'cpu');
+  assert.equal(chooseRoute(heavy, client).kind, 'direct');
+  const routes = (s: SourceVideo, c = client) => Object.fromEntries(qualityOptions(s, c).map(o => [o.quality, o.available ? o.route : o.reason]));
+  assert.deepEqual(routes(heavy), {auto: 'direct', original: 'direct', '1080p': 'cpu', '720p': 'cpu'});
+  const uhd = routes({...source, codec: 'hevc', width: 3840, height: 2160, bitrateKbps: 60000}, {...client, videoCodecs: ['hevc:8']});
+  assert.equal(uhd.original, 'direct'); assert.equal(uhd['720p'], 'Video above 1080p cannot be converted on this server');
+  assert.equal(routes({...source, codec: 'mpeg4'}).original, 'This browser cannot play the original video');
+});
+test('the stall meter flags repeated or long buffering within its window', () => {
+  const meter = new StallMeter(120000, 3, 10000);
+  meter.start(0); meter.start(500); meter.end(1000); meter.start(5000); meter.end(6000);
+  assert.equal(meter.heavy(7000), false);
+  meter.start(8000); meter.end(8500); assert.equal(meter.heavy(9000), true);
+  assert.equal(meter.heavy(200000), false);
+  meter.start(200000); assert.equal(meter.heavy(209000), false); assert.equal(meter.heavy(210000), true);
 });
 test('4K HEVC, above-1080p, unknown metadata and subtitle routes cannot create video encode arguments', () => {
   for (const s of [{...source, codec: 'hevc', width: 3840, height: 2160}, {...source, width: 2560, height: 1440}, {...source, width: undefined}, {...source, height: NaN}]) {

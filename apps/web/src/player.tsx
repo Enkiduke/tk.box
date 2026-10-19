@@ -5,6 +5,8 @@ import {timecode} from './hooks.js';
 import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
 import {readPreference} from './storage.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
+import {StallMeter} from './stall-meter.js';
+import type {Quality,QualityOption} from '../../../packages/contracts/src/index.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
 // Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
 export type TimeshiftState={state:'LIVE'|'PAUSED'|'PLAYING_DELAYED'|'EXPIRED'|'STOPPED';behindLiveMs:number;viewerCursorUtc:number;broadcastNowUtc:number};
@@ -19,6 +21,12 @@ export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;heig
 const deliveryLabel:Record<Delivery,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
 const deliveryDetail:Record<Delivery,string>={direct:'Playing the original file.',remux:'Original video, repackaged for this browser.',transcode:'Converted by Plex for this browser.'};
 const liveDetail:Partial<Record<Delivery,string>>={remux:'Channel video, repackaged for this browser.',transcode:'Channel video, converted by tk.box for this browser.'};
+// The bitrate ceilings match the server's qualityCaps.
+const qualityLabel:Record<Quality,string>={auto:'Auto',original:'Original','1080p':'1080p','720p':'720p'},qualityCeiling:Partial<Record<Quality,string>>={'1080p':'up to 8 Mbps','720p':'up to 4 Mbps'};
+const qualityDetail=(o:QualityOption)=>!o.available?o.reason:o.route==='cpu'?qualityCeiling[o.quality]?`Converted, ${qualityCeiling[o.quality]}`:'Converted for this browser'
+  :o.quality==='1080p'||o.quality==='720p'?'Same as Original for this title':o.route==='remux'?'Original video, repackaged':'Original file';
+// The next lighter choice that actually lowers the stream, for the buffering suggestion.
+const lighter=(current:Quality,options?:QualityOption[])=>(['1080p','720p'] as const).slice(current==='1080p'?1:current==='720p'?2:0).find(q=>options?.some(o=>o.quality===q&&o.available&&o.route==='cpu'));
 const speeds=[.5,.75,1,1.25,1.5,2],sizes=[['s','Small'],['m','Medium'],['l','Large']] as const;
 type Size=typeof sizes[number][0];type Panel='subtitles'|'settings'|'channels';
 // Viewer conveniences only; Plex's own track selection is the default.
@@ -33,8 +41,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,audioSwitching,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
@@ -43,6 +51,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   // Go Live reloads the stream at the live edge; `generation` restarts the player effect without a new URL.
   const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
   useEffect(()=>{setShifted(undefined);},[url]);
+  // Frequent mid-playback buffering suggests a lighter quality, once per stream unless dismissed.
+  const suggestion=live?undefined:lighter(quality,qualityOptions),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
+  const [nudge,setNudge]=useState(false),nudgeDismissed=useRef(false);
+  useEffect(()=>{setNudge(false);nudgeDismissed.current=false;},[url]);
   const clear=()=>{const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
   useImperativeHandle(handle,()=>({stop:clear}),[]);
   useEffect(()=>{
@@ -59,7 +71,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const playing=()=>{generation.started=true;progress('playing');sync();};
     const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
     const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else progress('stopped');sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
-    const events={loadedmetadata:loaded,play:playing,timeupdate:time,pause,ended,error,waiting:sync,playing:sync,volumechange:sync,progress:sync,seeked:sync} as const;
+    const stalls=new StallMeter();
+    const waiting=()=>{if(generation.started&&!video.seeking&&!video.paused)stalls.start(performance.now());sync();};
+    const resumed=()=>{stalls.end(performance.now());sync();};
+    const events={loadedmetadata:loaded,play:playing,timeupdate:time,pause:()=>{stalls.end(performance.now());pause();},ended,error,waiting,playing:resumed,volumechange:sync,progress:sync,seeked:resumed} as const;
     for(const [name,listener] of Object.entries(events))video.addEventListener(name,listener);
     if(url) {
       // Recent Chromium answers "maybe" for native HLS, but hls.js over MSE is the tested path; native HLS is the fallback without MSE.
@@ -87,7 +102,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const watchdog=new LivePlaybackWatchdog(),stallCheck=live&&url&&feeds?window.setInterval(()=>{
       if(generation.active&&!failureReported&&watchdog.check(performance.now(),video.currentTime,video.paused||video.seeking))fail('The live stream stopped advancing.');
     },2000):undefined;
-    return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();hlsRef.current=undefined;video.removeAttribute('src');video.load();};
+    const bufferingCheck=window.setInterval(()=>{if(generation.active&&suggestionRef.current&&!nudgeDismissed.current&&stalls.heavy(performance.now()))setNudge(true);},2000);
+    return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);clearInterval(bufferingCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();hlsRef.current=undefined;video.removeAttribute('src');video.load();};
   },[url,generationKey]);
   // The broadcast time on screen (the stream's program date-time), for custom-channel subtitles.
   const displayedUtc=()=>{
@@ -128,8 +144,12 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const track=subtitleTracks.find(t=>t.id===id);store('subtitles',track?.language??(id?'':'off'));
   };
   const chooseAudio=(id:string)=>{
-    if(id===audio?.id||audioSwitching||!onAudioChange)return;
+    if(id===audio?.id||switching||!onAudioChange)return;
     onAudioChange(id,(ref.current?.currentTime??0)*1000);setPanel(undefined);
+  };
+  const chooseQuality=(next:Quality)=>{
+    setNudge(false);if(next===quality||switching||!onQualityChange)return;
+    onQualityChange(next,(ref.current?.currentTime??0)*1000);setPanel(undefined);
   };
   const toggleSubtitles=()=>{
     if(subtitleId){chooseSubtitle(null);showFlash('captions','Subtitles off');return;}
@@ -190,7 +210,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const captionTime=useMemo(()=>programs?()=>{const at=displayedUtc();return program&&at!==undefined?(program.mediaStartMs+at-program.start)/1000:NaN;}:()=>(ref.current?.currentTime??0)+shift,[programs,program?.id,program?.start,program?.mediaStartMs,shift]);
   const commit=()=>{if(scrub!==undefined){ref.current!.currentTime=scrub;setScrub(undefined);}};
   const hoverAt=(clientX:number,element:HTMLElement)=>{const box=element.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(clientX-box.left)/box.width));setHover({x:fraction*box.width,time:fraction*view.duration});};
-  const quality=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
+  const videoInfo=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
   return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
     {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
@@ -210,8 +230,11 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
       {!view.playing&&!view.waiting&&!liveSwitching&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
-      {audioSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching audio…</div>}
+      {switching&&<div className="player-status" role="status"><span className="spinner"/>{switching==='audio'?'Switching audio…':'Switching quality…'}</div>}
       {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
+      {nudge&&suggestion&&!switching&&<div className="player-status player-nudge" role="status">Buffering a lot? A lighter stream may play more smoothly.
+        <button className="primary" onClick={()=>chooseQuality(suggestion)}>Switch to {qualityLabel[suggestion]}</button>
+        <button className="secondary" onClick={()=>{nudgeDismissed.current=true;setNudge(false);}}>Not now</button></div>}
       {shifted?.state==='EXPIRED'&&<div className="player-expired" role="alert"><strong>Buffer expired</strong><span>You were paused longer than this channel keeps, so that part is gone.</span><button className="primary" disabled={shiftBusy} onClick={goLive}>Go Live</button></div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
       {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
@@ -225,7 +248,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           {!!subtitleTracks.length&&<PanelSection title="Size"><div className="segmented">{sizes.map(([value,label])=><button key={value} aria-pressed={size===value} onClick={()=>{setSize(value);store('subtitleSize',value);}}>{label}</button>)}</div></PanelSection>}
         </>:<>
           {tracks&&tracks.audio.length>1&&onAudioChange&&<PanelSection title="Audio"><div role="radiogroup" aria-label="Audio track" className="choices">
-            {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={audioSwitching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
+            {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={!!switching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
+          </div></PanelSection>}
+          {!live&&onQualityChange&&qualityOptions&&<PanelSection title="Quality"><div role="radiogroup" aria-label="Quality" className="choices">
+            {qualityOptions.map(o=><Choice key={o.quality} selected={o.quality===quality} disabled={!o.available||!!switching} detail={qualityDetail(o)} onSelect={()=>chooseQuality(o.quality)}>{qualityLabel[o.quality]}</Choice>)}
           </div></PanelSection>}
           {live&&onFeed&&feeds&&feeds.length>1&&<PanelSection title="Feed"><div role="radiogroup" aria-label="Channel feed" className="choices">
             {feeds.map(f=><Choice key={f.id} selected={f.id===feed} detail={f.quality} onSelect={()=>{if(f.id!==feed)onFeed(f.id);}}>{f.label}</Choice>)}
@@ -234,7 +260,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           <PanelSection title="Stream">
             <dl className="stream-info">
               <div><dt>Mode</dt><dd>{deliveryLabel[delivery]}<small>{(live&&liveDetail[delivery])||deliveryDetail[delivery]}</small></dd></div>
-              {quality&&<div><dt>Video</dt><dd>{quality}</dd></div>}
+              {videoInfo&&<div><dt>Video</dt><dd>{videoInfo}</dd></div>}
+              {!live&&quality!=='auto'&&<div><dt>Quality</dt><dd>{qualityLabel[quality]}{delivery==='transcode'&&qualityCeiling[quality]&&<small>Converted, {qualityCeiling[quality]}</small>}</dd></div>}
               {audio&&<div><dt>Audio</dt><dd>{audio.label}</dd></div>}
             </dl>
           </PanelSection>
@@ -260,6 +287,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           </button>}
           <span className="grow"/>
           {live&&onFeed&&feeds&&feeds.length>1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Change feed · ${feeds.length} available`} title="Change feed">{feeds.find(f=>f.id===feed)?.quality??'Feed'} · {feeds.length}</button>}
+          {!live&&quality!=='auto'&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Quality · ${qualityLabel[quality]}`}>{qualityLabel[quality]}</button>}
           {rate!==1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')}>{rate}×</button>}
           {live&&channels&&<button className="icon-button" onClick={()=>setPanel(p=>p==='channels'?undefined:'channels')} aria-label="Browse channels" aria-expanded={panel==='channels'} title="Browse channels (g)"><Icon name="grid" size={24}/></button>}
           {(!live||programs)&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}

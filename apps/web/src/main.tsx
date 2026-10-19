@@ -1,6 +1,6 @@
 import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import type {Principal,Library,CatalogItem} from '../../../packages/contracts/src/index.js';
+import type {Principal,Library,CatalogItem,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
 import {api,ApiClientError} from './api.js';
 import {useApi,useRoute,useScrolled,link,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram} from './player.js';
@@ -13,14 +13,14 @@ const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})))
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
 import './style.css';
 
-type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;source?:SourceInfo;item:CatalogItem};
+type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;source?:SourceInfo;quality?:Quality;qualityOptions?:QualityOption[];audioStreamId?:string;item:CatalogItem};
 type Session=VodSession|LiveSession;
 const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['live','Live TV']] as const;
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean}>('/setup'),scrolled=useScrolled();
   const me=identity.error&&[401,403].includes(identity.error.status)?undefined:identity.data;
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
-  const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switchingAudio,setSwitchingAudio]=useState(false),[authUrl,setAuthUrl]=useState('');
+  const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>(),[authUrl,setAuthUrl]=useState('');
   const failover=useRef(new LiveFailover()),[switchingLive,setSwitchingLive]=useState(false);
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
@@ -84,26 +84,28 @@ function App() {
     }).catch(e=>{if(isCurrent())setError((e as Error).message);})
       .finally(()=>{if(failover.current===recovery)setSwitchingLive(false);});
   };
-  // Another audio track needs a new playback session (Plex HLS) resumed at the current position.
-  const changeAudio=(audioStreamId:string,timeMs:number)=>void action(async()=>{
+  // Another audio track or quality needs a new playback session resumed at the current position;
+  // each change keeps the other choice.
+  const restart=(change:{audioStreamId?:string;quality?:Quality},timeMs:number)=>void action(async()=>{
     const current=sessionRef.current;if(current?.kind!=='vod')return;
-    const body={mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),audioStreamId};
+    const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto';
+    const body={mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:{})};
     const release=()=>api(`/playback/sessions/${current.id}`,'DELETE').catch(()=>{});let released=false;
-    setSwitchingAudio(true);
+    setSwitching(change.quality?'quality':'audio');
     try {
       let created:Omit<VodSession,'item'|'kind'>;
       // The current stream keeps playing until its replacement is ready, unless it holds the only encoder slot.
       try {created=await api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',body);}
       catch(e) {
-        if(!(e instanceof ApiClientError&&e.code==='TRANSCODE_CAPACITY_REACHED'))throw e;
+        if(!(e instanceof ApiClientError&&e.code==='TRANSCODE_CAPACITY_REACHED')||current.delivery!=='transcode')throw e;
         await release();released=true;
         try {created=await api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',body);}
         catch(retry) {if(sessionRef.current===current){player.current?.stop();sessionRef.current=undefined;setSession(undefined);}throw retry;}
       }
       if(sessionRef.current!==current){await api(`/playback/sessions/${created.id}`,'DELETE').catch(()=>{});return;}
-      const next:VodSession={...created,kind:'vod',item:current.item};sessionRef.current=next;setSession(next);
+      const next:VodSession={...created,kind:'vod',item:current.item,...(audioStreamId?{audioStreamId}:{})};sessionRef.current=next;setSession(next);
       if(!released)void release();
-    } finally {setSwitchingAudio(false);}
+    } finally {setSwitching(undefined);}
   });
   // Channel up/down follows the viewer's lineup order and wraps around.
   const lineup=useApi<{channels:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]}[]}>(session?.kind==='live'?'/iptv/channels':undefined);
@@ -144,7 +146,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} audioSwitching={switchingAudio} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&changeAudio} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={playbackError}/>
+    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:item?.title} subtitle={subtitle} docked={!watching} onStop={()=>void action(async()=>{const back=watching;await stop();if(back)window.location.hash=returnTo.current;})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onError={playbackError}/>
     {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error}/>}
   </div>;
 }

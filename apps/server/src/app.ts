@@ -17,8 +17,8 @@ import { VodTranscodes } from './services/vod-transcode.js';
 import { SubtitleService } from './services/subtitles.js';
 import { AppError, requireThat } from './errors.js';
 import { Vault } from './security/vault.js';
-import { playbackSettings } from '../../../packages/contracts/src/index.js';
-import { chooseRoute, EncoderBudget } from './streaming/policy.js';
+import { playbackSettings, quality } from '../../../packages/contracts/src/index.js';
+import { chooseRoute, qualityOptions, EncoderBudget } from './streaming/policy.js';
 import { IptvStore } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { registerIptv } from './iptv-api.js';
@@ -177,9 +177,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   const caps = z.object({videoCodecs: z.array(z.string().max(40)).max(20), audioCodecs: z.array(z.string().max(40)).max(20), containers: z.array(z.string().max(40)).max(20)}).strict();
   app.post('/api/v1/playback/sessions', {config: {rateLimit: {max: 20, timeWindow: 60000}}}, async req => {
-    // startAtMs and audioStreamId restart a title at the current position with another audio track.
+    // startAtMs with audioStreamId or quality restarts a title at the current position with another track or quality.
     const input = z.object({mode: z.literal('plex_vod'), ratingKey: z.string().regex(/^\d+$/), capabilities: caps,startFrom:z.enum(['resume','beginning']).default('resume'),
-      startAtMs: z.number().int().nonnegative().optional(), audioStreamId: z.string().regex(/^\d+$/).max(20).optional()}).strict().parse(req.body);
+      startAtMs: z.number().int().nonnegative().optional(), audioStreamId: z.string().regex(/^\d+$/).max(20).optional(), quality: quality.default('auto')}).strict().parse(req.body);
     const {hash, grant} = await auth(req), item = await plex.metadata(grant, input.ratingKey), media = item.Media[0];
     requireThat(media, 'SOURCE_INCOMPATIBLE', 'No playable media.', 422);
     const video = media.Part[0]?.Stream?.find(s => s.streamType === 1), {audio, fileDefault, plexSelected} = audioStreams(item);
@@ -187,11 +187,13 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     requireThat(input.audioStreamId === undefined || requested, 'INVALID_AUDIO', 'Audio track is not part of this media.');
     // Browsers play only the file's default audio, so any other track needs Plex HLS.
     const target = requested ?? plexSelected ?? fileDefault, otherTrack = !!target && target.id !== fileDefault?.id;
-    const route = chooseRoute({codec: media.videoCodec, width: media.width, height: media.height, container: media.container, audioCodec: target?.codec ?? media.audioCodec, bitDepth: video?.bitDepth}, input.capabilities, 'auto', false, !otherTrack);
+    const sourceVideo = {codec: media.videoCodec, width: media.width, height: media.height, container: media.container, audioCodec: target?.codec ?? media.audioCodec, bitDepth: video?.bitDepth, bitrateKbps: media.bitrate};
+    const route = chooseRoute(sourceVideo, input.capabilities, input.quality, false, !otherTrack);
     const startOffsetMs = Math.max(0, Math.min(input.startAtMs ?? (input.startFrom==='beginning' ? 0 : item.viewOffset ?? 0), item.duration));
     // Track and source details let the player offer subtitles and describe the stream.
     const playing = route.kind === 'direct' ? fileDefault : target;
-    const details = {tracks: mediaTracks(item, playing?.id), source: {videoCodec: media.videoCodec, audioCodec: playing?.codec ?? media.audioCodec, width: media.width, height: media.height, container: media.container}};
+    const details = {tracks: mediaTracks(item, playing?.id), source: {videoCodec: media.videoCodec, audioCodec: playing?.codec ?? media.audioCodec, width: media.width, height: media.height, container: media.container, bitrateKbps: media.bitrate},
+      quality: input.quality, qualityOptions: qualityOptions(sourceVideo, input.capabilities, false, !otherTrack)};
     if (route.kind === 'direct') return {...playback.createVod(hash, input.ratingKey, startOffsetMs), ...details};
     if (requested && requested.id !== plexSelected?.id) await plex.selectAudioStream(grant, item, requested.id);
     const created = playback.createVod(hash, input.ratingKey, startOffsetMs, route.kind === 'remux' ? 'remux' : 'transcode');
