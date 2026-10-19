@@ -29,6 +29,13 @@ export type TimeshiftState = { state: string; viewerCursorUtc: number; broadcast
 const segmentName = /^seg-\d{6}\.ts$/;
 const LIVE_WINDOW_MS = 90000, LIVE_SEGMENTS = 8, LEAD_IN_MS = 30000, FREE_FLOOR = 1024 ** 3;
 const sleep = (ms: number) => new Promise(done => setTimeout(done, Math.max(0, ms)).unref());
+// A segment's broadcast start. A program's first segment is placed by the clock; the rest follow back to back, since
+// its media is continuous. Stamping them by arrival would put a gap wherever FFmpeg fell behind (a slow read or
+// encode), and captions, timed from the airing's start by broadcast time, would run ahead by every gap.
+export function segmentStart(previousEnd: number | undefined, now: number, durationMs: number, newProgram: boolean) {
+  if (previousEnd === undefined) return Math.round(now - durationMs);
+  return newProgram ? Math.round(Math.max(previousEnd, now - durationMs)) : previousEnd;
+}
 
 // Custom channel playout. A channel is a schedule, not a running video: a station starts when the first viewer
 // tunes in and stops when the last one leaves. It plays one program at a time, joining the airing program at its
@@ -172,7 +179,7 @@ export class CustomTv {
           if (sequence > s.lastSequence && duration > 0) {
             const bytes = await stat(join(s.dir, line)).then(x => x.size, () => 0);
             if (!bytes) break;
-            const previous = s.segments.at(-1), start = Math.round(Math.max(previous?.end ?? 0, now - duration)), marked = discontinuity && !!previous;
+            const previous = s.segments.at(-1), start = segmentStart(previous?.end, now, duration, discontinuity || !!s.opening), marked = discontinuity && !!previous;
             s.segments.push({ id: line, uri: line, start, end: start + Math.max(1, Math.round(duration)), bytes, programId: s.library ?? '', revision: 0, sequence, discontinuity: marked, discontinuitySequence: s.discontinuities });
             if (marked) s.discontinuities++;
             if (s.opening) { s.airings.push({ ...s.opening, start }); s.opening = undefined; }

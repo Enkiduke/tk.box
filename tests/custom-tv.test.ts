@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from '../apps/server/src/persistence/database.js';
 import { CustomChannelStore } from '../apps/server/src/persistence/custom-channels.js';
-import { CustomTv } from '../apps/server/src/services/custom-tv.js';
+import { CustomTv, segmentStart } from '../apps/server/src/services/custom-tv.js';
 import { LocalMedia } from '../apps/server/src/providers/local-media.js';
 import { PartProxy } from '../apps/server/src/providers/part-proxy.js';
 import { EncoderBudget } from '../apps/server/src/streaming/policy.js';
@@ -16,6 +16,15 @@ const ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg';
 const available = spawnSync(ffmpeg, ['-version']).status === 0;
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 const grant = (libraries = ['10']): PlexGrant => ({ accountId: '1', role: 'admin', serverToken: 'token', libraries: libraries.map(key => ({ key, title: 'Movies', type: 'movie' })) });
+
+test('segments within a program stay back to back when FFmpeg falls behind; a new program re-anchors to the clock', () => {
+  assert.equal(segmentStart(undefined, 10000, 2000, true), 8000, 'the first segment ends when it is found');
+  // FFmpeg stalled for 5 s: the late segment still follows on, so media time and broadcast time stay in step.
+  assert.equal(segmentStart(10000, 17000, 2000, false), 10000);
+  // The next program starts on the clock, leaving the stall behind it.
+  assert.equal(segmentStart(10000, 17000, 2000, true), 15000);
+  assert.equal(segmentStart(10000, 11000, 2000, true), 10000, 'never overlaps the previous segment');
+});
 
 test('a station joins mid-program, plays the next program on time and cleans up', { skip: !available && 'FFmpeg unavailable', timeout: 90000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tk.box-custom-tv-')), media = join(dir, 'media'), cache = join(dir, 'cache');
