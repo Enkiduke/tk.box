@@ -25,7 +25,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
   const [slide,setSlide]=useState({index:0,prev:-1}),[paused,setPaused]=useState(false);
   const count=Math.max(1,featured.length),index=slide.index%count,prev=slide.prev<0?-1:slide.prev%count,item=featured[index];
   const show=(next:(i:number)=>number)=>setSlide(s=>{const i=next(s.index%count);return i===s.index%count?s:{index:i,prev:s.index%count};});
-  // Advance every 8s (the dot's progress bar in CSS matches); keyed on index so picking a dot restarts the clock. Reduced motion only drops the fades (CSS).
+  // Advance every 8s; keyed on index so picking a dot restarts the clock.
   useEffect(()=>{
     if(paused||featured.length<2)return;
     const timer=setInterval(()=>{if(!document.hidden)show(i=>(i+1)%featured.length);},8000);
@@ -33,7 +33,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
   },[paused,index,featured.length]);
   if(!item)return data.loading?<div className="hero hero-loading" aria-busy="true"/>:<div className="hero-spacer"/>;
   // Pause only while the pointer is on the buttons or keyboard focus is inside, not for a mouse resting anywhere on the art.
-  return <section className={`hero${paused?' hero-paused':''}`} aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
+  return <section className="hero" aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
     {featured.map((media,i)=><div key={media.id} className={`hero-slide${i===index?' is-active':i===prev?' is-prev':''}`}>
       <FadeImage className="hero-art" src={media.backdropUrl} alt="" fetchPriority={i===index?'high':'low'} decoding="async"/>
     </div>)}

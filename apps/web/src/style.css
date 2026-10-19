@@ -137,21 +137,16 @@ main{min-height:100vh}
 .hero-content{position:absolute;left:var(--gutter);top:calc(var(--nav-h) + 16px);bottom:clamp(96px,14vh,150px);display:flex;flex-direction:column;justify-content:flex-end;width:min(560px,calc(100% - 2 * var(--gutter)))}
 /* Slides crossfade: the new one fades in over the previous, which stays opaque until it is covered.
    Hidden slides snap back only after the fade is done. The drift keeps running as a slide becomes the previous one. */
-.hero-slide{position:absolute;inset:0;opacity:0;transition:opacity 0s 1.4s}
-.hero-slide.is-active,.hero-slide.is-prev{opacity:1;animation:hero-drift 14s cubic-bezier(.25,.1,.25,1) both}
-.hero-slide.is-active{z-index:1;transition:opacity 1.4s cubic-bezier(.4,0,.2,1)}
+.hero-slide{position:absolute;inset:0;opacity:0;transition:opacity 0s 2s}
+.hero-slide.is-active,.hero-slide.is-prev{opacity:1;animation:hero-drift 12s linear both}
+.hero-slide.is-active{z-index:1;transition:opacity 2s ease-in-out}
 .hero-slide.is-prev{transition:none}
 .hero-shade{z-index:2}
 .hero-content,.hero-dots{z-index:3}
-@keyframes hero-drift{from{transform:scale(1.08) translateX(1%)}to{transform:none}}
-.hero-content>*{animation:hero-in .9s var(--ease) both}
-.hero-content>:nth-child(1){animation-delay:.35s}
-.hero-content>:nth-child(2){animation-delay:.43s}
-.hero-content>:nth-child(3){animation-delay:.51s}
-.hero-content>:nth-child(4){animation-delay:.59s}
-.hero-content>:nth-child(5){animation-delay:.67s}
-.hero-content>:nth-child(6){animation-delay:.75s}
-@keyframes hero-in{from{opacity:0;transform:translateY(18px);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+/* A steady, linear zoom-out so the art never visibly starts or stops moving. */
+@keyframes hero-drift{from{transform:scale(1.06)}to{transform:none}}
+.hero-content{animation:hero-in 1.2s ease-in-out .4s both}
+@keyframes hero-in{from{opacity:0}to{opacity:1}}
 .hero-kicker{font-size:13px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
 .hero h1{font-size:clamp(30px,4vw,56px);line-height:1.04;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex-shrink:0;letter-spacing:-.035em;margin-bottom:14px;text-shadow:0 2px 24px rgba(0,0,0,.4)}
 .hero-meta{font-size:15px;color:#dcdce2;margin-bottom:12px;font-weight:500}
@@ -159,13 +154,9 @@ main{min-height:100vh}
 .hero-summary{font-size:16px;line-height:1.55;color:#d6d6dc;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:24px;text-shadow:0 1px 12px rgba(0,0,0,.5)}
 @media (max-height:760px){.hero-summary{-webkit-line-clamp:2}}
 .hero-dots{position:absolute;right:var(--gutter);bottom:clamp(106px,15vh,160px);display:flex;gap:6px}
-.hero-dots button{position:relative;overflow:hidden;width:22px;height:4px;padding:0;border:0;border-radius:2px;background:rgba(255,255,255,.3);transition:width .5s var(--ease),background .2s}
+.hero-dots button{width:22px;height:4px;padding:0;border:0;border-radius:2px;background:rgba(255,255,255,.3);transition:width .8s ease-in-out,background .8s ease-in-out}
 .hero-dots button:hover{background:rgba(255,255,255,.6)}
-.hero-dots button[aria-pressed=true]{width:44px}
-/* The active dot fills over the 8s rotation; paused it shows full. Un-pausing restarts it along with the timer. */
-.hero-dots button[aria-pressed=true]:after{content:'';position:absolute;inset:0;background:var(--accent);transform-origin:left}
-.hero:not(.hero-paused) .hero-dots button[aria-pressed=true]:after{animation:hero-progress 8s linear both}
-@keyframes hero-progress{from{transform:scaleX(0)}to{transform:none}}
+.hero-dots button[aria-pressed=true]{background:var(--accent);width:34px}
 .rows{position:relative;z-index:2;margin-top:clamp(-90px,-9vh,-50px);padding-bottom:64px;display:flex;flex-direction:column;gap:clamp(28px,3.4vw,44px)}
 .hero-spacer+.rows{margin-top:0}
 
@@ -658,6 +649,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   .art-image-loaded{animation-duration:.6s!important}
+  /* The hero's crossfade and slow drift are gentle enough to keep. */
+  .hero-slide.is-active,.hero-slide.is-prev{animation-duration:12s!important}
+  .hero-slide.is-active{transition-duration:2s!important}
+  .hero-content{animation-duration:1.2s!important}
+  .hero-dots button{transition-duration:.8s!important}
   /* Loading indicators keep moving: they are how people know the app is still working. */
   .spinner{animation-duration:.9s!important;animation-iteration-count:infinite!important}
   .skeleton{animation-duration:1.6s!important;animation-iteration-count:infinite!important}
