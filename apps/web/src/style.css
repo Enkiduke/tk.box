@@ -18,7 +18,7 @@ small{font-size:12px}
 svg{flex-shrink:0}
 img{display:block}
 .art-image{opacity:0}
-.art-image-loaded{opacity:1;animation:art-in .3s ease-out both}
+.art-image-loaded{opacity:1;animation:art-in .6s cubic-bezier(.4,0,.2,1) both}
 @keyframes art-in{from{opacity:0}to{opacity:1}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 main:focus{outline:none}
@@ -600,7 +600,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 }
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
-  .art-image-loaded{animation:none!important}
+  .art-image-loaded{animation-duration:.6s!important}
 }
 /* Live TV: channel logos, On now strip and guide states */
 .channel-logo{display:grid;place-items:center;flex:none;border-radius:8px;background:var(--surface-3);overflow:hidden}
