@@ -75,12 +75,13 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     await auth(req);
     if(custom?.exists(channelParams(req.params))){
       // The logo address, else the Plex title's logo, else its poster.
-      const {url,plexId}=custom.logo(channelParams(req.params));
+      const key=z.object({v:z.string().regex(/^\d{1,20}$/).optional()}).parse(req.query).v;
+      const {url,plexId,keyed}=custom.logo(channelParams(req.params),Date.now(),key);
       let image:Image|undefined=url?await logos.get(url).catch(()=>undefined):undefined;
       if(!image&&plexId&&plexArtwork)image=await plexArtwork(req,plexId,'logo').catch(()=>plexArtwork(req,plexId,'poster')).catch(()=>undefined);
       if(!image)throw new AppError('LOGO_UNAVAILABLE','Logo unavailable.',404);
-      // Shorter for Plex logos: the main show can change with the program list.
-      return reply.type(image.type).header('Cache-Control',`private, max-age=${url?3600:600}`).send(image.bytes);
+      // A keyed address always means the same title; otherwise shorter for Plex logos, as the main show can change.
+      return reply.type(image.type).header('Cache-Control',`private, max-age=${url||keyed?3600:600}`).send(image.bytes);
     }
     const hints=store.logo(channelParams(req.params));
     // Standardized library logo first, then the playlist logo, then the guide's channel icon.

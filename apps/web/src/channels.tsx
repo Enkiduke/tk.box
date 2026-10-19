@@ -409,7 +409,7 @@ function DetailsPanel({view,saved,removed}:{view:Detail;saved:(c:Detail)=>void;r
           {plexLogo&&plexLogo!=='none'&&!titles.some(t=>t.id===plexLogo)&&<option value={plexLogo}>A title no longer on this channel</option>}
           <option value="none">None · show the channel’s initials</option>
         </select>{!logo.trim()&&shown&&<PlexLogoPreview id={shown}/>}</span>
-          <small>{logo.trim()?'The logo address above is used instead.':'Automatic uses the show or movie that makes up at least half the channel. Titles without a Plex logo use their poster.'}</small></label>
+          <small>{logo.trim()?'The logo address above is used instead.':'Automatic shows the logo of the movie on now, changing with each movie. Otherwise it uses the show or movie that makes up at least half the channel. Titles without a Plex logo use their poster.'}</small></label>
         <Switch label="Visible in Live TV" description="Turn off to hide the channel from viewers. Its schedule keeps running, so it’s on time when you turn it back on." checked={enabled} onChange={setEnabled}/>
         <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>{dirty?'Save details':'Saved'}</button></div>
       </form>

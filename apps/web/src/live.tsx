@@ -11,7 +11,7 @@ const fullTitle=(p:Program)=>p.subtitle?`${p.title} · ${p.subtitle}`:p.title;
 // Blank slots follow a finished sports event: nothing to list, but not missing guide data either.
 type Slot={start:number;end:number;program:Program|null;blank?:true};
 export type StationFeed={id:string;name:string;number:number;quality?:string};
-type Station={id:string;sourceId?:string;name:string;number:number;type:'iptv'|'custom';favorite:boolean;logo?:boolean;stack?:string;quality?:string;feeds?:StationFeed[];programs:Slot[]};
+type Station={id:string;sourceId?:string;name:string;number:number;type:'iptv'|'custom';favorite:boolean;logo?:boolean;logoKey?:string;stack?:string;quality?:string;feeds?:StationFeed[];programs:Slot[]};
 type GuideSource={id:string;name:string;count:number};
 type Guide={start:number;end:number;offset:number;limit:number;total:number;hasMore:boolean;sources?:GuideSource[];channels:Station[]};
 // The source heading a channel starts, when the list spans several sources and this is the first of its source.
@@ -32,10 +32,12 @@ const validFilter=(value:string|null):value is Filter=>filters.some(([f])=>f===v
 function savedFilter(account:string):Filter {try{const value=readPreference(sessionStorage,`tk.box:guide:${account}`);return validFilter(value)?value:'all';}catch{return 'all';}}
 // Provider names often carry a region prefix ("US: CNN"); show it as a tag instead.
 export function stationName(name:string){const m=/^([A-Z]{2,3})s*[:|]s*(.+)$/.exec(name);return m?{region:m[1],label:m[2]!}:{label:name};}
-export function ChannelLogo({channel,size=40}:{channel:{id:string;name:string;logo?:boolean};size?:number}) {
-  const [failed,setFailed]=useState(false),label=stationName(channel.name).label;
+export function ChannelLogo({channel,size=40}:{channel:{id:string;name:string;logo?:boolean;logoKey?:string};size?:number}) {
+  // A custom channel's logoKey changes with the movie airing, giving a new address so the new logo loads.
+  const src=`/api/v1/iptv/channels/${channel.id}/logo${channel.logoKey?`?v=${encodeURIComponent(channel.logoKey)}`:''}`;
+  const [failed,setFailed]=useState<string>(),label=stationName(channel.name).label;
   // A fixed landscape tile: most station logos are wide, so every logo shares one box and one alignment.
-  return <span className="channel-logo" style={{width:Math.round(size*1.6),height:size}} aria-hidden="true">{channel.logo&&!failed?<FadeImage src={`/api/v1/iptv/channels/${channel.id}/logo`} alt="" loading="lazy" onError={()=>setFailed(true)}/>:<b style={{fontSize:size*.34}}>{label.slice(0,2).toUpperCase()}</b>}</span>;
+  return <span className="channel-logo" style={{width:Math.round(size*1.6),height:size}} aria-hidden="true">{channel.logo&&failed!==src?<FadeImage key={src} src={src} alt="" loading="lazy" onError={()=>setFailed(src)}/>:<b style={{fontSize:size*.34}}>{label.slice(0,2).toUpperCase()}</b>}</span>;
 }
 const airingNow=(c:Station,now:number)=>c.programs.find(p=>p.program&&p.program.start<=now&&p.program.end>now)?.program??undefined;
 const minutesLeft=(p:Program,now:number)=>Math.max(1,Math.ceil((p.end-now)/60000));

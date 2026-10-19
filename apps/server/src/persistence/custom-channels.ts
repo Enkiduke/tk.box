@@ -64,6 +64,8 @@ export function entryIssue(m: ChannelMedia): EntryIssue | undefined {
 // shared clock (services/scheduler.ts). Editing changes only the draft; publishing hands over at the end of the airing program.
 export class CustomChannelStore {
   readonly scheduler: ChannelScheduler;
+  // Per channel, as of its last change: which media are movies, and the main title on air.
+  private logoFacts = new Map<string, { at: number; movies: Set<string>; main?: string }>();
   constructor(private db: Db) { this.scheduler = new ChannelScheduler(db); }
   private row(id: string) {
     const row = this.db.prepare('SELECT c.*,n.number,n.position FROM custom_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=?').get(id) as Row | undefined;
@@ -334,7 +336,11 @@ export class CustomChannelStore {
   stations(account: string, favoritesOnly: boolean, search: string, channelId?: string, now = Date.now()) {
     const favorites = new Set((this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id));
     return this.viewable(now).filter(r => (!favoritesOnly || favorites.has(r.id)) && (!channelId || r.id === channelId) && (!search || r.name.toLocaleLowerCase().includes(search) || String(r.number).includes(search)))
-      .map(r => ({ id: r.id, sourceId: 'custom', name: r.name, number: r.number!, position: r.position!, type: 'custom' as const, favorite: favorites.has(r.id), logo: !!r.logo_url || r.plex_logo !== 'none', feeds: [{ id: r.id, name: r.name, number: r.number! }] }));
+      .map(r => {
+        // logoKey changes with the Plex title shown, so the guide fetches the new logo when the airing movie changes.
+        const plex = this.plexLogo(r, now);
+        return { id: r.id, sourceId: 'custom', name: r.name, number: r.number!, position: r.position!, type: 'custom' as const, favorite: favorites.has(r.id), logo: !!r.logo_url || r.plex_logo !== 'none', ...(plex ? { logoKey: plex } : {}), feeds: [{ id: r.id, name: r.name, number: r.number! }] };
+      });
   }
   // Guide rows for [start, end): exact program slots, blank before the channel first went on air.
   programs(id: string, start: number, end: number): GuideSlot[] {
@@ -351,12 +357,31 @@ export class CustomChannelStore {
     else this.db.prepare('DELETE FROM custom_favorites WHERE account_id=? AND channel_id=?').run(account, id);
   }
   favoriteIds(account: string) { return (this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id).filter(id => this.isVisible(id)); }
-  // The logo address if one is set, else the Plex title whose logo to show: the one chosen, or the main show on air.
-  logo(id: string): { url?: string; plexId?: string } {
-    requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
+  // Automatic Plex logo: the movie airing now, else the main title on air. A movie is known from the draft or the
+  // published list, so one still airing from a list that was just replaced is recognised too.
+  private facts(row: Row) {
+    let facts = this.logoFacts.get(row.id);
+    if (facts?.at !== row.updated_at) {
+      const onAir = this.onAir(row) ?? [];
+      facts = { at: row.updated_at, movies: new Set([...onAir, ...this.draft(row)].filter(e => e.kind === 'movie').map(e => e.mediaId)), main: mainTitle(onAir)?.id };
+      this.logoFacts.set(row.id, facts);
+    }
+    return facts;
+  }
+  private autoLogo(row: Row, now: number) {
+    const facts = this.facts(row), started = this.scheduler.startedAt(row.id);
+    const airing = started !== undefined && started <= now ? this.scheduler.current(row.id, now).entry.mediaId : undefined;
+    return airing && facts.movies.has(airing) ? airing : facts.main;
+  }
+  private plexLogo(row: Row, now: number) { return row.logo_url || row.plex_logo === 'none' ? undefined : row.plex_logo ?? this.autoLogo(row, now); }
+  // The logo address if one is set, else the Plex title whose logo to show: the one chosen, or the automatic one.
+  // `key` is the guide's logoKey; on Automatic it is honoured when it names this channel's main title or one of its
+  // movies, so a request made just as the movie changes still gets the logo its address stands for.
+  logo(id: string, now = Date.now(), key?: string): { url?: string; plexId?: string; keyed?: boolean } {
+    requireThat(this.isVisible(id, now), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
     const row = this.row(id);
     if (row.logo_url) return { url: row.logo_url };
-    if (row.plex_logo === 'none') return {};
-    return { plexId: row.plex_logo ?? mainTitle(this.onAir(row) ?? [])?.id };
+    if (key && row.plex_logo === null) { const facts = this.facts(row); if (facts.movies.has(key) || facts.main === key) return { plexId: key, keyed: true }; }
+    const plexId = this.plexLogo(row, now); return plexId ? { plexId } : {};
   }
 }
