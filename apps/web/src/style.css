@@ -149,12 +149,14 @@ main{min-height:100vh}
 .row-scroll{display:grid;grid-auto-flow:column;grid-auto-columns:var(--card-w,clamp(118px,13.5vw,190px));gap:clamp(8px,.9vw,14px);overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding:0 var(--gutter);padding:16px var(--gutter) 10px;margin-top:-10px;scrollbar-width:none}
 .row-scroll::-webkit-scrollbar{display:none}
 .row-scroll>*{scroll-snap-align:start}
-/* Endless rows drift a fraction of a pixel a frame, which snapping would undo. */
+/* Snapping would fight an endless row's drift and wrapping. */
 .row-endless{scroll-snap-type:none}
 /* Cards drifting left are invisible left of the gutter, the line the rows above start on, and fade in over the 32px after it. */
 .row-endless{-webkit-mask-image:linear-gradient(to right,transparent var(--gutter),#000 calc(var(--gutter) + 32px));mask-image:linear-gradient(to right,transparent var(--gutter),#000 calc(var(--gutter) + 32px))}
 .row-set{display:contents}
-.row-endless>.row-set>*{translate:var(--drift,0) 0}
+/* The cards sit on one track that the drift animates as a single composited layer; the scroller lays it out like a row. */
+.row-endless{display:block}
+.row-track{display:grid;grid-auto-flow:column;grid-auto-columns:inherit;gap:inherit;width:max-content;will-change:transform}
 .row-wide .row-scroll,.row-wide{--card-w:clamp(230px,24vw,340px)}
 .row-arrow{position:absolute;top:16px;bottom:52px;z-index:3;width:calc(var(--gutter) - 4px);min-width:40px;padding:0;border:0;border-radius:0;background:rgba(12,12,16,.6);color:#fff;opacity:0;transition:opacity .2s,background .2s}
 .row-arrow.left{left:0}
