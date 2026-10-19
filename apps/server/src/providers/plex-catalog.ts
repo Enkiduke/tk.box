@@ -40,7 +40,7 @@ export function externalRatings(node:CatalogNode):ExternalRating[]|undefined {
   }
   return found.size?ratingOrder.flatMap(source=>found.get(source)??[]):undefined;
 }
-export type ArtworkKind='poster'|'backdrop'|'logo';
+export type ArtworkKind='poster'|'backdrop'|'logo'|'tile';
 // A Plex collection in the library's Collections view. Without a custom poster Plex builds a composite of its titles.
 export const collectionNode=z.object({ratingKey:identifier,type:z.string(),title:z.string().max(500),subtype:z.string().max(20).optional(),librarySectionID:identifier.optional(),
   childCount:z.coerce.number().int().nonnegative().optional(),thumb:z.string().optional(),composite:z.string().optional(),summary:z.string().optional()});
