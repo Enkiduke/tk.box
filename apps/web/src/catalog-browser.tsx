@@ -58,7 +58,7 @@ const CatalogWindow=forwardRef<WindowHandle,{path?:string;layout:Layout;onOpen:(
   </div>;
 });
 
-export function LibraryView({type,libraries,params,onOpen,onPlay,accountId}:{type:'movie'|'show';libraries:Library[];params:URLSearchParams;onOpen:(id:string)=>void;onPlay:PlayFn;accountId:string}) {
+export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accountId}:{type:'movie'|'show';libraries:Library[];params:URLSearchParams;onOpen:(id:string)=>void;onPlay:PlayFn;onPlayAll:(path:string)=>void;accountId:string}) {
   const storageKey=`tk.box:browse:${accountId}:${type}`,[saved,setSaved]=useState(()=>readPrefs(storageKey)),page=type==='movie'?'movies':'shows';
   // Like Plex: Library, Collections and (for movies) Categories tabs. A collection opens in place.
   const views:[View,string][]=type==='movie'?[['library','Library'],['collections','Collections'],['categories','Categories']]:[['library','Library'],['collections','Collections']];
@@ -98,7 +98,7 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,accountId}:{typ
       <span className="browse-count" aria-label={total===undefined?'Loading titles':`${total} titles`}>{total?.toLocaleString()}</span></>}
     </div>
     {view==='categories'?<CategoryGrid genres={genres} onPick={genre=>navigate({view:'library',genre,shelf:'all',year:'',contentRating:'',q:''})}/>
-    :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal}/>
+    :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onPlayAll={onPlayAll} onTotal={setTotal}/>
       :library&&<CollectionGrid library={library.key} open={id=>navigate({view:'collections',collection:id})}/>:<>
     {filterCount>0&&<div className="active-filters">{prefs.genre&&<button onClick={()=>navigate({genre:''})}>{genres.data?.genres.find(g=>g.id===prefs.genre)?.title??'Genre'} ×</button>}{prefs.shelf==='unwatched'&&<button onClick={()=>navigate({shelf:'all'})}>Unwatched ×</button>}{prefs.year&&<button onClick={()=>navigate({year:''})}>{prefs.year} ×</button>}{prefs.contentRating&&<button onClick={()=>navigate({contentRating:''})}>{prefs.contentRating} ×</button>}<button onClick={reset}>Clear</button></div>}
     <div className={prefs.sort==='title'?'catalog-with-index':'catalog-with-index wide'}><CatalogWindow ref={windowRef} path={path} layout={prefs.layout} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal} onPosition={setPosition}/></div>
@@ -108,7 +108,7 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,accountId}:{typ
 }
 
 const ignorePosition=()=>{};
-function CollectionView({id,path,layout,back,onOpen,onPlay,onTotal}:{id:string;path?:string;layout:Layout;back:()=>void;onOpen:(id:string)=>void;onPlay:PlayFn;onTotal:(total:number|undefined)=>void}) {
+function CollectionView({id,path,layout,back,onOpen,onPlay,onPlayAll,onTotal}:{id:string;path?:string;layout:Layout;back:()=>void;onOpen:(id:string)=>void;onPlay:PlayFn;onPlayAll:(path:string)=>void;onTotal:(total:number|undefined)=>void}) {
   const info=useApi<Collection>(`/catalog/collections/${id}`);
   if(info.error)return <ErrorNotice message={info.error.message} retry={info.reload}/>;
   return <>
@@ -116,6 +116,7 @@ function CollectionView({id,path,layout,back,onOpen,onPlay,onTotal}:{id:string;p
       <button className="link-button" onClick={back}><Icon name="back" size={14}/>Collections</button>
       <h2>{info.data?.title??'\u00a0'}</h2>
       {info.data?.summary&&<p className="muted">{info.data.summary}</p>}
+      {path&&info.data?.count!==0&&<button className="primary collection-play" onClick={()=>onPlayAll(path)}><Icon name="play"/>Play</button>}
     </div>
     <CatalogWindow path={path} layout={layout} onOpen={onOpen} onPlay={onPlay} onTotal={onTotal} onPosition={ignorePosition}/>
   </>;
