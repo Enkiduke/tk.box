@@ -67,8 +67,8 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .button-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .badge{display:inline-flex;align-items:center;max-width:100%;font-size:11px;font-weight:600;letter-spacing:.02em;padding:3px 8px;border-radius:4px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
 .badge.warning{color:#f2cf7a;border-color:#6b5420;background:#2d240c}
-/* A ring whose tail fades in as white and turns the accent orange at the head; --ring sets its thickness. */
-.spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 15%,rgba(255,255,255,.6) 45%,#fff 75%,var(--accent));-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
+/* A ring that fades in as the accent orange, stays orange for most of its length and turns white at the head; --ring sets its thickness. */
+.spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 8%,var(--accent) 30% 78%,#fff);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading{display:grid;place-items:center;padding:60px 0}
 .skeleton{background:linear-gradient(100deg,var(--surface) 30%,var(--surface-2) 50%,var(--surface) 70%);background-size:300% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:var(--radius)}
