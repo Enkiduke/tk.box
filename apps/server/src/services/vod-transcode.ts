@@ -24,7 +24,7 @@ export class VodTranscodes {
     // AAC first so any audio conversion targets it; a compatible source codec may still be copied.
     const profile: TranscodeProfile = route.kind === 'remux'
       ? { videoCodecs: [source.videoCodec], audioCodecs: [...new Set(['aac', ...(route.audioEncode || !audioCodec ? [] : [audioCodec])])] }
-      : { videoCodecs: ['h264'], audioCodecs: ['aac'], ...(route.maxHeight ? { maxHeight: route.maxHeight } : {}) };
+      : { videoCodecs: ['h264'], audioCodecs: ['aac'], ...(route.maxHeight ? { maxHeight: route.maxHeight } : {}), ...(route.maxBitrateKbps ? { maxBitrateKbps: route.maxBitrateKbps } : {}) };
     // Atomic admission before any asynchronous Plex work; no queue (PLAY-27).
     let release = route.kind === 'cpu' ? this.budget.reserve(`plex-vod:${id}`) : () => {};
     const plexSession = randomUUID(), params = this.plex.transcodeParams(item.ratingKey, plexSession, profile, audio?.id);

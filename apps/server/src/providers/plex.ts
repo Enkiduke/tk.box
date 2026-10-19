@@ -15,7 +15,7 @@ export const metadataSchema = z.object({
   title: z.string(), duration: z.number().positive(), type: z.enum(['movie', 'episode']),
   viewOffset: z.number().optional(),
   viewCount: z.number().int().nonnegative().optional(), lastViewedAt: z.number().optional(),
-  Media: z.array(z.object({ container: z.string(), videoCodec: z.string(), audioCodec: z.string().optional(),
+  Media: z.array(z.object({ container: z.string(), videoCodec: z.string(), audioCodec: z.string().optional(), bitrate: z.number().positive().optional(),
     width: z.number().positive().optional(), height: z.number().positive().optional(),
     // `file` is the part's absolute path on the Plex host; same-host mode (LocalMedia) may read it from disk.
     Part: z.array(z.object({ key: z.string(), file: z.string().min(1).max(4096).optional(), Stream: z.array(z.object({ id: z.union([z.string(), z.number()]).transform(String), streamType: z.number(), codec: z.string().optional(), bitDepth: z.number().int().positive().optional(), languageCode: z.string().optional(), selected: z.union([z.boolean(), z.number()]).optional(),
@@ -46,7 +46,7 @@ const decisionSchema = z.object({ MediaContainer: z.object({
 }) });
 // Plex's universal transcoder namespace. Every proxied path stays below one session directory.
 export const transcodeRoot = '/video/:/transcode/universal/';
-export type TranscodeProfile = { videoCodecs: string[]; audioCodecs: string[]; maxWidth?: number; maxHeight?: number };
+export type TranscodeProfile = { videoCodecs: string[]; audioCodecs: string[]; maxWidth?: number; maxHeight?: number; maxBitrateKbps?: number };
 export type PlexMetadata = z.infer<typeof metadataSchema>;
 const plexId = z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]).transform(String);
 const leafContainer = z.object({ MediaContainer: z.object({ librarySectionID: plexId.optional(), totalSize: z.coerce.number().int().nonnegative().optional(), Metadata: z.array(z.object({
@@ -392,12 +392,15 @@ export class PlexAdapter {
       ...profile.audioCodecs.map(codec => `add-transcode-target-audio-codec(${target}&audioCodec=${codec})`),
       ...profile.audioCodecs.map(codec => `add-limitation(scope=videoAudioCodec&scopeName=${codec}&type=upperBound&name=audio.channels&value=${codec === 'mp3' ? 2 : 6})`),
       ...(profile.maxWidth ? [`add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=${profile.maxWidth})`] : []),
-      ...(profile.maxHeight ? [`add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=${profile.maxHeight})`] : [])];
+      ...(profile.maxHeight ? [`add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=${profile.maxHeight})`] : []),
+      ...(profile.maxBitrateKbps ? [`add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=${profile.maxBitrateKbps})`] : [])];
     return new URLSearchParams({ path: `/library/metadata/${ratingKey}`, mediaIndex: '0', partIndex: '0', protocol: 'hls', fastSeek: '1', directPlay: '0', directStream: '1', directStreamAudio: '1',
       copyts: '1', hasMDE: '1', location: 'lan', mediaBufferSize: '102400', subtitles: 'none', offset: '0', session, 'X-Plex-Session-Identifier': session,
       'X-Plex-Platform': 'Generic', 'X-Plex-Client-Platform': 'Generic', 'X-Plex-Client-Profile-Name': 'Generic', 'X-Plex-Client-Profile-Extra': extra.join('+'),
       // Plex follows the part's persisted selection (see selectAudioStream); the explicit ID keeps the request self-describing.
-      ...(audioStreamId ? { audioStreamID: audioStreamId } : {}) });
+      ...(audioStreamId ? { audioStreamID: audioStreamId } : {}),
+      // Plex's own bitrate ceiling (kbps), alongside the profile limitation above.
+      ...(profile.maxBitrateKbps ? { maxVideoBitrate: String(profile.maxBitrateKbps) } : {}) });
   }
   async transcodeDecision(grant: PlexGrant, params: URLSearchParams) {
     const url = new URL(`${transcodeRoot}decision?${params}`, this.config.PLEX_URL);
