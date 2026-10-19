@@ -59,7 +59,7 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
     const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
     return <div className="poster-card" key={c.id}>
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
-        <ChannelLogo channel={c} size={40}/>
+        <ChannelLogo channel={c} size={68}/>
         {next&&<span className="live-next"><small>Next {clock(next.start)}</small> {next.title}</span>}
         <span className="live-banner">{current?`Live · ${timing(current,now)}`:'Live'}</span>
         {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
