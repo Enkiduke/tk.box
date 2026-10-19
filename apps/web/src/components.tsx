@@ -67,7 +67,7 @@ function CardText({item,onOpen,detail,titleClass,metaClass}:{item:CatalogItem;on
 }
 export type PlayFn=(item:CatalogItem,from?:'resume'|'beginning')=>void;
 // Where a menu opens decides its entries: Continue Watching can remove a title, details already show Play.
-export type MenuContext='card'|'continue'|'detail'|'episode';
+export type MenuContext='card'|'continue'|'upnext'|'detail'|'episode';
 type MenuEntry={label:string;icon:string;run:()=>void};
 type MenuPosition={x:number;y:number;flipY:number;alignRight:boolean};
 function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>void,onPlay?:PlayFn):MenuEntry[][] {
@@ -76,6 +76,7 @@ function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>voi
   if(!fullyWatched(item))state.push({label:'Mark as watched',icon:'check',run:()=>void updateWatchState(item,'watched')});
   if(partlyWatched(item))state.push({label:'Mark as unwatched',icon:'unwatched',run:()=>void updateWatchState(item,'unwatched')});
   if(playable&&(context==='continue'||(context==='detail'&&resumable)))state.push({label:'Remove from Continue Watching',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
+  if(playable&&context==='upnext')state.push({label:'Remove from Recommended',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
   const show=item.type==='episode'||item.type==='season'?item.showId??(item.type==='season'?item.parentId:undefined):undefined;
   if(show)go.push({label:'Go to show',icon:'shows',run:()=>onOpen(show)});
   if(item.type==='episode'&&item.parentId)go.push({label:'Go to season',icon:'list',run:()=>onOpen(item.parentId!)});
@@ -138,9 +139,9 @@ export const Poster=memo(function Poster({item:source,onOpen,onPlay}:{item:Catal
     {actions.menu}
   </div>;
 });
-// Landscape card used by Continue Watching: backdrop art, progress and time remaining.
-export const WideCard=memo(function WideCard({item:source,onOpen,onPlay}:{item:CatalogItem;onOpen:(id:string)=>void;onPlay?:PlayFn}) {
-  const item=useWithOverride(source),actions=useMediaMenu(item,'continue',onOpen,onPlay);
+// Landscape card used by Continue Watching and Recommended: backdrop art, progress and time remaining.
+export const WideCard=memo(function WideCard({item:source,context='continue',onOpen,onPlay}:{item:CatalogItem;context?:'continue'|'upnext';onOpen:(id:string)=>void;onPlay?:PlayFn}) {
+  const item=useWithOverride(source),actions=useMediaMenu(item,context,onOpen,onPlay);
   const left=item.durationMs&&item.viewOffsetMs?item.durationMs-item.viewOffsetMs:undefined;
   return <div className={`wide-card${actions.open?' menu-open':''}`} onContextMenu={actions.onContextMenu}>
     <div className="card-frame"><button className="wide-art" onClick={()=>onOpen(item.id)} aria-label={`Open ${item.title}`}>

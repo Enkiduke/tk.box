@@ -53,7 +53,8 @@ function App() {
   }),[]);
   // The server answers once the channel's relay has its first segment, so playback starts promptly.
   const watchChannel=useCallback<WatchChannel>((channel,program)=>void action(async()=>{
-    await stop();returnTo.current=link('live',Object.fromEntries(routeRef.current.params));
+    // Back returns to where the channel was picked (Live TV or Home); switching from the player keeps that place.
+    await stop();const {page,params}=routeRef.current;if(page!=='watch')returnTo.current=link(page,Object.fromEntries(params));
     failover.current=new LiveFailover();
     const created=await api<Omit<LiveSession,'kind'|'program'>>('/live/sessions','POST',{channelId:channel.id});
     // Keep the station's feed list so the player can switch feeds without a guide lookup.
@@ -126,7 +127,7 @@ function App() {
     {setup.error?<ErrorNotice message={setup.error.message} retry={setup.reload}/>:setup.data?.plexConfigured?<><button className="primary large" disabled={busy} onClick={()=>void action(async()=>{const result=await api<{authUrl:string}>('/auth/plex/start','POST');setAuthUrl(result.authUrl);window.open(result.authUrl,'_blank','noopener,noreferrer');})}>Sign in with Plex</button>
       {authUrl&&<div className="linking"><span className="spinner"/><p>Finish signing in on the Plex tab. tk.box connects automatically.</p><a href={authUrl} target="_blank" rel="noreferrer">Reopen Plex sign-in</a><button className="text-button" disabled={busy} onClick={()=>void action(checkAuth)}>I've signed in</button></div>}</>
     :<p>Set up your Plex server in the local configuration to enable sign-in.</p>}<small className="muted">Your Plex password stays with Plex.</small></div></section>;
-  const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} busy={busy}/>
+  const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play}/>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>

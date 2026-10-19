@@ -35,7 +35,7 @@ function optimistic(item:CatalogItem,action:WatchAction):Override {
   // A watched title leaves Continue Watching; Plex may then offer the next episode instead.
   return action==='watched'?{watched:true,viewOffsetMs:0,continueHidden:true,...counts}:{watched:false,viewOffsetMs:0,...counts};
 }
-const done={watched:'Marked as watched',unwatched:'Marked as unwatched',removeContinue:'Removed from Continue Watching'};
+const done={watched:'Marked as watched',unwatched:'Marked as unwatched',removeContinue:'Removed from Home'};
 export async function updateWatchState(item:CatalogItem,action:WatchAction) {
   const before=overrides.get(item.id),value={...before,...optimistic(item,action)};
   patch(item.id,value);
