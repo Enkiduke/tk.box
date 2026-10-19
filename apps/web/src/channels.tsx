@@ -126,7 +126,7 @@ function ChannelEditor({id,back,startAdding}:{id:string;back:()=>void;startAddin
         <small>{blocked?'Remove the programs that can’t play before publishing.':view.live?'When you publish, the program on now finishes first, then the new list takes over.':'Publish when the list looks right. It goes on air right away.'}</small></span>
       <div className="button-row">
         {view.live&&<button disabled={mutation.busy} onClick={()=>apply('/draft/discard','POST',{},()=>setNotice('Changes discarded. The list is back to what’s on air.'))}>Discard changes</button>}
-        <button className="primary" disabled={mutation.busy||blocked} onClick={()=>setPublish(true)}>{view.live?'Review & publish':'Publish channel'}</button>
+        <button className="primary" disabled={mutation.busy||blocked} onClick={()=>view.live?setPublish(true):apply('/publish','POST',{expectedPublication:view.publicationRevision},()=>setNotice('Published. The channel is on air in Live TV.'))}>{view.live?'Review & publish':mutation.busy?'Publishing…':'Publish channel'}</button>
       </div>
     </div>}
     {publish&&<PublishDialog view={view} onClose={()=>setPublish(false)} published={(c,at)=>{setLocal(c);setPublish(false);setNotice(at>Date.now()+1000?`Published. The new list takes over at ${when(at)}, when the current program ends.`:'Published. The channel is on air in Live TV.');}}/>}
