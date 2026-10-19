@@ -35,5 +35,9 @@ export type CatalogItem = {
   // seasonCount is set only on a recently added show card that merges several new seasons.
   seasonCount?: number; episodeCount?: number; watchedEpisodeCount?: number; contentRating?: string; rating?: number;
   genres: string[]; addedAt?: number;
+  // Detail fields Plex sends on a single item (lists usually omit them).
+  ratings?: ExternalRating[]; logoUrl?: string; tagline?: string; airDate?: string; studio?: string; directors?: string[]; cast?: string[];
 };
+// A third-party score from the item's Plex agent, on Plex's 0–10 scale. `fresh` is Rotten Tomatoes' fresh/upright state.
+export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};

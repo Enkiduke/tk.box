@@ -1,5 +1,5 @@
-import {useEffect,useState} from 'react';
-import type {CatalogItem,CatalogPage,Library} from '../../../packages/contracts/src/index.js';
+import {useEffect,useRef,useState} from 'react';
+import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
@@ -134,57 +134,133 @@ export async function playableOf(item:CatalogItem):Promise<CatalogItem|undefined
   const season=item.type==='show'?seasonOf(await children(item.id)):item;
   return season&&upNextOf(await children(season.id));
 }
-function EpisodeRow({episode:source,onPlay,onOpen,busy}:{episode:CatalogItem;onOpen:(id:string)=>void}&PlayProps) {
+const airDate=(date?:string)=>date?new Date(`${date}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):undefined;
+const ratingNames:Record<ExternalRating['source'],string>={imdb:'IMDb',tomatometer:'Rotten Tomatoes Tomatometer',popcornmeter:'Rotten Tomatoes Popcornmeter',tmdb:'TMDB'};
+// Rating source logos, bundled from Overseerr (src/assets). Rotten Tomatoes has a fresh and a rotten mark for each meter.
+const ratingIcons={
+  imdb:new URL('./assets/ratings/imdb.svg',import.meta.url).href,tmdb:new URL('./assets/ratings/tmdb.svg',import.meta.url).href,
+  tomatometer:new URL('./assets/ratings/tomatometer-fresh.svg',import.meta.url).href,tomatometerRotten:new URL('./assets/ratings/tomatometer-rotten.svg',import.meta.url).href,
+  popcornmeter:new URL('./assets/ratings/popcornmeter-upright.svg',import.meta.url).href,popcornmeterRotten:new URL('./assets/ratings/popcornmeter-spilled.svg',import.meta.url).href
+};
+function RatingMark({rating}:{rating:ExternalRating}) {
+  const icon=rating.fresh===false&&rating.source==='tomatometer'?ratingIcons.tomatometerRotten:rating.fresh===false&&rating.source==='popcornmeter'?ratingIcons.popcornmeterRotten:ratingIcons[rating.source];
+  return <img className={`rating-mark ${rating.source}`} src={icon} alt="" aria-hidden="true"/>;
+}
+function Ratings({ratings}:{ratings:ExternalRating[]}) {
+  return <ul className="ratings">{ratings.map(rating=>{
+    const value=rating.source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`;
+    return <li key={rating.source} title={ratingNames[rating.source]}><RatingMark rating={rating}/><span className="sr-only">{ratingNames[rating.source]}</span>{value}</li>;
+  })}</ul>;
+}
+// Year (or air date for an episode), content rating and runtime. Plex's own score shows only when no third-party ones came.
+const facts=(item:CatalogItem)=>[item.type==='episode'?airDate(item.airDate)??item.year:item.year,item.contentRating,playable(item)?duration(item.durationMs):undefined,
+  !item.ratings&&item.rating!==undefined?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
+function EpisodeRow({episode:source,current,onPlay,onOpen,busy}:{episode:CatalogItem;current?:boolean;onOpen:(id:string)=>void}&PlayProps) {
   const episode=useWithOverride(source),actions=useMediaMenu(episode,'episode',onOpen,onPlay,'episode-more');
-  return <li className={actions.open?'menu-open':undefined} onContextMenu={actions.onContextMenu}><button className="episode" disabled={busy} onClick={()=>onPlay(episode)} aria-label={`Play episode ${episode.episodeNumber??''}: ${episode.title}`}>
-    <span className="episode-number">{episode.episodeNumber??'—'}</span>
-    <span className="episode-thumb">{episode.posterUrl?<FadeImage src={episode.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<span className="episode-play"><Icon name="play" size={18}/></span>{episode.viewOffsetMs>0&&episode.durationMs&&<span className="card-progress"><span style={{width:`${Math.min(100,episode.viewOffsetMs/episode.durationMs*100)}%`}}/></span>}</span>
-    <span className="episode-info"><span className="episode-title"><strong>{episode.title}</strong><span>{episode.watched?<Icon name="check" size={14}/>:null}{duration(episode.durationMs)}</span></span>{episode.summary&&<span className="episode-summary">{episode.summary}</span>}</span>
+  const kicker=[episode.episodeNumber!==undefined?`Episode ${episode.episodeNumber}`:undefined,airDate(episode.airDate),duration(episode.durationMs)].filter(Boolean).join(' · ');
+  return <li className={actions.open?'menu-open':undefined} onContextMenu={actions.onContextMenu}><button className="episode" aria-current={current||undefined} disabled={busy} onClick={()=>onPlay(episode)} aria-label={`Play episode ${episode.episodeNumber??''}: ${episode.title}`}>
+    <span className="episode-thumb">{episode.posterUrl?<FadeImage src={episode.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<span className="episode-play"><Icon name="play" size={18}/></span>{episode.watched&&<span className="watched-badge" title="Watched"><Icon name="check" size={12}/></span>}{episode.viewOffsetMs>0&&episode.durationMs&&<span className="card-progress"><span style={{width:`${Math.min(100,episode.viewOffsetMs/episode.durationMs*100)}%`}}/></span>}</span>
+    <span className="episode-info"><span className="episode-kicker">{current?'Now viewing · ':''}{kicker}</span><strong className="episode-name">{episode.title}</strong>{episode.summary&&<span className="episode-summary">{episode.summary}</span>}</span>
   </button>{actions.trigger}{actions.menu}</li>;
 }
-function Episodes({seasonId,onPlay,onOpen,busy,onUpNext}:{seasonId:string;onOpen:(id:string)=>void;onUpNext:(item?:CatalogItem)=>void}&PlayProps) {
+function Episodes({seasonId,current,onPlay,onOpen,busy,onUpNext}:{seasonId:string;current?:string;onOpen:(id:string)=>void;onUpNext:(item?:CatalogItem)=>void}&PlayProps) {
   const [offset,setOffset]=useState(0),data=useApi<CatalogPage>(`/catalog/items/${seasonId}/children?offset=${offset}&limit=60`),list=data.data?.items;
   useEffect(()=>{if(list)onUpNext(upNextOf(list));},[list]);
   if(data.loading&&!list)return <Loading/>;
   if(data.error)return <ErrorNotice message={data.error.message} retry={data.reload}/>;
   if(!list?.length)return <Empty title="No episodes available"/>;
-  return <><ol className="episode-list">{list.map(episode=><EpisodeRow key={episode.id} episode={episode} onPlay={onPlay} onOpen={onOpen} busy={busy}/>)}</ol><Pagination page={data.data!} onChange={setOffset}/></>;
+  return <><ol className="episode-list">{list.map(episode=><EpisodeRow key={episode.id} episode={episode} current={episode.id===current} onPlay={onPlay} onOpen={onOpen} busy={busy}/>)}</ol><Pagination page={data.data!} onChange={setOffset}/></>;
 }
+const seasonDone=(s:CatalogItem)=>s.episodeCount!==undefined&&(s.watchedEpisodeCount??0)>=s.episodeCount;
+const seasonProgress=(s:CatalogItem)=>s.episodeCount===undefined?undefined:s.watchedEpisodeCount&&s.watchedEpisodeCount<s.episodeCount?`${s.watchedEpisodeCount} of ${s.episodeCount} watched`:`${s.episodeCount} episode${s.episodeCount===1?'':'s'}`;
+function SeasonPicker({seasons,current,onPick}:{seasons:CatalogItem[];current?:CatalogItem;onPick:(season:CatalogItem)=>void}) {
+  const popup=useRef<HTMLDetailsElement>(null);
+  const close=()=>{if(popup.current?.open){popup.current.open=false;popup.current.querySelector('summary')?.focus();}};
+  useEffect(()=>{const outside=(event:PointerEvent)=>{if(popup.current&&!popup.current.contains(event.target as Node))popup.current.open=false;};document.addEventListener('pointerdown',outside);return()=>document.removeEventListener('pointerdown',outside);},[]);
+  return <details ref={popup} className="browse-popup season-picker" onKeyDown={event=>{
+    // Escape closes the season list, not the whole dialog.
+    if(event.key==='Escape'&&popup.current?.open){event.preventDefault();event.stopPropagation();close();}
+  }}><summary role="button" aria-label={`Season: ${current?.title??''}. Change season`}><span>{current?.title}</span><Icon name="down" size={14}/></summary>
+    <ul className="browse-menu season-menu">{seasons.map(s=><li key={s.id}><button type="button" aria-current={s.id===current?.id||undefined} onClick={()=>{close();if(s.id!==current?.id)onPick(s);}}>
+      <span>{s.title}</span><span className="season-menu-detail">{seasonDone(s)&&<Icon name="check" size={14}/>}{seasonProgress(s)}</span>
+    </button></li>)}</ul>
+  </details>;
+}
+function SeasonCard({season:source,onOpen}:{season:CatalogItem;onOpen:(id:string)=>void}) {
+  const season=useWithOverride(source),partial=!seasonDone(season)&&(season.watchedEpisodeCount??0)>0&&season.episodeCount;
+  return <li><button className="season-card" onClick={()=>onOpen(season.id)} aria-label={`${season.title}, ${seasonProgress(season)??''}`}>
+    <span className="season-poster">{season.posterUrl?<FadeImage src={season.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:<span className="season-poster-fallback">{season.title}</span>}
+      {seasonDone(season)&&<span className="watched-badge" title="Watched"><Icon name="check" size={12}/></span>}
+      {partial&&<span className="card-progress"><span style={{width:`${(season.watchedEpisodeCount??0)/partial*100}%`}}/></span>}</span>
+    <strong>{season.title}</strong><span className="season-card-detail">{seasonProgress(season)}</span>
+  </button></li>;
+}
+// A series with several seasons shows their posters; each opens its season. A single season lists its episodes here.
 function Seasons({show,onUpNext,...play}:{show:CatalogItem;onOpen:(id:string)=>void;onUpNext:(item?:CatalogItem)=>void}&PlayProps) {
-  const seasons=useApi<CatalogPage>(`/catalog/items/${show.id}/children?limit=60`),list=seasons.data?.items??[],[chosen,setChosen]=useState<string>();
-  const season=list.find(s=>s.id===chosen)??seasonOf(list);
-  return <section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2>{list.length>1?<select aria-label="Season" value={season?.id} onChange={e=>setChosen(e.target.value)}>{list.map(s=><option key={s.id} value={s.id}>{s.title}{s.episodeCount!==undefined?` (${s.episodeCount})`:''}</option>)}</select>:season&&<span className="muted">{season.title}</span>}</div>
-    {seasons.error?<ErrorNotice message={seasons.error.message} retry={seasons.reload}/>:!season?(seasons.loading?<Loading/>:<Empty title="No seasons available"/>):<Episodes key={season.id} seasonId={season.id} onUpNext={onUpNext} {...play}/>}
+  const seasons=useApi<CatalogPage>(`/catalog/items/${show.id}/children?limit=60`),list=seasons.data?.items,season=list&&seasonOf(list),many=(list?.length??0)>1;
+  // The Play button still needs the up-next episode when no episode list is loaded.
+  useEffect(()=>{
+    if(!many||!season)return;let live=true;
+    api<CatalogPage>(`/catalog/items/${season.id}/children?limit=60`).then(page=>{if(live)onUpNext(upNextOf(page.items));},()=>{});
+    return()=>{live=false;};
+  },[many,season?.id]);
+  if(seasons.error)return <section className="detail-episodes"><ErrorNotice message={seasons.error.message} retry={seasons.reload}/></section>;
+  if(!season)return <section className="detail-episodes">{seasons.loading?<Loading/>:<Empty title="No seasons available"/>}</section>;
+  return <section className="detail-episodes">
+    <div className="episodes-heading"><h2>{many?'Seasons':'Episodes'}</h2>{!many&&<span className="muted">{season.title}</span>}</div>
+    {many?<ul className="season-grid">{list!.map(s=><SeasonCard key={s.id} season={s} onOpen={play.onOpen}/>)}</ul>:<Episodes key={season.id} seasonId={season.id} onUpNext={onUpNext} {...play}/>}
   </section>;
+}
+// A season's episodes, with a picker that opens the show's other seasons.
+function SeasonEpisodes({season,onUpNext,...play}:{season:CatalogItem;onOpen:(id:string)=>void;onUpNext:(item?:CatalogItem)=>void}&PlayProps) {
+  const siblings=useApi<CatalogPage>(season.parentId?`/catalog/items/${season.parentId}/children?limit=60`:undefined),list=siblings.data?.items??[];
+  return <section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2>{list.length>1&&<SeasonPicker seasons={list} current={list.find(s=>s.id===season.id)??season} onPick={s=>play.onOpen(s.id)}/>}</div>
+    <Episodes seasonId={season.id} onUpNext={onUpNext} {...play}/></section>;
 }
 export function Details({id,onClose,onOpen,onPlay,busy,error}:{id:string;onClose:()=>void;onOpen:(id:string)=>void;error?:string}&PlayProps) {
   const item=useApi<CatalogItem>(`/catalog/items/${id}`),media=useWithOverride(item.data),actions=useMediaMenu(media??{id,libraryId:'',type:'movie',title:'',summary:'',viewOffsetMs:0,watched:false,genres:[]},'detail',onOpen,onPlay,'secondary large icon-only'),[upNext,setUpNext]=useState<CatalogItem>();
-  const target=media&&playable(media)?media:upNext,art=media?.backdropUrl??media?.posterUrl;
+  const target=media&&playable(media)?media:upNext,[failedLogo,setFailedLogo]=useState<string>();
+  // An episode leads with its own still, uncovered, since the still often carries the episode's title card.
+  const still=media?.type==='episode'?media.posterUrl:undefined,art=still??media?.backdropUrl??media?.posterUrl;
   const parent=media?.type==='episode'?{id:media.showId??media.parentId,title:media.showTitle??media.parentTitle}:media?.type==='season'?{id:media.parentId,title:media.parentTitle}:undefined;
+  const people=media&&[
+    ['Starring',media.cast?.slice(0,5).join(', ')],[media.directors&&media.directors.length>1?'Directors':'Director',media.directors?.join(', ')],
+    ['Genres',media.genres.join(', ')],['Studio',media.studio]
+  ].filter((row):row is [string,string]=>!!row[1]);
+  const progress=media?.episodeCount!==undefined&&media.type!=='episode'?Math.min(1,(media.watchedEpisodeCount??0)/Math.max(1,media.episodeCount)):undefined;
+  const heading=media&&<div className="detail-heading">
+    {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
+    {media.type==='episode'&&<p className="detail-eyebrow">{media.seasonNumber!==undefined&&media.parentId?<button className="text-button" onClick={()=>onOpen(media.parentId!)}>Season {media.seasonNumber}</button>:null}{media.episodeNumber!==undefined&&<span>Episode {media.episodeNumber}</span>}</p>}
+    <h1 className="detail-title">{media.logoUrl&&failedLogo!==media.logoUrl?<img className="detail-logo" src={media.logoUrl} alt={media.title} decoding="async" onError={()=>setFailedLogo(media.logoUrl)}/>:media.title}</h1>
+    {(facts(media).length>0||media.ratings||media.watched)&&<div className="detail-facts">
+      {facts(media).length>0&&<p className="detail-meta">{facts(media).map((fact,i)=><span key={i}>{fact}</span>)}{media.watched&&<span className="badge">Watched</span>}</p>}
+      {media.ratings&&<Ratings ratings={media.ratings}/>}
+    </div>}
+    {progress!==undefined&&<p className="detail-progress"><span className="detail-progress-bar"><span style={{width:`${progress*100}%`}}/></span>{media.watchedEpisodeCount??0} of {media.episodeCount} episodes watched</p>}
+    {error&&<ErrorNotice message={error}/>}
+    <div className="button-row">
+      <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
+      {target&&target.viewOffsetMs>0&&<button className="secondary large" disabled={busy} onClick={()=>onPlay(target,'beginning')}>Start over</button>}
+      {actions.trigger}{actions.menu}
+    </div>
+  </div>;
   return <Modal title={media?.title??'Media details'} onClose={onClose} variant="media">
     {item.loading&&!media?<div className="detail-loading"><Loading/></div>:item.error?<div className="detail-body"><ErrorNotice message={item.error.message} retry={item.reload}/></div>:media&&<>
-      <div className={`detail-hero ${art?'':'no-art'}`}>
+      <div className={`detail-hero${art?'':' no-art'}${still?' still':''}`}>
         {art&&<FadeImage src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
-        <div className="detail-hero-content">
-          {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
-          <h1>{media.title}</h1>
-          {error&&<ErrorNotice message={error}/>}
-          <div className="button-row">
-            <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
-            {target&&target.viewOffsetMs>0&&<button className="secondary large" disabled={busy} onClick={()=>onPlay(target,'beginning')}>Start over</button>}
-            {actions.trigger}{actions.menu}
-          </div>
-        </div>
+        {!still&&<div className="detail-hero-content">{heading}</div>}
       </div>
+      {still&&<div className="detail-head">{heading}</div>}
       <div className="detail-body">
         <div className="detail-main">
-          <p className="detail-meta">{media.type==='episode'&&<span>S{media.seasonNumber??'?'}:E{media.episodeNumber??'?'}</span>}{meta(media)&&<span>{meta(media)}</span>}{media.episodeCount!==undefined&&<span>{media.watchedEpisodeCount??0} of {media.episodeCount} episodes watched</span>}{media.watched&&<span className="badge">Watched</span>}</p>
+          {media.tagline&&<p className="tagline">{media.tagline}</p>}
           <p className="synopsis">{media.summary||'No synopsis available.'}</p>
         </div>
-        {media.genres.length>0&&<p className="detail-side"><span>Genres:</span> {media.genres.join(', ')}</p>}
+        {people&&people.length>0&&<dl className="detail-people">{people.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
       </div>
       {media.type==='show'&&<Seasons show={media} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/>}
-      {media.type==='season'&&<section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2></div><Episodes seasonId={media.id} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/></section>}
+      {media.type==='season'&&<SeasonEpisodes key={media.id} season={media} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/>}
+      {media.type==='episode'&&media.parentId&&<section className="detail-episodes"><div className="episodes-heading"><h2>{media.seasonNumber!==undefined?`Season ${media.seasonNumber}`:'More episodes'}</h2></div><Episodes seasonId={media.parentId} current={media.id} onUpNext={()=>{}} onPlay={onPlay} onOpen={onOpen} busy={busy}/></section>}
     </>}
   </Modal>;
 }
