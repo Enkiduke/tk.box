@@ -91,7 +91,7 @@ export function Search({libraries,params,onOpen,onPlay}:BrowseProps&{params:URLS
   // Library hooks are keyed by query, so each result set remounts with a fresh page offset.
   return <div className="page search-page">
     <form className="search-box" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('search',{q:text.trim()}));}}><Icon name="search" size={22}/><input autoFocus aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} onChange={e=>setText(e.target.value)}/>{text&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>setText('')}><Icon name="close" size={18}/></button>}</form>
-    {q?<>{matches.length>0&&<section className="search-group"><h2>Channels</h2><div className="channel-chips">{matches.map(c=><a href={link('live',{channel:c.id})} key={c.id}><span>{c.number}</span>{c.name}</a>)}</div></section>}
+    {q?<>{matches.length>0&&<section className="search-group"><h2>Channels</h2><div className="channel-chips">{matches.map(c=><a href={link('live',{channel:c.id})} key={c.id}>{c.name}</a>)}</div></section>}
       {channels.error&&<ErrorNotice message="Channels could not be searched." retry={channels.reload}/>}
       {libraries.map(l=><SearchLibrary key={`${q}-${l.key}`} library={l} q={q} onOpen={onOpen} onPlay={onPlay}/>)}</>
     :<Empty title="Find something to watch">Search your movies, TV shows and channels.</Empty>}
