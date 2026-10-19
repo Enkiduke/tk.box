@@ -16,6 +16,7 @@ export function registerCatalog(app:FastifyInstance,plex:PlexAdapter,auth:(reque
     await plex.catalogWatchState(grant,id(request.params),input.action);return {status:'updated'};
   });
   app.get('/api/v1/catalog/libraries/:id/collections',async request=>{const {grant}=await auth(request);return plex.catalogCollections(grant,id(request.params));});
+  app.get('/api/v1/catalog/home/collections',async request=>{const {grant}=await auth(request);return plex.homeCollections(grant);});
   app.get('/api/v1/catalog/collections/:id',async request=>{const {grant}=await auth(request);return plex.catalogCollection(grant,id(request.params));});
   app.get('/api/v1/catalog/collections/:id/items',async request=>{const {grant}=await auth(request);return plex.catalogCollectionItems(grant,id(request.params),catalogQuery.parse(request.query));});
   app.get('/api/v1/catalog/collections/:id/artwork',{config:{rateLimit:{max:1200,timeWindow:60000}}},async(request,reply)=>{
