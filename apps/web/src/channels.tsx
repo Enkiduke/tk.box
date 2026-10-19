@@ -3,6 +3,7 @@ import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/inde
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,invalidate,duration,clock} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Icon,Loading,Modal} from './components.js';
+import {ChannelLogo} from './live.js';
 import {Card,MoveButtons,SectionHead,Switch,code,moveTo,plural,useDragOrder,useMutation} from './settings-ui.js';
 
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
@@ -45,7 +46,7 @@ function status(c:Summary):{label:string;tone:Tone} {
   return {label:'On air',tone:'ok'};
 }
 const StatusBadge=({channel}:{channel:Summary})=>{const s=status(channel);return <span className={`badge ${s.tone}`}>{s.label}</span>;};
-const NumberTile=({channel}:{channel:Summary})=><span className="channel-tile" aria-hidden="true">{channel.number??'—'}</span>;
+const Logo=({channel}:{channel:Summary})=><ChannelLogo channel={{id:channel.id,name:channel.name,logo:!!channel.logoUrl||channel.plexLogo!=='none'}} size={28}/>;
 
 export function CustomChannelSettings() {
   const drag=useDragOrder(),list=useApi<{channels:Summary[]}>(base),[open,setOpen]=useState<{id:string;adding?:boolean}>(),[create,setCreate]=useState(false),ordering=useMutation(list.reload);
@@ -62,7 +63,7 @@ export function CustomChannelSettings() {
       <ul className="source-rows">{channels.map((c,i)=><li key={c.id} className="source-item" {...drag('channels',i,reorder,channels.length>1&&!ordering.busy)}>
         {channels.length>1&&<MoveButtons name={c.name} index={i} count={channels.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}
         <button className="source-row" onClick={()=>setOpen({id:c.id})}>
-          <NumberTile channel={c}/>
+          <Logo channel={c}/>
           <span className="source-row-main"><strong>{c.name}</strong><small>{c.live&&c.enabled&&c.current?<>Now: {c.current.title}{c.current.subtitle&&` · ${c.current.subtitle}`}</>:c.programs?`${plural(c.programs,'program')} · ${duration(c.runtimeMs)} per loop`:'Add programs to get started'}</small></span>
           <span className="source-row-tags"><StatusBadge channel={c}/></span><Icon name="next" size={18}/>
         </button></li>)}</ul>
@@ -109,7 +110,7 @@ function ChannelEditor({id,back,startAdding}:{id:string;back:()=>void;startAddin
   return <section className="source-detail channel-editor">
     <button className="back-link" onClick={back}><Icon name="back" size={16}/>All channels</button>
     <div className="source-head">
-      <div className="source-title"><NumberTile channel={view}/><div><h2>{view.name}</h2>
+      <div className="source-title"><Logo channel={view}/><div><h2>{view.name}</h2>
         <p className="muted small"><StatusBadge channel={view}/> {view.live&&view.current?<>Now: <strong>{view.current.title}</strong>{view.current.subtitle&&` · ${view.current.subtitle}`} · until {clock(view.current.end)}</>:view.entries.length?`${plural(view.entries.length,'program')} · ${duration(view.runtimeMs)} per loop`:null}</p></div></div>
     </div>
     {view.live&&!view.enabled&&<div className="notice subtle"><span>Hidden from Live TV. Its schedule keeps running, so it’s on time when you show it again.</span><button onClick={()=>setTab('details')}>Change</button></div>}
@@ -406,7 +407,7 @@ function DetailsPanel({view,saved,removed}:{view:Detail;saved:(c:Detail)=>void;r
           <option value="">{view.mainTitle?`Automatic · ${view.mainTitle.title}`:'Automatic · no main show yet'}</option>
           {titles.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}
           {plexLogo&&plexLogo!=='none'&&!titles.some(t=>t.id===plexLogo)&&<option value={plexLogo}>A title no longer on this channel</option>}
-          <option value="none">None · show the channel number</option>
+          <option value="none">None · show the channel’s initials</option>
         </select>{!logo.trim()&&shown&&<PlexLogoPreview id={shown}/>}</span>
           <small>{logo.trim()?'The logo address above is used instead.':'Automatic uses the show or movie that makes up at least half the channel. Titles without a Plex logo use their poster.'}</small></label>
         <Switch label="Visible in Live TV" description="Turn off to hide the channel from viewers. Its schedule keeps running, so it’s on time when you turn it back on." checked={enabled} onChange={setEnabled}/>

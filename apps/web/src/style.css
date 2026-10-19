@@ -285,7 +285,6 @@ main{min-height:100vh}
 .channel-chips{display:flex;gap:10px;flex-wrap:wrap}
 .channel-chips a{display:inline-flex;align-items:center;gap:10px;padding:10px 16px;border-radius:24px;background:var(--surface-2);border:1px solid var(--line);font-size:14px;font-weight:550}
 .channel-chips a:hover{border-color:var(--line-strong);background:var(--surface-3)}
-.channel-chips span{color:var(--accent);font-variant-numeric:tabular-nums;font-size:13px}
 .pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
 .pagination>div{display:flex;gap:8px}
 .pagination button{font-size:13px;padding:7px 14px}
@@ -911,7 +910,6 @@ input[type=checkbox].switch:disabled{opacity:.4;cursor:default}
 .source-panel>.table-scroll{border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 .channel-table td{padding:12px}
 .channel-table tr.selected td{background:rgba(245,184,46,.05)}
-.number-cell{color:var(--muted);font-variant-numeric:tabular-nums}
 .row-actions{display:flex;justify-content:flex-end;gap:4px}
 .row-actions button{padding:5px 10px;border-color:transparent;background:transparent;color:var(--muted);font-size:12.5px}
 .row-actions button:hover:not(:disabled){border-color:var(--line-strong);background:var(--surface-2);color:var(--text)}
@@ -1028,7 +1026,6 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .warning-text{color:#f2cf7a}
 .program-toolbar .grow-left{flex:1;min-width:240px;line-height:1.5}
 /* Channel Manager: setup steps, number tiles, the publish bar, list header, picker tray and source rows. */
-.channel-tile{flex:none;display:grid;place-items:center;min-width:44px;height:44px;padding:0 8px;border-radius:10px;background:var(--surface-3);color:var(--accent);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
 .list-note{margin:0 0 10px}
 .program-list+.list-note,.list-footer+.list-note{margin:10px 0 0}
 .channel-intro{display:flex;flex-direction:column;align-items:flex-start;gap:18px;padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
