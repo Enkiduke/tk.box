@@ -151,7 +151,7 @@ main{min-height:100vh}
 .row-scroll>*{scroll-snap-align:start}
 /* Endless rows drift a fraction of a pixel a frame, which snapping would undo. */
 .row-endless{scroll-snap-type:none}
-/* Cards drifting left are fully gone by the gutter, the line the rows above start on, fading over the 32px before it. */
+/* Cards drifting left are invisible left of the gutter, the line the rows above start on, and fade in over the 32px after it. */
 .row-endless{-webkit-mask-image:linear-gradient(to right,transparent var(--gutter),#000 calc(var(--gutter) + 32px));mask-image:linear-gradient(to right,transparent var(--gutter),#000 calc(var(--gutter) + 32px))}
 .row-set{display:contents}
 .row-endless>.row-set>*{translate:var(--drift,0) 0}
