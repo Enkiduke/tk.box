@@ -715,9 +715,16 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .sports-sport-head strong{flex:1;min-width:0}
 .sports-rank{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--surface-3);font-size:12px;font-weight:600;color:var(--muted)}
 .sports-leagues{border-top:1px solid var(--line);padding:4px 0 4px 36px}
-.sports-move{display:flex;gap:2px}
-.sports-move .icon-button{width:30px;height:30px;padding:0;font-size:15px}
-.sports-move .icon-button:disabled{opacity:.3}
+.move-buttons,.program-actions{display:flex;align-items:center;gap:2px;flex:none}
+.move-buttons .icon-button,.program-actions .icon-button{width:30px;height:30px;padding:0;color:var(--muted)}
+.move-buttons .icon-button:not(:disabled):hover,.program-actions .icon-button:not(:disabled):hover{color:var(--text)}
+.move-buttons .icon-button:disabled{opacity:.25}
+.drag-grip{display:inline-grid;place-items:center;width:20px;height:30px;color:var(--dim);cursor:grab}
+[draggable=true]{cursor:grab}
+[draggable=true]:active{cursor:grabbing}
+[data-drag=source]{opacity:.4}
+[data-drag=before]{box-shadow:inset 0 2px 0 var(--accent)}
+[data-drag=after]{box-shadow:inset 0 -2px 0 var(--accent)}
 .sports-bulk button{font-size:12px;padding:5px 10px}
 @media(max-width:640px){
   .sports-row{flex-wrap:wrap;gap:6px 10px}
@@ -817,10 +824,7 @@ input[type=checkbox].switch:disabled{opacity:.4;cursor:default}
 .source-rows{margin:0;padding:0;list-style:none;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 .source-rows li+li{border-top:1px solid var(--line)}
 .source-item{display:flex;align-items:center}
-.source-move{display:flex;flex-direction:column;padding-left:10px}
-.source-move .icon-button{padding:0 6px;min-height:0;line-height:1.2;color:var(--dim)}
-.source-move .icon-button:not(:disabled):hover{color:var(--text)}
-.source-move .icon-button:disabled{opacity:.25}
+.source-item>.move-buttons{padding-left:6px}
 .source-item .source-row{flex:1;min-width:0}
 .source-row{width:100%;justify-content:flex-start;gap:16px;padding:18px 20px;border:0;border-radius:0;background:transparent;text-align:left;white-space:normal;font-weight:400}
 .source-row:hover{background:var(--surface-2)}
@@ -905,8 +909,6 @@ tr:hover .row-actions button{color:var(--text)}
 .program-row{display:flex;align-items:center;gap:12px;min-width:0;padding:8px 12px}
 .program-row+.program-row{border-top:1px solid var(--line)}
 .program-row.selected{background:var(--surface-2)}
-.program-row.dragging{opacity:.4}
-.program-row[draggable=true]{cursor:grab}
 .program-row input[type=checkbox]{flex:none;width:auto}
 .program-index{flex:none;width:34px;font-size:12px;color:var(--dim);text-align:right;font-variant-numeric:tabular-nums}
 .program-thumb{flex:none;display:grid;place-items:center;width:32px;height:48px;overflow:hidden;border-radius:4px;background:var(--surface-3);color:var(--dim)}

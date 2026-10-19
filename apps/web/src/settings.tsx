@@ -3,7 +3,7 @@ import type {Principal,PlaybackSettings} from '../../../packages/contracts/src/i
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
-import {Card,SectionHead,Stat,Switch,code,date,move,plural,remember,remembered,useMutation} from './settings-ui.js';
+import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remember,remembered,useDragOrder,useMutation} from './settings-ui.js';
 import {CustomChannelSettings} from './channels.js';
 
 type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
@@ -422,18 +422,18 @@ function IptvAppSettings() {
   </form>;
 }
 function SourceSettings() {
-  const sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');
+  const drag=useDragOrder(),sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');
   const choose=(id:string)=>{setSelected(id);remember('source',id);setImportError('');};
   const playlists=sources.data?.sources.filter(s=>s.kind==='m3u')??[],source=playlists.find(s=>s.id===selected),ordering=useMutation(sources.reload);
   // Saved right away: this is the order the Live TV guide groups channels in.
-  const reorder=(i:number,by:number)=>void ordering.run(()=>api('/admin/iptv/sources/order','PUT',{ids:move(playlists.map(s=>s.id),i,by)}));
+  const reorder=(from:number,to:number)=>void ordering.run(()=>api('/admin/iptv/sources/order','PUT',{ids:moveTo(playlists.map(s=>s.id),from,to)}));
   if(source)return <>{importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}<SourceDetail key={source.id} source={source} sources={sources.data!.sources} changed={sources.reload} removed={()=>choose('')} back={()=>choose('')}/></>;
   return <>
     <SectionHead title="IPTV" description="Live TV settings for the whole server, and the playlists that supply its channels."/>
     <IptvAppSettings/>
     <div className="section-heading"><div><h3>Sources</h3><p className="muted small">Playlists, their program guides and how their channels are listed. Live TV groups channels by source, in this order.</p></div><button className="primary" onClick={()=>setCreate(true)}>Add source</button></div>
     {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}{ordering.error&&<ErrorNotice message={ordering.error}/>}
-    {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map((s,i)=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id} className="source-item">{playlists.length>1&&<span className="source-move"><button type="button" className="icon-button" aria-label={`Move ${s.name} up`} disabled={i===0||ordering.busy} onClick={()=>reorder(i,-1)}>↑</button><button type="button" className="icon-button" aria-label={`Move ${s.name} down`} disabled={i===playlists.length-1||ordering.busy} onClick={()=>reorder(i,1)}>↓</button></span>}<button className="source-row" onClick={()=>choose(s.id)}>
+    {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map((s,i)=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id} className="source-item" {...drag('sources',i,reorder,playlists.length>1&&!ordering.busy)}>{playlists.length>1&&<MoveButtons name={s.name} index={i} count={playlists.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}<button className="source-row" onClick={()=>choose(s.id)}>
       <span className={`status-dot ${attention?'danger':s.lastSuccess?'ok':''}`} aria-hidden="true"/>
       <span className="source-row-main"><strong>{s.name}</strong><small>{s.remote?`Remote · every ${s.intervalHours}h`:'File upload'} · {s.lastSuccess?`Imported ${date(s.lastSuccess)}`:'Waiting for import'}</small></span>
       <span className="source-row-tags">{s.candidateDigest&&<span className="badge warning">Review needed</span>}{s.lastError&&<span className="badge danger">{code(s.lastError)}</span>}<span className={`badge ${guide?guide.lastError?'danger':'ok':''}`}>{guide?guide.lastError?'EPG error':'EPG':'No EPG'}</span></span>
@@ -471,7 +471,7 @@ type SportsSettingsView={settings:SportsSettingsValue&{revision:number};leagues:
 const sportNames:Record<string,string>={football:'American football',basketball:'Basketball',baseball:'Baseball',hockey:'Hockey',soccer:'Soccer',mma:'MMA',boxing:'Boxing',wrestling:'Wrestling',racing:'Motorsport',golf:'Golf',tennis:'Tennis',rugby:'Rugby',cricket:'Cricket',cycling:'Cycling',darts:'Darts',curling:'Curling',sports:'Other sports'};
 // Server-wide: which leagues event channels are shown for, the order sports and leagues appear in, and their numbers.
 function LiveSportsSettings() {
-  const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload);
+  const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.settings;setDraft(value);}},[view.data?.settings.revision]);
   const head=<SectionHead title="Live Sports" description="Which leagues’ event channels appear, the order sports and leagues are listed in, and how event channels are numbered. Applies to every source with event categories."/>;
   if(view.loading&&!view.data)return <>{head}<Loading/></>;
@@ -485,7 +485,8 @@ function LiveSportsSettings() {
   const leaguesOf=(sport:string)=>data.leagues.filter(l=>l.sport===sport).sort((a,b)=>hidden(a)-hidden(b)||rank(a)-rank(b)||a.name.localeCompare(b.name));
   // The order saved is the order on screen.
   const shownOrder=(sport?:string,moved?:string[])=>draft.sportOrder.flatMap(s=>s===sport&&moved?moved:leaguesOf(s).map(l=>l.key));
-  const moveLeague=(sport:string,i:number,by:number)=>set({leagueOrder:shownOrder(sport,move(leaguesOf(sport).map(l=>l.key),i,by))});
+  const moveSport=(from:number,to:number)=>set({sportOrder:moveTo(draft.sportOrder,from,to)});
+  const moveLeague=(sport:string)=>(from:number,to:number)=>set({leagueOrder:shownOrder(sport,moveTo(leaguesOf(sport).map(l=>l.key),from,to))});
   const choose=(keys:string[],on:boolean)=>set({leagues:on?[...new Set([...draft.leagues,...keys])]:draft.leagues.filter(k=>!keys.includes(k))});
   const toggle=(sport:string)=>setOpen(o=>o.includes(sport)?o.filter(s=>s!==sport):[...o,sport]);
   return <>{head}
@@ -498,15 +499,15 @@ function LiveSportsSettings() {
         {selecting&&!draft.leagues.length&&<div className="notice"><span>No leagues are selected.{draft.unscheduled?' Only channels with no scheduled game will show.':' No event channels will show.'}</span></div>}
       </Card>
       <Card title="Order" description="Live events are listed by sport, then by league within each sport, then by start time. Channels with no scheduled game come after the leagues of their sport.">
-        <ol className="sports-order">{draft.sportOrder.map((sport,i)=>{const leagues=leaguesOf(sport),on=leagues.filter(l=>draft.leagues.includes(l.key)).length,expanded=open.includes(sport)||(selecting&&leagues.length>0&&open.length===0&&i===0);return <li key={sport} className="sports-sport">
+        <ol className="sports-order">{draft.sportOrder.map((sport,i)=>{const leagues=leaguesOf(sport),on=leagues.filter(l=>draft.leagues.includes(l.key)).length,expanded=open.includes(sport)||(selecting&&leagues.length>0&&open.length===0&&i===0);return <li key={sport} className="sports-sport" {...drag('sports',i,moveSport)}>
           <div className="sports-row sports-sport-head"><span className="sports-rank">{i+1}</span>
             <button type="button" className="sports-expand" aria-expanded={expanded} disabled={!leagues.length} onClick={()=>toggle(sport)}><strong>{sportNames[sport]??sport}</strong><small className="muted">{leagues.length?(selecting?`${on} of ${leagues.length} shown`:plural(leagues.length,'league')):'Detected by name only'}</small></button>
             {selecting&&leagues.length>0&&<span className="button-row sports-bulk"><button type="button" onClick={()=>choose(leagues.map(l=>l.key),true)}>All</button><button type="button" onClick={()=>choose(leagues.map(l=>l.key),false)}>None</button></span>}
-            <span className="sports-move"><button type="button" className="icon-button" aria-label={`Move ${sportNames[sport]??sport} up`} disabled={i===0} onClick={()=>set({sportOrder:move(draft.sportOrder,i,-1)})}>↑</button><button type="button" className="icon-button" aria-label={`Move ${sportNames[sport]??sport} down`} disabled={i===draft.sportOrder.length-1} onClick={()=>set({sportOrder:move(draft.sportOrder,i,1)})}>↓</button></span></div>
-          {expanded&&leagues.length>0&&<ol className="sports-leagues">{leagues.map((l,j)=><li key={l.key} className="sports-row">
+            <MoveButtons name={sportNames[sport]??sport} index={i} count={draft.sportOrder.length} onMove={to=>moveSport(i,to)}/></div>
+          {expanded&&leagues.length>0&&<ol className="sports-leagues">{leagues.map((l,j)=><li key={l.key} className="sports-row" {...drag(`leagues:${sport}`,j,moveLeague(sport))}>
             {selecting?<label className="checkbox-label grow"><input type="checkbox" checked={draft.leagues.includes(l.key)} onChange={e=>choose([l.key],e.target.checked)}/>{l.name}</label>:<span className="grow">{l.name}</span>}
             <small className="muted">{l.upcoming?`${plural(l.upcoming,'game')} scheduled`:'No games scheduled'}{!l.configured&&' · not downloaded'}</small>
-            <span className="sports-move"><button type="button" className="icon-button" aria-label={`Move ${l.name} up`} disabled={j===0} onClick={()=>moveLeague(sport,j,-1)}>↑</button><button type="button" className="icon-button" aria-label={`Move ${l.name} down`} disabled={j===leagues.length-1} onClick={()=>moveLeague(sport,j,1)}>↓</button></span>
+            <MoveButtons name={l.name} index={j} count={leagues.length} onMove={to=>moveLeague(sport)(j,to)}/>
           </li>)}</ol>}
         </li>;})}</ol>
       </Card>

@@ -1,10 +1,30 @@
-import {useRef,useState,type ReactNode} from 'react';
+import {useRef,useState,type DragEvent,type ReactNode} from 'react';
+import {Icon} from './components.js';
 
 // Small building blocks shared by every settings section.
 export const date=(value:number|null)=>value===null?'—':new Intl.DateTimeFormat(undefined,{dateStyle:'short',timeStyle:'short'}).format(value);
 export const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
 export const code=(value:string)=>value.replaceAll('_',' ').toLowerCase();
-export const move=<T,>(list:T[],i:number,by:number)=>{const j=i+by;if(j<0||j>=list.length)return list;const next=[...list];[next[i],next[j]]=[next[j]!,next[i]!];return next;};
+export const moveTo=<T,>(list:T[],from:number,to:number)=>{if(to<0||to>=list.length||to===from)return list;const next=[...list],[item]=next.splice(from,1);next.splice(to,0,item!);return next;};
+// Drag-and-drop reordering for lists that also have move buttons. One hook serves several lists
+// (such as leagues within sports): each passes its own group, and drags never cross groups.
+export function useDragOrder() {
+  const [drag,setDrag]=useState<{group:string;from:number;over:number}>();
+  return (group:string,i:number,onMove:(from:number,to:number)=>void,enabled=true)=>{
+    if(!enabled)return {};
+    const d=drag?.group===group?drag:undefined;
+    return {draggable:true,'data-drag':d?d.from===i?'source':d.over===i?(i<d.from?'before':'after'):undefined:undefined,
+      onDragStart:(e:DragEvent)=>{e.stopPropagation();e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i));setDrag({group,from:i,over:i});},
+      onDragOver:(e:DragEvent)=>{if(!d)return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='move';if(d.over!==i)setDrag({...d,over:i});},
+      onDrop:(e:DragEvent)=>{if(!d)return;e.preventDefault();e.stopPropagation();setDrag(undefined);if(d.from!==i)onMove(d.from,i);},
+      onDragEnd:()=>setDrag(undefined)};
+  };
+}
+export function MoveButtons({name,index,count,disabled,onMove}:{name:string;index:number;count:number;disabled?:boolean;onMove:(to:number)=>void}) {
+  return <span className="move-buttons"><span className="drag-grip" aria-hidden="true" title="Drag to reorder"><Icon name="grip" size={16}/></span>
+    <button type="button" className="icon-button" aria-label={`Move ${name} up`} disabled={disabled||index===0} onClick={()=>onMove(index-1)}><Icon name="up" size={18}/></button>
+    <button type="button" className="icon-button" aria-label={`Move ${name} down`} disabled={disabled||index===count-1} onClick={()=>onMove(index+1)}><Icon name="down" size={18}/></button></span>;
+}
 export function useMutation(changed:()=>void) {
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
   const lock=useRef(false);
