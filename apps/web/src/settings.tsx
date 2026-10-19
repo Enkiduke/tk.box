@@ -5,6 +5,7 @@ import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remember,remembered,useDragOrder,useMutation} from './settings-ui.js';
 import {CustomChannelSettings} from './channels.js';
+import {SubtitleSettings} from './subtitle-settings.js';
 
 type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
@@ -444,11 +445,15 @@ function SourceSettings() {
 }
 type CustomBuffer={bytes:number;maxBytesPerChannel:number;stations:number;delayedViewers:number;bufferedMs:number;storagePressure:boolean};
 const size=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(1)} GB`:`${Math.round(bytes/1024**2)} MB`;
-function PlaybackSettingsForm() {
+function PlaybackSettings({admin}:{admin:boolean}) {
+  return <><SectionHead title="Playback" description={admin?'Your subtitle style, plus the server-wide encoder ceiling and pause buffer.':'How subtitles look for you.'}/>
+    <SubtitleSettings/>
+    {admin&&<ServerPlaybackSettings/>}</>;
+}
+function ServerPlaybackSettings() {
   const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number;customBuffer:CustomBuffer}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(data.reload);
   useEffect(()=>{if(data.data){setLimit(data.data.maxConcurrentCpuVideoTranscodes);setMinutes(data.data.pauseRetentionMinutes);}},[data.data?.revision]);
-  return <><SectionHead title="Playback & buffering" description="The server-wide CPU encoder ceiling and how long paused custom channels are kept."/>
-    {data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card>
+  return <>{data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card title="Encoding & buffering" description="Server-wide: the CPU encoder ceiling and how long paused custom channels are kept.">
       <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/settings/playback','PATCH',{expectedRevision:data.data!.revision,maxConcurrentCpuVideoTranscodes:limit,pauseRetentionMinutes:minutes});setSaved(true);});}}>
         <label>Maximum concurrent CPU video encoders<input type="number" min="1" max="16" required value={limit} onChange={e=>setLimit(Number(e.target.value))}/><small>{data.data.activeVideoEncoders} active app-managed encoders. Direct Play and remux do not use encoder slots. Video encoding stays limited to 1080p-or-lower sources; lowering the ceiling leaves running jobs alone.</small></label>
         <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>How far behind the live broadcast a viewer can fall on a custom channel, counting time spent paused and time watching after Resume. It isn’t how long Pause can stay on. Disk limits can make the real window shorter.</small></label>
@@ -531,12 +536,12 @@ const sections=[['channels','Channels','shows'],['sources','IPTV','live'],['spor
 export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   const admin=me.role==='admin',[section,setSectionState]=useState(()=>admin?remembered('section','sources'):'account');
   const setSection=(s:string)=>{setSectionState(s);remember('section',s);};
-  const available=admin?sections:sections.filter(s=>s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
+  const available=admin?sections:sections.filter(s=>s[0]==='playback'||s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
   return <div className="settings">
-    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Custom channels, IPTV sources, live sports and shared playback settings.':'Your account and connection.'}</p></div>
+    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Custom channels, IPTV sources, live sports and shared playback settings.':'Your subtitle style, account and connection.'}</p></div>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">{available.map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>setSection(id)}><Icon name={icon} size={18}/>{label}</button>)}</nav>
-      <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='playback'?<PlaybackSettingsForm/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
+      <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='playback'?<PlaybackSettings admin={admin}/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
     </div>
   </div>;
 }

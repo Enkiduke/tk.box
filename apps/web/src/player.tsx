@@ -4,6 +4,7 @@ import {Icon} from './components.js';
 import {timecode} from './hooks.js';
 import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
 import {readPreference} from './storage.js';
+import {CaptionCue,subtitleScale,subtitleSizes,updateSubtitleStyle,useSubtitleStyle,type SubtitleStyle} from './subtitle-style.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
 import {qualityTiers,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
@@ -32,8 +33,8 @@ const lighter=(current:Quality,options:QualityOption[]|undefined,sourceKbps?:num
   const open=qualityTiers.filter(t=>(now===undefined||t.bitrateKbps<now)&&options?.some(o=>o.quality===t.id&&o.available&&o.route==='cpu'));
   return (open.find(t=>t.bitrateKbps<=(now===undefined?8000:now*.6))??open.at(-1))?.id;
 };
-const speeds=[.5,.75,1,1.25,1.5,2],sizes=[['s','Small'],['m','Medium'],['l','Large']] as const;
-type Size=typeof sizes[number][0];type Panel='subtitles'|'settings'|'channels';
+const speeds=[.5,.75,1,1.25,1.5,2];
+type Panel='subtitles'|'settings'|'channels';
 // Viewer conveniences only; Plex's own track selection is the default.
 const stored=(key:string)=>{try{return readPreference(localStorage,`tk.box.player.${key}`);}catch{return null;}};
 const store=(key:string,value:string)=>{try{localStorage.setItem(`tk.box.player.${key}`,value);}catch{/* storage unavailable */}};
@@ -50,7 +51,7 @@ type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:Rea
 export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
-  const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
+  const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
   const [subtitleId,setSubtitleId]=useState<string|null>(null),[subtitleStatus,setSubtitleStatus]=useState<'loading'|'ready'|'failed'>(),[captions,setCaptions]=useState<Caption[]>(),[shift,setShift]=useState(0),lastSubtitle=useRef<string|null>(null);
   const [hover,setHover]=useState<{x:number;time:number}>(),[flash,setFlash]=useState<{icon:string;label?:string;key:number}>();
   // Go Live reloads the stream at the live edge; `generation` restarts the player effect without a new URL.
@@ -218,7 +219,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const videoInfo=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
   return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
-    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
+    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
     {(view.waiting||liveSwitching)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':'Buffering'}/>}
     {docked?<div className="mini-controls">
       <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
@@ -250,7 +251,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
               detail={!t.supported?'Image-based, not supported yet':t.forced?'Forced':undefined}>{t.label}</Choice>)}
             {!subtitleTracks.length&&<p className="panel-empty">{programs?'This program has no subtitles.':'This title has no subtitles.'}</p>}
           </div></PanelSection>
-          {!!subtitleTracks.length&&<PanelSection title="Size"><div className="segmented">{sizes.map(([value,label])=><button key={value} aria-pressed={size===value} onClick={()=>{setSize(value);store('subtitleSize',value);}}>{label}</button>)}</div></PanelSection>}
+          {!!subtitleTracks.length&&<PanelSection title="Size"><div className="segmented">{subtitleSizes.map(([value,label])=><button key={value} aria-pressed={subtitleStyle.size===value} onClick={()=>updateSubtitleStyle({size:value})}>{label}</button>)}</div><p className="panel-note">Font, colors, outline and position are in Settings › Playback.</p></PanelSection>}
         </>:<>
           {tracks&&tracks.audio.length>1&&onAudioChange&&<PanelSection title="Audio"><div role="radiogroup" aria-label="Audio track" className="choices">
             {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={!!switching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
@@ -301,9 +302,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     </>}
   </aside>;
 });
-const captionScale:Record<Size,[number,number]>={s:[.036,14],m:[.046,16],l:[.058,19]};
 // Draws the cues active at the media time (from `time`) over the picture, above the controls while they show.
-function Captions({video,cues,time,size,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];time:()=>number;size:Size;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
+function Captions({video,cues,time,subtitleStyle,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];time:()=>number;subtitleStyle:SubtitleStyle;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
   const [active,setActive]=useState<number[]>([]),[box,setBox]=useState({height:0,inset:0});
   useEffect(()=>{
     const element=video.current;if(!element)return;let frame=0,key='';
@@ -319,11 +319,10 @@ function Captions({video,cues,time,size,docked,controls,language}:{video:RefObje
     measure();update();loop();
     return()=>{cancelAnimationFrame(frame);observer.disconnect();for(const name of events)element.removeEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);};
   },[video,cues,time]);
-  const [scale,minimum]=docked?[.05,11]:captionScale[size],fontSize=Math.max(minimum,box.height*scale);
-  const bottom=Math.max(box.inset+box.height*.05,controls?.current?(controls.current.offsetHeight+8):0);
+  const [scale,minimum]=docked?[.05,11]:subtitleScale[subtitleStyle.size],fontSize=Math.max(minimum,box.height*scale);
+  const bottom=Math.max(box.inset+box.height*(docked?5:subtitleStyle.position)/100,controls?.current?(controls.current.offsetHeight+8):0);
   return <div className="player-captions" lang={language} style={{bottom,fontSize}} aria-hidden="true">
-    {active.map(i=><div key={i} className="caption">{cues[i]!.lines.map((line,n)=><span key={n} className="caption-line">{line.map((span,m)=>
-      <span key={m} style={{fontStyle:span.i?'italic':undefined,fontWeight:span.b?700:undefined,textDecoration:span.u?'underline':undefined}}>{span.text}</span>)}</span>)}</div>)}
+    {active.map(i=><CaptionCue key={i} lines={cues[i]!.lines} style={subtitleStyle}/>)}
   </div>;
 }
 // Conversions the source already fits within would only replay the original, so they are left out;
