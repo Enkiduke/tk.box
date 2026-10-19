@@ -3,7 +3,7 @@ import type {CatalogItem,CatalogPage,Library} from '../../../packages/contracts/
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,replaceRoute} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
-import {LiveNow,type WatchChannel} from './live.js';
+import {LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
 import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 
@@ -59,18 +59,19 @@ function OnDeckRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
     {next.length>0&&<Row title="Recommended For You" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
   </>;
 }
-function LazyRow({title,path,href,drift,onOpen,onPlay}:{title:string;path:string;href:string;drift?:number;onOpen:(id:string)=>void;onPlay:PlayFn}) {
-  const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<CatalogPage>(near?path:undefined);
-  return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):data.data.items.length?<Row title={title} href={href} drift={drift}>{data.data.items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
+// With a seed the titles come in a stable shuffled order, cut to a row's worth.
+function LazyRow({title,path,href,drift,seed,onOpen,onPlay}:{title:string;path:string;href:string;drift?:number;seed?:string;onOpen:(id:string)=>void;onPlay:PlayFn}) {
+  const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<CatalogPage>(near?path:undefined),list=data.data&&(seed?shuffled(data.data.items,seed).slice(0,20):data.data.items);
+  return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):list?.length?<Row title={title} href={href} drift={drift}>{list.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
 }
 // Collections set to "Visible on Home" in Plex (holiday ones included), a row each in Plex's order.
 // They leave Home on their own once Plex stops promoting them; if Plex can't list them, Home goes without.
-// Like the Live TV row they can drift endlessly, per the Home settings.
+// Like the Live TV row they can drift endlessly and shuffle, per the Home settings; the order is fixed for this visit.
 function PromotedRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
-  const settings=useHomeSettings(),drift=settings.collectionScroll?liveSpeedPx[settings.collectionSpeed]:0;
+  const settings=useHomeSettings(),drift=settings.collectionScroll?liveSpeedPx[settings.collectionSpeed]:0,[seed]=useState(()=>Math.random().toString(36));
   const data=useApi<{collections:{id:string;title:string;libraryId:string}[]}>('/catalog/home/collections');
   return <>{data.data?.collections.map(c=>{const library=libraries.find(l=>l.key===c.libraryId);
-    return library&&<LazyRow key={`collection-${c.id}`} title={c.title} path={`/catalog/collections/${c.id}/items?limit=20`} href={link(page(library),{library:library.key,view:'collections',collection:c.id})} drift={drift} onOpen={onOpen} onPlay={onPlay}/>;})}</>;
+    return library&&<LazyRow key={`collection-${c.id}`} title={c.title} path={`/catalog/collections/${c.id}/items?limit=${settings.collectionShuffle?60:20}`} href={link(page(library),{library:library.key,view:'collections',collection:c.id})} drift={drift} seed={settings.collectionShuffle?seed:undefined} onOpen={onOpen} onPlay={onPlay}/>;})}</>;
 }
 export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProps&{onWatch:WatchChannel}) {
   const settings=useHomeSettings();

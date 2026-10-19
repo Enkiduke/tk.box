@@ -18,10 +18,11 @@ export function HomePageSettings() {
         </>}
       </div>
     </Card>
-    <Card title="Custom collections" description="Collections set to show on Home in Plex, such as seasonal ones, a row each." actions={<button type="button" onClick={()=>set({collectionRows:d.collectionRows,collectionScroll:d.collectionScroll,collectionSpeed:d.collectionSpeed})}>Reset to default</button>}>
+    <Card title="Custom collections" description="Collections set to show on Home in Plex, such as seasonal ones, a row each." actions={<button type="button" onClick={()=>set({collectionRows:d.collectionRows,collectionShuffle:d.collectionShuffle,collectionScroll:d.collectionScroll,collectionSpeed:d.collectionSpeed})}>Reset to default</button>}>
       <div className="home-settings">
         <Switch label="Show collections on Home" checked={settings.collectionRows} onChange={collectionRows=>set({collectionRows})}/>
         {settings.collectionRows&&<>
+          <Switch label="Shuffle titles" description="A new order each time you open Home, picked from the first 60 titles in each collection." checked={settings.collectionShuffle} onChange={collectionShuffle=>set({collectionShuffle})}/>
           <Switch label="Scroll endlessly" description="Each row drifts sideways and wraps around. It holds still while your mouse is over it." checked={settings.collectionScroll} onChange={collectionScroll=>set({collectionScroll})}/>
           {settings.collectionScroll&&<Options label="Scroll speed" options={liveSpeeds} value={settings.collectionSpeed} onChange={collectionSpeed=>set({collectionSpeed})}/>}
         </>}
