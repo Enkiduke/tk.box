@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,type CatalogQuery,type CatalogAction} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,collectionsContainer,collectionDto,collectionArtwork,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -238,6 +238,37 @@ export class PlexAdapter {
     });
     return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
   }
+  // The library's Collections view, A–Z like Plex.
+  async catalogCollections(grant:PlexGrant,libraryId:string):Promise<{collections:CatalogCollection[]}> {
+    this.library(grant,libraryId);
+    const url=new URL(`/library/sections/${libraryId}/collections`,this.config.PLEX_URL);
+    url.searchParams.set('sort','titleSort:asc');url.searchParams.set('X-Plex-Container-Start','0');url.searchParams.set('X-Plex-Container-Size','2000');
+    const container=collectionsContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+    return {collections:container.Metadata.filter(c=>c.type==='collection'&&(c.librarySectionID??container.librarySectionID??libraryId)===libraryId).map(collectionDto)};
+  }
+  private async collectionNode(grant:PlexGrant,id:string) {
+    requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex collection identifier.');
+    const container=collectionsContainer.parse(await this.json(new URL(`/library/metadata/${id}`,this.config.PLEX_URL),grant.serverToken)).MediaContainer;
+    const node=container.Metadata[0];requireThat(container.Metadata.length===1&&node?.ratingKey===id&&node.type==='collection','MEDIA_NOT_FOUND','That collection is unavailable.',404);
+    const section=node.librarySectionID??container.librarySectionID;requireThat(section,'PLEX_ACCESS_DENIED','Collection library could not be verified.',403);
+    this.library(grant,section);return {node,section};
+  }
+  async catalogCollection(grant:PlexGrant,id:string) {const {node,section}=await this.collectionNode(grant,id);return {...collectionDto(node),libraryId:section};}
+  async catalogCollectionItems(grant:PlexGrant,id:string,input:Partial<CatalogQuery>):Promise<CatalogPage> {
+    const {section}=await this.collectionNode(grant,id),query=catalogQuery.parse(input);
+    const url=new URL(`/library/collections/${id}/children`,this.config.PLEX_URL);
+    url.searchParams.set('X-Plex-Container-Start',String(query.offset));url.searchParams.set('X-Plex-Container-Size',String(query.limit));
+    url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Guid,Collection,Producer');
+    const container=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+    requireThat(container.Metadata.length<=query.limit&&(container.offset===undefined||container.offset===query.offset),'PLEX_PAGINATION_INVALID','Plex returned an unexpected collection page.',502);
+    const items=container.Metadata.map(child=>{requireThat((child.librarySectionID??container.librarySectionID??section)===section,'PLEX_ACCESS_DENIED','Plex returned media outside the collection’s library.',403);return catalogDto(child,section);});
+    return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
+  }
+  async collectionArtwork(grant:PlexGrant,id:string) {
+    const {node}=await this.collectionNode(grant,id),path=collectionArtwork(node);
+    requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
+    return this.cachedArtwork(grant,path,'poster');
+  }
   // A movie, episode, season, whole show, collection or category as the playable items a custom channel would air,
   // with the media details needed to judge channel playback. Read with the administrator's grant. Shows and seasons
   // come in season then episode order. A collection keeps its Plex order and a category (genre) is A–Z; each show in
@@ -307,6 +338,9 @@ export class PlexAdapter {
   async artwork(grant:PlexGrant,id:string,kind:'poster'|'backdrop') {
     const {node}=await this.catalogNode(grant,id),path=artworkPath(kind==='backdrop'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
     requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
+    return this.cachedArtwork(grant,path,kind);
+  }
+  private cachedArtwork(grant:PlexGrant,path:string,kind:'poster'|'backdrop') {
     const cacheKey=createHash('sha256').update(JSON.stringify([grant.accountId,grant.serverToken,path,kind])).digest('hex');
     const cached=this.images.get(cacheKey);if(cached)return cached;
     let pending=this.imageRequests.get(cacheKey);
