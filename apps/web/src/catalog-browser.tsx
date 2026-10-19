@@ -58,7 +58,7 @@ const CatalogWindow=forwardRef<WindowHandle,{path?:string;layout:Layout;onOpen:(
   </div>;
 });
 
-export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accountId}:{type:'movie'|'show';libraries:Library[];params:URLSearchParams;onOpen:(id:string)=>void;onPlay:PlayFn;onPlayAll:(path:string)=>void;accountId:string}) {
+export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accountId}:{type:'movie'|'show';libraries:Library[];params:URLSearchParams;onOpen:(id:string)=>void;onPlay:PlayFn;onPlayAll:(path:string,title:string)=>void;accountId:string}) {
   const storageKey=`tk.box:browse:${accountId}:${type}`,[saved,setSaved]=useState(()=>readPrefs(storageKey)),page=type==='movie'?'movies':'shows';
   // Like Plex: Library, Collections and (for movies) Categories tabs. A collection opens in place.
   const views:[View,string][]=type==='movie'?[['library','Library'],['collections','Collections'],['categories','Categories']]:[['library','Library'],['collections','Collections']];
@@ -121,13 +121,13 @@ function CollectionView({id,path,layout,back,onOpen,onPlay,onTotal}:{id:string;p
   </>;
 }
 // Hovering a collection offers Play, which plays its items in order.
-function CollectionGrid({library,open,onPlayAll}:{library:string;open:(id:string)=>void;onPlayAll:(path:string)=>void}) {
+function CollectionGrid({library,open,onPlayAll}:{library:string;open:(id:string)=>void;onPlayAll:(path:string,title:string)=>void}) {
   const list=useApi<{collections:Collection[]}>(`/catalog/libraries/${library}/collections`);
   if(list.error)return <ErrorNotice message={list.error.message} retry={list.reload}/>;
   if(!list.data)return <Loading cards/>;
   if(!list.data.collections.length)return <Empty title="No collections">Collections you make in Plex appear here.</Empty>;
   return <div className="poster-grid">{list.data.collections.map(c=>{const count=c.count===undefined?'':plural(c.count,c.kind==='show'?'show':'movie');
-    return <div key={c.id} className="poster-card"><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button>{c.count!==0&&<button className="card-play" tabIndex={-1} aria-label={`Play ${c.title}`} onClick={()=>onPlayAll(`/catalog/collections/${c.id}/items`)}><Icon name="play" size={22}/></button>}</div>
+    return <div key={c.id} className="poster-card"><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button>{c.count!==0&&<button className="card-play" tabIndex={-1} aria-label={`Play ${c.title}`} onClick={()=>onPlayAll(`/catalog/collections/${c.id}/items`,c.title)}><Icon name="play" size={22}/></button>}</div>
       <span className="poster-title">{c.title}</span><span className="poster-meta">{count}</span></div>;})}</div>;
 }
 // Categories are the library's genres; picking one shows the Library filtered to it.

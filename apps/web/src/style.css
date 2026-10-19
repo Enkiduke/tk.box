@@ -1148,3 +1148,42 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
   .publish-bar{bottom:8px}
   .publish-bar .button-row{width:100%}
 }
+/* Play queue: the Playlist panel and the Up Next card at the end of a title. */
+.player-bar .icon-button:disabled{opacity:.35;cursor:default}
+.player-panel.queue{width:min(420px,calc(100vw - 32px));max-height:min(72vh,640px);padding:0}
+.queue-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:rgba(18,18,24,.92);border-bottom:1px solid var(--glass-line)}
+.queue-head>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.queue-head h4{margin:0 0 2px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:#a9a9b4}
+.queue-head strong{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-head small{font-size:12px;color:#a9a9b4}
+.queue-autoplay{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0}
+.queue-autoplay input{appearance:none;position:relative;width:36px;height:20px;margin:0;border-radius:999px;background:rgba(255,255,255,.22);cursor:pointer;transition:background .15s}
+.queue-autoplay input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s var(--ease)}
+.queue-autoplay input:checked{background:var(--accent)}
+.queue-autoplay input:checked::after{transform:translateX(16px)}
+.queue-list{list-style:none;margin:0;padding:6px}
+.queue-item{display:flex;align-items:center;justify-content:flex-start;gap:12px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:transparent;text-align:left;color:#e8e8ee;white-space:normal}
+.queue-item:hover{background:rgba(255,255,255,.08)}
+.queue-item[aria-current]{background:rgba(255,255,255,.08);cursor:default}
+.queue-art{position:relative;flex-shrink:0;width:44px;aspect-ratio:2/3;border-radius:5px;overflow:hidden;background:rgba(255,255,255,.08)}
+.queue-item.wide .queue-art{width:96px;aspect-ratio:16/9}
+.queue-art img{width:100%;height:100%;object-fit:cover;display:block}
+.queue-playing{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.5);color:var(--accent)}
+.queue-text{flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0}
+.queue-text strong{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.queue-item[aria-current] strong{color:var(--accent)}
+.queue-text small{font-size:12px;color:#a9a9b4}
+.up-next{position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;gap:clamp(20px,3vw,40px);padding:96px clamp(24px,6vw,96px) 140px;background:rgba(6,6,10,.72);backdrop-filter:blur(6px);animation:panel-in .25s var(--ease)}
+.up-next-art{flex-shrink:0;height:min(48vh,420px);aspect-ratio:2/3;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.08);box-shadow:0 24px 60px rgba(0,0,0,.6)}
+.up-next.wide .up-next-art{height:auto;width:min(46vw,640px);aspect-ratio:16/9}
+.up-next-art img{width:100%;height:100%;object-fit:cover;display:block}
+.up-next-text{display:flex;flex-direction:column;gap:8px;max-width:420px}
+.up-next-eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--accent)}
+.up-next-text strong{font-size:clamp(20px,2vw,28px);line-height:1.2}
+.up-next-text>span:not(.up-next-eyebrow){font-size:15px;color:var(--muted)}
+.up-next-actions{display:flex;gap:10px;margin-top:12px}
+.up-next-play{position:relative;overflow:hidden;display:inline-flex;align-items:center;gap:8px;isolation:isolate}
+.up-next-play.counting{background:rgba(245,184,46,.45)}
+.up-next-play.counting::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--accent);transform-origin:left;animation:up-next-fill var(--countdown) linear forwards}
+@keyframes up-next-fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@media(prefers-reduced-motion:reduce){.up-next-play.counting::before{animation:none;transform:none}}

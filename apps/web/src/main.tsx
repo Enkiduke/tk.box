@@ -9,6 +9,7 @@ import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
+import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 // Administration is rarely visited, so it loads on demand.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
@@ -16,6 +17,7 @@ import './style.css';
 
 type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;markers?:SkipMarker[];source?:SourceInfo;quality?:Quality;qualityOptions?:QualityOption[];audioStreamId?:string;item:CatalogItem};
 type Session=VodSession|LiveSession;
+const fetchPage=(path:string)=>api<CatalogPage>(path);
 const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['live','Live TV']] as const;
 // Opens synchronously in the click so popup blockers allow it; the caller points it at Plex once the auth URL arrives.
 function openPlexPopup(url='') {
@@ -72,33 +74,38 @@ function App() {
     await stop();
     if(!keepReturn){const {page,params}=routeRef.current,old=new URLSearchParams(params);old.delete('item');returnTo.current=link(page==='watch'?'home':page,Object.fromEntries(old));}
     const created=await api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',{mode:'plex_vod',ratingKey:item.id,capabilities:browserCapabilities(),startFrom:from});
-    setSession({...created,kind:'vod',item});window.location.hash='watch';
+    // A queued title plays wherever the player is, so a mini player stays docked.
+    setSession({...created,kind:'vod',item});if(!keepReturn)window.location.hash='watch';
   }
+  // The play queue: a show's episodes across all its seasons, or a whole collection. The current title's
+  // place in it is found by id, so audio and quality restarts keep it.
+  const [queue,setQueue]=useState<PlayQueue>(),queueToken=useRef<object>(undefined);
+  const clearQueue=()=>{queueToken.current=undefined;setQueue(undefined);};
   const play=useCallback((media:CatalogItem,from:'resume'|'beginning'='resume')=>void action(async()=>{
-    queue.current=undefined;const item=await playableOf(media);if(!item)throw new Error('Nothing to play yet.');
+    clearQueue();const item=await playableOf(media);if(!item)throw new Error('Nothing to play yet.');
     await start(item,from);
+    // Playback never waits for the queue; an episode's show is listed while it starts.
+    const show=item.type==='episode'?item.showId:undefined;if(!show)return;
+    const token={};queueToken.current=token;
+    void showEpisodes(fetchPage,show,item).then(items=>{if(queueToken.current===token&&items.length>1)setQueue({title:item.showTitle??'Episodes',items});},()=>{});
   }),[]);
-  // A collection's Play goes through its items in page order, fetching the next as each ends; items with nothing to play are skipped.
-  const queue=useRef<{path:string;index:number}>(undefined);
-  async function queued(path:string,from:number) {
-    for(let index=from;;index++) {
-      const media=(await api<CatalogPage>(`${path}?offset=${index}&limit=1`)).items[0];if(!media)return undefined;
-      const item=await playableOf(media);if(item)return {item,index};
-    }
-  }
-  const playAll=useCallback((path:string)=>void action(async()=>{
-    queue.current=undefined;const next=await queued(path,0);if(!next)throw new Error('Nothing to play yet.');
-    await start(next.item,'beginning');queue.current={path,index:next.index};
+  // A collection's Play queues its titles in page order; shows in it queue all their episodes.
+  const playAll=useCallback((path:string,title:string)=>void action(async()=>{
+    clearQueue();const items=await collectionItems(fetchPage,path);if(!items.length)throw new Error('Nothing to play yet.');
+    await start(items[0]!,'beginning');if(items.length>1)setQueue({title,items});
   }),[]);
-  const advance=()=>{const current=queue.current;if(!current)return;void action(async()=>{
-    const next=await queued(current.path,current.index+1);if(queue.current!==current)return;
-    queue.current=next&&{path:current.path,index:next.index};if(next)await start(next.item,'beginning',true);
-  });};
+  // Next, Previous and the end-of-title countdown start from the beginning; a pick from the list resumes.
+  // The player stays open on a spinner while the next title starts.
+  const [loadingNext,setLoadingNext]=useState<CatalogItem>();
+  const playQueued=(index:number,from:'resume'|'beginning')=>{
+    const next=queue?.items[index];if(!next||locking.current)return;setLoadingNext(next);
+    void action(async()=>{try{await start(next,from,true);}finally{setLoadingNext(undefined);}});
+  };
   // The server answers once the channel's relay has its first segment, so playback starts promptly.
   const watchChannel=useCallback<WatchChannel>((channel,program)=>void action(async()=>{
     // Back returns to where the channel was picked (Live TV or Home); switching from the player keeps that place.
     const {page,params}=routeRef.current;if(page!=='watch')returnTo.current=link(page,Object.fromEntries(params));
-    const token={};tuningRef.current=token;setTuning({name:channel.name,...(program?{program}:{})});window.location.hash='watch';
+    clearQueue();const token={};tuningRef.current=token;setTuning({name:channel.name,...(program?{program}:{})});window.location.hash='watch';
     try {
       await stop();if(tuningRef.current!==token)return;
       const recovery=failover.current=new LiveFailover();
@@ -174,7 +181,8 @@ function App() {
   const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
   useEffect(()=>{if(identity.error&&[401,403].includes(identity.error.status)){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
   const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>setError(e.message));};
-  const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item;
+  const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item??loadingNext;
+  const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
   const subtitle=channel?channel.program:item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
   const signIn=<section className="sign-in"><div className="sign-in-card"><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p>
     {setup.error?<ErrorNotice message={setup.error.message} retry={setup.reload}/>:setup.data?.plexConfigured?<><button className="primary large" disabled={busy} onClick={()=>{if(locking.current)return;const popup=openPlexPopup();plexPopup.current=popup;void action(async()=>{try{const result=await api<{authUrl:string}>('/auth/plex/start','POST');setAuthUrl(result.authUrl);if(popup&&!popup.closed)popup.location.href=result.authUrl;else plexPopup.current=openPlexPopup(result.authUrl)??(window.open(result.authUrl,'_blank','noopener,noreferrer'),null);}catch(e){popup?.close();throw e;}});}}>Sign in with Plex</button>
@@ -200,7 +208,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;queue.current=undefined;await stop();if(back)window.location.hash=returnTo.current;});}} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} onEnded={vod&&advance} onError={playbackError}/>
+    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
     {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error}/>}
   </div>;
 }

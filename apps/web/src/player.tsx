@@ -1,13 +1,13 @@
 import {forwardRef,useEffect,useImperativeHandle,useMemo,useRef,useState,type CSSProperties,type ReactNode,type RefObject} from 'react';
 import type Hls from 'hls.js';
 import {Icon} from './components.js';
-import {timecode} from './hooks.js';
+import {duration,timecode} from './hooks.js';
 import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
 import {readPreference} from './storage.js';
 import {CaptionCue,subtitleScale,subtitleSizes,updateSubtitleStyle,useSubtitleStyle,type SubtitleStyle} from './subtitle-style.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
-import {qualityTiers,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
+import {qualityTiers,type CatalogItem,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
 // Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
 export type TimeshiftState={state:'LIVE'|'PAUSED'|'PLAYING_DELAYED'|'EXPIRED'|'STOPPED';behindLiveMs:number;viewerCursorUtc:number;broadcastNowUtc:number};
@@ -36,7 +36,7 @@ const lighter=(current:Quality,options:QualityOption[]|undefined,sourceKbps?:num
   return (open.find(t=>t.bitrateKbps<=(now===undefined?8000:now*.6))??open.at(-1))?.id;
 };
 const speeds=[.5,.75,1,1.25,1.5,2];
-type Panel='subtitles'|'settings'|'channels';
+type Panel='subtitles'|'settings'|'channels'|'queue';
 // Viewer conveniences only; Plex's own track selection is the default.
 const stored=(key:string)=>{try{return readPreference(localStorage,`tk.box.player.${key}`);}catch{return null;}};
 const store=(key:string,value:string)=>{try{localStorage.setItem(`tk.box.player.${key}`,value);}catch{/* storage unavailable */}};
@@ -49,8 +49,13 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,markers,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
+export type QueueState={title:string;items:CatalogItem[];index:number};
+const countdownSeconds=10;
+const queueArt=(item:CatalogItem)=>item.type==='episode'?item.posterUrl??item.backdropUrl:item.posterUrl;
+const queueLabel=(item:CatalogItem)=>item.type==='episode'?`S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} · ${item.title}`:item.title;
+const queueDetail=(item:CatalogItem)=>item.type==='episode'?item.showTitle:item.year?String(item.year):undefined;
+type Props={url?:string;queue?:QueueState;onQueuePick?:(index:number,from:'resume'|'beginning')=>void;loading?:boolean;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,queue,onQueuePick,loading,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,markers,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
@@ -58,8 +63,21 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const [hover,setHover]=useState<{x:number;time:number}>(),[flash,setFlash]=useState<{icon:string;label?:string;key:number}>();
   // Go Live reloads the stream at the live edge; `generation` restarts the player effect without a new URL.
   const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
-  const endedRef=useRef(onEnded);endedRef.current=onEnded;
   useEffect(()=>{setShifted(undefined);},[url]);
+  // At the end of a title the next one in the queue comes up, and plays after a countdown while Autoplay is on.
+  const next=queue?.items[queue.index+1],previous=queue&&queue.index>0?queue.items[queue.index-1]:undefined;
+  const [ended,setEnded]=useState(false),[countdown,setCountdown]=useState<number>(),[autoplay,setAutoplay]=useState(()=>stored('autoplay')!=='off');
+  const endedRef=useRef(()=>{});endedRef.current=()=>setEnded(true);
+  const pickQueued=(index:number,from:'resume'|'beginning')=>{setEnded(false);setCountdown(undefined);onQueuePick?.(index,from);};
+  const pickRef=useRef(pickQueued);pickRef.current=pickQueued;
+  const chooseAutoplay=(on:boolean)=>{setAutoplay(on);store('autoplay',on?'on':'off');if(!on)setCountdown(undefined);};
+  useEffect(()=>{setEnded(false);setCountdown(undefined);},[url]);
+  useEffect(()=>{if(ended&&next&&autoplay)setCountdown(countdownSeconds);},[ended,!!next]);
+  useEffect(()=>{
+    if(countdown===undefined||!queue)return;
+    if(countdown<=0){pickRef.current(queue.index+1,'beginning');return;}
+    const timer=window.setTimeout(()=>setCountdown(c=>c===undefined?c:c-1),1000);return()=>clearTimeout(timer);
+  },[countdown]);
   // Frequent mid-playback buffering suggests a lighter quality, once per stream unless dismissed.
   const suggestion=live?undefined:lighter(quality,qualityOptions,source?.bitrateKbps),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
   const [nudge,setNudge]=useState(false),nudgeDismissed=useRef(false);
@@ -77,7 +95,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const progress=(kind:'playing'|'paused'|'stopped')=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind);};
     const sync=()=>setView({playing:!video.paused,waiting:!video.paused&&video.readyState<3,time:video.currentTime,duration:video.duration,buffered:video.buffered.length?video.buffered.end(video.buffered.length-1):0,volume:video.volume,muted:video.muted});
     const loaded=()=>{if(generation.active&&seekOnLoad&&startOffsetMs>0&&Number.isFinite(video.duration))video.currentTime=Math.min(startOffsetMs/1000,Math.max(0,video.duration-.1));sync();};
-    const playing=()=>{generation.started=true;progress('playing');sync();};
+    const playing=()=>{generation.started=true;setEnded(false);setCountdown(undefined);progress('playing');sync();};
     const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
     const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else {progress('stopped');if(generation.active)endedRef.current?.();}sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
     const stalls=new StallMeter();
@@ -220,13 +238,13 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       const target=event.target as HTMLElement;if(event.ctrlKey||event.metaKey||event.altKey||target.closest('input:not([type=range]),select,textarea,dialog'))return;
       if(event.key==='Escape'&&panel){event.preventDefault();setPanel(undefined);return;}
       const video=ref.current!,step=(direction:number)=>{const index=speeds.indexOf(rate);changeRate(speeds[Math.max(0,Math.min(speeds.length-1,(index<0?2:index)+direction))]!);};
-      const actions:Record<string,()=>void>={' ':toggle,k:toggle,f:toggleFullscreen,...(live?{...(onChannel?{PageUp:()=>onChannel(1),PageDown:()=>onChannel(-1),ChannelUp:()=>onChannel(1),ChannelDown:()=>onChannel(-1)}:{}),...(channels?{g:()=>setPanel(p=>p==='channels'?undefined:'channels')}:{}),...(programs?{c:toggleSubtitles}:{})}:{ArrowLeft:()=>seek(-10),ArrowRight:()=>seek(10),j:()=>seek(-10),l:()=>seek(10),c:toggleSubtitles,'>':()=>step(1),'<':()=>step(-1)}),
+      const actions:Record<string,()=>void>={' ':toggle,k:toggle,f:toggleFullscreen,...(live?{...(onChannel?{PageUp:()=>onChannel(1),PageDown:()=>onChannel(-1),ChannelUp:()=>onChannel(1),ChannelDown:()=>onChannel(-1)}:{}),...(channels?{g:()=>setPanel(p=>p==='channels'?undefined:'channels')}:{}),...(programs?{c:toggleSubtitles}:{})}:{ArrowLeft:()=>seek(-10),ArrowRight:()=>seek(10),j:()=>seek(-10),l:()=>seek(10),c:toggleSubtitles,'>':()=>step(1),'<':()=>step(-1),...(next?{N:()=>pickQueued(queue!.index+1,'beginning')}:{}),...(previous?{P:()=>pickQueued(queue!.index-1,'beginning')}:{})}),
         m:()=>{video.muted=!video.muted;showFlash(video.muted?'mute':'volume');},ArrowUp:()=>{video.volume=Math.min(1,video.volume+.1);video.muted=false;showFlash('volume',`${Math.round(video.volume*100)}%`);},ArrowDown:()=>{video.volume=Math.max(0,video.volume-.1);showFlash(video.volume?'volume':'mute',`${Math.round(video.volume*100)}%`);}};
-      const action=actions[event.key.length===1?event.key.toLowerCase():event.key];
+      const action=actions[event.key.length===1?(event.shiftKey&&/^[np]$/i.test(event.key)?event.key.toUpperCase():event.key.toLowerCase()):event.key];
       if(action){if(event.key===' '&&target.closest('button'))return;if(target.matches('input[type=range]')&&event.key.startsWith('Arrow'))return;event.preventDefault();action();wake();}
     };
     window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);
-  },[docked,url,live,onChannel,channels,panel,rate,subtitleId,tracks,programs,program?.id]);
+  },[docked,url,live,onChannel,channels,panel,rate,subtitleId,tracks,programs,program?.id,queue]);
   const shown=!idle||!view.playing||!!panel,position=scrub??view.time,known=!live&&Number.isFinite(view.duration)&&view.duration>0;
   const activeTrack=subtitleTracks.find(t=>t.id===subtitleId);
   // Caption clock in media seconds: the player's own time for titles, broadcast time mapped into the program for channels.
@@ -234,10 +252,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const commit=()=>{if(scrub!==undefined){ref.current!.currentTime=scrub;setScrub(undefined);}};
   const hoverAt=(clientX:number,element:HTMLElement)=>{const box=element.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(clientX-box.left)/box.width));setHover({x:fraction*box.width,time:fraction*view.duration});};
   const videoInfo=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
-  return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url&&!tuning} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
+  return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url&&!tuning&&!loading} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
     {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
-    {(view.waiting||liveSwitching||tuning)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':tuning?'Tuning channel':'Buffering'}/>}
+    {(view.waiting||liveSwitching||tuning||loading)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':tuning?'Tuning channel':loading?'Starting':'Buffering'}/>}
     {docked?<div className="mini-controls">
       <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
       <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
@@ -251,8 +269,9 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
-      {marker&&!panel&&<button key={`${marker.type}:${marker.startMs}`} className="player-skip" onClick={()=>skipMarker(marker)}>{marker.type==='intro'?'Skip Intro':'Skip Credits'}<Icon name="skip-next" size={18}/></button>}
-      {!view.playing&&!view.waiting&&!liveSwitching&&!tuning&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
+      {ended&&next&&<UpNext item={next} countdown={countdown} onPlay={()=>pickQueued(queue!.index+1,'beginning')} onCancel={()=>setCountdown(undefined)}/>}
+      {marker&&!(ended&&next)&&!panel&&<button key={`${marker.type}:${marker.startMs}`} className="player-skip" onClick={()=>skipMarker(marker)}>{marker.type==='intro'?'Skip Intro':'Skip Credits'}<Icon name="skip-next" size={18}/></button>}
+      {!view.playing&&!view.waiting&&!liveSwitching&&!tuning&&!loading&&!(ended&&next)&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
       {switching&&<div className="player-status" role="status"><span className="spinner"/>{switching==='audio'?'Switching audio…':'Switching quality…'}</div>}
       {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
@@ -261,8 +280,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="secondary" onClick={()=>{nudgeDismissed.current=true;setNudge(false);}}>Not now</button></div>}
       {shifted?.state==='EXPIRED'&&<div className="player-expired" role="alert"><strong>Buffer expired</strong><span>You were paused longer than this channel keeps, so that part is gone.</span><button className="primary" disabled={shiftBusy} onClick={goLive}>Go Live</button></div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
-      {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
-        {panel==='channels'?channels:panel==='subtitles'?<>
+      {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':panel==='queue'?'Playlist':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
+        {panel==='queue'?queue&&<QueuePanel queue={queue} autoplay={autoplay} onAutoplay={chooseAutoplay} onPick={index=>{setPanel(undefined);pickQueued(index,'resume');}}/>:panel==='channels'?channels:panel==='subtitles'?<>
           <PanelSection title="Subtitles"><div role="radiogroup" aria-label="Subtitle track" className="choices">
             <Choice selected={!subtitleId} onSelect={()=>chooseSubtitle(null)}>Off</Choice>
             {subtitleTracks.map(t=><Choice key={t.id} selected={t.id===subtitleId} disabled={!t.supported} onSelect={()=>chooseSubtitle(t.id)}
@@ -299,6 +318,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         </div>}
         <div className="player-bar">
           <button className="icon-button play-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'} title={view.playing?'Pause (k)':'Play (k)'}><Icon name={view.playing?'pause':'play'} size={28}/></button>
+          {queue&&<><button className="icon-button" disabled={!previous} onClick={()=>pickQueued(queue.index-1,'beginning')} aria-label="Previous" title={previous?`Previous: ${queueLabel(previous)} (Shift+P)`:'Previous'}><Icon name="skip-back" size={24}/></button>
+          <button className="icon-button" disabled={!next} onClick={()=>pickQueued(queue.index+1,'beginning')} aria-label="Next" title={next?`Next: ${queueLabel(next)} (Shift+N)`:'Next'}><Icon name="skip-next" size={24}/></button></>}
           {live&&onChannel&&<><button className="icon-button" onClick={()=>onChannel(-1)} aria-label="Previous channel" title="Previous channel (Page Down)"><Icon name="back" size={24}/></button>
           <button className="icon-button channel-next" onClick={()=>onChannel(1)} aria-label="Next channel" title="Next channel (Page Up)"><Icon name="back" size={24}/></button></>}
           {!live&&<><button className="icon-button" onClick={()=>seek(-10)} aria-label="Back 10 seconds" title="Back 10 seconds (j)"><Icon name="rewind" size={26}/></button>
@@ -313,6 +334,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           {!live&&quality!=='auto'&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Quality · ${qualityShort(quality)}`}>{qualityShort(quality)}</button>}
           {rate!==1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')}>{rate}×</button>}
           {live&&channels&&<button className="icon-button" onClick={()=>setPanel(p=>p==='channels'?undefined:'channels')} aria-label="Browse channels" aria-expanded={panel==='channels'} title="Browse channels (g)"><Icon name="grid" size={24}/></button>}
+          {queue&&<button className="icon-button" onClick={()=>setPanel(p=>p==='queue'?undefined:'queue')} aria-label="Playlist" aria-expanded={panel==='queue'} title="Playlist"><Icon name="queue" size={24}/></button>}
           {(!live||programs)&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}
           <button className="icon-button" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label="Playback settings" aria-expanded={panel==='settings'} title="Settings"><Icon name="gear" size={24}/></button>
           <button className="icon-button" onClick={toggleFullscreen} aria-label={fullscreen?'Exit full screen':'Full screen'} title={fullscreen?'Exit full screen (f)':'Full screen (f)'}><Icon name={fullscreen?'minimize':'fullscreen'} size={24}/></button>
@@ -355,6 +377,37 @@ function QualityChoices({options,selected,source,disabled,onSelect}:{options:Qua
       detail={!o.available?o.reason:o.quality==='original'?original||routeDetail(o):routeDetail(o)}>{o.quality==='original'?'Play original quality':'Auto'}</Choice>)}
     {blocked?<p className="panel-empty">Converting: {blocked}</p>:tiers.map(o=><Choice key={o.quality} selected={o.quality===selected} disabled={!o.available||disabled} onSelect={()=>onSelect(o.quality)}
       detail={o.available?mbps(tierOf(o.quality)!.bitrateKbps):o.reason}>Convert to {qualityLabel(o.quality)}</Choice>)}
+  </div>;
+}
+// The queue as a list, with the playing title marked and scrolled into view, and the Autoplay switch.
+function QueuePanel({queue,autoplay,onAutoplay,onPick}:{queue:QueueState;autoplay:boolean;onAutoplay:(on:boolean)=>void;onPick:(index:number)=>void}) {
+  const current=useRef<HTMLButtonElement>(null);
+  // The show's name only helps when the queue spans several shows or movies.
+  const mixed=new Set(queue.items.map(i=>i.type==='episode'?i.showId:i.id)).size>1;
+  useEffect(()=>{current.current?.scrollIntoView({block:'center'});},[]);
+  return <>
+    <div className="queue-head"><div><h4>Playlist</h4><strong>{queue.title}</strong><small>{queue.index+1} of {queue.items.length}</small></div>
+      <label className="queue-autoplay"><span>Autoplay</span><input type="checkbox" role="switch" checked={autoplay} onChange={e=>onAutoplay(e.target.checked)}/></label></div>
+    <ol className="queue-list">{queue.items.map((item,i)=>{const art=queueArt(item),detail=[mixed?queueDetail(item):undefined,item.durationMs?duration(item.durationMs):undefined,item.watched&&i!==queue.index?'Watched':undefined].filter(Boolean).join(' · ');
+      return <li key={`${item.id}-${i}`}><button ref={i===queue.index?current:undefined} className={`queue-item${item.type==='episode'?' wide':''}`} aria-current={i===queue.index?'true':undefined} onClick={()=>{if(i!==queue.index)onPick(i);}}>
+        <span className="queue-art">{art&&<img src={art} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}{i===queue.index&&<span className="queue-playing"><Icon name="play" size={16}/></span>}</span>
+        <span className="queue-text"><strong>{queueLabel(item)}</strong>{detail&&<small>{detail}</small>}</span>
+      </button></li>;})}</ol>
+  </>;
+}
+// The next title's art when one ends, with the Autoplay countdown on Play Now.
+function UpNext({item,countdown,onPlay,onCancel}:{item:CatalogItem;countdown?:number;onPlay:()=>void;onCancel:()=>void}) {
+  const art=queueArt(item),detail=queueDetail(item);
+  return <div className={`up-next${item.type==='episode'?' wide':''}`} role="dialog" aria-label="Up next" onClick={e=>e.stopPropagation()} onPointerDown={e=>e.stopPropagation()}>
+    <span className="up-next-art">{art&&<img src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}</span>
+    <div className="up-next-text">
+      <span className="up-next-eyebrow">Up next</span>
+      <strong>{queueLabel(item)}</strong>{detail&&<span>{detail}</span>}
+      <div className="up-next-actions">
+        <button className={`primary up-next-play${countdown!==undefined?' counting':''}`} style={{'--countdown':`${countdownSeconds}s`} as CSSProperties} onClick={onPlay} autoFocus><Icon name="play" size={18}/>{countdown!==undefined?`Playing in ${countdown}`:'Play now'}</button>
+        {countdown!==undefined&&<button className="secondary" onClick={onCancel}>Cancel</button>}
+      </div>
+    </div>
   </div>;
 }
 const PanelSection=({title,children}:{title:string;children:ReactNode})=><section className="panel-section"><h4>{title}</h4>{children}</section>;

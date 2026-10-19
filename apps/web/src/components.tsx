@@ -25,6 +25,9 @@ const paths:Record<string,ReactNode>={
   up:<path d="m6 15 6-6 6 6" strokeWidth="2.4"/>,down:<path d="m6 9 6 6 6-6" strokeWidth="2.4"/>,
   grip:<>{[9,15].flatMap(x=>[5,12,19].map(y=><circle key={`${x}-${y}`} cx={x} cy={y} r="1.6" fill="currentColor" stroke="none"/>))}</>,
   restart:<><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5"/><path d="M4 3.5v5h5"/></>,plus:<path d="M12 5v14M5 12h14"/>,
+  'skip-back':<><path d="M18 5.5v13a.8.8 0 0 1-1.2.7L7.5 12.7a.8.8 0 0 1 0-1.4l9.3-6.5a.8.8 0 0 1 1.2.7z" fill="currentColor" stroke="none"/><path d="M5.5 5v14" strokeWidth="2.2"/></>,
+  'skip-next':<><path d="M6 5.5v13a.8.8 0 0 0 1.2.7l9.3-6.5a.8.8 0 0 0 0-1.4L7.2 4.8A.8.8 0 0 0 6 5.5z" fill="currentColor" stroke="none"/><path d="M18.5 5v14" strokeWidth="2.2"/></>,
+  queue:<path d="M3 6h13M3 12h13M3 18h8m4-2.5v5l4.5-2.5z"/>,
   collection:<><rect x="3" y="8" width="14" height="13" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v11"/></>,tag:<><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></>,unwatched:<><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></>,
 };
 paths.settings=paths.gear;
