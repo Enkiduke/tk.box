@@ -5,7 +5,7 @@ import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkele
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveNow,type WatchChannel} from './live.js';
 import {api} from './api.js';
-import {useHomeSettings} from './home-settings.js';
+import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 
 type BrowseProps={libraries:Library[];onOpen:(id:string)=>void};
 type PlayProps={onPlay:PlayFn;busy:boolean};
@@ -59,16 +59,18 @@ function OnDeckRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
     {next.length>0&&<Row title="Recommended For You" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
   </>;
 }
-function LazyRow({title,path,href,onOpen,onPlay}:{title:string;path:string;href:string;onOpen:(id:string)=>void;onPlay:PlayFn}) {
+function LazyRow({title,path,href,drift,onOpen,onPlay}:{title:string;path:string;href:string;drift?:number;onOpen:(id:string)=>void;onPlay:PlayFn}) {
   const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<CatalogPage>(near?path:undefined);
-  return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):data.data.items.length?<Row title={title} href={href}>{data.data.items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
+  return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):data.data.items.length?<Row title={title} href={href} drift={drift}>{data.data.items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
 }
 // Collections set to "Visible on Home" in Plex (holiday ones included), a row each in Plex's order.
 // They leave Home on their own once Plex stops promoting them; if Plex can't list them, Home goes without.
+// Like the Live TV row they can drift endlessly, per the Home settings.
 function PromotedRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
+  const settings=useHomeSettings(),drift=settings.collectionScroll?liveSpeedPx[settings.collectionSpeed]:0;
   const data=useApi<{collections:{id:string;title:string;libraryId:string}[]}>('/catalog/home/collections');
   return <>{data.data?.collections.map(c=>{const library=libraries.find(l=>l.key===c.libraryId);
-    return library&&<LazyRow key={`collection-${c.id}`} title={c.title} path={`/catalog/collections/${c.id}/items?limit=20`} href={link(page(library),{library:library.key,view:'collections',collection:c.id})} onOpen={onOpen} onPlay={onPlay}/>;})}</>;
+    return library&&<LazyRow key={`collection-${c.id}`} title={c.title} path={`/catalog/collections/${c.id}/items?limit=20`} href={link(page(library),{library:library.key,view:'collections',collection:c.id})} drift={drift} onOpen={onOpen} onPlay={onPlay}/>;})}</>;
 }
 export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProps&{onWatch:WatchChannel}) {
   const settings=useHomeSettings();
@@ -77,7 +79,7 @@ export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProp
     <Hero libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
     <div className="rows">
       <OnDeckRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
-      <PromotedRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
+      {settings.collectionRows&&<PromotedRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>}
       {libraries.map(l=><LazyRow key={`recent-${l.key}`} title={`Recently added in ${l.title}`} path={recent(l)} href={link(page(l),{library:l.key,sort:'newest',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
       {settings.liveRow&&<LiveNow onWatch={onWatch} busy={busy}/>}
     </div>
