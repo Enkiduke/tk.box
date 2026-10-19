@@ -68,4 +68,4 @@ npm test
 
 ## License
 
-No license has been chosen yet. All rights reserved.
+Released into the public domain under [The Unlicense](LICENSE). Dependencies keep their own licenses.
