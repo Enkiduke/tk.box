@@ -8,7 +8,7 @@ import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {config,fakePlex,metadata} from './fixtures.js';
 import {ArtworkCache} from '../apps/server/src/providers/artwork-cache.js';
-import {sortIndex,promotedHubs,promotedCollections} from '../apps/server/src/providers/plex-catalog.js';
+import {sortIndex,promotedHubs,promotedCollectionIds} from '../apps/server/src/providers/plex-catalog.js';
 
 function catalogFixture() {
   const base=fakePlex(),requests:{path:string;query:URLSearchParams;token:string|null}[]=[],nodes:Record<string,Record<string,unknown>>={
@@ -178,17 +178,24 @@ test('non-title jump buckets follow the sorted order and pick a readable granula
   assert.deepEqual(sortIndex('rating',[8,7,8]),[{label:'8',offset:0,count:2},{label:'7',offset:1,count:1}]);
 });
 
-test('promoted Home hubs keep only collections from the viewer’s libraries, once each, in Plex order',()=>{
+test('promoted Home hubs yield each collection once, in Plex order, skipping rows that are not collections or do not parse',async()=>{
   const hubs=promotedHubs.parse({MediaContainer:{Hub:[
-    {hubIdentifier:'home.continue',title:'Continue Watching'},
-    {hubIdentifier:'custom.collection.2.900',title:'Halloween'},
-    {hubIdentifier:'custom.collection.1.800',title:'Christmas Movies'},
-    {hubIdentifier:'custom.collection.9.700',title:'Not shared'},
+    {hubIdentifier:'home.continue',key:'/hubs/home/continueWatching',title:'Continue Watching'},
+    {hubIdentifier:'custom.collection.2.900',key:'/library/collections/900/children',title:'Halloween - All Time Classics'},
+    {hubIdentifier:'custom.collection.1.800'},
+    {key:'/library/collections/700/children?excludeAllLeaves=1'},
     {hubIdentifier:'custom.collection.1.800.extra',title:'Malformed'},
-    {hubIdentifier:'custom.collection.1.800',title:'Christmas Movies again'},
-    {title:'No identifier'},
+    {hubIdentifier:'custom.collection.1.800',key:'/library/collections/800/children',title:'Christmas again'},
+    {key:42,title:'Odd row'},'not a hub',
   ]}});
-  assert.deepEqual(promotedCollections(hubs,[{key:'1',type:'movie'},{key:'2',type:'show'},{key:'3',type:'artist'}]),[
-    {id:'900',title:'Halloween',libraryId:'2'},{id:'800',title:'Christmas Movies',libraryId:'1'}]);
-  assert.deepEqual(promotedCollections(promotedHubs.parse({MediaContainer:{}}),[{key:'1',type:'movie'}]),[]);
+  assert.deepEqual(promotedCollectionIds(hubs),['900','800','700']);
+  assert.deepEqual(promotedCollectionIds(promotedHubs.parse({MediaContainer:{size:0}})),[]);
+  assert.deepEqual(promotedCollectionIds(promotedHubs.parse({})),[]);
+  // Each one is read back with the viewer's grant; collections outside their libraries are left off.
+  const f=catalogFixture();
+  f.nodes['900']={ratingKey:'900',type:'collection',librarySectionID:'20',title:'Halloween - All Time Classics'};
+  f.nodes['800']={ratingKey:'800',type:'collection',librarySectionID:'99',title:'Hidden'};
+  const transport=(async(input:string|URL|Request,init?:RequestInit)=>new URL(String(input)).pathname==='/hubs/promoted'?Response.json({MediaContainer:{Hub:[{key:'/library/collections/900/children'},{key:'/library/collections/800/children'},{key:'/library/collections/555/children'}]}}):f.transport(input,init)) as typeof fetch;
+  const plex=new PlexAdapter(config(),'test',transport),grant=await plex.authorize('fixture');
+  assert.deepEqual(await plex.homeCollections(grant),{collections:[{id:'900',title:'Halloween - All Time Classics',libraryId:'20'}]});
 });
