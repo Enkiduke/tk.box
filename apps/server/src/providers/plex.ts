@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollections,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -271,7 +271,10 @@ export class PlexAdapter {
     if(!keys.length)return {collections:[]};
     const url=new URL('/hubs/promoted',this.config.PLEX_URL);
     url.searchParams.set('contentDirectoryID',keys.join(','));url.searchParams.set('pinnedContentDirectoryID',keys.join(','));url.searchParams.set('count','1');
-    return {collections:promotedCollections(promotedHubs.parse(await this.json(url,grant.serverToken)),grant.libraries)};
+    // Each collection is read back like any other, which checks its library is the viewer's; one that fails is left off.
+    const ids=promotedCollectionIds(promotedHubs.parse(await this.json(url,grant.serverToken))).slice(0,20);
+    const found=await Promise.all(ids.map(id=>this.collectionNode(grant,id).then(({node,section})=>({id,title:node.title,libraryId:section}),()=>undefined)));
+    return {collections:found.filter(c=>c!==undefined)};
   }
   private async collectionNode(grant:PlexGrant,id:string) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex collection identifier.');
