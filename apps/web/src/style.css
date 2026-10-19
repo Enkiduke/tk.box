@@ -149,6 +149,9 @@ main{min-height:100vh}
 .row-scroll{display:grid;grid-auto-flow:column;grid-auto-columns:var(--card-w,clamp(118px,13.5vw,190px));gap:clamp(8px,.9vw,14px);overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding:0 var(--gutter);padding:16px var(--gutter) 10px;margin-top:-10px;scrollbar-width:none}
 .row-scroll::-webkit-scrollbar{display:none}
 .row-scroll>*{scroll-snap-align:start}
+/* Endless rows drift a fraction of a pixel a frame, which snapping would undo. */
+.row-endless{scroll-snap-type:none}
+.row-set{display:contents}
 .row-wide .row-scroll,.row-wide{--card-w:clamp(230px,24vw,340px)}
 .row-arrow{position:absolute;top:16px;bottom:52px;z-index:3;width:calc(var(--gutter) - 4px);min-width:40px;padding:0;border:0;border-radius:0;background:rgba(12,12,16,.6);color:#fff;opacity:0;transition:opacity .2s,background .2s}
 .row-arrow.left{left:0}
@@ -790,6 +793,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .subtitle-scenes{margin:0;align-self:flex-start}
 .subtitle-scenes button{padding:6px 12px}
 .subtitle-controls{display:flex;flex-direction:column;gap:16px}
+.home-settings{display:flex;flex-direction:column;gap:18px;max-width:560px}
 .subtitle-controls h4{margin:6px 0 -4px;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
 .subtitle-controls h4:first-child{margin-top:0}
 .subtitle-field{display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--muted)}

@@ -15,7 +15,7 @@ function Swatches({label,value,onChange}:{label:string;value:string;onChange:(va
     <label className={`swatch swatch-custom ${custom?'selected':''}`} title="Custom color" style={custom?{background:value}:undefined}><input type="color" aria-label={`Custom ${label.toLowerCase()}`} value={value} onChange={e=>onChange(e.target.value)}/></label>
   </div></div>;
 }
-function Options<T extends string>({label,options,value,onChange}:{label:string;options:readonly (readonly [T,string])[];value:T;onChange:(value:T)=>void}) {
+export function Options<T extends string>({label,options,value,onChange}:{label:string;options:readonly (readonly [T,string])[];value:T;onChange:(value:T)=>void}) {
   return <div className="subtitle-field"><span>{label}</span><div className="toggle-group" role="radiogroup" aria-label={label}>
     {options.map(([id,name])=><button key={id} type="button" role="radio" aria-checked={value===id} onClick={()=>onChange(id)}>{name}</button>)}</div></div>;
 }
