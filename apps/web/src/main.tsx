@@ -55,10 +55,11 @@ function App() {
   const watchChannel=useCallback<WatchChannel>((channel,program)=>void action(async()=>{
     // Back returns to where the channel was picked (Live TV or Home); switching from the player keeps that place.
     await stop();const {page,params}=routeRef.current;if(page!=='watch')returnTo.current=link(page,Object.fromEntries(params));
-    failover.current=new LiveFailover();
-    const created=await api<Omit<LiveSession,'kind'|'program'>>('/live/sessions','POST',{channelId:channel.id});
-    // Keep the station's feed list so the player can switch feeds without a guide lookup.
-    const next:LiveSession={...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}};sessionRef.current=next;setSession(next);window.location.hash='watch';
+    const recovery=failover.current=new LiveFailover();
+    // A feed that cannot be started (offline, or a 4K source this server will not convert) moves on to the station's next feed.
+    // The session keeps the station's feed list so the player can switch feeds without a guide lookup.
+    const next=await recovery.tune(channel,program,()=>failover.current===recovery);if(!next)return;
+    sessionRef.current=next;setSession(next);window.location.hash='watch';
   }),[]);
   // Pause, Resume and Go Live for the current custom-channel session.
   const timeshift=useCallback<Timeshift>((step,displayedUtc)=>{

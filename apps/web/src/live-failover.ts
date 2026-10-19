@@ -3,6 +3,9 @@ import {api,ApiClientError} from './api.js';
 export type LiveFeed={id:string;name:string;number:number;quality?:string};
 type Station={id:string;name:string;number:number;stack?:string;feeds?:LiveFeed[]};
 export type LiveSession={kind:'live';id:string;streamUrl:string;delivery:'direct'|'remux'|'transcode';source?:{videoCodec?:string;audioCodec?:string;width?:number;height?:number};channel:Station;program?:string;timeshift?:boolean};
+type Created=Omit<LiveSession,'kind'|'program'>;
+// A broken/incompatible feed can be skipped; account, server and connection errors stop recovery.
+const skippable=['LIVE_TUNE_FAILED','LIVE_TUNE_TIMEOUT','CHANNEL_NOT_FOUND','SOURCE_INCOMPATIBLE','QUALITY_NOT_PERMITTED','TRANSCODE_CAPACITY_REACHED'];
 
 // One instance per deliberate tune. Failed feeds stay excluded until the viewer tunes again.
 export class LiveFailover {
@@ -11,6 +14,14 @@ export class LiveFailover {
   private running?:Promise<LiveSession|undefined>;
   constructor(private request:typeof api=api) {}
   cancel(){this.cancelled=true;}
+  // Opens the chosen feed, moving on to the station's other feeds when it cannot be started.
+  // Resolves undefined when cancelled; rejects with the chosen feed's error when no feed starts.
+  async tune(channel:Station,program:string|undefined,isCurrent:()=>boolean):Promise<LiveSession|undefined> {
+    const ids=[channel.id,...(channel.feeds??[]).map(f=>f.id).filter(id=>id!==channel.id)];
+    const {created,error}=await this.open(ids,()=>!this.cancelled&&isCurrent());
+    if(created)return {...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}};
+    if(error)throw error;
+  }
   recover(current:LiveSession,isCurrent:()=>boolean):Promise<LiveSession|undefined> {
     return this.running??=this.run(current,isCurrent).finally(()=>{this.running=undefined;});
   }
@@ -26,20 +37,23 @@ export class LiveFailover {
     // Release this viewer before opening a replacement, including on one-connection plans.
     try{await this.request(`/live/sessions/${current.id}`,'DELETE');}
     catch(e){if(!(e instanceof ApiClientError&&e.status===404))throw e;}
-    for(const feed of backups) {
-      if(!active())return;
-      this.attempted.add(feed.id);
-      let created:Omit<LiveSession,'kind'|'program'>;
-      try{created=await this.request('/live/sessions','POST',{channelId:feed.id});}
-      catch(e){
-        // A broken/incompatible feed can be skipped; account, server and connection errors stop recovery.
-        if(e instanceof ApiClientError&&['LIVE_TUNE_FAILED','LIVE_TUNE_TIMEOUT','CHANNEL_NOT_FOUND','SOURCE_INCOMPATIBLE','QUALITY_NOT_PERMITTED','TRANSCODE_CAPACITY_REACHED'].includes(e.code))continue;
-        throw e;
-      }
+    const {created}=await this.open(backups.map(f=>f.id),active);
+    if(created)return {...created,kind:'live' as const,program:current.program,channel:{...created.channel,stack,feeds:station!.feeds}};
+  }
+  // Tries each feed in order, keeping the first skipped error for when none starts.
+  private async open(ids:string[],active:()=>boolean):Promise<{created?:Created;error?:ApiClientError}> {
+    let error:ApiClientError|undefined;
+    for(const id of ids) {
+      if(!active())return {};
+      this.attempted.add(id);
+      let created:Created;
+      try{created=await this.request('/live/sessions','POST',{channelId:id});}
+      catch(e){if(e instanceof ApiClientError&&skippable.includes(e.code)){error??=e;continue;}throw e;}
       // A manual stop or channel change can happen during the request. Reclaim any late session.
-      if(!active()){await this.request(`/live/sessions/${created.id}`,'DELETE').catch(()=>{});return;}
-      return {...created,kind:'live' as const,program:current.program,channel:{...created.channel,stack,feeds:station!.feeds}};
+      if(!active()){await this.request(`/live/sessions/${created.id}`,'DELETE').catch(()=>{});return {};}
+      return {created};
     }
+    return {error};
   }
 }
 
