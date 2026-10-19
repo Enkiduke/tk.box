@@ -67,8 +67,8 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .button-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .badge{display:inline-flex;align-items:center;max-width:100%;font-size:11px;font-weight:600;letter-spacing:.02em;padding:3px 8px;border-radius:4px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
 .badge.warning{color:#f2cf7a;border-color:#6b5420;background:#2d240c}
-/* A ring whose tail fades in as the accent orange and brightens to white at the head; --ring sets its thickness. */
-.spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 15%,color-mix(in srgb,var(--accent) 60%,transparent) 45%,var(--accent) 75%,#fff);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
+/* A ring whose tail fades in as white and turns the accent orange at the head; --ring sets its thickness. */
+.spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 15%,rgba(255,255,255,.6) 45%,#fff 75%,var(--accent));-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading{display:grid;place-items:center;padding:60px 0}
 .skeleton{background:linear-gradient(100deg,var(--surface) 30%,var(--surface-2) 50%,var(--surface) 70%);background-size:300% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:var(--radius)}
@@ -134,7 +134,7 @@ main{min-height:100vh}
 .hero-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 20%}
 .hero-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(12,12,16,.92) 0%,rgba(12,12,16,.55) 38%,transparent 70%),linear-gradient(0deg,var(--bg) 0%,rgba(12,12,16,.35) 30%,transparent 55%)}
 /* Text sits above the rows and below the nav, growing upward from the bottom. */
-.hero-content{position:absolute;left:var(--gutter);top:calc(var(--nav-h) + 16px);bottom:clamp(96px,14vh,150px);display:flex;flex-direction:column;justify-content:flex-end;width:min(560px,calc(100% - 2 * var(--gutter)))}
+.hero-content{position:absolute;left:var(--gutter);top:calc(var(--nav-h) + 16px);bottom:clamp(96px,14vh,150px);display:flex;flex-direction:column;justify-content:flex-end;width:min(960px,calc(100% - 2 * var(--gutter)))}
 /* Slides crossfade: the new one fades in over the previous, which stays opaque until it is covered.
    Hidden slides snap back only after the fade is done. The drift keeps running as a slide becomes the previous one. */
 .hero-slide{position:absolute;inset:0;opacity:0;transition:opacity 0s 2s}
@@ -148,10 +148,11 @@ main{min-height:100vh}
 .hero-content{animation:hero-in 1.2s ease-in-out .4s both}
 @keyframes hero-in{from{opacity:0}to{opacity:1}}
 .hero-kicker{font-size:13px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
-.hero h1{font-size:clamp(30px,4vw,56px);line-height:1.04;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex-shrink:0;letter-spacing:-.035em;margin-bottom:14px;text-shadow:0 2px 24px rgba(0,0,0,.4)}
+.hero h1{font-size:clamp(30px,4vw,56px);line-height:1.04;overflow-wrap:anywhere;flex-shrink:0;letter-spacing:-.035em;margin-bottom:14px;text-shadow:0 2px 24px rgba(0,0,0,.4)}
 .hero-meta{font-size:15px;color:#dcdce2;margin-bottom:12px;font-weight:500}
-.hero-episode{font-size:18px;line-height:1.4;font-weight:600;color:#eeeef2;margin-bottom:12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex-shrink:0}
-.hero-summary{font-size:16px;line-height:1.55;color:#d6d6dc;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:24px;text-shadow:0 1px 12px rgba(0,0,0,.5)}
+.hero-episode{font-size:18px;line-height:1.4;font-weight:600;color:#eeeef2;margin-bottom:12px;overflow-wrap:anywhere;flex-shrink:0}
+.hero-link:hover,.hero-link:focus-visible{text-decoration:underline;text-underline-offset:.12em;text-decoration-thickness:.06em}
+.hero-summary{max-width:560px;font-size:16px;line-height:1.55;color:#d6d6dc;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:24px;text-shadow:0 1px 12px rgba(0,0,0,.5)}
 @media (max-height:760px){.hero-summary{-webkit-line-clamp:2}}
 .hero-dots{position:absolute;right:var(--gutter);bottom:clamp(106px,15vh,160px);display:flex;gap:6px}
 .hero-dots button{width:22px;height:4px;padding:0;border:0;border-radius:2px;background:rgba(255,255,255,.3);transition:width .8s ease-in-out,background .8s ease-in-out}
