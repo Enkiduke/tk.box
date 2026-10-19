@@ -86,6 +86,32 @@ test('a vanished failed session does not prevent trying a backup',async()=>{
   assert.equal((await new LiveFailover(request).recover(session('primary'),()=>true))?.channel.id,'backup');
 });
 
+test('tuning moves past a feed that cannot start, and those feeds are not retried by later recovery',async()=>{
+  const station={...feed('primary'),stack:'source:station',feeds:['backup','primary','third'].map(feed)};
+  const {request,calls}=transport(call=>{
+    if(call.method==='GET')return lineup('backup','primary','third');
+    if(call.method==='DELETE')return {};
+    if(tuned(call)!=='third')throw new ApiClientError('4K','QUALITY_NOT_PERMITTED',422);
+    return session(tuned(call));
+  });
+  const recovery=new LiveFailover(request),result=await recovery.tune(station,'Now airing',()=>true);
+  assert.equal(result?.channel.id,'third');assert.equal(result?.program,'Now airing');assert.equal(result?.channel.feeds?.length,3);
+  assert.deepEqual(calls.map(tuned),['primary','backup','third'],'the chosen feed first, then the rest in order');
+  assert.equal(await recovery.recover(result!,()=>true),undefined);
+});
+
+test('tuning reports the chosen feed\'s error when no feed starts, and stops on a non-feed error',async()=>{
+  const station={...feed('primary'),stack:'source:station',feeds:['primary','backup'].map(feed)};
+  const failing=transport(call=>{throw tuned(call)==='primary'?new ApiClientError('4K','QUALITY_NOT_PERMITTED',422):new ApiClientError('Offline','LIVE_TUNE_FAILED',502);});
+  await assert.rejects(new LiveFailover(failing.request).tune(station,undefined,()=>true),{code:'QUALITY_NOT_PERMITTED'});
+  assert.equal(failing.calls.length,2);
+  const full=transport(()=>{throw new ApiClientError('Full','LIVE_CONNECTIONS_FULL',503);});
+  await assert.rejects(new LiveFailover(full.request).tune(station,undefined,()=>true),{code:'LIVE_CONNECTIONS_FULL'});
+  assert.equal(full.calls.length,1);
+  const single=transport(call=>session(tuned(call)));
+  assert.equal((await new LiveFailover(single.request).tune(feed('lone'),undefined,()=>true))?.channel.id,'lone');
+});
+
 test('live watchdog detects a stopped clock but allows progress, pauses, seeks and suspended browser timers',()=>{
   const watchdog=new LivePlaybackWatchdog();
   for(let now=0;now<20000;now+=2000)assert.equal(watchdog.check(now,10,false),false);
