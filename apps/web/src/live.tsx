@@ -47,7 +47,7 @@ const timing=(p:Program,now:number)=>p.continuous?'24/7':soon(p)?`Starting soon 
 const emptyLabel=(c:Station,now:number)=>c.programs.find(p=>p.start<=now&&p.end>now)?.blank?'':'No guide data';
 // A stable shuffle: the same seed gives the same order, and a channel joining or leaving does not move the rest.
 const rank=(id:string,seed:string)=>{let h=2166136261;for(const ch of seed+id)h=Math.imul(h^ch.charCodeAt(0),16777619);return h>>>0;};
-const shuffled=<T extends {id:string}>(list:T[],seed:string)=>[...list].sort((a,b)=>rank(a.id,seed)-rank(b.id,seed));
+export const shuffled=<T extends {id:string}>(list:T[],seed:string)=>[...list].sort((a,b)=>rank(a.id,seed)-rank(b.id,seed));
 function useNow(){const [now,setNow]=useState(Date.now);useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(timer);},[]);return now;}
 
 // Home's one Live TV row: what's on now and next, capped (Settings › Home) so it never becomes the guide.

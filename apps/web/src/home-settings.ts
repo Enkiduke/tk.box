@@ -3,9 +3,9 @@ import {useSyncExternalStore} from 'react';
 // How the Home page looks in this browser. Per browser, like the subtitle style, so every viewer sets their own.
 type Speed='slow'|'normal'|'fast';
 export type HomeSettings={liveRow:boolean;liveCount:number;liveShuffle:boolean;liveScroll:boolean;liveSpeed:Speed;
-  collectionRows:boolean;collectionScroll:boolean;collectionSpeed:Speed};
+  collectionRows:boolean;collectionShuffle:boolean;collectionScroll:boolean;collectionSpeed:Speed};
 export const defaultHomeSettings:HomeSettings={liveRow:true,liveCount:24,liveShuffle:true,liveScroll:true,liveSpeed:'slow',
-  collectionRows:true,collectionScroll:false,collectionSpeed:'slow'};
+  collectionRows:true,collectionShuffle:false,collectionScroll:false,collectionSpeed:'slow'};
 // The guide serves at most 60 channels a page.
 export const liveCounts=[12,24,36,48,60] as const;
 export const liveSpeeds=[['slow','Slow'],['normal','Normal'],['fast','Fast']] as const;
@@ -15,11 +15,11 @@ export const liveSpeedPx:Record<Speed,number>={slow:18,normal:32,fast:55};
 export function parseHomeSettings(raw:string|null):HomeSettings {
   let value:Partial<Record<keyof HomeSettings,unknown>>={};
   try{const parsed=raw?JSON.parse(raw):{};if(parsed&&typeof parsed==='object')value=parsed;}catch{/* fall back to defaults */}
-  const flag=(k:'liveRow'|'liveShuffle'|'liveScroll'|'collectionRows'|'collectionScroll')=>typeof value[k]==='boolean'?value[k] as boolean:defaultHomeSettings[k];
+  const flag=(k:'liveRow'|'liveShuffle'|'liveScroll'|'collectionRows'|'collectionShuffle'|'collectionScroll')=>typeof value[k]==='boolean'?value[k] as boolean:defaultHomeSettings[k];
   const speed=(k:'liveSpeed'|'collectionSpeed')=>liveSpeeds.some(([id])=>id===value[k])?value[k] as Speed:defaultHomeSettings[k];
   return {liveRow:flag('liveRow'),liveShuffle:flag('liveShuffle'),liveScroll:flag('liveScroll'),
     liveCount:liveCounts.includes(value.liveCount as never)?value.liveCount as number:defaultHomeSettings.liveCount,liveSpeed:speed('liveSpeed'),
-    collectionRows:flag('collectionRows'),collectionScroll:flag('collectionScroll'),collectionSpeed:speed('collectionSpeed')};
+    collectionRows:flag('collectionRows'),collectionShuffle:flag('collectionShuffle'),collectionScroll:flag('collectionScroll'),collectionSpeed:speed('collectionSpeed')};
 }
 
 const key='tk.box.home',listeners=new Set<()=>void>();
