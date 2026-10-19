@@ -6,7 +6,7 @@ import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js'
 import {readPreference} from './storage.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
-import type {Quality,QualityOption} from '../../../packages/contracts/src/index.js';
+import {qualityTiers,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
 // Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
 export type TimeshiftState={state:'LIVE'|'PAUSED'|'PLAYING_DELAYED'|'EXPIRED'|'STOPPED';behindLiveMs:number;viewerCursorUtc:number;broadcastNowUtc:number};
@@ -17,16 +17,21 @@ export type AudioTrack={id:string;label:string;language?:string;selected:boolean
 export type MediaTracks={subtitles:SubtitleTrack[];audio:AudioTrack[]};
 // A custom-channel program as it aired: from broadcast time `start` the picture shows media position `mediaStartMs` onward.
 export type LiveProgram={id:string;start:number;mediaStartMs:number;subtitles:SubtitleTrack[]};
-export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string};
+export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string;bitrateKbps?:number};
 const deliveryLabel:Record<Delivery,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
 const deliveryDetail:Record<Delivery,string>={direct:'Playing the original file.',remux:'Original video, repackaged for this browser.',transcode:'Converted by Plex for this browser.'};
 const liveDetail:Partial<Record<Delivery,string>>={remux:'Channel video, repackaged for this browser.',transcode:'Channel video, converted by tk.box for this browser.'};
-// The bitrate ceilings match the server's qualityCaps.
-const qualityLabel:Record<Quality,string>={auto:'Auto',original:'Original','1080p':'1080p','720p':'720p'},qualityCeiling:Partial<Record<Quality,string>>={'1080p':'up to 8 Mbps','720p':'up to 4 Mbps'};
-const qualityDetail=(o:QualityOption)=>!o.available?o.reason:o.route==='cpu'?qualityCeiling[o.quality]?`Converted, ${qualityCeiling[o.quality]}`:'Converted for this browser'
-  :o.quality==='1080p'||o.quality==='720p'?'Same as Original for this title':o.route==='remux'?'Original video, repackaged':'Original file';
-// The next lighter choice that actually lowers the stream, for the buffering suggestion.
-const lighter=(current:Quality,options?:QualityOption[])=>(['1080p','720p'] as const).slice(current==='1080p'?1:current==='720p'?2:0).find(q=>options?.some(o=>o.quality===q&&o.available&&o.route==='cpu'));
+const tierOf=(q:Quality)=>qualityTiers.find(t=>t.id===q),mbps=(kbps:number)=>`${+(kbps/1000).toFixed(1)} Mbps`;
+const qualityLabel=(q:Quality)=>q==='auto'?'Auto':q==='original'?'Original':tierOf(q)!.label;
+const qualityShort=(q:Quality)=>{const t=tierOf(q);return t?`${t.height}p · ${mbps(t.bitrateKbps)}`:qualityLabel(q);};
+const routeDetail=(o:QualityOption)=>o.route==='cpu'?'Converted for this browser':o.route==='remux'?'Original video, repackaged':'Original file';
+// The buffering suggestion: a real step down, to about half the current bitrate or the lightest
+// conversion left. Only conversions that actually lower the stream count.
+const lighter=(current:Quality,options:QualityOption[]|undefined,sourceKbps?:number)=>{
+  const now=tierOf(current)?.bitrateKbps??sourceKbps;
+  const open=qualityTiers.filter(t=>(now===undefined||t.bitrateKbps<now)&&options?.some(o=>o.quality===t.id&&o.available&&o.route==='cpu'));
+  return (open.find(t=>t.bitrateKbps<=(now===undefined?8000:now*.6))??open.at(-1))?.id;
+};
 const speeds=[.5,.75,1,1.25,1.5,2],sizes=[['s','Small'],['m','Medium'],['l','Large']] as const;
 type Size=typeof sizes[number][0];type Panel='subtitles'|'settings'|'channels';
 // Viewer conveniences only; Plex's own track selection is the default.
@@ -52,7 +57,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
   useEffect(()=>{setShifted(undefined);},[url]);
   // Frequent mid-playback buffering suggests a lighter quality, once per stream unless dismissed.
-  const suggestion=live?undefined:lighter(quality,qualityOptions),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
+  const suggestion=live?undefined:lighter(quality,qualityOptions,source?.bitrateKbps),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
   const [nudge,setNudge]=useState(false),nudgeDismissed=useRef(false);
   useEffect(()=>{setNudge(false);nudgeDismissed.current=false;},[url]);
   const clear=()=>{const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
@@ -233,7 +238,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       {switching&&<div className="player-status" role="status"><span className="spinner"/>{switching==='audio'?'Switching audio…':'Switching quality…'}</div>}
       {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
       {nudge&&suggestion&&!switching&&<div className="player-status player-nudge" role="status">Buffering a lot? A lighter stream may play more smoothly.
-        <button className="primary" onClick={()=>chooseQuality(suggestion)}>Switch to {qualityLabel[suggestion]}</button>
+        <button className="primary" onClick={()=>chooseQuality(suggestion)}>Switch to {qualityShort(suggestion)}</button>
         <button className="secondary" onClick={()=>{nudgeDismissed.current=true;setNudge(false);}}>Not now</button></div>}
       {shifted?.state==='EXPIRED'&&<div className="player-expired" role="alert"><strong>Buffer expired</strong><span>You were paused longer than this channel keeps, so that part is gone.</span><button className="primary" disabled={shiftBusy} onClick={goLive}>Go Live</button></div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
@@ -250,9 +255,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           {tracks&&tracks.audio.length>1&&onAudioChange&&<PanelSection title="Audio"><div role="radiogroup" aria-label="Audio track" className="choices">
             {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={!!switching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
           </div></PanelSection>}
-          {!live&&onQualityChange&&qualityOptions&&<PanelSection title="Quality"><div role="radiogroup" aria-label="Quality" className="choices">
-            {qualityOptions.map(o=><Choice key={o.quality} selected={o.quality===quality} disabled={!o.available||!!switching} detail={qualityDetail(o)} onSelect={()=>chooseQuality(o.quality)}>{qualityLabel[o.quality]}</Choice>)}
-          </div></PanelSection>}
+          {!live&&onQualityChange&&qualityOptions&&<PanelSection title="Quality"><QualityChoices options={qualityOptions} selected={quality} source={source} disabled={!!switching} onSelect={chooseQuality}/></PanelSection>}
           {live&&onFeed&&feeds&&feeds.length>1&&<PanelSection title="Feed"><div role="radiogroup" aria-label="Channel feed" className="choices">
             {feeds.map(f=><Choice key={f.id} selected={f.id===feed} detail={f.quality} onSelect={()=>{if(f.id!==feed)onFeed(f.id);}}>{f.label}</Choice>)}
           </div></PanelSection>}
@@ -261,7 +264,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
             <dl className="stream-info">
               <div><dt>Mode</dt><dd>{deliveryLabel[delivery]}<small>{(live&&liveDetail[delivery])||deliveryDetail[delivery]}</small></dd></div>
               {videoInfo&&<div><dt>Video</dt><dd>{videoInfo}</dd></div>}
-              {!live&&quality!=='auto'&&<div><dt>Quality</dt><dd>{qualityLabel[quality]}{delivery==='transcode'&&qualityCeiling[quality]&&<small>Converted, {qualityCeiling[quality]}</small>}</dd></div>}
+              {!live&&quality!=='auto'&&<div><dt>Quality</dt><dd>{qualityLabel(quality)}{tierOf(quality)&&<small>Converted, up to {mbps(tierOf(quality)!.bitrateKbps)}</small>}</dd></div>}
               {audio&&<div><dt>Audio</dt><dd>{audio.label}</dd></div>}
             </dl>
           </PanelSection>
@@ -287,7 +290,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           </button>}
           <span className="grow"/>
           {live&&onFeed&&feeds&&feeds.length>1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Change feed · ${feeds.length} available`} title="Change feed">{feeds.find(f=>f.id===feed)?.quality??'Feed'} · {feeds.length}</button>}
-          {!live&&quality!=='auto'&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Quality · ${qualityLabel[quality]}`}>{qualityLabel[quality]}</button>}
+          {!live&&quality!=='auto'&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Quality · ${qualityShort(quality)}`}>{qualityShort(quality)}</button>}
           {rate!==1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')}>{rate}×</button>}
           {live&&channels&&<button className="icon-button" onClick={()=>setPanel(p=>p==='channels'?undefined:'channels')} aria-label="Browse channels" aria-expanded={panel==='channels'} title="Browse channels (g)"><Icon name="grid" size={24}/></button>}
           {(!live||programs)&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}
@@ -321,6 +324,19 @@ function Captions({video,cues,time,size,docked,controls,language}:{video:RefObje
   return <div className="player-captions" lang={language} style={{bottom,fontSize}} aria-hidden="true">
     {active.map(i=><div key={i} className="caption">{cues[i]!.lines.map((line,n)=><span key={n} className="caption-line">{line.map((span,m)=>
       <span key={m} style={{fontStyle:span.i?'italic':undefined,fontWeight:span.b?700:undefined,textDecoration:span.u?'underline':undefined}}>{span.text}</span>)}</span>)}</div>)}
+  </div>;
+}
+// Conversions the source already fits within would only replay the original, so they are left out;
+// when no conversion is possible for one reason, that reason shows once instead of on every row.
+function QualityChoices({options,selected,source,disabled,onSelect}:{options:QualityOption[];selected:Quality;source?:SourceInfo;disabled:boolean;onSelect:(q:Quality)=>void}) {
+  const fixed=options.filter(o=>!tierOf(o.quality)),tiers=options.filter(o=>tierOf(o.quality)&&(!o.available||o.route==='cpu'));
+  const blocked=tiers.length>0&&tiers.every(o=>!o.available&&o.reason===tiers[0]!.reason)?tiers[0]!.reason:undefined;
+  const original=[source?.bitrateKbps&&mbps(source.bitrateKbps),resolution(source)].filter(Boolean).join(' · ');
+  return <div role="radiogroup" aria-label="Quality" className="choices">
+    {fixed.map(o=><Choice key={o.quality} selected={o.quality===selected} disabled={!o.available||disabled} onSelect={()=>onSelect(o.quality)}
+      detail={!o.available?o.reason:o.quality==='original'?original||routeDetail(o):routeDetail(o)}>{o.quality==='original'?'Play original quality':'Auto'}</Choice>)}
+    {blocked?<p className="panel-empty">Converting: {blocked}</p>:tiers.map(o=><Choice key={o.quality} selected={o.quality===selected} disabled={!o.available||disabled} onSelect={()=>onSelect(o.quality)}
+      detail={o.available?mbps(tierOf(o.quality)!.bitrateKbps):o.reason}>Convert to {qualityLabel(o.quality)}</Choice>)}
   </div>;
 }
 const PanelSection=({title,children}:{title:string;children:ReactNode})=><section className="panel-section"><h4>{title}</h4>{children}</section>;

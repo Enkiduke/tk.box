@@ -11,20 +11,21 @@ test('Auto prefers direct then remux/audio-only then eligible software fallback'
   const remux = chooseRoute({...source, container: 'mkv', audioCodec: 'dts'}, client); assert.equal(remux.kind, 'remux'); assert.equal(remux.audioEncode, true);
   assert.equal(chooseRoute({...source, codec: 'mpeg4'}, client).kind, 'cpu');
   assert.throws(() => chooseRoute({...source, codec: 'mpeg4'}, client, 'original'), {code: 'SOURCE_INCOMPATIBLE'});
-  assert.equal(chooseRoute({...source, height: 720, width: 1280}, client, '1080p').kind, 'direct');
-  assert.equal(chooseRoute(source, client, '720p').kind, 'cpu');
+  assert.equal(chooseRoute({...source, height: 720, width: 1280}, client, '1080p-8').kind, 'direct');
+  assert.equal(chooseRoute(source, client, '720p-4').kind, 'cpu');
   assert.equal(eligibleVideoEncode({...source, width: 1080, height: 1920}), true);
 });
 test('1080p and 720p cap bitrate too, and the quality menu explains what is unavailable', () => {
   const heavy = {...source, bitrateKbps: 20000};
-  assert.deepEqual(chooseRoute(heavy, client, '1080p'), {kind: 'cpu', maxHeight: 1080, maxBitrateKbps: 8000, audioEncode: true});
-  assert.equal(chooseRoute({...source, bitrateKbps: 6000}, client, '1080p').kind, 'direct');
-  assert.equal(chooseRoute({...source, height: 720, width: 1280, bitrateKbps: 6000}, client, '720p').kind, 'cpu');
+  assert.deepEqual(chooseRoute(heavy, client, '1080p-8'), {kind: 'cpu', maxHeight: 1080, maxBitrateKbps: 8000, audioEncode: true});
+  assert.equal(chooseRoute({...source, bitrateKbps: 6000}, client, '1080p-8').kind, 'direct');
+  assert.equal(chooseRoute({...source, height: 720, width: 1280, bitrateKbps: 6000}, client, '720p-4').kind, 'cpu');
   assert.equal(chooseRoute(heavy, client).kind, 'direct');
   const routes = (s: SourceVideo, c = client) => Object.fromEntries(qualityOptions(s, c).map(o => [o.quality, o.available ? o.route : o.reason]));
-  assert.deepEqual(routes(heavy), {auto: 'direct', original: 'direct', '1080p': 'cpu', '720p': 'cpu'});
+  assert.deepEqual(routes(heavy), {auto: 'direct', original: 'direct', '1080p-20': 'direct', '1080p-12': 'cpu', '1080p-10': 'cpu', '1080p-8': 'cpu', '720p-4': 'cpu', '720p-3': 'cpu', '720p-2': 'cpu', '480p-1.5': 'cpu'});
+  assert.deepEqual(chooseRoute(heavy, client, '480p-1.5'), {kind: 'cpu', maxHeight: 480, maxBitrateKbps: 1500, audioEncode: true});
   const uhd = routes({...source, codec: 'hevc', width: 3840, height: 2160, bitrateKbps: 60000}, {...client, videoCodecs: ['hevc:8']});
-  assert.equal(uhd.original, 'direct'); assert.equal(uhd['720p'], 'Video above 1080p cannot be converted on this server');
+  assert.equal(uhd.original, 'direct'); assert.equal(uhd['720p-4'], 'Video above 1080p cannot be converted on this server');
   assert.equal(routes({...source, codec: 'mpeg4'}).original, 'This browser cannot play the original video');
 });
 test('the stall meter flags repeated or long buffering within its window', () => {
@@ -37,7 +38,7 @@ test('the stall meter flags repeated or long buffering within its window', () =>
 });
 test('4K HEVC, above-1080p, unknown metadata and subtitle routes cannot create video encode arguments', () => {
   for (const s of [{...source, codec: 'hevc', width: 3840, height: 2160}, {...source, width: 2560, height: 1440}, {...source, width: undefined}, {...source, height: NaN}]) {
-    assert.throws(() => chooseRoute(s, client, '720p'), {code: 'QUALITY_NOT_PERMITTED'});
+    assert.throws(() => chooseRoute(s, client, '720p-4'), {code: 'QUALITY_NOT_PERMITTED'});
     assert.throws(() => hlsArgs('fixture', 'output', s, {kind: 'cpu', audioEncode: true}), {code: 'QUALITY_NOT_PERMITTED'});
   }
   const hevc = {...source, codec: 'hevc', width: 3840, height: 2160};
