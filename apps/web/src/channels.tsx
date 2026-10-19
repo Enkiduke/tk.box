@@ -8,7 +8,7 @@ import {Card,MoveButtons,SectionHead,Switch,code,moveTo,plural,useDragOrder,useM
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
 // Every edit changes the draft; Publish hands over at the end of whatever is airing.
 type Slot={title:string;subtitle?:string;start:number;end:number;entryId:string};
-type Summary={id:string;name:string;summary:string;logoUrl:string|null;enabled:boolean;number:number|null;position:number|null;revision:number;programs:number;runtimeMs:number;issues:number;
+type Summary={id:string;name:string;summary:string;logoUrl:string|null;plexLogo:string|null;mainTitle:{id:string;title:string}|null;enabled:boolean;number:number|null;position:number|null;revision:number;programs:number;runtimeMs:number;issues:number;
   live:boolean;startedAt?:number;current?:Slot;pending?:{effectiveAt:number;next:string;nextSubtitle?:string};changed:boolean;publicationRevision:number};
 type Issue='no_media'|'no_duration'|'incompatible';
 type Entry={entryId:string;mediaId:string;kind:'movie'|'episode';title:string;showTitle?:string;showId?:string;season?:number;episode?:number;year?:number;date?:string;durationMs:number;sourceId?:string;issue?:Issue;addedAuto?:number};
@@ -376,18 +376,39 @@ function PublishDialog({view,onClose,published}:{view:Detail;onClose:()=>void;pu
   </Modal>;
 }
 
+// The shows and movies on the channel, A–Z, as the titles whose Plex logo it can use.
+function logoTitles(entries:Entry[]) {
+  const titles=new Map<string,string>();
+  for(const e of entries){const id=e.kind==='episode'?e.showId:e.mediaId;if(id&&!titles.has(id))titles.set(id,(e.kind==='episode'?e.showTitle:undefined)??e.title);}
+  return [...titles].map(([id,title])=>({id,title})).sort((a,b)=>a.title.localeCompare(b.title));
+}
+// The title's Plex logo, or its poster when it has none, as Live TV would show it.
+function PlexLogoPreview({id}:{id:string}) {
+  const [step,setStep]=useState(0);
+  useEffect(()=>setStep(0),[id]);
+  if(step>1)return <span className="plex-logo-preview muted">No Plex artwork</span>;
+  return <span className="plex-logo-preview"><img src={`/api/v1/catalog/items/${id}/artwork?kind=${step?'poster':'logo'}`} alt="" onError={()=>setStep(s=>s+1)}/></span>;
+}
 function DetailsPanel({view,saved,removed}:{view:Detail;saved:(c:Detail)=>void;removed:()=>void}) {
-  const [name,setName]=useState(view.name),[number,setNumber]=useState(String(view.number??'')),[summary,setSummary]=useState(view.summary),[logo,setLogo]=useState(view.logoUrl??''),[enabled,setEnabled]=useState(view.enabled),[confirm,setConfirm]=useState(false);
+  const [name,setName]=useState(view.name),[number,setNumber]=useState(String(view.number??'')),[summary,setSummary]=useState(view.summary),[logo,setLogo]=useState(view.logoUrl??''),[plexLogo,setPlexLogo]=useState(view.plexLogo??''),[enabled,setEnabled]=useState(view.enabled),[confirm,setConfirm]=useState(false);
   const mutation=useMutation(changed),remove=useMutation(()=>{});
-  const dirty=name!==view.name||number!==String(view.number??'')||summary!==view.summary||logo!==(view.logoUrl??'')||enabled!==view.enabled;
+  const dirty=name!==view.name||number!==String(view.number??'')||summary!==view.summary||logo!==(view.logoUrl??'')||plexLogo!==(view.plexLogo??'')||enabled!==view.enabled;
+  const titles=logoTitles(view.entries),shown=plexLogo==='none'?undefined:plexLogo||view.mainTitle?.id;
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <Card title="Channel details" description="These save right away and don’t need publishing.">
-      <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>saved(await api<Detail>(`${base}/${view.id}`,'PATCH',{expectedRevision:view.revision,name,summary,enabled,logoUrl:logo.trim()||null,...(number?{number:Number(number)}:{})})));}}>
+      <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>saved(await api<Detail>(`${base}/${view.id}`,'PATCH',{expectedRevision:view.revision,name,summary,enabled,logoUrl:logo.trim()||null,plexLogo:plexLogo||null,...(number?{number:Number(number)}:{})})));}}>
         <label>Channel name<input value={name} onChange={e=>setName(e.target.value)} required maxLength={120}/></label>
         <label>Channel number<input type="number" min="1" max="999999" required value={number} onChange={e=>setNumber(e.target.value)}/><small>Shared with IPTV channels. Changing it doesn’t change what’s on.</small></label>
         <label>Description <span className="muted">(optional)</span><textarea value={summary} onChange={e=>setSummary(e.target.value)} maxLength={1000} placeholder="Shown with the channel in Live TV"/></label>
-        <label>Logo image address <span className="muted">(optional)</span><span className="logo-field">{logo.trim()&&/^https?:\/\//i.test(logo.trim())&&<img src={logo.trim()} alt="" className="logo-preview" onError={e=>{e.currentTarget.style.display='none';}} onLoad={e=>{e.currentTarget.style.display='';}}/>}<input type="url" value={logo} onChange={e=>setLogo(e.target.value)} maxLength={2000} placeholder="https://…/logo.png" spellCheck={false}/></span><small>PNG, JPEG, WebP or GIF up to 1 MB. Without one, Live TV shows the channel number.</small></label>
+        <label>Logo image address <span className="muted">(optional)</span><span className="logo-field">{logo.trim()&&/^https?:\/\//i.test(logo.trim())&&<img src={logo.trim()} alt="" className="logo-preview" onError={e=>{e.currentTarget.style.display='none';}} onLoad={e=>{e.currentTarget.style.display='';}}/>}<input type="url" value={logo} onChange={e=>setLogo(e.target.value)} maxLength={2000} placeholder="https://…/logo.png" spellCheck={false}/></span><small>PNG, JPEG, WebP or GIF up to 1 MB. Without one, Live TV uses the Plex logo below.</small></label>
+        <label>Use Plex logo<span className="logo-field"><select value={plexLogo} onChange={e=>setPlexLogo(e.target.value)} disabled={!!logo.trim()}>
+          <option value="">{view.mainTitle?`Automatic · ${view.mainTitle.title}`:'Automatic · no main show yet'}</option>
+          {titles.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}
+          {plexLogo&&plexLogo!=='none'&&!titles.some(t=>t.id===plexLogo)&&<option value={plexLogo}>A title no longer on this channel</option>}
+          <option value="none">None · show the channel number</option>
+        </select>{!logo.trim()&&shown&&<PlexLogoPreview id={shown}/>}</span>
+          <small>{logo.trim()?'The logo address above is used instead.':'Automatic uses the show or movie that makes up at least half the channel. Titles without a Plex logo use their poster.'}</small></label>
         <Switch label="Visible in Live TV" description="Turn off to hide the channel from viewers. Its schedule keeps running, so it’s on time when you turn it back on." checked={enabled} onChange={setEnabled}/>
         <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>{dirty?'Save details':'Saved'}</button></div>
       </form>

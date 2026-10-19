@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from '../apps/server/src/persistence/database.js';
-import { CustomChannelStore, entryIssue, type Selection } from '../apps/server/src/persistence/custom-channels.js';
+import { CustomChannelStore, entryIssue, mainTitle, type Selection } from '../apps/server/src/persistence/custom-channels.js';
 import { arrange, insertNew, type ArrangeEntry } from '../apps/server/src/services/arrange.js';
 import type { ChannelMedia } from '../apps/server/src/providers/plex.js';
 
@@ -194,4 +194,27 @@ test('the source migration keeps every source and its seen episodes', () => {
     assert.equal(count('SELECT COUNT(*) AS n FROM custom_source_episodes'), 0, 'the foreign key still cascades');
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a channel uses its logo address, else its chosen or main Plex title', () => {
+  const entries = [ep('A', 1, 1), ep('A', 1, 2), movie('M'), ep('B', 1, 1)];
+  assert.deepEqual(mainTitle(entries), { id: 'A', title: 'A' });
+  // Under half the channel is no main show.
+  assert.equal(mainTitle([ep('A', 1, 1), movie('M'), ep('B', 1, 1)]), undefined);
+  assert.equal(mainTitle([]), undefined);
+  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  try {
+    let channel = store.create('admin', { name: 'Shows', number: 9 }, 0);
+    const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] };
+    const added = store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['100'] }, [show], 0).channel;
+    channel = store.publish('admin', channel.id, { expectedRevision: added.revision, expectedPublication: 0 }, 0).channel;
+    assert.deepEqual(channel.mainTitle, { id: 'show', title: 'Show' });
+    assert.deepEqual(store.logo(channel.id), { plexId: 'show' });
+    channel = store.edit('admin', channel.id, { expectedRevision: channel.revision, plexLogo: '555' }, 1);
+    assert.deepEqual(store.logo(channel.id), { plexId: '555' });
+    channel = store.edit('admin', channel.id, { expectedRevision: channel.revision, plexLogo: 'none' }, 1);
+    assert.deepEqual(store.logo(channel.id), {}); assert.equal(store.stations('viewer', false, '', undefined, 1)[0]!.logo, false);
+    channel = store.edit('admin', channel.id, { expectedRevision: channel.revision, logoUrl: 'https://example.com/logo.png' }, 1);
+    assert.deepEqual(store.logo(channel.id), { url: 'https://example.com/logo.png' }); assert.equal(store.stations('viewer', false, '', undefined, 1)[0]!.logo, true);
+  } finally { db.close(); }
 });

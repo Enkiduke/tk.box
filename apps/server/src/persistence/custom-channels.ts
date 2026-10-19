@@ -12,7 +12,7 @@ import type { Program } from '../providers/iptv.js';
 export type EntryIssue = 'no_media' | 'no_duration' | 'incompatible';
 export type DraftEntry = { entryId: string; mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; season?: number; episode?: number;
   year?: number; date?: string; durationMs: number; sourceId?: string; issue?: EntryIssue; addedAuto?: number };
-type Row = { id: string; name: string; summary: string; logo_url: string | null; enabled: number; created_at: number; updated_at: number; revision: number; draft: string; published: string | null; number: number | null; position: number | null };
+type Row = { id: string; name: string; summary: string; logo_url: string | null; plex_logo: string | null; enabled: number; created_at: number; updated_at: number; revision: number; draft: string; published: string | null; number: number | null; position: number | null };
 export type SourceKind = 'show' | 'season' | 'collection' | 'genre';
 // Collections and categories can hold movies and many shows, so new titles of any kind join them.
 const grouped = (kind: string) => kind === 'collection' || kind === 'genre';
@@ -25,8 +25,10 @@ export type GuideSlot = { start: number; end: number; program: Program | null; b
 
 const revision = z.number().int().nonnegative();
 const logoUrl = z.string().trim().max(2000).url().refine(u => /^https?:\/\//i.test(u), 'Use an http(s) address.').nullable();
+// null: the main show's logo; 'none': no Plex logo; otherwise the Plex show or movie whose logo to use.
+const plexLogo = z.union([z.literal('none'), z.string().regex(/^\d{1,20}$/)]).nullable();
 export const customCreate = z.object({ name: z.string().trim().min(1).max(120), number: z.number().int().min(1).max(999999).optional(), summary: z.string().trim().max(1000).default(''), logoUrl: logoUrl.optional() }).strict();
-export const customEdit = z.object({ expectedRevision: revision, name: z.string().trim().min(1).max(120).optional(), number: z.number().int().min(1).max(999999).optional(), summary: z.string().trim().max(1000).optional(), logoUrl: logoUrl.optional(), enabled: z.boolean().optional() }).strict();
+export const customEdit = z.object({ expectedRevision: revision, name: z.string().trim().min(1).max(120).optional(), number: z.number().int().min(1).max(999999).optional(), summary: z.string().trim().max(1000).optional(), logoUrl: logoUrl.optional(), plexLogo: plexLogo.optional(), enabled: z.boolean().optional() }).strict();
 export const customOrder = z.object({ ids: z.array(z.string().uuid()).max(1000) }).strict();
 export const draftAdd = z.object({ expectedRevision: revision, ids: z.array(z.string().regex(/^(?:\d{1,20}|collection:\d{1,20}|genre:\d{1,20}:\d{1,20})$/)).min(1).max(100), at: z.number().int().nonnegative().optional(), specials: z.boolean().default(false), autoAdd: z.boolean().default(false) }).strict();
 export const draftOrder = z.object({ expectedRevision: revision, entryIds: z.array(z.string().uuid()).max(MAX_ENTRIES) }).strict();
@@ -39,6 +41,16 @@ const label = (e: DraftEntry) => e.kind === 'episode' ? [episodeCode(e), e.title
 // Guide/scheduler form of an entry: episodes air under their show's name.
 const toEntry = (e: DraftEntry): Entry => ({ occurrenceId: e.entryId, mediaId: e.mediaId, title: e.kind === 'episode' ? e.showTitle ?? e.title : e.title, ...(label(e) ? { subtitle: label(e) } : {}), durationMs: e.durationMs, mediaOffsetMs: 0 });
 const sameList = (a: DraftEntry[], b: DraftEntry[]) => a.length === b.length && a.every((e, i) => e.entryId === b[i]!.entryId);
+// The show (or movie) that makes up at least half the programs; a mixed channel has none, so no one show's logo stands for it.
+export function mainTitle(entries: Pick<DraftEntry, 'kind' | 'mediaId' | 'title' | 'showId' | 'showTitle'>[]): { id: string; title: string } | undefined {
+  const counts = new Map<string, { title: string; n: number }>();
+  for (const e of entries) {
+    const id = e.kind === 'episode' ? e.showId : e.mediaId; if (!id) continue;
+    const c = counts.get(id) ?? { title: (e.kind === 'episode' ? e.showTitle : undefined) ?? e.title, n: 0 }; c.n++; counts.set(id, c);
+  }
+  const [id, top] = [...counts].sort((a, b) => b[1].n - a[1].n)[0] ?? [];
+  return id && top && top.n * 2 >= entries.length ? { id, title: top.title } : undefined;
+}
 const slotView = (s: Slot) => ({ title: s.entry.title, subtitle: s.entry.subtitle, start: s.start, end: s.end, entryId: s.entry.occurrenceId });
 // Copying browser-safe H.264 needs no encode; anything else must be a verified 1080p-or-lower source.
 export function entryIssue(m: ChannelMedia): EntryIssue | undefined {
@@ -61,6 +73,7 @@ export class CustomChannelStore {
   private check(row: Row, expected: number) { requireThat(row.revision === expected, 'REVISION_CONFLICT', 'Channel changed. Reload and retry.', 409); }
   private audit(actor: string, event: string, detail: Record<string, unknown>, now: number) { this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
   private draft(row: Row) { return JSON.parse(row.draft) as DraftEntry[]; }
+  private onAir(row: Row) { return row.published ? JSON.parse(row.published) as DraftEntry[] : undefined; }
   private touch(id: string, now: number) { this.db.prepare('UPDATE custom_channels SET revision=revision+1,updated_at=? WHERE id=?').run(now, id); }
   private saveDraft(id: string, entries: DraftEntry[], now: number) {
     requireThat(entries.length <= MAX_ENTRIES, 'DRAFT_TOO_LARGE', `A channel can hold at most ${MAX_ENTRIES.toLocaleString()} programs.`, 413);
@@ -87,7 +100,7 @@ export class CustomChannelStore {
   }
   private summary(row: Row, now: number) {
     const draft = this.draft(row);
-    return { id: row.id, name: row.name, summary: row.summary, logoUrl: row.logo_url, enabled: !!row.enabled, number: row.number, position: row.position, revision: row.revision,
+    return { id: row.id, name: row.name, summary: row.summary, logoUrl: row.logo_url, plexLogo: row.plex_logo, mainTitle: mainTitle(this.onAir(row) ?? draft) ?? null, enabled: !!row.enabled, number: row.number, position: row.position, revision: row.revision,
       programs: draft.length, runtimeMs: draft.reduce((n, e) => n + e.durationMs, 0), issues: draft.filter(e => e.issue).length, ...this.status(row, now) };
   }
   list(now = Date.now()) { return this.rows().map(r => this.summary(r, now)); }
@@ -108,7 +121,8 @@ export class CustomChannelStore {
     const v = customEdit.parse(input);
     this.db.transaction(() => {
       const row = this.row(id); this.check(row, v.expectedRevision);
-      this.db.prepare('UPDATE custom_channels SET name=?,summary=?,logo_url=?,enabled=? WHERE id=?').run(v.name ?? row.name, v.summary ?? row.summary, v.logoUrl === undefined ? row.logo_url : v.logoUrl, v.enabled === undefined ? row.enabled : Number(v.enabled), id);
+      this.db.prepare('UPDATE custom_channels SET name=?,summary=?,logo_url=?,plex_logo=?,enabled=? WHERE id=?').run(v.name ?? row.name, v.summary ?? row.summary, v.logoUrl === undefined ? row.logo_url : v.logoUrl,
+        v.plexLogo === undefined ? row.plex_logo : v.plexLogo, v.enabled === undefined ? row.enabled : Number(v.enabled), id);
       if (v.number !== undefined && v.number !== row.number) this.number(id, v.number);
       this.touch(id, now); this.audit(actor, 'custom_channel_edited', { id }, now);
     })();
@@ -320,7 +334,7 @@ export class CustomChannelStore {
   stations(account: string, favoritesOnly: boolean, search: string, channelId?: string, now = Date.now()) {
     const favorites = new Set((this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id));
     return this.viewable(now).filter(r => (!favoritesOnly || favorites.has(r.id)) && (!channelId || r.id === channelId) && (!search || r.name.toLocaleLowerCase().includes(search) || String(r.number).includes(search)))
-      .map(r => ({ id: r.id, sourceId: 'custom', name: r.name, number: r.number!, position: r.position!, type: 'custom' as const, favorite: favorites.has(r.id), logo: !!r.logo_url, feeds: [{ id: r.id, name: r.name, number: r.number! }] }));
+      .map(r => ({ id: r.id, sourceId: 'custom', name: r.name, number: r.number!, position: r.position!, type: 'custom' as const, favorite: favorites.has(r.id), logo: !!r.logo_url || r.plex_logo !== 'none', feeds: [{ id: r.id, name: r.name, number: r.number! }] }));
   }
   // Guide rows for [start, end): exact program slots, blank before the channel first went on air.
   programs(id: string, start: number, end: number): GuideSlot[] {
@@ -337,5 +351,12 @@ export class CustomChannelStore {
     else this.db.prepare('DELETE FROM custom_favorites WHERE account_id=? AND channel_id=?').run(account, id);
   }
   favoriteIds(account: string) { return (this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id).filter(id => this.isVisible(id)); }
-  logo(id: string) { requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404); return this.row(id).logo_url ?? undefined; }
+  // The logo address if one is set, else the Plex title whose logo to show: the one chosen, or the main show on air.
+  logo(id: string): { url?: string; plexId?: string } {
+    requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
+    const row = this.row(id);
+    if (row.logo_url) return { url: row.logo_url };
+    if (row.plex_logo === 'none') return {};
+    return { plexId: row.plex_logo ?? mainTitle(this.onAir(row) ?? [])?.id };
+  }
 }

@@ -89,7 +89,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const admin = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(a.grant.role === 'admin', 'FORBIDDEN', 'Administrator access required.', 403); return a; };
   const iptv = new IptvStore(db,vault);
   const refresh = new SourceRefresh(iptv), custom = new CustomChannelStore(db);
-  registerIptv(app,iptv,refresh,auth,admin,undefined,undefined,custom);
+  registerIptv(app,iptv,refresh,auth,admin,undefined,undefined,custom,async (req,id,kind) => plex.artwork((await auth(req)).grant,id,kind));
   const episodes = new EpisodeSync(custom, plex, () => identity.adminGrant(config.PLEX_OWNER_ACCOUNT_ID ? [config.PLEX_OWNER_ACCOUNT_ID] : []), (message, detail) => app.log.info(detail, message));
   registerCustomChannels(app,custom,plex,admin,episodes);
   app.addHook('onReady', async () => { episodes.start(); });

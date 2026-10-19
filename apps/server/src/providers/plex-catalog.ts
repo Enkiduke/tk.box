@@ -9,11 +9,15 @@ export const catalogNode=z.object({
   parentRatingKey:identifier.optional(),grandparentRatingKey:identifier.optional(),parentTitle:z.string().optional(),grandparentTitle:z.string().optional(),
   index:z.number().int().nonnegative().optional(),parentIndex:z.number().int().nonnegative().optional(),
   leafCount:z.number().int().nonnegative().optional(),viewedLeafCount:z.number().int().nonnegative().optional(),
-  contentRating:z.string().optional(),rating:z.number().optional(),addedAt:z.number().optional(),Genre:z.array(z.object({tag:z.string()})).optional()
+  contentRating:z.string().optional(),rating:z.number().optional(),addedAt:z.number().optional(),Genre:z.array(z.object({tag:z.string()})).optional(),
+  Image:z.array(z.object({type:z.string().max(40),url:z.string().max(500)})).max(20).optional()
 });
 export const catalogContainer=z.object({MediaContainer:z.object({Metadata:z.array(catalogNode).default([]),librarySectionID:identifier.optional(),offset:z.coerce.number().int().nonnegative().optional(),totalSize:z.coerce.number().int().nonnegative().optional()})});
 export type CatalogNode=z.infer<typeof catalogNode>;
 export const artworkPath=(value:string|undefined)=>value&&/^\/library\/metadata\/\d+\/(?:thumb|art)\/\d+$/.test(value)?value:undefined;
+// A title's transparent wordmark ("clearLogo"), when its metadata agent supplied one.
+export const logoPath=(node:CatalogNode)=>{const value=node.Image?.find(i=>i.type==='clearLogo')?.url;return value&&/^\/library\/metadata\/\d+\/clearLogo\/\d+$/.test(value)?value:undefined;};
+export type ArtworkKind='poster'|'backdrop'|'logo';
 // A Plex collection in the library's Collections view. Without a custom poster Plex builds a composite of its titles.
 export const collectionNode=z.object({ratingKey:identifier,type:z.string(),title:z.string().max(500),subtype:z.string().max(20).optional(),librarySectionID:identifier.optional(),
   childCount:z.coerce.number().int().nonnegative().optional(),thumb:z.string().optional(),composite:z.string().optional(),summary:z.string().optional()});

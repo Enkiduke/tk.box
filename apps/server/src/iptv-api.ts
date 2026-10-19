@@ -10,7 +10,10 @@ import { sportIcon } from './providers/sport-icons.js';
 import type { CustomChannelStore } from './persistence/custom-channels.js';
 
 type Access=(req:FastifyRequest)=>Promise<{grant:{accountId:string}}>;
-export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceRefresh,auth:Access,admin:Access,logos=new ChannelLogos(),library=new LogoLibrary(),custom?:CustomChannelStore) {
+type Image={type:string;bytes:Buffer};
+// A Plex title's artwork, read with the viewer's own grant so it never shows a library they can't see.
+type PlexArtwork=(req:FastifyRequest,id:string,kind:'logo'|'poster')=>Promise<Image>;
+export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceRefresh,auth:Access,admin:Access,logos=new ChannelLogos(),library=new LogoLibrary(),custom?:CustomChannelStore,plexArtwork?:PlexArtwork) {
   const id=z.string().uuid(), revision=z.number().int().nonnegative();
   const sourceParams=(p:unknown)=>z.object({id}).parse(p).id;
   const channelParams=(p:unknown)=>z.object({id}).parse(p).id;
@@ -71,9 +74,13 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   app.get('/api/v1/iptv/channels/:id/logo',async(req,reply)=>{
     await auth(req);
     if(custom?.exists(channelParams(req.params))){
-      const url=custom.logo(channelParams(req.params)),image=url?await logos.get(url).catch(()=>undefined):undefined;
+      // The logo address, else the Plex title's logo, else its poster.
+      const {url,plexId}=custom.logo(channelParams(req.params));
+      let image:Image|undefined=url?await logos.get(url).catch(()=>undefined):undefined;
+      if(!image&&plexId&&plexArtwork)image=await plexArtwork(req,plexId,'logo').catch(()=>plexArtwork(req,plexId,'poster')).catch(()=>undefined);
       if(!image)throw new AppError('LOGO_UNAVAILABLE','Logo unavailable.',404);
-      return reply.type(image.type).header('Cache-Control','private, max-age=3600').send(image.bytes);
+      // Shorter for Plex logos: the main show can change with the program list.
+      return reply.type(image.type).header('Cache-Control',`private, max-age=${url?3600:600}`).send(image.bytes);
     }
     const hints=store.logo(channelParams(req.params));
     // Standardized library logo first, then the playlist logo, then the guide's channel icon.
