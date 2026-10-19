@@ -76,7 +76,7 @@ function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>voi
   if(!fullyWatched(item))state.push({label:'Mark as watched',icon:'check',run:()=>void updateWatchState(item,'watched')});
   if(partlyWatched(item))state.push({label:'Mark as unwatched',icon:'unwatched',run:()=>void updateWatchState(item,'unwatched')});
   if(playable&&(context==='continue'||(context==='detail'&&resumable)))state.push({label:'Remove from Continue Watching',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
-  if(playable&&context==='upnext')state.push({label:'Remove from Recommended',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
+  if(playable&&context==='upnext')state.push({label:'Remove from Recommended For You',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
   const show=item.type==='episode'||item.type==='season'?item.showId??(item.type==='season'?item.parentId:undefined):undefined;
   if(show)go.push({label:'Go to show',icon:'shows',run:()=>onOpen(show)});
   if(item.type==='episode'&&item.parentId)go.push({label:'Go to season',icon:'list',run:()=>onOpen(item.parentId!)});

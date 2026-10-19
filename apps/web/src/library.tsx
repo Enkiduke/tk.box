@@ -55,7 +55,7 @@ function OnDeckRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
   if(data.loading&&!list.length)return <RowSkeleton title="Continue watching" wide/>;
   return <>
     {resume.length>0&&<Row title="Continue watching" className="row-wide">{resume.map(item=><WideCard key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
-    {next.length>0&&<Row title="Recommended" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
+    {next.length>0&&<Row title="Recommended For You" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
   </>;
 }
 function LazyRow({title,path,href,onOpen,onPlay}:{title:string;path:string;href:string;onOpen:(id:string)=>void;onPlay:PlayFn}) {
