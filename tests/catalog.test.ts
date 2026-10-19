@@ -8,7 +8,7 @@ import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {config,fakePlex,metadata} from './fixtures.js';
 import {ArtworkCache} from '../apps/server/src/providers/artwork-cache.js';
-import {sortIndex,promotedHubs,promotedCollectionIds} from '../apps/server/src/providers/plex-catalog.js';
+import {sortIndex,promotedHubs,promotedCollectionIds,externalRatings,catalogNode} from '../apps/server/src/providers/plex-catalog.js';
 
 function catalogFixture() {
   const base=fakePlex(),requests:{path:string;query:URLSearchParams;token:string|null}[]=[],nodes:Record<string,Record<string,unknown>>={
@@ -213,4 +213,16 @@ test('promoted Home hubs yield each collection once, in Plex order, skipping row
   const transport=(async(input:string|URL|Request,init?:RequestInit)=>new URL(String(input)).pathname==='/hubs/promoted'?Response.json({MediaContainer:{Hub:[{key:'/library/collections/900/children'},{key:'/library/collections/800/children'},{key:'/library/collections/555/children'}]}}):f.transport(input,init)) as typeof fetch;
   const plex=new PlexAdapter(config(),'test',transport),grant=await plex.authorize('fixture');
   assert.deepEqual(await plex.homeCollections(grant),{collections:[{id:'900',title:'Halloween - All Time Classics',libraryId:'20'}]});
+});
+test('external ratings map Plex rating images to sources in a fixed order, falling back to the top-level pairs',()=>{
+  const node=(extra:object)=>catalogNode.parse({ratingKey:'1',type:'movie',title:'A',...extra});
+  assert.deepEqual(externalRatings(node({Rating:[
+    {image:'themoviedb://image.rating',value:7.8,type:'audience'},{image:'rottentomatoes://image.rating.spilled',value:4.2,type:'audience'},
+    {image:'imdb://image.rating',value:7.6,type:'audience'},{image:'rottentomatoes://image.rating.ripe',value:8.1,type:'critic'},{image:'unknown://x',value:5}
+  ]})),[{source:'imdb',score:7.6},{source:'tomatometer',score:8.1,fresh:true},{source:'popcornmeter',score:4.2,fresh:false},{source:'tmdb',score:7.8}]);
+  assert.deepEqual(externalRatings(node({rating:6.1,ratingImage:'rottentomatoes://image.rating.rotten',audienceRating:8,audienceRatingImage:'rottentomatoes://image.rating.upright'})),
+    [{source:'tomatometer',score:6.1,fresh:false},{source:'popcornmeter',score:8,fresh:true}]);
+  assert.equal(externalRatings(node({rating:7})),undefined);
+  // A malformed Rating list is dropped instead of failing the item.
+  assert.equal(externalRatings(node({Rating:'bad'})),undefined);
 });
