@@ -70,13 +70,14 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
         <ChannelLogo channel={c} size={88}/><span className="live-badge">LIVE</span>
         {next&&<span className="live-next"><small>Next {clock(next.start)}</small> {next.title}</span>}
-        {current&&<span className="live-banner">{timing(current,now)}</span>}
-        {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
+        {current&&<LiveProgress label={timing(current,now)} pct={current.continuous||soon(current)?0:Math.min(100,(now-current.start)/(current.end-current.start)*100)}/>}
       </button><button className="card-play" tabIndex={-1} disabled={busy} aria-label={`Watch ${c.name}`} onClick={tune}><Icon name="play" size={22}/></button></div>
       <span className="poster-title"><span className="card-plain">{current?fullTitle(current):emptyLabel(c,now)||'Off air'}</span></span>
       <span className="poster-meta"><span className="card-plain">{stationName(c.name).label}</span></span>
     </div>;})}</Row>;
 }
+// The time left sits inside the bar: light text over the track, and a copy clipped to the filled part in dark text.
+const LiveProgress=({label,pct}:{label:string;pct:number})=><span className="live-progress"><span>{label}</span><span aria-hidden="true" style={{clipPath:`inset(0 ${100-pct}% 0 0)`}}>{label}</span></span>;
 export type WatchChannel=(channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]},program?:string)=>void;
 // A stack is one station with several provider feeds. The server lists the best feed first;
 // a viewer's last pick for that station wins while it is still available.
