@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import type {CatalogItem,CatalogPage,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,replaceRoute} from './hooks.js';
-import {Empty,ErrorNotice,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
+import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {FavoriteChannels} from './live.js';
 import {api} from './api.js';
@@ -24,11 +24,11 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
     const timer=setInterval(()=>{if(!document.hidden)setIndex(i=>(i+1)%featured.length);},9000);
     return()=>clearInterval(timer);
   },[paused,featured.length]);
-  // Warm the next backdrop so the crossfade never shows an empty frame.
+  // Warm the next backdrop so it is ready before the next rotation.
   useEffect(()=>{const next=featured[(index+1)%Math.max(1,featured.length)];if(next?.backdropUrl)new Image().src=next.backdropUrl;},[index,featured.length]);
   if(!item)return data.loading?<div className="hero hero-loading" aria-busy="true"/>:<div className="hero-spacer"/>;
   return <section className="hero" aria-label="Featured" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)} onFocus={()=>setPaused(true)} onBlur={()=>setPaused(false)}>
-    <img key={item.id} className="hero-art" src={item.backdropUrl} alt="" fetchPriority="high" decoding="async"/>
+    <FadeImage key={item.id} className="hero-art" src={item.backdropUrl} alt="" fetchPriority="high" decoding="async"/>
     <div className="hero-shade"/>
     <div className="hero-content" key={`content-${item.id}`}>
       <p className="hero-kicker">{item.type==='show'?'Series':item.type==='episode'||item.type==='season'?item.showTitle??'Series':'Movie'} · Recently added</p>
@@ -103,7 +103,7 @@ function EpisodeRow({episode:source,onPlay,onOpen,busy}:{episode:CatalogItem;onO
   const episode=useWithOverride(source),actions=useMediaMenu(episode,'episode',onOpen,onPlay,'episode-more');
   return <li className={actions.open?'menu-open':undefined} onContextMenu={actions.onContextMenu}><button className="episode" disabled={busy} onClick={()=>onPlay(episode)} aria-label={`Play episode ${episode.episodeNumber??''}: ${episode.title}`}>
     <span className="episode-number">{episode.episodeNumber??'—'}</span>
-    <span className="episode-thumb">{episode.posterUrl?<img src={episode.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<span className="episode-play"><Icon name="play" size={18}/></span>{episode.viewOffsetMs>0&&episode.durationMs&&<span className="card-progress"><span style={{width:`${Math.min(100,episode.viewOffsetMs/episode.durationMs*100)}%`}}/></span>}</span>
+    <span className="episode-thumb">{episode.posterUrl?<FadeImage src={episode.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<span className="episode-play"><Icon name="play" size={18}/></span>{episode.viewOffsetMs>0&&episode.durationMs&&<span className="card-progress"><span style={{width:`${Math.min(100,episode.viewOffsetMs/episode.durationMs*100)}%`}}/></span>}</span>
     <span className="episode-info"><span className="episode-title"><strong>{episode.title}</strong><span>{episode.watched?<Icon name="check" size={14}/>:null}{duration(episode.durationMs)}</span></span>{episode.summary&&<span className="episode-summary">{episode.summary}</span>}</span>
   </button>{actions.trigger}{actions.menu}</li>;
 }
@@ -129,7 +129,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error}:{id:string;onClose
   return <Modal title={media?.title??'Media details'} onClose={onClose} variant="media">
     {item.loading&&!media?<div className="detail-loading"><Loading/></div>:item.error?<div className="detail-body"><ErrorNotice message={item.error.message} retry={item.reload}/></div>:media&&<>
       <div className={`detail-hero ${art?'':'no-art'}`}>
-        {art&&<img src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
+        {art&&<FadeImage src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
         <div className="detail-hero-content">
           {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
           <h1>{media.title}</h1>

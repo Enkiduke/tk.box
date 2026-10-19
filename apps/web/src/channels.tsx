@@ -2,7 +2,7 @@ import {useEffect,useState,type ReactNode} from 'react';
 import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,invalidate,duration,clock} from './hooks.js';
-import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {Empty,ErrorNotice,FadeImage,Icon,Loading,Modal} from './components.js';
 import {Card,SectionHead,Switch,code,move,plural,useMutation} from './settings-ui.js';
 
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
@@ -32,7 +32,7 @@ const kindIcon:Record<string,string>={movie:'movies',episode:'shows',show:'shows
 const kindLabel=(s:Source)=>s.kind==='show'?`Whole show${s.specials?' · with specials':''}`:s.kind==='season'?'One season':s.kind==='collection'?`Plex collection${s.specials?' · with specials':''}`:`Category${s.specials?' · with specials':''}`;
 function Thumb({src,icon='movies'}:{src?:string;icon?:string}) {
   const [failed,setFailed]=useState(false);
-  return <span className="program-thumb" aria-hidden="true">{src&&!failed?<img src={src} alt="" loading="lazy" decoding="async" onError={()=>setFailed(true)}/>:<Icon name={icon} size={16}/>}</span>;
+  return <span className="program-thumb" aria-hidden="true">{src&&!failed?<FadeImage src={src} alt="" loading="lazy" decoding="async" onError={()=>setFailed(true)}/>:<Icon name={icon} size={16}/>}</span>;
 }
 // One status per channel, in order of what needs doing first.
 type Tone='ok'|'warning'|'danger'|'';

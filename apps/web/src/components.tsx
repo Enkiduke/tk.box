@@ -1,4 +1,4 @@
-import {memo,useEffect,useLayoutEffect,useRef,useState,type KeyboardEvent,type MouseEvent,type ReactNode} from 'react';
+import {memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode} from 'react';
 import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/index.js';
 import {duration} from './hooks.js';
 import {fullyWatched,partlyWatched,updateWatchState,useNotice,useWithOverride} from './media-actions.js';
@@ -34,9 +34,16 @@ export function Empty({title,children}:{title:string;children?:ReactNode}) {retu
 export function Loading({cards=false}:{cards?:boolean}) {return cards?<div className="poster-grid" aria-label="Loading titles" role="status">{Array.from({length:8},(_,i)=><div key={i} className="skeleton poster-skeleton"/>)}</div>:<div className="loading" role="status"><span className="spinner"/><span className="sr-only">Loading…</span></div>;}
 export const subtitle=(item:CatalogItem)=>item.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item.type==='season'?`${item.episodeCount??'—'} episodes`:String(item.year??(item.type==='show'?'TV series':'Movie'));
 export const meta=(item:CatalogItem)=>[item.year,item.contentRating,item.type==='show'||item.type==='season'?undefined:duration(item.durationMs),item.rating!==undefined?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean).join(' · ');
-const Artwork=({src,alt='',fallback,className}:{src?:string;alt?:string;fallback:ReactNode;className?:string})=>{
+// Key by source so reused cards fade each new image, including images already in cache.
+export function FadeImage(props:ImgHTMLAttributes<HTMLImageElement>) {return <LoadedImage key={props.src} {...props}/>;}
+function LoadedImage({className='',onLoad,...props}:ImgHTMLAttributes<HTMLImageElement>) {
+  const ref=useRef<HTMLImageElement>(null),[loaded,setLoaded]=useState(false);
+  useLayoutEffect(()=>{if(ref.current?.complete&&ref.current.naturalWidth>0)setLoaded(true);},[]);
+  return <img {...props} ref={ref} className={`art-image${loaded?' art-image-loaded':''}${className?` ${className}`:''}`} onLoad={event=>{setLoaded(true);onLoad?.(event);}}/>;
+}
+export const Artwork=({src,alt='',fallback,className}:{src?:string;alt?:string;fallback:ReactNode;className?:string})=>{
   const [failed,setFailed]=useState(false);
-  return src&&!failed?<img className={className} src={src} onError={()=>setFailed(true)} loading="lazy" decoding="async" alt={alt}/>:<span className="art-fallback">{fallback}</span>;
+  return src&&!failed?<FadeImage className={className} src={src} onError={()=>setFailed(true)} loading="lazy" decoding="async" alt={alt}/>:<span className="art-fallback">{fallback}</span>;
 };
 const Progress=({item}:{item:CatalogItem})=>item.viewOffsetMs>0&&item.durationMs?<span className="card-progress"><span style={{width:`${Math.min(100,item.viewOffsetMs/item.durationMs*100)}%`}}/></span>:null;
 // Card text is split into separate links so the show, season and episode each open on their own.

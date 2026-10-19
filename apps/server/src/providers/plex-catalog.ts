@@ -14,6 +14,15 @@ export const catalogNode=z.object({
 export const catalogContainer=z.object({MediaContainer:z.object({Metadata:z.array(catalogNode).default([]),librarySectionID:identifier.optional(),offset:z.coerce.number().int().nonnegative().optional(),totalSize:z.coerce.number().int().nonnegative().optional()})});
 export type CatalogNode=z.infer<typeof catalogNode>;
 export const artworkPath=(value:string|undefined)=>value&&/^\/library\/metadata\/\d+\/(?:thumb|art)\/\d+$/.test(value)?value:undefined;
+// A Plex collection in the library's Collections view. Without a custom poster Plex builds a composite of its titles.
+export const collectionNode=z.object({ratingKey:identifier,type:z.string(),title:z.string().max(500),subtype:z.string().max(20).optional(),librarySectionID:identifier.optional(),
+  childCount:z.coerce.number().int().nonnegative().optional(),thumb:z.string().optional(),composite:z.string().optional(),summary:z.string().optional()});
+export const collectionsContainer=z.object({MediaContainer:z.object({librarySectionID:identifier.optional(),Metadata:z.array(collectionNode).max(2000).default([])})});
+export type CollectionNode=z.infer<typeof collectionNode>;
+export const collectionArtwork=(node:CollectionNode)=>artworkPath(node.thumb)??[node.thumb,node.composite].find(v=>v&&/^\/library\/(?:metadata|collections)\/\d+\/composite\/\d+$/.test(v));
+export const collectionDto=(node:CollectionNode)=>({id:node.ratingKey,title:node.title,summary:node.summary??'',count:node.childCount,kind:node.subtype==='show'?'show' as const:'movie' as const,
+  posterUrl:collectionArtwork(node)?`/api/v1/catalog/collections/${node.ratingKey}/artwork`:undefined});
+export type CatalogCollection=ReturnType<typeof collectionDto>;
 // Episodes and seasons carry their series poster so portrait cards never fall back to episode stills.
 function showPoster(node:CatalogNode) {
   const [id,thumb]=node.type==='episode'?[node.grandparentRatingKey,node.grandparentThumb]:node.type==='season'?[node.parentRatingKey,node.parentThumb]:[];
