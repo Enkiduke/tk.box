@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollections,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -263,6 +263,15 @@ export class PlexAdapter {
     url.searchParams.set('sort','titleSort:asc');url.searchParams.set('X-Plex-Container-Start','0');url.searchParams.set('X-Plex-Container-Size','2000');
     const container=collectionsContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
     return {collections:container.Metadata.filter(c=>c.type==='collection'&&(c.librarySectionID??container.librarySectionID??libraryId)===libraryId).map(collectionDto)};
+  }
+  // Collections Plex promotes to this viewer's Home, in Plex's order. Read with the viewer's own token, so Plex
+  // applies its own-home vs shared-home visibility; only hubs from the viewer's libraries are kept.
+  async homeCollections(grant:PlexGrant) {
+    const keys=grant.libraries.filter(l=>['movie','show'].includes(l.type)).map(l=>l.key);
+    if(!keys.length)return {collections:[]};
+    const url=new URL('/hubs/promoted',this.config.PLEX_URL);
+    url.searchParams.set('contentDirectoryID',keys.join(','));url.searchParams.set('pinnedContentDirectoryID',keys.join(','));url.searchParams.set('count','1');
+    return {collections:promotedCollections(promotedHubs.parse(await this.json(url,grant.serverToken)),grant.libraries)};
   }
   private async collectionNode(grant:PlexGrant,id:string) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex collection identifier.');

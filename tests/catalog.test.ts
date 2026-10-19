@@ -8,7 +8,7 @@ import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {config,fakePlex,metadata} from './fixtures.js';
 import {ArtworkCache} from '../apps/server/src/providers/artwork-cache.js';
-import {sortIndex} from '../apps/server/src/providers/plex-catalog.js';
+import {sortIndex,promotedHubs,promotedCollections} from '../apps/server/src/providers/plex-catalog.js';
 
 function catalogFixture() {
   const base=fakePlex(),requests:{path:string;query:URLSearchParams;token:string|null}[]=[],nodes:Record<string,Record<string,unknown>>={
@@ -176,4 +176,19 @@ test('non-title jump buckets follow the sorted order and pick a readable granula
   assert.deepEqual(sortIndex('newest',[day('2026-10-01'),day('2025-03-02')]).map(e=>e.label),['2026','2025']);
   // A label that recurs out of order folds into its first bucket.
   assert.deepEqual(sortIndex('rating',[8,7,8]),[{label:'8',offset:0,count:2},{label:'7',offset:1,count:1}]);
+});
+
+test('promoted Home hubs keep only collections from the viewer’s libraries, once each, in Plex order',()=>{
+  const hubs=promotedHubs.parse({MediaContainer:{Hub:[
+    {hubIdentifier:'home.continue',title:'Continue Watching'},
+    {hubIdentifier:'custom.collection.2.900',title:'Halloween'},
+    {hubIdentifier:'custom.collection.1.800',title:'Christmas Movies'},
+    {hubIdentifier:'custom.collection.9.700',title:'Not shared'},
+    {hubIdentifier:'custom.collection.1.800.extra',title:'Malformed'},
+    {hubIdentifier:'custom.collection.1.800',title:'Christmas Movies again'},
+    {title:'No identifier'},
+  ]}});
+  assert.deepEqual(promotedCollections(hubs,[{key:'1',type:'movie'},{key:'2',type:'show'},{key:'3',type:'artist'}]),[
+    {id:'900',title:'Halloween',libraryId:'2'},{id:'800',title:'Christmas Movies',libraryId:'1'}]);
+  assert.deepEqual(promotedCollections(promotedHubs.parse({MediaContainer:{}}),[{key:'1',type:'movie'}]),[]);
 });

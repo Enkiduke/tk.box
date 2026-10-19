@@ -97,3 +97,15 @@ export function sortIndex(sort:Exclude<CatalogQuery['sort'],'title'>,values:(num
   });
   return entries;
 }
+
+// Plex's promoted hubs: what it shows on the viewer's Home, including collections set to "Visible on Home"
+// (seasonal ones come and go as their visibility is switched). Collection hubs are `custom.collection.<section>.<id>`.
+export const promotedHubs=z.object({MediaContainer:z.object({Hub:z.array(z.object({hubIdentifier:z.string().max(200).optional(),title:z.string().max(500)})).max(200).default([])})});
+export function promotedCollections(hubs:z.infer<typeof promotedHubs>,libraries:{key:string;type:string}[]) {
+  const seen=new Set<string>();
+  return hubs.MediaContainer.Hub.flatMap(hub=>{
+    const match=/^custom\.collection\.(\d{1,20})\.(\d{1,20})$/.exec(hub.hubIdentifier??''),library=match&&libraries.find(l=>l.key===match[1]&&['movie','show'].includes(l.type));
+    if(!match||!library||seen.has(match[2]!))return [];seen.add(match[2]!);
+    return [{id:match[2]!,title:hub.title,libraryId:library.key}];
+  });
+}
