@@ -1,7 +1,7 @@
 import {Fragment,useEffect,useState} from 'react';
 import {useApi,useDebounced,useInfinitePages,clock,link,duration,invalidate} from './hooks.js';
 import {api} from './api.js';
-import {Empty,ErrorNotice,Loading,Icon,Modal,Row} from './components.js';
+import {Empty,ErrorNotice,FadeImage,Loading,Icon,Modal,Row} from './components.js';
 import {readPreference} from './storage.js';
 
 type Program={title:string;start:number;end:number;subtitle?:string;description?:string;category?:string;continuous?:boolean;status?:'starting_soon'};
@@ -32,7 +32,7 @@ export function stationName(name:string){const m=/^([A-Z]{2,3})s*[:|]s*(.+)$/.ex
 export function ChannelLogo({channel,size=40}:{channel:{id:string;name:string;logo?:boolean};size?:number}) {
   const [failed,setFailed]=useState(false),label=stationName(channel.name).label;
   // A fixed landscape tile: most station logos are wide, so every logo shares one box and one alignment.
-  return <span className="channel-logo" style={{width:Math.round(size*1.6),height:size}} aria-hidden="true">{channel.logo&&!failed?<img src={`/api/v1/iptv/channels/${channel.id}/logo`} alt="" loading="lazy" onError={()=>setFailed(true)}/>:<b style={{fontSize:size*.34}}>{label.slice(0,2).toUpperCase()}</b>}</span>;
+  return <span className="channel-logo" style={{width:Math.round(size*1.6),height:size}} aria-hidden="true">{channel.logo&&!failed?<FadeImage src={`/api/v1/iptv/channels/${channel.id}/logo`} alt="" loading="lazy" onError={()=>setFailed(true)}/>:<b style={{fontSize:size*.34}}>{label.slice(0,2).toUpperCase()}</b>}</span>;
 }
 const airingNow=(c:Station,now:number)=>c.programs.find(p=>p.program&&p.program.start<=now&&p.program.end>now)?.program??undefined;
 const minutesLeft=(p:Program,now:number)=>Math.max(1,Math.ceil((p.end-now)/60000));
