@@ -208,7 +208,7 @@ main{min-height:100vh}
 .live-badge{position:absolute;left:8px;top:8px;z-index:2;padding:2px 7px;border-radius:4px;background:var(--accent);color:var(--accent-ink);font-size:11px;font-weight:800;letter-spacing:.06em}
 .live-next{position:absolute;left:8px;right:8px;bottom:33px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:left;font-size:11.5px;font-weight:600;line-height:15px;color:#e6e6ea}
 .live-next small{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
-.live-banner{position:absolute;left:6px;right:6px;bottom:10px;z-index:2;padding:2px 4px;border-radius:2px;background:var(--accent);color:var(--accent-ink);font-size:clamp(9.5px,.75vw,12px);font-weight:700;letter-spacing:.04em;text-transform:uppercase;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.live-banner{position:absolute;left:6px;right:6px;bottom:10px;z-index:2;padding:1px 4px;border:1px solid rgba(255,255,255,.1);border-radius:4px;background:rgba(255,255,255,.08);backdrop-filter:blur(8px);color:var(--accent);font-size:10.5px;line-height:14px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .station-monogram{display:grid;place-items:center;width:40px;height:40px;border-radius:8px;background:var(--surface-3);font-size:14px;font-weight:700;color:var(--accent)}
 
 /* Library browser */
