@@ -5,6 +5,7 @@ import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkele
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveNow,type WatchChannel} from './live.js';
 import {api} from './api.js';
+import {useHomeSettings} from './home-settings.js';
 
 type BrowseProps={libraries:Library[];onOpen:(id:string)=>void};
 type PlayProps={onPlay:PlayFn;busy:boolean};
@@ -63,13 +64,14 @@ function LazyRow({title,path,href,onOpen,onPlay}:{title:string;path:string;href:
   return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):data.data.items.length?<Row title={title} href={href}>{data.data.items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
 }
 export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProps&{onWatch:WatchChannel}) {
+  const settings=useHomeSettings();
   if(!libraries.length)return <div className="page"><Empty title="No libraries available">Your Plex account needs access to Movies and TV libraries.</Empty></div>;
   return <div className="home">
     <Hero libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
     <div className="rows">
       <OnDeckRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
       {libraries.map(l=><LazyRow key={`recent-${l.key}`} title={`Recently added in ${l.title}`} path={recent(l)} href={link(page(l),{library:l.key,sort:'newest',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
-      <LiveNow onWatch={onWatch} busy={busy}/>
+      {settings.liveRow&&<LiveNow onWatch={onWatch} busy={busy}/>}
     </div>
   </div>;
 }

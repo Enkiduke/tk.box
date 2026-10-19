@@ -3,6 +3,7 @@ import {useApi,useDebounced,useInfinitePages,clock,link,duration,invalidate} fro
 import {api} from './api.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Icon,Modal,Row} from './components.js';
 import {readPreference} from './storage.js';
+import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 
 type Program={title:string;start:number;end:number;subtitle?:string;description?:string;category?:string;continuous?:boolean;status?:'starting_soon'};
 // One-line listing, e.g. "Arcane · S1E3 · The Base Violence Necessary for Change".
@@ -42,20 +43,26 @@ const minutesLeft=(p:Program,now:number)=>Math.max(1,Math.ceil((p.end-now)/60000
 const soon=(p?:Program|null)=>p?.status==='starting_soon';
 const timing=(p:Program,now:number)=>p.continuous?'24/7':soon(p)?`Starting soon · ${clock(p.end)}`:`${minutesLeft(p,now)} min left`;
 const emptyLabel=(c:Station,now:number)=>c.programs.find(p=>p.start<=now&&p.end>now)?.blank?'':'No guide data';
+// A stable shuffle: the same seed gives the same order, and a channel joining or leaving does not move the rest.
+const rank=(id:string,seed:string)=>{let h=2166136261;for(const ch of seed+id)h=Math.imul(h^ch.charCodeAt(0),16777619);return h>>>0;};
+const shuffled=<T extends {id:string}>(list:T[],seed:string)=>[...list].sort((a,b)=>rank(a.id,seed)-rank(b.id,seed));
 function useNow(){const [now,setNow]=useState(Date.now);useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(timer);},[]);return now;}
 
-// Home's one Live TV row: what's on now and next, capped at a dozen channels so it never becomes the guide.
-// Favorites come first; without any, the first channels of the lineup stand in.
+// Home's one Live TV row: what's on now and next, capped (Settings › Home) so it never becomes the guide.
+// Favorites come first; without any, the first channels of the lineup stand in. Shuffled, it picks from the first 60.
 export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
-  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=12`;
+  const settings=useHomeSettings(),[seed]=useState(()=>Math.random().toString(36));
+  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveShuffle?60:settings.liveCount}`;
   const favorites=useApi<Guide>(`${base}&filter=favorites`),none=favorites.data?.channels.length===0;
   const lineup=useApi<Guide>(none?`${base}&filter=all`:undefined),data=none?lineup:favorites;
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start,none]);
   if(data.error)return <ErrorNotice message="Live TV could not be loaded." retry={data.reload}/>;
   if(!data.data?.channels.length)return null;
+  // The order is fixed for this visit, so the minute refresh does not reshuffle the row.
+  const channels=(settings.liveShuffle?shuffled(data.data.channels,seed):data.data.channels).slice(0,settings.liveCount);
   // Laid out like the poster rows at half height: a 4:3 frame (the logo stands in for art) with a banner like the poster
   // overlays, then title and meta below.
-  return <Row title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})}>{data.data.channels.map(c=>{
+  return <Row title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})} drift={settings.liveScroll?liveSpeedPx[settings.liveSpeed]:0}>{channels.map(c=>{
     const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
     return <div className="poster-card" key={c.id}>
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>

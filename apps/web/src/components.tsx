@@ -1,4 +1,4 @@
-import {memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode} from 'react';
+import {memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode,type PointerEvent as ReactPointerEvent,type FocusEvent as ReactFocusEvent} from 'react';
 import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/index.js';
 import {duration} from './hooks.js';
 import {fullyWatched,partlyWatched,updateWatchState,useNotice,useWithOverride} from './media-actions.js';
@@ -159,19 +159,72 @@ export function ActionNotice() {
   return <div className="action-notice" role="status" aria-live="polite">{notice&&<div key={notice.id} className={`notice${notice.error?' error':''}`}><Icon name={notice.error?'info':'check'} size={18}/><span>{notice.text}</span></div>}</div>;
 }
 // Horizontal, swipeable row with edge arrows that appear on hover (pointer devices only).
-export function Row({title,href,children,className=''}:{title:ReactNode;href?:string;children:ReactNode;className?:string}) {
-  const ref=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false});
-  const update=()=>{const el=ref.current;if(el)setEdges({start:el.scrollLeft<8,end:el.scrollLeft+el.clientWidth>=el.scrollWidth-8});};
+export function Row({title,href,children,className='',drift=0}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number}) {
+  const ref=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
+  // Only re-renders when an edge changes: an endless row scrolls every frame.
+  const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
   useEffect(()=>{update();const el=ref.current;if(!el)return;const resize=new ResizeObserver(update);resize.observe(el);return()=>resize.disconnect();},[]);
+  const endless=useEndless(ref,drift>0,drift);
+  // Loop only when the cards overflow; a short row stays still and is not repeated.
+  useEffect(()=>{
+    if(!drift){setLoops(false);return;}const el=ref.current;if(!el)return;
+    // One set's width (cards plus the gap after the last), measured the same way with or without the copies so it settles.
+    const check=()=>{const style=getComputedStyle(el),pad=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight),gap=parseFloat(style.columnGap)||0;setLoops((endless.copies()?endless.setWidth():el.scrollWidth-pad+gap)>el.clientWidth);};
+    check();const resize=new ResizeObserver(check);resize.observe(el);return()=>resize.disconnect();
+  });
   const scroll=(direction:number)=>ref.current?.scrollBy({left:direction*ref.current.clientWidth*.85,behavior:'smooth'});
+  const looping=drift>0&&loops;
   return <section className={`row ${className}`}>
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
-    <div className="row-viewport">
-      {!edges.start&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
-      <div className="row-scroll" ref={ref} onScroll={update}>{children}</div>
-      {!edges.end&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
+    <div className="row-viewport" {...endless.handlers}>
+      {(looping||!edges.start)&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
+      <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}>{looping?<>
+        {/* Three identical sets: the view starts on the middle one and jumps back by one set width, which looks seamless. */}
+        <div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div>
+      </>:children}</div>
+      {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
+}
+// Drifts an endless row sideways at `speed` px/s. It holds still while the pointer is over the row, keyboard focus
+// is inside it, it is off screen, or the viewer prefers reduced motion; scrolling by hand still works while it is held.
+function useEndless(ref:{current:HTMLDivElement|null},on:boolean,speed:number) {
+  const held=useRef({hover:false,focus:false}),position=useRef<number|undefined>(undefined);
+  const sets=()=>Array.from(ref.current?.children??[]).filter(c=>c.classList.contains('row-set')).map(c=>c.firstElementChild as HTMLElement|null);
+  const copies=()=>sets().length===3;
+  const setWidth=()=>{const [a,b]=sets();return a&&b?b.offsetLeft-a.offsetLeft:0;};
+  // Keeps the view inside the middle set by jumping a whole set width, so either direction can go on forever.
+  const wrap=(x:number)=>{const w=setWidth();if(!w)return x;while(x<w)x+=w;while(x>=w*2)x-=w;return x;};
+  useEffect(()=>{
+    const el=ref.current;if(!on||!el)return;
+    const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+    let frame=0,last=0,visible=true;
+    const seen=new IntersectionObserver(([entry])=>{visible=!!entry?.isIntersecting;});seen.observe(el);
+    const tick=(time:number)=>{
+      const dt=Math.min(100,last?time-last:0);last=time;
+      const w=setWidth();
+      if(w>el.clientWidth){
+        // Starting out, or picking up after a hold: continue from wherever the viewer left it.
+        if(position.current===undefined||Math.abs(el.scrollLeft-position.current)>2)position.current=wrap(el.scrollLeft||w);
+        if(visible&&!held.current.hover&&!held.current.focus&&!reduced.matches&&!document.hidden){
+          position.current=wrap(position.current+speed*dt/1000);el.scrollLeft=position.current;
+        }
+      }
+      frame=requestAnimationFrame(tick);
+    };
+    frame=requestAnimationFrame(tick);
+    // A hand scroll that runs into an outer set is moved back to the matching spot in the middle one.
+    const settle=()=>{const x=wrap(el.scrollLeft);if(Math.abs(x-el.scrollLeft)>1){el.scrollLeft=x;position.current=x;}};
+    el.addEventListener('scrollend',settle);
+    return()=>{cancelAnimationFrame(frame);seen.disconnect();el.removeEventListener('scrollend',settle);position.current=undefined;};
+  },[on,speed]);
+  const handlers={
+    onPointerEnter:(e:ReactPointerEvent<HTMLElement>)=>{if(e.pointerType==='mouse')held.current.hover=true;},
+    onPointerLeave:()=>{held.current.hover=false;},
+    onFocus:(e:ReactFocusEvent<HTMLElement>)=>{held.current.focus=e.target.matches(':focus-visible');},
+    onBlur:()=>{held.current.focus=false;},
+  };
+  return {handlers,setWidth,copies};
 }
 export function RowSkeleton({title,wide=false}:{title:string;wide?:boolean}) {
   return <section className="row" aria-busy="true"><div className="row-heading"><h2>{title}</h2></div><div className="row-scroll">{Array.from({length:8},(_,i)=><div key={i} className={`skeleton ${wide?'wide-skeleton':'poster-skeleton'}`}/>)}</div></section>;
