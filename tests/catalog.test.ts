@@ -156,13 +156,28 @@ test('recent TV uses series posters and groups a season batch into one card whil
   const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
   const episode=(key:string,season:string,index:number,addedAt:number)=>({ratingKey:key,librarySectionID:'20',type:'episode',title:`Episode ${index}`,parentRatingKey:season,parentTitle:'Season 1',parentIndex:1,index,grandparentRatingKey:'100',grandparentTitle:'Fixture show',thumb:`/library/metadata/${key}/thumb/1`,grandparentThumb:'/library/metadata/100/thumb/1',addedAt});
   const day=86400;
-  f.setPage({MediaContainer:{Metadata:[episode('501','101',3,10*day),episode('502','101',2,10*day-60),episode('503','101',1,10*day-120),episode('601','201',1,9*day),episode('504','101',0,2*day)],totalSize:5}});
+  f.setPage({MediaContainer:{Metadata:[episode('501','101',3,10*day),episode('502','101',2,10*day-60),episode('503','101',1,10*day-120),episode('601','201',1,8*day),episode('504','101',0,2*day)],totalSize:5}});
   const page=await plex.catalogPage(grant,'20',{shelf:'recent',limit:20});
   assert.equal(f.requests.find(r=>r.path==='/library/sections/20/recentlyAdded')!.query.get('X-Plex-Container-Size'),'60');
   assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['season','101'],['episode','601'],['episode','504']]);
   const season=page.items[0]!;assert.equal(season.episodeCount,3);assert.equal(season.showTitle,'Fixture show');assert.equal(season.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster');
   assert.equal(page.items[1]!.showPosterUrl,'/api/v1/catalog/items/100/artwork?kind=poster');assert.equal(page.items[1]!.posterUrl,'/api/v1/catalog/items/601/artwork?kind=poster');
   assert.equal(page.hasMore,false);
+});
+
+test('recent TV merges seasons of one show that arrived together into a show card, around other shows',async()=>{
+  const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
+  const episode=(key:string,show:string,season:string,index:number,addedAt:number)=>({ratingKey:key,librarySectionID:'20',type:'episode',title:`Episode ${index}`,parentRatingKey:season,parentTitle:`Season ${season}`,parentIndex:1,index,grandparentRatingKey:show,grandparentTitle:`Show ${show}`,thumb:`/library/metadata/${key}/thumb/1`,grandparentThumb:`/library/metadata/${show}/thumb/1`,addedAt});
+  const day=86400;
+  f.setPage({MediaContainer:{Metadata:[
+    episode('11','100','102',2,10*day),episode('12','100','102',1,10*day-60),
+    episode('21','200','201',2,10*day-90),episode('22','200','201',1,10*day-100),
+    episode('13','100','101',2,10*day-120),episode('14','100','101',1,10*day-180),
+    // A later batch of the same show stays as its own season card.
+    episode('15','100','103',2,5*day),episode('16','100','103',1,5*day-60)],totalSize:8}});
+  const page=await plex.catalogPage(grant,'20',{shelf:'recent',limit:20});
+  assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['show','100'],['season','201'],['season','103']]);
+  const show=page.items[0]!;assert.equal(show.title,'Show 100');assert.equal(show.seasonCount,2);assert.equal(show.episodeCount,4);assert.equal(show.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster');
 });
 
 test('non-title jump buckets follow the sorted order and pick a readable granularity',()=>{
