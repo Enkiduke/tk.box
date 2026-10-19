@@ -56,6 +56,14 @@ test('a station joins mid-program, plays the next program on time and cleans up'
     for (let i = 0; i < 60 && !/^#EXT-X-DISCONTINUITY$/m.test(playlist); i++) { await sleep(500); playlist = await tv.playlist(second.id, 'viewer', grant()); }
     assert.match(playlist, /^#EXT-X-DISCONTINUITY$/m, 'the next program follows behind a discontinuity');
     assert.ok(Date.now() - start >= 6000, 'B starts no earlier than its slot');
+    // Subtitles follow what aired: A was joined about 2 s in and copied, so it starts on the keyframe at 2 s; B starts at 0.
+    const aired = tv.airings(second.id, 'viewer');
+    assert.equal(aired.length, 2);
+    assert.deepEqual(aired.map(a => tv.airingMedia(second.id, 'viewer', a.id)), ['1', '2']);
+    assert.equal(aired[0]!.mediaStartMs, 2000);
+    assert.ok(aired[1]!.start > aired[0]!.start && aired[1]!.mediaStartMs < 1000);
+    assert.throws(() => tv.airingMedia(second.id, 'viewer', 'missing'), { code: 'SUBTITLE_NOT_FOUND' });
+    assert.throws(() => tv.airings(second.id, 'someone-else'), { code: 'SESSION_NOT_FOUND' });
     const name = playlist.split('\n').find(l => /^seg-\d{6}\.ts$/.test(l))!;
     const segment = await tv.segment(second.id, 'viewer', name);
     assert.ok(segment.size > 0); segment.body.destroy();
