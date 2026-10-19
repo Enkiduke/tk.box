@@ -54,12 +54,12 @@ export function CustomChannelSettings() {
   if(open&&channels.some(c=>c.id===open.id))return <ChannelEditor key={open.id} id={open.id} startAdding={open.adding} back={()=>setOpen(undefined)}/>;
   const reorder=(from:number,to:number)=>void ordering.run(()=>api(`${base}/order`,'PUT',{ids:moveTo(channels.map(c=>c.id),from,to)}).then(changed));
   return <>
-    <SectionHead title="Custom channels" description="Make 24/7 channels from your Plex movies and shows. Programs play one after another and start over at the end, and everyone tuned in sees the same thing.">
+    <SectionHead title="Plex channels" description="Make 24/7 channels from your Plex movies and shows. Programs play one after another and start over at the end, and everyone tuned in sees the same thing.">
       {channels.length>0&&<button className="primary" onClick={()=>setCreate(true)}><Icon name="plus" size={16}/>New channel</button>}
     </SectionHead>
     {ordering.error&&<ErrorNotice message={ordering.error}/>}
     {list.loading&&!list.data?<Loading/>:list.error?<ErrorNotice message={list.error.message} retry={list.reload}/>:channels.length?<>
-      <p className="muted small list-note">Live TV lists custom channels first, in this order.{channels.length>1&&' Drag channels or use the arrows to change it.'}</p>
+      <p className="muted small list-note">Live TV lists Plex channels first, in this order.{channels.length>1&&' Drag channels or use the arrows to change it.'}</p>
       <ul className="source-rows">{channels.map((c,i)=><li key={c.id} className="source-item" {...drag('channels',i,reorder,channels.length>1&&!ordering.busy)}>
         {channels.length>1&&<MoveButtons name={c.name} index={i} count={channels.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}
         <button className="source-row" onClick={()=>setOpen({id:c.id})}>

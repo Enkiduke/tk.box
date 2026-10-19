@@ -453,10 +453,10 @@ function PlaybackSettings({admin}:{admin:boolean}) {
 function ServerPlaybackSettings() {
   const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number;customBuffer:CustomBuffer}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(data.reload);
   useEffect(()=>{if(data.data){setLimit(data.data.maxConcurrentCpuVideoTranscodes);setMinutes(data.data.pauseRetentionMinutes);}},[data.data?.revision]);
-  return <>{data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card title="Encoding & buffering" description="Server-wide: the CPU encoder ceiling and how long paused custom channels are kept.">
+  return <>{data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card title="Encoding & buffering" description="Server-wide: the CPU encoder ceiling and how long paused Plex channels are kept.">
       <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/settings/playback','PATCH',{expectedRevision:data.data!.revision,maxConcurrentCpuVideoTranscodes:limit,pauseRetentionMinutes:minutes});setSaved(true);});}}>
         <label>Maximum concurrent CPU video encoders<input type="number" min="1" max="16" required value={limit} onChange={e=>setLimit(Number(e.target.value))}/><small>{data.data.activeVideoEncoders} active app-managed encoders. Direct Play and remux do not use encoder slots. Video encoding stays limited to 1080p-or-lower sources; lowering the ceiling leaves running jobs alone.</small></label>
-        <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>How far behind the live broadcast a viewer can fall on a custom channel, counting time spent paused and time watching after Resume. It isn’t how long Pause can stay on. Disk limits can make the real window shorter.</small></label>
+        <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>How far behind the live broadcast a viewer can fall on a Plex channel, counting time spent paused and time watching after Resume. It isn’t how long Pause can stay on. Disk limits can make the real window shorter.</small></label>
         {minutes<data.data.pauseRetentionMinutes&&<div className="notice"><span>Lowering this applies right away. Anyone now more than {minutes} minutes behind live will see “Buffer expired” and need to Go Live.{data.data.customBuffer.delayedViewers>0&&` ${data.data.customBuffer.delayedViewers} viewer${data.data.customBuffer.delayedViewers===1?' is':'s are'} behind live right now.`}</span></div>}
         <dl className="detail-grid">
           <div><dt>Pause buffer in use</dt><dd>{data.data.customBuffer.stations?`${size(data.data.customBuffer.bytes)} across ${data.data.customBuffer.stations} channel${data.data.customBuffer.stations===1?'':'s'}`:'Nothing playing'}</dd></div>
@@ -464,7 +464,7 @@ function ServerPlaybackSettings() {
           <div><dt>Viewers behind live</dt><dd>{data.data.customBuffer.delayedViewers}</dd></div>
           <div><dt>Disk cap per channel</dt><dd>{size(data.data.customBuffer.maxBytesPerChannel)}</dd></div>
         </dl>
-        {data.data.customBuffer.storagePressure&&<div className="notice error"><span>Disk space is low, so custom channels keep only about the last 90 seconds. Paused viewers may run out of buffer sooner than the setting allows.</span></div>}
+        {data.data.customBuffer.storagePressure&&<div className="notice error"><span>Disk space is low, so Plex channels keep only about the last 90 seconds. Paused viewers may run out of buffer sooner than the setting allows.</span></div>}
         {mutation.error&&<ErrorNotice message={mutation.error}/>}
         <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button>{saved&&<span role="status" className="success">Saved.</span>}</div>
       </form>
@@ -538,7 +538,7 @@ export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   const setSection=(s:string)=>{setSectionState(s);remember('section',s);};
   const available=admin?sections:sections.filter(s=>s[0]==='home'||s[0]==='playback'||s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
   return <div className="settings">
-    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Custom channels, IPTV sources, live sports and shared playback settings.':'Your Home page, subtitle style, account and connection.'}</p></div>
+    <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Plex channels, IPTV sources, live sports and shared playback settings.':'Your Home page, subtitle style, account and connection.'}</p></div>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">{available.map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>setSection(id)}><Icon name={icon} size={18}/>{label}</button>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='home'?<HomePageSettings/>:current==='playback'?<PlaybackSettings admin={admin}/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>

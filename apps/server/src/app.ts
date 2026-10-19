@@ -119,7 +119,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const parts = new PartProxy(plex), customTv = new CustomTv(custom, plex, localMedia, parts, budget, config.CACHE_DIR, () => settings.get().pauseRetentionMinutes * 60000, config.SEGMENT_CACHE_MAX_BYTES,
     config.FFMPEG_PATH, (message, detail) => app.log.warn(detail, message));
   // Pause, Resume and Go Live exist only on custom channels; IPTV stays strictly live.
-  const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only custom channels can be paused.', 409); return run(); };
+  const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only Plex channels can be paused.', 409); return run(); };
   app.get<{Params: {id: string}}>('/api/v1/live/sessions/:id/state', async req => { const {hash} = await auth(req); return timeshift(req.params.id, () => customTv.state(req.params.id, hash)); });
   app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/pause', async req => {
     const {hash} = await auth(req), input = z.object({displayedUtc: z.number().finite()}).strict().parse(req.body);
@@ -129,12 +129,12 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/go-live', async req => { const {hash} = await auth(req); z.object({}).strict().parse(req.body); return timeshift(req.params.id, () => customTv.goLive(req.params.id, hash)); });
   // Custom channels are Plex media, so they offer each program's subtitles; IPTV has none.
   app.get<{Params: {id: string}}>('/api/v1/live/sessions/:id/programs', async req => {
-    const {hash} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only custom channels have subtitles.', 409);
+    const {hash} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only Plex channels have subtitles.', 409);
     return {programs: customTv.airings(req.params.id, hash)};
   });
   app.get<{Params: {id: string; airing: string; stream: string}}>('/api/v1/live/sessions/:id/subtitles/:airing/:stream', async (req, reply) => {
     requireThat(/^\d+$/.test(req.params.stream) && /^[\w-]{1,32}$/.test(req.params.airing), 'INVALID_MEDIA', 'Invalid subtitle identifier.');
-    const {hash, grant} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only custom channels have subtitles.', 409);
+    const {hash, grant} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only Plex channels have subtitles.', 409);
     const item = await plex.metadata(grant, customTv.airingMedia(req.params.id, hash, req.params.airing));
     return reply.type('text/vtt; charset=utf-8').send(await subtitles.webvtt(grant, item, req.params.stream));
   });
