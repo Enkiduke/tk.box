@@ -72,3 +72,28 @@ export function applyCatalogFilters(url:URL,query:CatalogQuery,type:string) {
   if(query.contentRating)url.searchParams.set('contentRating',query.contentRating);
   if(query.shelf==='unwatched')url.searchParams.set('unwatched','1');
 }
+// Jump-rail buckets for non-title sorts. Values arrive in the library's sort order, so each
+// bucket is a run of consecutive items; a label that recurs folds into its first run.
+export type IndexEntry={label:string;offset:number;count:number};
+const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+export function sortIndex(sort:Exclude<CatalogQuery['sort'],'title'>,values:(number|undefined)[]):IndexEntry[] {
+  const known=values.filter((v):v is number=>v!==undefined&&Number.isFinite(v));
+  let label:(v:number)=>string;
+  if(sort==='year')label=new Set(known).size<=28?String:v=>`${Math.floor(v/10)*10}s`;
+  else if(sort==='rating')label=v=>String(Math.min(10,Math.max(0,Math.floor(v))));
+  else if(sort==='duration'){
+    const short=known.every(v=>v<90*60000);
+    label=short?v=>{const m=Math.floor(v/600000)*10;return m?`${m}m`:'<10m';}:v=>{const half=Math.floor(v/1800000);return half>=6?'3h+':['<30m','30m','1h','1½h','2h','2½h'][half]!;};
+  } else {
+    const years=new Set(known.map(v=>new Date(v*1000).getUTCFullYear()));
+    label=years.size>1?v=>String(new Date(v*1000).getUTCFullYear()):v=>months[new Date(v*1000).getUTCMonth()]!;
+  }
+  const entries:IndexEntry[]=[],seen=new Map<string,IndexEntry>();let last:IndexEntry|undefined;
+  values.forEach((v,offset)=>{
+    const name=v===undefined||!Number.isFinite(v)?'–':label(v);
+    if(last?.label===name){last.count++;return;}
+    const prior=seen.get(name);if(prior){prior.count++;last=prior;return;}
+    last={label:name,offset,count:1};seen.set(name,last);entries.push(last);
+  });
+  return entries;
+}

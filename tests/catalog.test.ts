@@ -8,6 +8,7 @@ import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {config,fakePlex,metadata} from './fixtures.js';
 import {ArtworkCache} from '../apps/server/src/providers/artwork-cache.js';
+import {sortIndex} from '../apps/server/src/providers/plex-catalog.js';
 
 function catalogFixture() {
   const base=fakePlex(),requests:{path:string;query:URLSearchParams;token:string|null}[]=[],nodes:Record<string,Record<string,unknown>>={
@@ -80,7 +81,9 @@ test('alphabet offsets and advanced filtering share the exact catalog query and 
   for(const [key,value] of Object.entries({genre:'7',unwatched:'1',title:'Space',year:'2024',contentRating:'PG-13',sort:'titleSort:desc',type:'1'})){assert.equal(a.query.get(key),value);assert.equal(b.query.get(key),value);}
   assert.ok(!JSON.stringify(index).includes('must-not-leak'));
   const before=f.requests.length;await assert.rejects(plex.catalogIndex(grant,'99',{}),{code:'PLEX_ACCESS_DENIED'});assert.equal(f.requests.length,before);
-  await assert.rejects(plex.catalogIndex(grant,'10',{sort:'year'}),{code:'INVALID_INDEX'});
+  f.setPage({MediaContainer:{Metadata:[{year:2024},{year:2024},{year:2021},{}],totalSize:4}});
+  assert.deepEqual(await plex.catalogIndex(grant,'10',{sort:'year',direction:'desc'}),{entries:[{label:'2024',offset:0,count:2},{label:'2021',offset:2,count:1},{label:'–',offset:3,count:1}],total:4});
+  const y=f.requests.at(-1)!;assert.equal(y.query.get('sort'),'year:desc');assert.equal(y.query.get('includeFields'),'year');f.setPage(undefined);
   await assert.rejects(plex.catalogIndex(grant,'10',{shelf:'recent'}),{code:'INVALID_INDEX'});
 });
 
@@ -160,4 +163,17 @@ test('recent TV uses series posters and groups a season batch into one card whil
   const season=page.items[0]!;assert.equal(season.episodeCount,3);assert.equal(season.showTitle,'Fixture show');assert.equal(season.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster');
   assert.equal(page.items[1]!.showPosterUrl,'/api/v1/catalog/items/100/artwork?kind=poster');assert.equal(page.items[1]!.posterUrl,'/api/v1/catalog/items/601/artwork?kind=poster');
   assert.equal(page.hasMore,false);
+});
+
+test('non-title jump buckets follow the sorted order and pick a readable granularity',()=>{
+  const decades=Array.from({length:40},(_,i)=>2020-i);
+  assert.deepEqual(sortIndex('year',decades).map(e=>[e.label,e.offset,e.count]),[['2020s',0,1],['2010s',1,10],['2000s',11,10],['1990s',21,10],['1980s',31,9]]);
+  assert.deepEqual(sortIndex('rating',[9.4,9,8.7,undefined]).map(e=>[e.label,e.count]),[['9',2],['8',1],['–',1]]);
+  assert.deepEqual(sortIndex('duration',[22*60000,25*60000,44*60000]).map(e=>e.label),['20m','40m']);
+  assert.deepEqual(sortIndex('duration',[95*60000,130*60000,200*60000]).map(e=>e.label),['1½h','2h','3h+']);
+  const day=(s:string)=>Date.parse(s)/1000;
+  assert.deepEqual(sortIndex('newest',[day('2026-10-01'),day('2026-03-02')]).map(e=>e.label),['Oct','Mar']);
+  assert.deepEqual(sortIndex('newest',[day('2026-10-01'),day('2025-03-02')]).map(e=>e.label),['2026','2025']);
+  // A label that recurs out of order folds into its first bucket.
+  assert.deepEqual(sortIndex('rating',[8,7,8]),[{label:'8',offset:0,count:2},{label:'7',offset:1,count:1}]);
 });
