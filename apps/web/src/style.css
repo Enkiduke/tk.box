@@ -65,7 +65,8 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .button-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .badge{display:inline-flex;align-items:center;max-width:100%;font-size:11px;font-weight:600;letter-spacing:.02em;padding:3px 8px;border-radius:4px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
 .badge.warning{color:#f2cf7a;border-color:#6b5420;background:#2d240c}
-.spinner{display:inline-block;width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.15);border-top-color:var(--text);animation:spin .8s linear infinite}
+/* A ring with a tapering tail; --ring sets its thickness. */
+.spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 15%,color-mix(in srgb,var(--text) 35%,transparent) 50%,var(--text));-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading{display:grid;place-items:center;padding:60px 0}
 .skeleton{background:linear-gradient(100deg,var(--surface) 30%,var(--surface-2) 50%,var(--surface) 70%);background-size:300% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:var(--radius)}
@@ -356,7 +357,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .player-flash em{font-style:normal;font-size:14px;font-weight:650;padding:4px 12px;border-radius:999px;background:rgba(10,10,14,.6)}
 @keyframes player-flash{0%{opacity:0;transform:translate(-50%,-50%) scale(.85)}20%{opacity:1;transform:translate(-50%,-50%) scale(1)}70%{opacity:1}100%{opacity:0;transform:translate(-50%,-50%) scale(1.08)}}
 .player-status{position:absolute;top:96px;left:50%;z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 16px;border-radius:999px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--glass-line);font-size:13px;font-weight:550;white-space:nowrap}
-.player-status .spinner{width:16px;height:16px;border-width:2px}
+.player-status .spinner{--ring:2px;width:16px;height:16px}
 .player-status.warning{color:#f2cf7a}
 .scrubber{position:relative;height:22px;display:flex;align-items:center;margin-bottom:8px}
 .scrubber:before{content:'';position:absolute;left:0;right:0;height:4px;border-radius:4px;background:linear-gradient(90deg,var(--accent) var(--played),rgba(255,255,255,.42) var(--played) var(--buffered),rgba(255,255,255,.18) var(--buffered));transition:height .15s var(--ease)}
@@ -601,6 +602,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   .art-image-loaded{animation-duration:.6s!important}
+  /* Loading indicators keep moving: they are how people know the app is still working. */
+  .spinner{animation-duration:.9s!important;animation-iteration-count:infinite!important}
+  .skeleton{animation-duration:1.6s!important;animation-iteration-count:infinite!important}
 }
 /* Live TV: channel logos, On now strip and guide states */
 .channel-logo{display:grid;place-items:center;flex:none;border-radius:8px;background:var(--surface-3);overflow:hidden}
