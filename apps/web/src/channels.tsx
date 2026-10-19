@@ -3,7 +3,7 @@ import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/inde
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,invalidate,duration,clock} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Icon,Loading,Modal} from './components.js';
-import {Card,SectionHead,Switch,code,move,plural,useMutation} from './settings-ui.js';
+import {Card,MoveButtons,SectionHead,Switch,code,moveTo,plural,useDragOrder,useMutation} from './settings-ui.js';
 
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
 // Every edit changes the draft; Publish hands over at the end of whatever is airing.
@@ -48,19 +48,19 @@ const StatusBadge=({channel}:{channel:Summary})=>{const s=status(channel);return
 const NumberTile=({channel}:{channel:Summary})=><span className="channel-tile" aria-hidden="true">{channel.number??'—'}</span>;
 
 export function CustomChannelSettings() {
-  const list=useApi<{channels:Summary[]}>(base),[open,setOpen]=useState<{id:string;adding?:boolean}>(),[create,setCreate]=useState(false),ordering=useMutation(list.reload);
+  const drag=useDragOrder(),list=useApi<{channels:Summary[]}>(base),[open,setOpen]=useState<{id:string;adding?:boolean}>(),[create,setCreate]=useState(false),ordering=useMutation(list.reload);
   const channels=list.data?.channels??[];
   if(open&&channels.some(c=>c.id===open.id))return <ChannelEditor key={open.id} id={open.id} startAdding={open.adding} back={()=>setOpen(undefined)}/>;
-  const reorder=(i:number,by:number)=>void ordering.run(()=>api(`${base}/order`,'PUT',{ids:move(channels.map(c=>c.id),i,by)}).then(changed));
+  const reorder=(from:number,to:number)=>void ordering.run(()=>api(`${base}/order`,'PUT',{ids:moveTo(channels.map(c=>c.id),from,to)}).then(changed));
   return <>
     <SectionHead title="Custom channels" description="Make 24/7 channels from your Plex movies and shows. Programs play one after another and start over at the end, and everyone tuned in sees the same thing.">
       {channels.length>0&&<button className="primary" onClick={()=>setCreate(true)}><Icon name="plus" size={16}/>New channel</button>}
     </SectionHead>
     {ordering.error&&<ErrorNotice message={ordering.error}/>}
     {list.loading&&!list.data?<Loading/>:list.error?<ErrorNotice message={list.error.message} retry={list.reload}/>:channels.length?<>
-      <p className="muted small list-note">Live TV lists custom channels first, in this order.{channels.length>1&&' Use the arrows to change it.'}</p>
-      <ul className="source-rows">{channels.map((c,i)=><li key={c.id} className="source-item">
-        {channels.length>1&&<span className="source-move"><button type="button" className="icon-button" aria-label={`Move ${c.name} up`} disabled={i===0||ordering.busy} onClick={()=>reorder(i,-1)}>↑</button><button type="button" className="icon-button" aria-label={`Move ${c.name} down`} disabled={i===channels.length-1||ordering.busy} onClick={()=>reorder(i,1)}>↓</button></span>}
+      <p className="muted small list-note">Live TV lists custom channels first, in this order.{channels.length>1&&' Drag channels or use the arrows to change it.'}</p>
+      <ul className="source-rows">{channels.map((c,i)=><li key={c.id} className="source-item" {...drag('channels',i,reorder,channels.length>1&&!ordering.busy)}>
+        {channels.length>1&&<MoveButtons name={c.name} index={i} count={channels.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}
         <button className="source-row" onClick={()=>setOpen({id:c.id})}>
           <NumberTile channel={c}/>
           <span className="source-row-main"><strong>{c.name}</strong><small>{c.live&&c.enabled&&c.current?<>Now: {c.current.title}{c.current.subtitle&&` · ${c.current.subtitle}`}</>:c.programs?`${plural(c.programs,'program')} · ${duration(c.runtimeMs)} per loop`:'Add programs to get started'}</small></span>
@@ -138,7 +138,7 @@ type AddOptions={specials:boolean;autoAdd:boolean;atStart:boolean};
 const PAGE=200;
 const matches=(e:Entry,q:string)=>`${e.showTitle??''} ${e.title} ${e.kind==='episode'?episodeLabel(e):e.year??''}`.toLocaleLowerCase().includes(q);
 function ProgramsPanel({view,busy,apply,setNotice,startAdding}:{view:Detail;busy:boolean;apply:Apply;setNotice:(s:string)=>void;startAdding?:boolean}) {
-  const [selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[picker,setPicker]=useState(!!startAdding&&!view.entries.length),[arranging,setArranging]=useState(false),[dragging,setDragging]=useState<number>();
+  const [selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[picker,setPicker]=useState(!!startAdding&&!view.entries.length),[arranging,setArranging]=useState(false),drag=useDragOrder();
   const [filter,setFilter]=useState(''),[undo,setUndo]=useState<{ids:string[];revision:number;label:string}>();
   const entries=view.entries,ids=entries.map(e=>e.entryId),q=filter.trim().toLocaleLowerCase();
   const sources=new Map(view.sources.map(s=>[s.id,s]));
@@ -146,8 +146,8 @@ function ProgramsPanel({view,busy,apply,setNotice,startAdding}:{view:Detail;busy
   useEffect(()=>{setSelected(s=>s.filter(id=>ids.includes(id)));},[view.revision]);
   const order=(next:string[],done?:(r:unknown)=>void)=>apply('/draft/order','PUT',{entryIds:next},done);
   const remove=(drop:string[])=>{order(ids.filter(id=>!drop.includes(id)),()=>setNotice(`Removed ${plural(drop.length,'program')}. Discard changes to bring ${drop.length===1?'it':'them'} back.`));setSelected([]);};
-  const moveTo=(top:boolean)=>{const chosen=ids.filter(id=>selected.includes(id)),rest=ids.filter(id=>!selected.includes(id));order(top?[...chosen,...rest]:[...rest,...chosen]);};
-  const drop=(to:number)=>{if(dragging===undefined||dragging===to)return;const next=[...ids],[moved]=next.splice(dragging,1);next.splice(to,0,moved!);setDragging(undefined);order(next);};
+  const moveSelected=(top:boolean)=>{const chosen=ids.filter(id=>selected.includes(id)),rest=ids.filter(id=>!selected.includes(id));order(top?[...chosen,...rest]:[...rest,...chosen]);};
+  const reorder=(from:number,to:number)=>order(moveTo(ids,from,to));
   const problems=entries.filter(e=>e.issue);
   const allVisible=visible.length>0&&visible.every(r=>selected.includes(r.e.entryId));
   const add=(picked:string[],o:AddOptions)=>apply('/draft/add','POST',{ids:picked,specials:o.specials,autoAdd:o.autoAdd,...(o.atStart?{at:0}:{})},r=>{
@@ -168,15 +168,14 @@ function ProgramsPanel({view,busy,apply,setNotice,startAdding}:{view:Detail;busy
       {problems.length>0&&<div className="notice error" role="alert"><span>{plural(problems.length,'program')} can’t play on a channel and must be removed before publishing. {issueHelp}</span><button disabled={busy} onClick={()=>remove(problems.map(e=>e.entryId))}>Remove them</button></div>}
       {undo&&undo.revision===view.revision&&<div className="notice subtle" role="status"><span>{undo.label}</span><button disabled={busy} onClick={()=>order(undo.ids,()=>{setUndo(undefined);setNotice('Order restored.');})}>Undo</button></div>}
       {selected.length>0&&<div className="bulk-bar" role="region" aria-label="Selected programs"><strong>{selected.length} selected</strong><div className="button-row">
-        <button disabled={busy} onClick={()=>moveTo(true)}>Move to top</button><button disabled={busy} onClick={()=>moveTo(false)}>Move to bottom</button>
+        <button disabled={busy} onClick={()=>moveSelected(true)}>Move to top</button><button disabled={busy} onClick={()=>moveSelected(false)}>Move to bottom</button>
         <button disabled={busy} onClick={()=>apply('/draft/duplicate','POST',{entryIds:selected})} title="Adds a second airing right after each">Air twice</button>
         <button disabled={busy} className="danger" onClick={()=>remove(selected)}>Remove</button><button className="text-button" onClick={()=>setSelected([])}>Clear</button></div></div>}
       <div className="program-head">
         <label className="checkbox-label"><input type="checkbox" checked={allVisible} disabled={!visible.length} onChange={e=>{const on=e.target.checked,v=visible.map(r=>r.e.entryId);setSelected(s=>on?[...new Set([...s,...v])]:s.filter(id=>!v.includes(id)));}}/>{filtering?`${plural(rows.length,'match')}`:`${plural(entries.length,'program')}`}</label>
         <span className="muted small">{filtering?'Clear the search to reorder':`${duration(view.runtimeMs)} per loop, then it starts over`}</span>
       </div>
-      {!rows.length?<p className="muted program-none">Nothing in this list matches “{filter}”.</p>:<ol className="program-list">{visible.map(({e,i})=>{const source=e.sourceId?sources.get(e.sourceId):undefined;return <li key={e.entryId} className={`program-row ${selected.includes(e.entryId)?'selected':''} ${dragging===i?'dragging':''}`} draggable={!busy&&!filtering}
-        onDragStart={ev=>{setDragging(i);ev.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDragging(undefined)} onDragOver={ev=>{if(dragging!==undefined){ev.preventDefault();ev.dataTransfer.dropEffect='move';}}} onDrop={ev=>{ev.preventDefault();drop(i);}}>
+      {!rows.length?<p className="muted program-none">Nothing in this list matches “{filter}”.</p>:<ol className="program-list">{visible.map(({e,i})=>{const source=e.sourceId?sources.get(e.sourceId):undefined;return <li key={e.entryId} className={`program-row ${selected.includes(e.entryId)?'selected':''}`} {...drag('programs',i,reorder,!busy&&!filtering&&entries.length>1)}>
         <input type="checkbox" aria-label={`Select ${e.showTitle??e.title} ${e.kind==='episode'?episodeLabel(e):''}`} checked={selected.includes(e.entryId)} onChange={ev=>{const on=ev.target.checked;setSelected(s=>on?[...s,e.entryId]:s.filter(id=>id!==e.entryId));}}/>
         <span className="program-index" aria-hidden="true">{i+1}</span>
         <Thumb src={poster(e)} icon={kindIcon[e.kind]}/>
@@ -184,7 +183,7 @@ function ProgramsPanel({view,busy,apply,setNotice,startAdding}:{view:Detail;busy
         {e.addedAuto&&<span className="badge" title={`Added automatically ${stamp(e.addedAuto)}`}>New</span>}
         {e.issue&&<span className="badge danger" title={e.issue==='incompatible'?issueHelp:undefined}>{issues[e.issue]}</span>}
         <span className="program-runtime">{duration(e.durationMs)}</span>
-        <span className="sports-move"><button type="button" className="icon-button" aria-label={`Move ${e.title} up`} disabled={busy||filtering||i===0} onClick={()=>order(move(ids,i,-1))}>↑</button><button type="button" className="icon-button" aria-label={`Move ${e.title} down`} disabled={busy||filtering||i===entries.length-1} onClick={()=>order(move(ids,i,1))}>↓</button><button type="button" className="icon-button" aria-label={`Remove ${e.title}`} disabled={busy} onClick={()=>remove([e.entryId])}><Icon name="close" size={14}/></button></span>
+        <span className="program-actions"><MoveButtons name={e.title} index={i} count={entries.length} disabled={busy||filtering} onMove={to=>reorder(i,to)}/><button type="button" className="icon-button" aria-label={`Remove ${e.title}`} disabled={busy} onClick={()=>remove([e.entryId])}><Icon name="close" size={14}/></button></span>
       </li>;})}</ol>}
       {rows.length>PAGE&&<div className="list-footer"><span className="muted small">Showing {Math.min(shown,rows.length)} of {rows.length}</span>{shown<rows.length&&<button onClick={()=>setShown(n=>n+PAGE)}>Show {Math.min(PAGE,rows.length-shown)} more</button>}</div>}
       {!filtering&&entries.length>1&&<p className="muted small list-note">Drag rows or use the arrows to reorder. Select programs to move, repeat or remove several at once.</p>}
