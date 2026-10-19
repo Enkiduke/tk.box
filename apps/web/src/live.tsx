@@ -59,9 +59,9 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
     const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
     return <div className="poster-card" key={c.id}>
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
-        <ChannelLogo channel={c} size={88}/>
+        <ChannelLogo channel={c} size={88}/><span className="live-badge">LIVE</span>
         {next&&<span className="live-next"><small>Next {clock(next.start)}</small> {next.title}</span>}
-        <span className="live-banner">{current?`Live · ${timing(current,now)}`:'Live'}</span>
+        {current&&<span className="live-banner">{timing(current,now)}</span>}
         {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
       </button><button className="card-play" tabIndex={-1} disabled={busy} aria-label={`Watch ${c.name}`} onClick={tune}><Icon name="play" size={22}/></button></div>
       <span className="poster-title"><span className="card-plain">{current?fullTitle(current):emptyLabel(c,now)||'Off air'}</span></span>
