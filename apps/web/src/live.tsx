@@ -44,12 +44,23 @@ const timing=(p:Program,now:number)=>p.continuous?'24/7':soon(p)?`Starting soon 
 const emptyLabel=(c:Station,now:number)=>c.programs.find(p=>p.start<=now&&p.end>now)?.blank?'':'No guide data';
 function useNow(){const [now,setNow]=useState(Date.now);useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(timer);},[]);return now;}
 
-export function FavoriteChannels() {
-  const now=useNow(),start=Math.floor(now/1800000)*1800000,data=useApi<Guide>(`/guide?start=${start}&end=${start+7200000}&filter=favorites&limit=6`);
-  useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start]);
-  if(data.error)return <ErrorNotice message="Favorite channels could not be loaded." retry={data.reload}/>;
+// Home's one Live TV row: what's on now and next, capped at a dozen channels so it never becomes the guide.
+// Favorites come first; without any, the first channels of the lineup stand in.
+export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
+  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=12`;
+  const favorites=useApi<Guide>(`${base}&filter=favorites`),none=favorites.data?.channels.length===0;
+  const lineup=useApi<Guide>(none?`${base}&filter=all`:undefined),data=none?lineup:favorites;
+  useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start,none]);
+  if(data.error)return <ErrorNotice message="Live TV could not be loaded." retry={data.reload}/>;
   if(!data.data?.channels.length)return null;
-  return <Row title="Your channels" href={link('live',{filter:'favorites'})}>{data.data.channels.map(c=>{const slot=c.programs.find(p=>p.start<=now&&p.end>now),current=slot?.program;return <a className="channel-card" key={c.id} href={link('live',{channel:c.id})}><span className="channel-top"><ChannelLogo channel={c}/><small>CH {c.number}</small></span><strong>{stationName(c.name).label}</strong><span className="channel-now">{current?fullTitle(current):'No guide data'}</span>{current&&!current.continuous&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}</a>;})}</Row>;
+  return <Row title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})}>{data.data.channels.map(c=>{
+    const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program;
+    return <button className="channel-card" key={c.id} disabled={busy} onClick={()=>onWatch(tuneTarget(c),current?.title)} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
+      <span className="channel-top"><ChannelLogo channel={c}/><small>CH {c.number}</small></span><strong>{stationName(c.name).label}</strong>
+      <span className="channel-now">{current?fullTitle(current):emptyLabel(c,now)||'Off air'}</span>
+      {next&&<span className="channel-next">{clock(next.start)} · {next.title}</span>}
+      {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
+    </button>;})}</Row>;
 }
 export type WatchChannel=(channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]},program?:string)=>void;
 // A stack is one station with several provider feeds. The server lists the best feed first;

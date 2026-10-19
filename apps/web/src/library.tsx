@@ -3,7 +3,7 @@ import type {CatalogItem,CatalogPage,Library} from '../../../packages/contracts/
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,replaceRoute} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
-import {FavoriteChannels} from './live.js';
+import {LiveNow,type WatchChannel} from './live.js';
 import {api} from './api.js';
 
 type BrowseProps={libraries:Library[];onOpen:(id:string)=>void};
@@ -45,27 +45,31 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
     {featured.length>1&&<div className="hero-dots" role="group" aria-label="Featured titles">{featured.map((media,i)=><button key={media.id} aria-label={`Show ${media.title}`} aria-pressed={index%featured.length===i} onClick={()=>setIndex(i)}/>)}</div>}
   </section>;
 }
-function ContinueRow({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
+// Plex's On Deck mixes titles paused partway with the next episode of shows the viewer keeps
+// watching. Paused titles are Continue watching; untouched next episodes are Recommended.
+function OnDeckRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
   const data=useApiAll<CatalogPage>(libraries.map(l=>items(l,'shelf=continue&limit=20')));
   const overrides=useOverrides(),list=interleave(data.data.map(p=>p?.items??[])).filter(item=>!overrides.get(item.id)?.continueHidden);
+  const paused=(item:CatalogItem)=>(overrides.get(item.id)?.viewOffsetMs??item.viewOffsetMs)>0;
+  const resume=list.filter(paused),next=list.filter(item=>!paused(item));
   if(data.loading&&!list.length)return <RowSkeleton title="Continue watching" wide/>;
-  if(!list.length)return null;
-  return <Row title="Continue watching" className="row-wide">{list.map(item=><WideCard key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>;
+  return <>
+    {resume.length>0&&<Row title="Continue watching" className="row-wide">{resume.map(item=><WideCard key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
+    {next.length>0&&<Row title="Recommended" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
+  </>;
 }
 function LazyRow({title,path,href,onOpen,onPlay}:{title:string;path:string;href:string;onOpen:(id:string)=>void;onPlay:PlayFn}) {
   const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<CatalogPage>(near?path:undefined);
   return <div ref={ref} className="lazy-row">{!data.data?(data.error?<section className="row"><div className="row-heading"><h2>{title}</h2></div><ErrorNotice message={data.error.message} retry={data.reload}/></section>:<RowSkeleton title={title}/>):data.data.items.length?<Row title={title} href={href}>{data.data.items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>:null}</div>;
 }
-export function Home({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
+export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProps&{onWatch:WatchChannel}) {
   if(!libraries.length)return <div className="page"><Empty title="No libraries available">Your Plex account needs access to Movies and TV libraries.</Empty></div>;
   return <div className="home">
     <Hero libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
     <div className="rows">
-      <ContinueRow libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
+      <OnDeckRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
+      <LiveNow onWatch={onWatch} busy={busy}/>
       {libraries.map(l=><LazyRow key={`recent-${l.key}`} title={`Recently added in ${l.title}`} path={recent(l)} href={link(page(l),{library:l.key,sort:'newest',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
-      <FavoriteChannels/>
-      {libraries.map(l=><LazyRow key={`rated-${l.key}`} title={`Top rated ${l.title}`} path={items(l,'sort=rating&direction=desc&limit=20')} href={link(page(l),{library:l.key,sort:'rating',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
-      {libraries.map(l=><LazyRow key={`unwatched-${l.key}`} title={`Unwatched ${l.title}`} path={items(l,'shelf=unwatched&sort=year&direction=desc&limit=20')} href={link(page(l),{library:l.key,shelf:'unwatched',sort:'year',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
     </div>
   </div>;
 }
