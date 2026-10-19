@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {customAudioMap,mediaTracks,type PlexAdapter,type PlexGrant,type PlexMetadata} from '../apps/server/src/providers/plex.js';
+import {customAudioMap,mediaMarkers,mediaTracks,type PlexAdapter,type PlexGrant,type PlexMetadata} from '../apps/server/src/providers/plex.js';
 import {SubtitleService} from '../apps/server/src/services/subtitles.js';
 import {matroskaTextTrack} from '../apps/server/src/services/matroska-subtitles.js';
 
@@ -29,6 +29,12 @@ test('media tracks describe audio and subtitle choices, marking image subtitles 
   const tracks=mediaTracks(item);
   assert.deepEqual(tracks.audio,[{id:'2',label:'English (AC3 5.1)',language:'eng',selected:true}]);
   assert.deepEqual(tracks.subtitles.map(t=>[t.id,t.label,t.supported,t.forced]),[['3','English (SRT External)',true,false],['4','Français (PGS)',false,true]]);
+});
+
+test('media markers keep intros and credits in order, clamped to the title, and drop commercials',()=>{
+  const marked={...item,Marker:[{type:'credits',startTimeOffset:50000,endTimeOffset:61000,final:true},{type:'commercial',startTimeOffset:20000,endTimeOffset:30000},{type:'intro',startTimeOffset:5000,endTimeOffset:5000},{type:'intro',startTimeOffset:1000,endTimeOffset:9000}]} as PlexMetadata;
+  assert.deepEqual(mediaMarkers(marked),[{type:'intro',startMs:1000,endMs:9000,final:false},{type:'credits',startMs:50000,endMs:60000,final:true}]);
+  assert.deepEqual(mediaMarkers(item),[]);
 });
 
 test('sidecar subtitles convert to cached WebVTT and image subtitles are refused',{skip:spawnSync('ffmpeg',['-version']).status!==0&&'ffmpeg unavailable'},async()=>{

@@ -18,6 +18,8 @@ export type AudioTrack={id:string;label:string;language?:string;selected:boolean
 export type MediaTracks={subtitles:SubtitleTrack[];audio:AudioTrack[]};
 // A custom-channel program as it aired: from broadcast time `start` the picture shows media position `mediaStartMs` onward.
 export type LiveProgram={id:string;start:number;mediaStartMs:number;subtitles:SubtitleTrack[]};
+// A Plex intro or credits section in media milliseconds; `final` marks the closing credits.
+export type SkipMarker={type:'intro'|'credits';startMs:number;endMs:number;final:boolean};
 export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string;bitrateKbps?:number};
 const deliveryLabel:Record<Delivery,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
 const deliveryDetail:Record<Delivery,string>={direct:'Playing the original file.',remux:'Original video, repackaged for this browser.',transcode:'Converted by Plex for this browser.'};
@@ -47,8 +49,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,markers,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
@@ -191,6 +193,20 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const behind=!!shifted&&shifted.state!=='LIVE';
   const seek=(delta:number)=>{const video=ref.current!;video.currentTime=Math.max(0,Math.min(Number.isFinite(video.duration)?video.duration:Infinity,video.currentTime+delta));showFlash(delta<0?'rewind':'forward',`${delta<0?'−':'+'}${Math.abs(delta)}s`);};
   const changeRate=(next:number)=>{setRate(next);showFlash('speed',`${next}×`);};
+  // Plex's intro and credits markers, in media time: a Skip button while one plays, and with Auto-skip on,
+  // a jump past each marker once per title, so seeking back into one leaves it playing.
+  const [autoSkip,setAutoSkip]=useState(()=>stored('autoskip')==='on'),autoSkipped=useRef(new Set<string>());
+  const chooseAutoSkip=(on:boolean)=>{setAutoSkip(on);store('autoskip',on?'on':'off');};
+  useEffect(()=>{autoSkipped.current.clear();},[url]);
+  const mediaMs=(view.time+shift)*1000,marker=live?undefined:markers?.find(m=>mediaMs>=m.startMs&&mediaMs<m.endMs-1000);
+  const skipMarker=(m:SkipMarker)=>{
+    const video=ref.current!;video.currentTime=Math.min(m.endMs/1000-shift,Number.isFinite(video.duration)?video.duration:Infinity);
+    showFlash('skip-next',m.type==='intro'?'Skipped intro':'Skipped credits');
+  };
+  useEffect(()=>{
+    if(!marker||!autoSkip||!view.playing)return;const key=`${marker.type}:${marker.startMs}`;
+    if(!autoSkipped.current.has(key)){autoSkipped.current.add(key);skipMarker(marker);}
+  },[marker?.startMs,autoSkip,view.playing]);
   const toggleFullscreen=()=>{if(document.fullscreenElement)void document.exitFullscreen();else void shell.current?.requestFullscreen?.().catch(()=>{});};
   useEffect(()=>{const changed=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener('fullscreenchange',changed);return()=>document.removeEventListener('fullscreenchange',changed);},[]);
   useEffect(()=>{if(docked){setPanel(undefined);if(document.fullscreenElement)void document.exitFullscreen();}},[docked]);
@@ -235,6 +251,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
+      {marker&&!panel&&<button key={`${marker.type}:${marker.startMs}`} className="player-skip" onClick={()=>skipMarker(marker)}>{marker.type==='intro'?'Skip Intro':'Skip Credits'}<Icon name="skip-next" size={18}/></button>}
       {!view.playing&&!view.waiting&&!liveSwitching&&!tuning&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
       {switching&&<div className="player-status" role="status"><span className="spinner"/>{switching==='audio'?'Switching audio…':'Switching quality…'}</div>}
@@ -262,6 +279,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
             {feeds.map(f=><Choice key={f.id} selected={f.id===feed} detail={f.quality} onSelect={()=>{if(f.id!==feed)onFeed(f.id);}}>{f.label}</Choice>)}
           </div></PanelSection>}
           {!live&&<PanelSection title="Playback speed"><div className="segmented">{speeds.map(value=><button key={value} aria-pressed={rate===value} onClick={()=>setRate(value)}>{value===1?'Normal':`${value}×`}</button>)}</div></PanelSection>}
+          {!live&&<section className="panel-section"><label className="panel-switch">Auto-skip intros and credits<input type="checkbox" role="switch" checked={autoSkip} onChange={e=>chooseAutoSkip(e.target.checked)}/></label></section>}
           <PanelSection title="Stream">
             <dl className="stream-info">
               <div><dt>Mode</dt><dd>{deliveryLabel[delivery]}<small>{(live&&liveDetail[delivery])||deliveryDetail[delivery]}</small></dd></div>
