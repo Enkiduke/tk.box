@@ -43,20 +43,40 @@ export function catalogDto(node:CatalogNode,libraryId:string):CatalogItem {
 // Plex lists recently added TV one episode at a time. Like Plex's own home hub, episodes of a
 // season that arrived together (each within a day of the next) collapse into one season card.
 // Only a season's newest batch is grouped; older stragglers stay as episodes so ids remain unique.
+// Batches from several seasons of one show that arrived together then merge into one show card
+// ("2 seasons · 16 episodes"), placed where the show's newest episode is. Again only the show's newest run merges.
 const batchWindowSeconds=24*60*60;
+type SeasonBatch={episodes:CatalogItem[];batchable:boolean};
+const near=(a?:number,b?:number)=>Math.abs((a??0)-(b??0))<=batchWindowSeconds;
 export function groupRecentEpisodes(items:CatalogItem[]):CatalogItem[] {
-  const open=new Map<string,CatalogItem[]>(),closed=new Set<string>(),out:CatalogItem[][]=[];
+  const open=new Map<string,SeasonBatch>(),closed=new Set<string>(),batches:SeasonBatch[]=[];
   for(const item of items) {
     const season=item.type==='episode'?item.parentId:undefined,batch=season?open.get(season):undefined;
-    if(season&&batch&&Math.abs((batch.at(-1)!.addedAt??0)-(item.addedAt??0))<=batchWindowSeconds){batch.push(item);continue;}
+    if(season&&batch&&near(batch.episodes.at(-1)!.addedAt,item.addedAt)){batch.episodes.push(item);continue;}
     if(season&&batch){open.delete(season);closed.add(season);}
-    const entry=[item];out.push(entry);if(season&&!closed.has(season))open.set(season,entry);
+    const entry={episodes:[item],batchable:!!season&&!closed.has(season)};batches.push(entry);if(entry.batchable)open.set(season!,entry);
   }
-  return out.map(([first,...rest])=>!rest.length||!first!.parentId?first!:{
+  const openShows=new Map<string,SeasonBatch[]>(),closedShows=new Set<string>(),out:SeasonBatch[][]=[];
+  for(const batch of batches) {
+    const show=batch.batchable?batch.episodes[0]!.showId:undefined,run=show?openShows.get(show):undefined;
+    if(show&&run&&near(run.at(-1)!.episodes.at(-1)!.addedAt,batch.episodes[0]!.addedAt)){run.push(batch);continue;}
+    if(show&&run){openShows.delete(show);closedShows.add(show);}
+    const entry=[batch];out.push(entry);if(show&&!closedShows.has(show))openShows.set(show,entry);
+  }
+  return out.map(run=>run.length>1?showCard(run.map(b=>b.episodes)):seasonCard(run[0]!.episodes));
+}
+function seasonCard([first,...rest]:CatalogItem[]):CatalogItem {
+  return !rest.length||!first!.parentId?first!:{
     id:first!.parentId,libraryId:first!.libraryId,type:'season',title:first!.parentTitle??`Season ${first!.seasonNumber??''}`.trim(),summary:'',
     viewOffsetMs:0,watched:[first!,...rest].every(e=>e.watched),posterUrl:first!.showPosterUrl??first!.posterUrl,showPosterUrl:first!.showPosterUrl,backdropUrl:first!.backdropUrl,
     parentId:first!.showId,parentTitle:first!.showTitle,showId:first!.showId,showTitle:first!.showTitle,seasonNumber:first!.seasonNumber,
-    episodeCount:rest.length+1,contentRating:first!.contentRating,genres:first!.genres,addedAt:first!.addedAt});
+    episodeCount:rest.length+1,contentRating:first!.contentRating,genres:first!.genres,addedAt:first!.addedAt};
+}
+function showCard(seasons:CatalogItem[][]):CatalogItem {
+  const episodes=seasons.flat(),first=episodes[0]!;
+  return {id:first.showId!,libraryId:first.libraryId,type:'show',title:first.showTitle??first.title,summary:'',
+    viewOffsetMs:0,watched:episodes.every(e=>e.watched),posterUrl:first.showPosterUrl??first.posterUrl,showPosterUrl:first.showPosterUrl,backdropUrl:first.backdropUrl,
+    seasonCount:seasons.length,episodeCount:episodes.length,contentRating:first.contentRating,genres:first.genres,addedAt:first.addedAt};
 }
 export const catalogQuery=z.object({offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(24),q:z.string().trim().max(120).default(''),sort:z.enum(['title','newest','year','rating','duration']).default('title'),direction:z.enum(['asc','desc']).optional(),shelf:z.enum(['all','continue','recent','unwatched']).default('all'),genre:z.string().regex(/^\d*$/).max(20).default(''),year:z.coerce.number().int().min(1880).max(2100).optional(),contentRating:z.string().trim().max(30).default('')}).strict();
 export type CatalogQuery=z.infer<typeof catalogQuery>;

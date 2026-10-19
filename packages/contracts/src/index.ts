@@ -32,7 +32,8 @@ export type CatalogItem = {
   summary: string; year?: number; durationMs?: number; viewOffsetMs: number; watched: boolean;
   posterUrl?: string; showPosterUrl?: string; backdropUrl?: string; parentId?: string; parentTitle?: string;
   showId?: string; showTitle?: string; seasonNumber?: number; episodeNumber?: number;
-  episodeCount?: number; watchedEpisodeCount?: number; contentRating?: string; rating?: number;
+  // seasonCount is set only on a recently added show card that merges several new seasons.
+  seasonCount?: number; episodeCount?: number; watchedEpisodeCount?: number; contentRating?: string; rating?: number;
   genres: string[]; addedAt?: number;
 };
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};
