@@ -53,14 +53,17 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start,none]);
   if(data.error)return <ErrorNotice message="Live TV could not be loaded." retry={data.reload}/>;
   if(!data.data?.channels.length)return null;
-  return <Row title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})}>{data.data.channels.map(c=>{
-    const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program;
-    return <button className="channel-card" key={c.id} disabled={busy} onClick={()=>onWatch(tuneTarget(c),current?.title)} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
-      <span className="channel-top"><ChannelLogo channel={c}/><small>CH {c.number}</small></span><strong>{stationName(c.name).label}</strong>
-      <span className="channel-now">{current?fullTitle(current):emptyLabel(c,now)||'Off air'}</span>
-      {next&&<span className="channel-next">{clock(next.start)} · {next.title}</span>}
-      {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
-    </button>;})}</Row>;
+  // Laid out like Continue watching's wide cards: a 16:9 frame (the logo stands in for art), then title and meta below.
+  return <Row title={none?'On Live TV now':'On your channels now'} className="row-wide" href={link('live',{filter:none?'all':'favorites'})}>{data.data.channels.map(c=>{
+    const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
+    return <div className="wide-card" key={c.id}>
+      <div className="card-frame"><button className="wide-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
+        <ChannelLogo channel={c} size={64}/><span className="live-badge">LIVE</span>
+        {next&&<span className="live-next">Next {clock(next.start)} · {next.title}</span>}
+        {current&&!current.continuous&&!soon(current)&&<span className="card-progress"><span style={{width:`${Math.min(100,(now-current.start)/(current.end-current.start)*100)}%`}}/></span>}
+      </button><button className="card-play" tabIndex={-1} disabled={busy} aria-label={`Watch ${c.name}`} onClick={tune}><Icon name="play" size={22}/></button></div>
+      <div className="wide-info"><span className="wide-title"><span className="card-plain">{current?fullTitle(current):emptyLabel(c,now)||'Off air'}</span></span><span className="wide-meta"><span className="card-plain">{[`CH ${c.number}`,stationName(c.name).label,current&&timing(current,now)].filter(Boolean).join(' · ')}</span></span></div>
+    </div>;})}</Row>;
 }
 export type WatchChannel=(channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]},program?:string)=>void;
 // A stack is one station with several provider feeds. The server lists the best feed first;
