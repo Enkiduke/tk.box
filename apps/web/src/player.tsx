@@ -47,8 +47,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
@@ -56,6 +56,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const [hover,setHover]=useState<{x:number;time:number}>(),[flash,setFlash]=useState<{icon:string;label?:string;key:number}>();
   // Go Live reloads the stream at the live edge; `generation` restarts the player effect without a new URL.
   const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
+  const endedRef=useRef(onEnded);endedRef.current=onEnded;
   useEffect(()=>{setShifted(undefined);},[url]);
   // Frequent mid-playback buffering suggests a lighter quality, once per stream unless dismissed.
   const suggestion=live?undefined:lighter(quality,qualityOptions,source?.bitrateKbps),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
@@ -76,7 +77,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     const loaded=()=>{if(generation.active&&seekOnLoad&&startOffsetMs>0&&Number.isFinite(video.duration))video.currentTime=Math.min(startOffsetMs/1000,Math.max(0,video.duration-.1));sync();};
     const playing=()=>{generation.started=true;progress('playing');sync();};
     const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
-    const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else progress('stopped');sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
+    const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else {progress('stopped');if(generation.active)endedRef.current?.();}sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
     const stalls=new StallMeter();
     const waiting=()=>{if(generation.started&&!video.seeking&&!video.paused)stalls.start(performance.now());sync();};
     const resumed=()=>{stalls.end(performance.now());sync();};
