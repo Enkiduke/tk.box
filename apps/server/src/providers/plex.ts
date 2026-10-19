@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,collectionsContainer,collectionDto,collectionArtwork,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -335,21 +335,23 @@ export class PlexAdapter {
     return {collections:container.Metadata.filter(c=>c.type==='collection'&&(c.librarySectionID??container.librarySectionID??libraryId)===libraryId)
       .map(c=>({id:`collection:${c.ratingKey}`,title:c.title,count:c.childCount,kind:c.subtype==='show'?'show' as const:'movie' as const}))};
   }
-  async artwork(grant:PlexGrant,id:string,kind:'poster'|'backdrop') {
-    const {node}=await this.catalogNode(grant,id),path=artworkPath(kind==='backdrop'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
+  async artwork(grant:PlexGrant,id:string,kind:ArtworkKind) {
+    const {node}=await this.catalogNode(grant,id),path=kind==='logo'?logoPath(node):artworkPath(kind==='backdrop'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
     requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
     return this.cachedArtwork(grant,path,kind);
   }
-  private cachedArtwork(grant:PlexGrant,path:string,kind:'poster'|'backdrop') {
+  private cachedArtwork(grant:PlexGrant,path:string,kind:ArtworkKind) {
     const cacheKey=createHash('sha256').update(JSON.stringify([grant.accountId,grant.serverToken,path,kind])).digest('hex');
     const cached=this.images.get(cacheKey);if(cached)return cached;
     let pending=this.imageRequests.get(cacheKey);
     if(!pending){pending=this.loadArtwork(path,kind,grant.serverToken).then(image=>{this.images.set(cacheKey,image);return image;}).finally(()=>this.imageRequests.delete(cacheKey));this.imageRequests.set(cacheKey,pending);}
     return pending;
   }
-  private async loadArtwork(path:string,kind:'poster'|'backdrop',serverToken:string) {
-    const url=new URL('/photo/:/transcode',this.config.PLEX_URL);
-    url.searchParams.set('url',path);url.searchParams.set('width',kind==='poster'?'360':'1280');url.searchParams.set('height',kind==='poster'?'540':'720');url.searchParams.set('minSize','1');url.searchParams.set('upscale','0');
+  private async loadArtwork(path:string,kind:ArtworkKind,serverToken:string) {
+    const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360,540]:kind==='logo'?[800,400]:[1280,720];
+    url.searchParams.set('url',path);url.searchParams.set('width',String(width));url.searchParams.set('height',String(height));url.searchParams.set('minSize','1');url.searchParams.set('upscale','0');
+    // Logos are transparent; PNG keeps the transparency a JPEG transcode would fill in.
+    if(kind==='logo')url.searchParams.set('format','png');
     try {
       const response=await this.transport(url,{headers:this.headers(serverToken),redirect:'error',signal:AbortSignal.timeout(10000)});
       const type=response.headers.get('content-type')?.split(';')[0];

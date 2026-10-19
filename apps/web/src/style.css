@@ -1034,6 +1034,9 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .danger-text:hover:not(:disabled){color:#ffb4a8}
 .logo-field{display:flex;align-items:center;gap:10px}
 .logo-preview{flex:none;width:40px;height:40px;object-fit:contain;border-radius:6px;background:var(--surface-3)}
+.logo-field select{flex:1;min-width:0}
+.plex-logo-preview{flex:none;display:grid;place-items:center;width:96px;height:48px;padding:4px;border-radius:6px;background:var(--surface-3);font-size:11px;text-align:center}
+.plex-logo-preview img{max-width:100%;max-height:100%;object-fit:contain}
 @media (max-width:640px){
   .channel-steps{grid-template-columns:1fr}
   .program-toolbar .program-filter{max-width:none;margin-left:0;flex-basis:100%}

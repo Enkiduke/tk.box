@@ -144,6 +144,11 @@ export function openDatabase(path: string) {
         DROP TABLE seen_backup;`);
       db.prepare('INSERT INTO migrations VALUES(14)').run();
     }
+    // Which Plex title's logo a custom channel uses when it has no logo address: NULL picks its main show, 'none' turns it off.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=15').get()) {
+      db.exec('ALTER TABLE custom_channels ADD COLUMN plex_logo TEXT');
+      db.prepare('INSERT INTO migrations VALUES(15)').run();
+    }
   })();
   return db;
 }

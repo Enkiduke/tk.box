@@ -24,7 +24,7 @@ export function registerCatalog(app:FastifyInstance,plex:PlexAdapter,auth:(reque
   });
   app.get('/api/v1/catalog/items/:id/children',async request=>{const {grant}=await auth(request);return plex.catalogChildren(grant,id(request.params),catalogQuery.parse(request.query));});
   app.get('/api/v1/catalog/items/:id/artwork',{config:{rateLimit:{max:1200,timeWindow:60000}}},async(request,reply)=>{
-    const {grant}=await auth(request),query=z.object({kind:z.enum(['poster','backdrop']).default('poster')}).strict().parse(request.query);
+    const {grant}=await auth(request),query=z.object({kind:z.enum(['poster','backdrop','logo']).default('poster')}).strict().parse(request.query);
     return sendImage(request,reply,await plex.artwork(grant,id(request.params),query.kind));
   });
 }
