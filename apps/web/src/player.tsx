@@ -1,4 +1,4 @@
-import {forwardRef,useEffect,useImperativeHandle,useRef,useState,type CSSProperties,type ReactNode,type RefObject} from 'react';
+import {forwardRef,useEffect,useImperativeHandle,useMemo,useRef,useState,type CSSProperties,type ReactNode,type RefObject} from 'react';
 import type Hls from 'hls.js';
 import {Icon} from './components.js';
 import {timecode} from './hooks.js';
@@ -13,6 +13,8 @@ export type Delivery='direct'|'remux'|'transcode';
 export type SubtitleTrack={id:string;label:string;language?:string;forced:boolean;selected:boolean;supported:boolean};
 export type AudioTrack={id:string;label:string;language?:string;selected:boolean};
 export type MediaTracks={subtitles:SubtitleTrack[];audio:AudioTrack[]};
+// A custom-channel program as it aired: from broadcast time `start` the picture shows media position `mediaStartMs` onward.
+export type LiveProgram={id:string;start:number;mediaStartMs:number;subtitles:SubtitleTrack[]};
 export type SourceInfo={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string};
 const deliveryLabel:Record<Delivery,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
 const deliveryDetail:Record<Delivery,string>={direct:'Playing the original file.',remux:'Original video, repackaged for this browser.',transcode:'Converted by Plex for this browser.'};
@@ -31,8 +33,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,source,subtitleBase,audioSwitching,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;audioSwitching?:boolean;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,audioSwitching,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),[size,setSize]=useState<Size>(()=>(stored('subtitleSize') as Size|null)??'m'),[remaining,setRemaining]=useState(false);
@@ -87,27 +89,43 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     },2000):undefined;
     return()=>{generation.active=false;clearInterval(heartbeat);clearInterval(stallCheck);for(const [name,listener] of Object.entries(events))video.removeEventListener(name,listener);video.pause();hls?.destroy();hlsRef.current=undefined;video.removeAttribute('src');video.load();};
   },[url,generationKey]);
+  // The broadcast time on screen (the stream's program date-time), for custom-channel subtitles.
+  const displayedUtc=()=>{
+    const playing=hlsRef.current?.playingDate?.getTime();if(playing)return playing;
+    const video=ref.current as (HTMLVideoElement&{getStartDate?:()=>Date})|null,start=video?.getStartDate?.().getTime();
+    return video&&start&&Number.isFinite(start)?start+video.currentTime*1000:undefined;
+  };
+  // On a custom channel, subtitles belong to whichever program is on screen, which changes as the channel plays.
+  const [programId,setProgramId]=useState<string>();
+  useEffect(()=>{
+    setProgramId(undefined);if(!url||!programs)return;
+    const update=()=>{const at=displayedUtc();setProgramId(at===undefined?undefined:[...programs].reverse().find(p=>p.start<=at)?.id);};
+    update();const timer=window.setInterval(update,500);return()=>clearInterval(timer);
+  },[url,generationKey,programs]);
+  const program=programs?.find(p=>p.id===programId),subtitleTracks=programs?program?.subtitles??[]:tracks?.subtitles??[];
+  const trackBase=programs?program&&subtitleBase&&`${subtitleBase}${program.id}/`:subtitleBase;
   // Each title starts from the viewer's subtitle preference, then Plex's selection. Plex stream IDs
   // are unique per server, so a restart of the same title (an audio switch) keeps the current subtitles.
   useEffect(()=>{
-    const subtitles=tracks?.subtitles??[],keep=subtitleId!==null&&subtitles.some(t=>t.id===subtitleId);
-    const id=!url?null:keep?subtitleId:initialSubtitle(subtitles);setSubtitleId(id);if(!keep)lastSubtitle.current=id;setPanel(undefined);
-  },[url]);
+    const keep=subtitleId!==null&&subtitleTracks.some(t=>t.id===subtitleId);
+    const id=!url?null:keep?subtitleId:initialSubtitle(subtitleTracks);setSubtitleId(id);if(!keep)lastSubtitle.current=id;
+  },[url,program?.id]);
+  useEffect(()=>setPanel(undefined),[url]);
   useEffect(()=>{if(ref.current)ref.current.playbackRate=rate;},[rate,url]);
   // Subtitles may take a while to prepare on the server; playback never waits for them.
   useEffect(()=>{
     setCaptions(undefined);
-    if(!url||!subtitleId||!subtitleBase){setSubtitleStatus(undefined);return;}
+    if(!url||!subtitleId||!trackBase){setSubtitleStatus(undefined);return;}
     const abort=new AbortController();setSubtitleStatus('loading');
-    fetch(`${subtitleBase}${subtitleId}`,{signal:abort.signal}).then(r=>r.ok?r.text():Promise.reject(new Error(`HTTP ${r.status}`)))
+    fetch(`${trackBase}${subtitleId}`,{signal:abort.signal}).then(r=>r.ok?r.text():Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(text=>{const cues=parseVtt(text);if(!text.startsWith('WEBVTT'))throw new Error('not WebVTT');setCaptions(cues);setSubtitleStatus('ready');})
       .catch(()=>{if(!abort.signal.aborted)setSubtitleStatus('failed');});
     return()=>abort.abort();
-  },[url,subtitleId,subtitleBase]);
+  },[url,subtitleId,trackBase]);
   const audio=tracks?.audio.find(t=>t.selected)??tracks?.audio[0];
   const chooseSubtitle=(id:string|null)=>{
     setSubtitleId(id);if(id)lastSubtitle.current=id;
-    const track=tracks?.subtitles.find(t=>t.id===id);store('subtitles',track?.language??(id?'':'off'));
+    const track=subtitleTracks.find(t=>t.id===id);store('subtitles',track?.language??(id?'':'off'));
   };
   const chooseAudio=(id:string)=>{
     if(id===audio?.id||audioSwitching||!onAudioChange)return;
@@ -115,8 +133,8 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   };
   const toggleSubtitles=()=>{
     if(subtitleId){chooseSubtitle(null);showFlash('captions','Subtitles off');return;}
-    const next=lastSubtitle.current??tracks?.subtitles.find(t=>t.supported&&!t.forced)?.id??null;
-    if(next){chooseSubtitle(next);showFlash('captions',tracks?.subtitles.find(t=>t.id===next)?.label);}
+    const next=(subtitleTracks.some(t=>t.id===lastSubtitle.current)?lastSubtitle.current:null)??subtitleTracks.find(t=>t.supported&&!t.forced)?.id??null;
+    if(next){chooseSubtitle(next);showFlash('captions',subtitleTracks.find(t=>t.id===next)?.label);}
   };
   const flashKey=useRef(0);
   const showFlash=(icon:string,label?:string)=>setFlash({icon,label,key:++flashKey.current});
@@ -159,21 +177,23 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       const target=event.target as HTMLElement;if(event.ctrlKey||event.metaKey||event.altKey||target.closest('input:not([type=range]),select,textarea,dialog'))return;
       if(event.key==='Escape'&&panel){event.preventDefault();setPanel(undefined);return;}
       const video=ref.current!,step=(direction:number)=>{const index=speeds.indexOf(rate);changeRate(speeds[Math.max(0,Math.min(speeds.length-1,(index<0?2:index)+direction))]!);};
-      const actions:Record<string,()=>void>={' ':toggle,k:toggle,f:toggleFullscreen,...(live?{...(onChannel?{PageUp:()=>onChannel(1),PageDown:()=>onChannel(-1),ChannelUp:()=>onChannel(1),ChannelDown:()=>onChannel(-1)}:{}),...(channels?{g:()=>setPanel(p=>p==='channels'?undefined:'channels')}:{})}:{ArrowLeft:()=>seek(-10),ArrowRight:()=>seek(10),j:()=>seek(-10),l:()=>seek(10),c:toggleSubtitles,'>':()=>step(1),'<':()=>step(-1)}),
+      const actions:Record<string,()=>void>={' ':toggle,k:toggle,f:toggleFullscreen,...(live?{...(onChannel?{PageUp:()=>onChannel(1),PageDown:()=>onChannel(-1),ChannelUp:()=>onChannel(1),ChannelDown:()=>onChannel(-1)}:{}),...(channels?{g:()=>setPanel(p=>p==='channels'?undefined:'channels')}:{}),...(programs?{c:toggleSubtitles}:{})}:{ArrowLeft:()=>seek(-10),ArrowRight:()=>seek(10),j:()=>seek(-10),l:()=>seek(10),c:toggleSubtitles,'>':()=>step(1),'<':()=>step(-1)}),
         m:()=>{video.muted=!video.muted;showFlash(video.muted?'mute':'volume');},ArrowUp:()=>{video.volume=Math.min(1,video.volume+.1);video.muted=false;showFlash('volume',`${Math.round(video.volume*100)}%`);},ArrowDown:()=>{video.volume=Math.max(0,video.volume-.1);showFlash(video.volume?'volume':'mute',`${Math.round(video.volume*100)}%`);}};
       const action=actions[event.key.length===1?event.key.toLowerCase():event.key];
       if(action){if(event.key===' '&&target.closest('button'))return;if(target.matches('input[type=range]')&&event.key.startsWith('Arrow'))return;event.preventDefault();action();wake();}
     };
     window.addEventListener('keydown',keys);return()=>window.removeEventListener('keydown',keys);
-  },[docked,url,live,onChannel,channels,panel,rate,subtitleId,tracks]);
+  },[docked,url,live,onChannel,channels,panel,rate,subtitleId,tracks,programs,program?.id]);
   const shown=!idle||!view.playing||!!panel,position=scrub??view.time,known=!live&&Number.isFinite(view.duration)&&view.duration>0;
-  const activeTrack=tracks?.subtitles.find(t=>t.id===subtitleId);
+  const activeTrack=subtitleTracks.find(t=>t.id===subtitleId);
+  // Caption clock in media seconds: the player's own time for titles, broadcast time mapped into the program for channels.
+  const captionTime=useMemo(()=>programs?()=>{const at=displayedUtc();return program&&at!==undefined?(program.mediaStartMs+at-program.start)/1000:NaN;}:()=>(ref.current?.currentTime??0)+shift,[programs,program?.id,program?.start,program?.mediaStartMs,shift]);
   const commit=()=>{if(scrub!==undefined){ref.current!.currentTime=scrub;setScrub(undefined);}};
   const hoverAt=(clientX:number,element:HTMLElement)=>{const box=element.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(clientX-box.left)/box.width));setHover({x:fraction*box.width,time:fraction*view.duration});};
   const quality=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
   return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
-    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} shift={shift} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
+    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} size={size} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
     {(view.waiting||liveSwitching)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':'Buffering'}/>}
     {docked?<div className="mini-controls">
       <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
@@ -198,11 +218,11 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         {panel==='channels'?channels:panel==='subtitles'?<>
           <PanelSection title="Subtitles"><div role="radiogroup" aria-label="Subtitle track" className="choices">
             <Choice selected={!subtitleId} onSelect={()=>chooseSubtitle(null)}>Off</Choice>
-            {tracks?.subtitles.map(t=><Choice key={t.id} selected={t.id===subtitleId} disabled={!t.supported} onSelect={()=>chooseSubtitle(t.id)}
+            {subtitleTracks.map(t=><Choice key={t.id} selected={t.id===subtitleId} disabled={!t.supported} onSelect={()=>chooseSubtitle(t.id)}
               detail={!t.supported?'Image-based, not supported yet':t.forced?'Forced':undefined}>{t.label}</Choice>)}
-            {!tracks?.subtitles.length&&<p className="panel-empty">This title has no subtitles.</p>}
+            {!subtitleTracks.length&&<p className="panel-empty">{programs?'This program has no subtitles.':'This title has no subtitles.'}</p>}
           </div></PanelSection>
-          {!!tracks?.subtitles.length&&<PanelSection title="Size"><div className="segmented">{sizes.map(([value,label])=><button key={value} aria-pressed={size===value} onClick={()=>{setSize(value);store('subtitleSize',value);}}>{label}</button>)}</div></PanelSection>}
+          {!!subtitleTracks.length&&<PanelSection title="Size"><div className="segmented">{sizes.map(([value,label])=><button key={value} aria-pressed={size===value} onClick={()=>{setSize(value);store('subtitleSize',value);}}>{label}</button>)}</div></PanelSection>}
         </>:<>
           {tracks&&tracks.audio.length>1&&onAudioChange&&<PanelSection title="Audio"><div role="radiogroup" aria-label="Audio track" className="choices">
             {tracks.audio.map(t=><Choice key={t.id} selected={t.id===audio?.id} disabled={audioSwitching} onSelect={()=>chooseAudio(t.id)}>{t.label}</Choice>)}
@@ -242,7 +262,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           {live&&onFeed&&feeds&&feeds.length>1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label={`Change feed · ${feeds.length} available`} title="Change feed">{feeds.find(f=>f.id===feed)?.quality??'Feed'} · {feeds.length}</button>}
           {rate!==1&&<button className="player-chip" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')}>{rate}×</button>}
           {live&&channels&&<button className="icon-button" onClick={()=>setPanel(p=>p==='channels'?undefined:'channels')} aria-label="Browse channels" aria-expanded={panel==='channels'} title="Browse channels (g)"><Icon name="grid" size={24}/></button>}
-          {!live&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}
+          {(!live||programs)&&<button className={`icon-button ${subtitleId?'active':''}`} onClick={()=>setPanel(p=>p==='subtitles'?undefined:'subtitles')} aria-label="Subtitles" aria-expanded={panel==='subtitles'} title="Subtitles (c)"><Icon name="captions" size={24}/></button>}
           <button className="icon-button" onClick={()=>setPanel(p=>p==='settings'?undefined:'settings')} aria-label="Playback settings" aria-expanded={panel==='settings'} title="Settings"><Icon name="gear" size={24}/></button>
           <button className="icon-button" onClick={toggleFullscreen} aria-label={fullscreen?'Exit full screen':'Full screen'} title={fullscreen?'Exit full screen (f)':'Full screen (f)'}><Icon name={fullscreen?'minimize':'fullscreen'} size={24}/></button>
         </div>
@@ -251,12 +271,12 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   </aside>;
 });
 const captionScale:Record<Size,[number,number]>={s:[.036,14],m:[.046,16],l:[.058,19]};
-// Draws the cues active at the media time over the picture, above the controls while they show.
-function Captions({video,cues,shift,size,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];shift:number;size:Size;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
+// Draws the cues active at the media time (from `time`) over the picture, above the controls while they show.
+function Captions({video,cues,time,size,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];time:()=>number;size:Size;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
   const [active,setActive]=useState<number[]>([]),[box,setBox]=useState({height:0,inset:0});
   useEffect(()=>{
     const element=video.current;if(!element)return;let frame=0,key='';
-    const update=()=>{const next=activeCaptions(cues,element.currentTime+shift),nextKey=next.join(',');if(nextKey!==key){key=nextKey;setActive(next);}};
+    const update=()=>{const next=activeCaptions(cues,time()),nextKey=next.join(',');if(nextKey!==key){key=nextKey;setActive(next);}};
     const loop=()=>{update();frame=requestAnimationFrame(loop);};
     const measure=()=>{
       const {clientWidth:w,clientHeight:h,videoWidth:vw,videoHeight:vh}=element;
@@ -267,7 +287,7 @@ function Captions({video,cues,shift,size,docked,controls,language}:{video:RefObj
     for(const name of events)element.addEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);
     measure();update();loop();
     return()=>{cancelAnimationFrame(frame);observer.disconnect();for(const name of events)element.removeEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);};
-  },[video,cues,shift]);
+  },[video,cues,time]);
   const [scale,minimum]=docked?[.05,11]:captionScale[size],fontSize=Math.max(minimum,box.height*scale);
   const bottom=Math.max(box.inset+box.height*.05,controls?.current?(controls.current.offsetHeight+8):0);
   return <div className="player-captions" lang={language} style={{bottom,fontSize}} aria-hidden="true">

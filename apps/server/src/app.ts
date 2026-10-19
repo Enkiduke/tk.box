@@ -127,6 +127,17 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/resume', async req => { const {hash} = await auth(req); z.object({}).strict().parse(req.body); return timeshift(req.params.id, () => customTv.resume(req.params.id, hash)); });
   app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/go-live', async req => { const {hash} = await auth(req); z.object({}).strict().parse(req.body); return timeshift(req.params.id, () => customTv.goLive(req.params.id, hash)); });
+  // Custom channels are Plex media, so they offer each program's subtitles; IPTV has none.
+  app.get<{Params: {id: string}}>('/api/v1/live/sessions/:id/programs', async req => {
+    const {hash} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only custom channels have subtitles.', 409);
+    return {programs: customTv.airings(req.params.id, hash)};
+  });
+  app.get<{Params: {id: string; airing: string; stream: string}}>('/api/v1/live/sessions/:id/subtitles/:airing/:stream', async (req, reply) => {
+    requireThat(/^\d+$/.test(req.params.stream) && /^[\w-]{1,32}$/.test(req.params.airing), 'INVALID_MEDIA', 'Invalid subtitle identifier.');
+    const {hash, grant} = await auth(req); requireThat(customTv.has(req.params.id), 'NOT_SUPPORTED', 'Only custom channels have subtitles.', 409);
+    const item = await plex.metadata(grant, customTv.airingMedia(req.params.id, hash, req.params.airing));
+    return reply.type('text/vtt; charset=utf-8').send(await subtitles.webvtt(grant, item, req.params.stream));
+  });
   app.post('/api/v1/live/sessions', {config: {rateLimit: {max: 30, timeWindow: 60000}}}, async req => {
     const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash, grant} = await auth(req);
     return custom.exists(input.channelId) ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId);

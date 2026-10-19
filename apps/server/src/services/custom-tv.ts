@@ -7,7 +7,7 @@ import { opaque } from '../security/vault.js';
 import { assertVideoEncode, type EncoderBudget } from '../streaming/policy.js';
 import { SegmentBuffer, ViewerCursor, renderManifest, type Segment } from '../streaming/buffer.js';
 import type { CustomChannelStore } from '../persistence/custom-channels.js';
-import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
+import { mediaTracks, type PlexAdapter, type PlexGrant } from '../providers/plex.js';
 import type { LocalMedia } from '../providers/local-media.js';
 import type { PartProxy } from '../providers/part-proxy.js';
 import type { Slot } from './scheduler.js';
@@ -18,7 +18,11 @@ type Station = {
   ready: Promise<void>; output: boolean; stderr: string; library?: string; encode: boolean; source?: LiveSource;
   // The retained window, indexed by broadcast time. `buffer` mirrors it for viewer cursors.
   segments: Segment[]; buffer: SegmentBuffer; lastSequence: number; discontinuities: number; indexer?: NodeJS.Timeout; indexing: boolean; pressure: boolean; checkedDisk: number;
+  airings: Airing[]; opening?: Omit<Airing, 'start'>;
 };
+// One run of a program (or the blank slate) on the station, from its first segment's broadcast time. `mediaStartMs`
+// is the media position shown at `start`, so captions follow broadcast time: media = mediaStartMs + (utc - start).
+type Airing = { id: string; mediaId?: string; start: number; mediaStartMs: number; subtitles: ReturnType<typeof mediaTracks>['subtitles'] };
 type Viewer = { id: string; hash: string; channelId: string; seen: number; cursor: ViewerCursor };
 type Input = { path: string; demuxer?: string; protocols: string };
 export type TimeshiftState = { state: string; viewerCursorUtc: number; broadcastNowUtc: number; behindLiveMs: number; bufferStartUtc?: number; bufferEndUtc?: number };
@@ -57,7 +61,7 @@ export class CustomTv {
       requireThat(this.stations.size < this.options.maxStations, 'LIVE_CAPACITY_REACHED', 'Too many channels are being watched right now. Please try again shortly.', 503);
       const key = opaque().slice(0, 16);
       const created: Station = { key, channelId, dir: join(this.root, key), viewers: new Set(), grant, stopped: false, ready: Promise.resolve(), output: false, stderr: '', encode: false,
-        segments: [], buffer: new SegmentBuffer(this.maxBytes, () => this.retained(created)), lastSequence: -1, discontinuities: 0, indexing: false, pressure: false, checkedDisk: 0 };
+        segments: [], buffer: new SegmentBuffer(this.maxBytes, () => this.retained(created)), lastSequence: -1, discontinuities: 0, indexing: false, pressure: false, checkedDisk: 0, airings: [] };
       this.stations.set(channelId, created);
       created.ready = mkdir(created.dir, { recursive: true, mode: 0o700 }).then(() => {
         created.indexer = setInterval(() => void this.index(created), this.options.indexMs); created.indexer.unref();
@@ -115,6 +119,15 @@ export class CustomTv {
     viewer.cursor.pause(Math.round(Math.max(first.start, Math.min(displayedUtc, last.end - 1, now))), now);
     return this.state(id, hash, now);
   }
+  // What aired when within reach of this viewer, for subtitles. The slate has no media and no subtitles.
+  airings(id: string, hash: string) {
+    return this.owned(id, hash).station.airings.map(({ id, start, mediaStartMs, subtitles }) => ({ id, start, mediaStartMs, subtitles }));
+  }
+  airingMedia(id: string, hash: string, airingId: string) {
+    const media = this.owned(id, hash).station.airings.find(a => a.id === airingId)?.mediaId;
+    requireThat(media, 'SUBTITLE_NOT_FOUND', 'This program is no longer available.', 404);
+    return media;
+  }
   resume(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.resume(now); return this.state(id, hash, now); }
   goLive(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.goLive(); return this.state(id, hash, now); }
   state(id: string, hash: string, now = Date.now()): TimeshiftState {
@@ -162,6 +175,7 @@ export class CustomTv {
             const previous = s.segments.at(-1), start = Math.round(Math.max(previous?.end ?? 0, now - duration)), marked = discontinuity && !!previous;
             s.segments.push({ id: line, uri: line, start, end: start + Math.max(1, Math.round(duration)), bytes, programId: s.library ?? '', revision: 0, sequence, discontinuity: marked, discontinuitySequence: s.discontinuities });
             if (marked) s.discontinuities++;
+            if (s.opening) { s.airings.push({ ...s.opening, start }); s.opening = undefined; }
             s.lastSequence = sequence;
           }
           discontinuity = false; duration = 0;
@@ -180,6 +194,7 @@ export class CustomTv {
       await unlink(join(s.dir, old.uri)).catch(() => {});
     }
     s.buffer.replace(s.segments);
+    while (s.airings.length > 1 && s.segments[0] && s.airings[1]!.start <= s.segments[0].start) s.airings.shift();
   }
 
   // The playout loop: always play what the clock says is airing, from where it is now.
@@ -216,17 +231,39 @@ export class CustomTv {
       s.encode = encode; s.source = { videoCodec: media.videoCodec, audioCodec: media.audioCodec, width: media.width, height: media.height };
       // Join at the clock position as of this moment, so startup time never leaves the channel behind its schedule.
       const now = Date.now(), offsetMs = slot.entry.mediaOffsetMs + Math.max(0, now - slot.start);
+      const opening = { id: opaque().slice(0, 16), mediaId: item.ratingKey, mediaStartMs: offsetMs, subtitles: mediaTracks(item).subtitles };
+      s.opening = opening;
+      // Copied video starts at the keyframe before the join point, which can be seconds earlier.
+      if (!encode && offsetMs > 500) void this.keyframe(input, offsetMs).then(at => { if (at !== undefined) opening.mediaStartMs = at; });
       return await this.exec(s, [...this.inputArgs(input, offsetMs), '-t', ((slot.end - now) / 1000).toFixed(3), '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
         ...(encode ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-maxrate', '8M', '-bufsize', '16M', '-pix_fmt', 'yuv420p', '-threads', '2', '-force_key_frames', 'expr:gte(t,n_forced*2)'] : ['-c:v', 'copy']),
         '-c:a', 'aac', '-b:a', '160k', '-ac', '2']);
     } finally { release(); done(); }
+  }
+  // The source time of the keyframe a copied join starts on: the first video packet after the same input seek, timestamps kept.
+  private keyframe(input: Input, offsetMs: number) {
+    return new Promise<number | undefined>(done => {
+      const child = spawn(this.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-copyts', ...this.inputArgs(input, offsetMs).filter(a => a !== '-re'), '-map', '0:v:0', '-c', 'copy', '-frames:v', '1', '-f', 'framecrc', '-'],
+        { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      let out = '';
+      const timer = setTimeout(() => child.kill('SIGKILL'), 15000); timer.unref();
+      child.stdout!.on('data', (b: Buffer) => { out += b.toString(); });
+      child.on('error', () => { clearTimeout(timer); done(undefined); });
+      child.on('close', () => {
+        clearTimeout(timer);
+        const base = /^#tb 0: (\d+)\/(\d+)/m.exec(out), packet = /^0,\s*(-?\d+),\s*(-?\d+),/m.exec(out);
+        const ms = base && packet ? Number(packet[2]) * Number(base[1]) / Number(base[2]) * 1000 : NaN;
+        // Only a keyframe shortly before the join point is believable; anything else keeps the scheduled position.
+        done(Number.isFinite(ms) && ms <= offsetMs + 50 && ms >= offsetMs - 30000 ? Math.round(Math.min(ms, offsetMs)) : undefined);
+      });
+    });
   }
   private inputArgs(input: Input, offsetMs: number) {
     return ['-protocol_whitelist', input.protocols, '-fflags', '+genpts', ...(offsetMs > 500 ? ['-ss', (offsetMs / 1000).toFixed(3)] : []), '-re', ...(input.demuxer ? ['-f', input.demuxer] : []), '-i', input.path];
   }
   // A plain dark screen with silence for the rest of a slot. Tiny and cheap to encode, so it needs no encoder permit.
   private slate(s: Station, ms: number) {
-    s.library = undefined;
+    s.library = undefined; s.opening = { id: opaque().slice(0, 16), mediaStartMs: 0, subtitles: [] };
     return this.exec(s, ['-re', '-f', 'lavfi', '-i', 'color=c=0x0e0e12:s=1280x720:r=25', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', (ms / 1000).toFixed(3),
       '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-g', '50', '-c:a', 'aac', '-b:a', '64k']);
   }
