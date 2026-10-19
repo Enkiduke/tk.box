@@ -47,8 +47,8 @@ function initialSubtitle(tracks:SubtitleTrack[]) {
   return usable.find(t=>t.selected)?.id??null;
 }
 export type Feed={id:string;label:string;quality?:string};
-type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
-export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
+type Props={url?:string;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onEnded?:()=>void;onError:(message:string)=>void};
+export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onEnded,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
@@ -218,10 +218,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const commit=()=>{if(scrub!==undefined){ref.current!.currentTime=scrub;setScrub(undefined);}};
   const hoverAt=(clientX:number,element:HTMLElement)=>{const box=element.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(clientX-box.left)/box.width));setHover({x:fraction*box.width,time:fraction*view.duration});};
   const videoInfo=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
-  return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
+  return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url&&!tuning} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
     {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
-    {(view.waiting||liveSwitching)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':'Buffering'}/>}
+    {(view.waiting||liveSwitching||tuning)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':tuning?'Tuning channel':'Buffering'}/>}
     {docked?<div className="mini-controls">
       <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
       <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
@@ -235,7 +235,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
-      {!view.playing&&!view.waiting&&!liveSwitching&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
+      {!view.playing&&!view.waiting&&!liveSwitching&&!tuning&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
       {switching&&<div className="player-status" role="status"><span className="spinner"/>{switching==='audio'?'Switching audio…':'Switching quality…'}</div>}
       {liveSwitching&&<div className="player-status" role="status"><span className="spinner"/>Switching to a backup feed…</div>}
