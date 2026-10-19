@@ -15,7 +15,18 @@ const recent=(library:Library)=>items(library,'shelf=recent&limit=20');
 const playable=(item:CatalogItem)=>item.type==='movie'||item.type==='episode';
 const page=(library:Library)=>library.type==='movie'?'movies':'shows';
 const heroTitle=(item:CatalogItem)=>item.type==='episode'?item.showTitle??'TV Show':item.type==='season'?item.showTitle??item.parentTitle??'TV Show':item.title;
-const heroSubtitle=(item:CatalogItem)=>item.type==='episode'?[item.seasonNumber!==undefined?`Season ${item.seasonNumber}`:undefined,item.episodeNumber!==undefined?`Episode ${item.episodeNumber}`:undefined,item.title].filter(Boolean).join(' · '):item.type==='season'?(item.seasonNumber!==undefined?`Season ${item.seasonNumber}`:item.title):undefined;
+const heroDetails=(item:CatalogItem):{text:string;id?:string}[]=>item.type==='episode'?[
+  ...(item.seasonNumber!==undefined?[{text:`Season ${item.seasonNumber}`,id:item.parentId}]:[]),
+  ...(item.episodeNumber!==undefined?[{text:`Episode ${item.episodeNumber}`,id:item.id}]:[]),
+  {text:item.title,id:item.id}
+]:item.type==='season'?[{text:item.seasonNumber!==undefined?`Season ${item.seasonNumber}`:item.title,id:item.id}]:[];
+const heroSubtitle=(item:CatalogItem)=>heroDetails(item).map(part=>part.text).join(' · ');
+function HeroLink({id,onOpen,children}:{id?:string;onOpen:(id:string)=>void;children:string}) {
+  return id?<a className="hero-link" href={link('home',{item:id})} onClick={event=>{
+    if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+    event.preventDefault();onOpen(id);
+  }}>{children}</a>:<span>{children}</span>;
+}
 function interleave<T>(lists:T[][]) {const out:T[]=[];for(let i=0;i<Math.max(0,...lists.map(l=>l.length));i++)for(const list of lists)if(list[i]!==undefined)out.push(list[i]!);return out;}
 
 function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
@@ -32,7 +43,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
     return()=>clearInterval(timer);
   },[paused,index,featured.length]);
   if(!item)return data.loading?<div className="hero hero-loading" aria-busy="true"/>:<div className="hero-spacer"/>;
-  // Pause only while the pointer is on the buttons or keyboard focus is inside, not for a mouse resting anywhere on the art.
+  // Pause while interacting with title links or buttons, or while keyboard focus is inside.
   return <section className="hero" aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
     {featured.map((media,i)=><div key={media.id} className={`hero-slide${i===index?' is-active':i===prev?' is-prev':''}`}>
       <FadeImage className="hero-art" src={media.backdropUrl} alt="" fetchPriority={i===index?'high':'low'} decoding="async"/>
@@ -40,8 +51,8 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
     <div className="hero-shade"/>
     <div className="hero-content" key={`content-${item.id}`}>
       <p className="hero-kicker">{item.type==='movie'?'Movie':'TV Shows'} · Recently added</p>
-      <h1>{heroTitle(item)}</h1>
-      {heroSubtitle(item)&&<p className="hero-episode">{heroSubtitle(item)}</p>}
+      <h1 onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}><HeroLink id={item.type==='episode'?item.showId:item.type==='season'?item.showId??item.parentId:item.id} onOpen={onOpen}>{heroTitle(item)}</HeroLink></h1>
+      {heroDetails(item).length>0&&<p className="hero-episode" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}>{heroDetails(item).map((part,i)=><span key={i}>{i>0&&' · '}<HeroLink id={part.id} onOpen={onOpen}>{part.text}</HeroLink></span>)}</p>}
       <p className="hero-meta">{[meta(item),item.genres.slice(0,2).join(' · ')].filter(Boolean).join(' · ')}</p>
       {item.summary&&<p className="hero-summary">{item.summary}</p>}
       <div className="button-row" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}>
