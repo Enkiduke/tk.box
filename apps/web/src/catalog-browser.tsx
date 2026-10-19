@@ -98,8 +98,8 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accou
       <span className="browse-count" aria-label={total===undefined?'Loading titles':`${total} titles`}>{total?.toLocaleString()}</span></>}
     </div>
     {view==='categories'?<CategoryGrid genres={genres} onPick={genre=>navigate({view:'library',genre,shelf:'all',year:'',contentRating:'',q:''})}/>
-    :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onPlayAll={onPlayAll} onTotal={setTotal}/>
-      :library&&<CollectionGrid library={library.key} open={id=>navigate({view:'collections',collection:id})}/>:<>
+    :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal}/>
+      :library&&<CollectionGrid library={library.key} open={id=>navigate({view:'collections',collection:id})} onPlayAll={onPlayAll}/>:<>
     {filterCount>0&&<div className="active-filters">{prefs.genre&&<button onClick={()=>navigate({genre:''})}>{genres.data?.genres.find(g=>g.id===prefs.genre)?.title??'Genre'} ×</button>}{prefs.shelf==='unwatched'&&<button onClick={()=>navigate({shelf:'all'})}>Unwatched ×</button>}{prefs.year&&<button onClick={()=>navigate({year:''})}>{prefs.year} ×</button>}{prefs.contentRating&&<button onClick={()=>navigate({contentRating:''})}>{prefs.contentRating} ×</button>}<button onClick={reset}>Clear</button></div>}
     <div className={prefs.sort==='title'?'catalog-with-index':'catalog-with-index wide'}><CatalogWindow ref={windowRef} path={path} layout={prefs.layout} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal} onPosition={setPosition}/></div>
     <nav className={prefs.sort==='title'?'alphabet-rail':'alphabet-rail wide'} aria-label={`Jump to ${railNames[prefs.sort]}`}>{index.error?<button title="Retry index" aria-label="Reload index" onClick={index.reload}>↻</button>:index.data&&index.data.total!==total&&total!==undefined?<button title="Refresh index" aria-label="Refresh index" onClick={index.reload}>↻</button>:(index.data?.entries??(prefs.sort==='title'?Array.from('#ABCDEFGHIJKLMNOPQRSTUVWXYZ',label=>({label,offset:0,count:0})):[])).map(entry=><button key={entry.label} aria-label={`Jump to ${entry.label}`} aria-current={active===entry.label?'location':undefined} disabled={!entry.count} title={`${entry.label} · ${entry.count} titles`} onClick={()=>windowRef.current?.jump(entry.offset)}>{entry.label}</button>)}</nav>
@@ -108,7 +108,7 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accou
 }
 
 const ignorePosition=()=>{};
-function CollectionView({id,path,layout,back,onOpen,onPlay,onPlayAll,onTotal}:{id:string;path?:string;layout:Layout;back:()=>void;onOpen:(id:string)=>void;onPlay:PlayFn;onPlayAll:(path:string)=>void;onTotal:(total:number|undefined)=>void}) {
+function CollectionView({id,path,layout,back,onOpen,onPlay,onTotal}:{id:string;path?:string;layout:Layout;back:()=>void;onOpen:(id:string)=>void;onPlay:PlayFn;onTotal:(total:number|undefined)=>void}) {
   const info=useApi<Collection>(`/catalog/collections/${id}`);
   if(info.error)return <ErrorNotice message={info.error.message} retry={info.reload}/>;
   return <>
@@ -116,18 +116,18 @@ function CollectionView({id,path,layout,back,onOpen,onPlay,onPlayAll,onTotal}:{i
       <button className="link-button" onClick={back}><Icon name="back" size={14}/>Collections</button>
       <h2>{info.data?.title??'\u00a0'}</h2>
       {info.data?.summary&&<p className="muted">{info.data.summary}</p>}
-      {path&&info.data?.count!==0&&<button className="primary collection-play" onClick={()=>onPlayAll(path)}><Icon name="play"/>Play</button>}
     </div>
     <CatalogWindow path={path} layout={layout} onOpen={onOpen} onPlay={onPlay} onTotal={onTotal} onPosition={ignorePosition}/>
   </>;
 }
-function CollectionGrid({library,open}:{library:string;open:(id:string)=>void}) {
+// Hovering a collection offers Play, which plays its items in order.
+function CollectionGrid({library,open,onPlayAll}:{library:string;open:(id:string)=>void;onPlayAll:(path:string)=>void}) {
   const list=useApi<{collections:Collection[]}>(`/catalog/libraries/${library}/collections`);
   if(list.error)return <ErrorNotice message={list.error.message} retry={list.reload}/>;
   if(!list.data)return <Loading cards/>;
   if(!list.data.collections.length)return <Empty title="No collections">Collections you make in Plex appear here.</Empty>;
   return <div className="poster-grid">{list.data.collections.map(c=>{const count=c.count===undefined?'':plural(c.count,c.kind==='show'?'show':'movie');
-    return <div key={c.id} className="poster-card"><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button></div>
+    return <div key={c.id} className="poster-card"><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button>{c.count!==0&&<button className="card-play" tabIndex={-1} aria-label={`Play ${c.title}`} onClick={()=>onPlayAll(`/catalog/collections/${c.id}/items`)}><Icon name="play" size={22}/></button>}</div>
       <span className="poster-title">{c.title}</span><span className="poster-meta">{count}</span></div>;})}</div>;
 }
 // Categories are the library's genres; picking one shows the Library filtered to it.
