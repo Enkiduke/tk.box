@@ -160,11 +160,11 @@ export function ActionNotice() {
 }
 // Horizontal, swipeable row with edge arrows that appear on hover (pointer devices only).
 export function Row({title,href,children,className='',drift=0}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number}) {
-  const ref=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
-  // Only re-renders when an edge changes: an endless row scrolls every frame.
+  const ref=useRef<HTMLDivElement>(null),track=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
+  // Only re-renders when an edge changes.
   const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
   useEffect(()=>{update();const el=ref.current;if(!el)return;const resize=new ResizeObserver(update);resize.observe(el);return()=>resize.disconnect();},[]);
-  const endless=useEndless(ref,drift>0,drift);
+  const looping=drift>0&&loops,endless=useEndless(ref,track,looping,drift);
   // Loop only when the cards overflow; a short row stays still and is not repeated.
   useEffect(()=>{
     if(!drift){setLoops(false);return;}const el=ref.current;if(!el)return;
@@ -173,15 +173,15 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
     check();const resize=new ResizeObserver(check);resize.observe(el);return()=>resize.disconnect();
   });
   const scroll=(direction:number)=>ref.current?.scrollBy({left:direction*ref.current.clientWidth*.85,behavior:'smooth'});
-  const looping=drift>0&&loops;
   return <section className={`row ${className}`}>
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
     <div className="row-viewport" {...endless.handlers}>
       {(looping||!edges.start)&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
-      <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}>{looping?<>
-        {/* Three identical sets: the view starts on the middle one and jumps back by one set width, which looks seamless. */}
-        <div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div>
-      </>:children}</div>
+      <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}>{looping?<div className="row-track" ref={track}>
+        {/* Identical sets: the view rests in the second and jumps back by one set width, which looks seamless. The drift can
+            carry it up to one more set past wherever it rests, so two copies follow. */}
+        <div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div>
+      </div>:children}</div>
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
@@ -189,41 +189,49 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
 // Drifts an endless row sideways at `speed` px/s. It holds still while the pointer is over the row, keyboard focus
 // is inside it, or it is off screen; scrolling by hand still works while it is held. It ignores the system's reduced-motion
 // preference on purpose: Settings › Home turns it off, and Windows reports reduced motion whenever animation effects are off.
-function useEndless(ref:{current:HTMLDivElement|null},on:boolean,speed:number) {
-  const held=useRef({hover:false,focus:false}),position=useRef<number|undefined>(undefined);
-  const sets=()=>Array.from(ref.current?.children??[]).filter(c=>c.classList.contains('row-set')).map(c=>c.firstElementChild as HTMLElement|null);
-  const copies=()=>sets().length===3;
+// The drift is one transform animation on the track, which the browser runs on the compositor: it stays smooth and
+// sub-pixel while the page is busy, and costs no script or layout per frame. Hand scrolling moves the scroll position as usual.
+function useEndless(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElement|null},on:boolean,speed:number) {
+  const held=useRef({hover:false,focus:false}),sync=useRef<()=>void>(()=>{});
+  const sets=()=>Array.from(track.current?.children??[]).filter(c=>c.classList.contains('row-set')).map(c=>c.firstElementChild as HTMLElement|null);
+  const copies=()=>sets().length===4;
   const setWidth=()=>{const [a,b]=sets();return a&&b?b.offsetLeft-a.offsetLeft:0;};
-  // Keeps the view inside the middle set by jumping a whole set width, so either direction can go on forever.
+  // Keeps the view inside the second set by jumping a whole set width, so either direction can go on forever.
   const wrap=(x:number)=>{const w=setWidth();if(!w)return x;while(x<w)x+=w;while(x>=w*2)x-=w;return x;};
   useEffect(()=>{
-    const el=ref.current;if(!on||!el)return;
-    let frame=0,last=0,visible=true;
-    const seen=new IntersectionObserver(([entry])=>{visible=!!entry?.isIntersecting;});seen.observe(el);
-    const tick=(time:number)=>{
-      const dt=Math.min(100,last?time-last:0);last=time;
-      const w=setWidth();
-      if(w>el.clientWidth){
-        // Starting out, or picking up after a hold: continue from wherever the viewer left it.
-        if(position.current===undefined||Math.abs(el.scrollLeft-position.current)>2)position.current=wrap(el.scrollLeft||w);
-        if(visible&&!held.current.hover&&!held.current.focus&&!document.hidden){
-          // Scroll positions round to whole pixels on 100% displays; the leftover fraction moves the cards instead, so slow speeds stay smooth.
-          position.current=wrap(position.current+speed*dt/1000);const whole=Math.floor(position.current);el.scrollLeft=whole;el.style.setProperty('--drift',`${whole-position.current}px`);
-        }
-      }
-      frame=requestAnimationFrame(tick);
+    const el=ref.current,tr=track.current;if(!on||!el||!tr)return;
+    let animation:Animation|undefined,width=0,visible=true;
+    const offset=()=>(animation?.effect?.getComputedTiming().progress??0)*width;
+    // Moves what the drift has covered into the scroll position, so hand scrolling starts from what is on screen.
+    const bake=()=>{if(!animation)return;const moved=offset();animation.pause();animation.currentTime=0;el.scrollLeft=wrap(Math.round(el.scrollLeft+moved));};
+    sync.current=()=>{
+      if(!animation)return;
+      if(held.current.hover||held.current.focus){if(animation.playState!=='paused'||offset())bake();}
+      else if(visible)animation.play();else animation.pause();
     };
-    frame=requestAnimationFrame(tick);
+    // (Re)starts the animation for the current set width, keeping how far it had got.
+    const build=()=>{
+      const next=setWidth();if(next===width)return;
+      const progress=animation?.effect?.getComputedTiming().progress??0;animation?.cancel();animation=undefined;width=next;
+      if(width<=el.clientWidth)return;
+      if(el.scrollLeft<width||el.scrollLeft>=width*2)el.scrollLeft=wrap(el.scrollLeft||width);
+      const duration=width/speed*1000;
+      animation=tr.animate([{transform:'translateX(0)'},{transform:`translateX(${-width}px)`}],{duration,iterations:Infinity});
+      animation.currentTime=progress*duration;sync.current();
+    };
+    build();
+    const resize=new ResizeObserver(build);resize.observe(el);resize.observe(tr);
+    const seen=new IntersectionObserver(([entry])=>{visible=!!entry?.isIntersecting;sync.current();});seen.observe(el);
     // A hand scroll that runs into an outer set is moved back to the matching spot in the middle one.
-    const settle=()=>{const x=wrap(el.scrollLeft);if(Math.abs(x-el.scrollLeft)>1){el.scrollLeft=x;position.current=x;}};
+    const settle=()=>{const x=wrap(el.scrollLeft);if(Math.abs(x-el.scrollLeft)>1)el.scrollLeft=x;};
     el.addEventListener('scrollend',settle);
-    return()=>{cancelAnimationFrame(frame);seen.disconnect();el.removeEventListener('scrollend',settle);position.current=undefined;};
+    return()=>{animation?.cancel();resize.disconnect();seen.disconnect();el.removeEventListener('scrollend',settle);sync.current=()=>{};};
   },[on,speed]);
   const handlers={
-    onPointerEnter:(e:ReactPointerEvent<HTMLElement>)=>{if(e.pointerType==='mouse')held.current.hover=true;},
-    onPointerLeave:()=>{held.current.hover=false;},
-    onFocus:(e:ReactFocusEvent<HTMLElement>)=>{held.current.focus=e.target.matches(':focus-visible');},
-    onBlur:()=>{held.current.focus=false;},
+    onPointerEnter:(e:ReactPointerEvent<HTMLElement>)=>{if(e.pointerType==='mouse'){held.current.hover=true;sync.current();}},
+    onPointerLeave:()=>{held.current.hover=false;sync.current();},
+    onFocus:(e:ReactFocusEvent<HTMLElement>)=>{held.current.focus=e.target.matches(':focus-visible');sync.current();},
+    onBlur:()=>{held.current.focus=false;sync.current();},
   };
   return {handlers,setWidth,copies};
 }
