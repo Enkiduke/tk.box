@@ -210,6 +210,16 @@ test('a channel uses its logo address, else its chosen or main Plex title', () =
     channel = store.publish('admin', channel.id, { expectedRevision: added.revision, expectedPublication: 0 }, 0).channel;
     assert.deepEqual(channel.mainTitle, { id: 'show', title: 'Show' });
     assert.deepEqual(store.logo(channel.id), { plexId: 'show' });
+    // Automatic follows the movie on air: Show e1 0–10s, e2 10–20s, then Film 20–30s.
+    let film = store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['7'] }, [{ root: { id: '7', type: 'movie', title: 'Film' }, items: [media('m1')] }], 1).channel;
+    film = store.publish('admin', channel.id, { expectedRevision: film.revision, expectedPublication: 1 }, 1).channel;
+    assert.deepEqual(store.logo(channel.id, 25000), { plexId: 'm1' });
+    assert.equal(store.stations('viewer', false, '', undefined, 25000)[0]!.logoKey, 'm1');
+    assert.equal(store.stations('viewer', false, '', undefined, 35000)[0]!.logoKey, 'show');
+    // A keyed request keeps its title once the movie has ended; an unrelated key is ignored.
+    assert.deepEqual(store.logo(channel.id, 35000, 'm1'), { plexId: 'm1', keyed: true });
+    assert.deepEqual(store.logo(channel.id, 35000, '999'), { plexId: 'show' });
+    channel = film;
     channel = store.edit('admin', channel.id, { expectedRevision: channel.revision, plexLogo: '555' }, 1);
     assert.deepEqual(store.logo(channel.id), { plexId: '555' });
     channel = store.edit('admin', channel.id, { expectedRevision: channel.revision, plexLogo: 'none' }, 1);

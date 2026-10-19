@@ -92,7 +92,7 @@ Favorites move to a source-neutral table, or `iptv_favorites` stops requiring an
 ## UI
 
 - **Settings → Channels:** a channel list with number, name, status (Live, Pending · goes live at …, Draft, Disabled) and reorder controls. The editor has four tabs: Details; Programs (picker on the left, program list on the right, arrange-tools menu, runtime total, warnings); Shows (auto-add toggles, last check, errors); and Publish (preview and handoff). Playback & Buffering holds retention, with a warning before a reduction and cache usage.
-- **Live TV:** custom rows in the guide. The channel logo is the logo address if set, else the Plex logo (clearLogo) of the title picked in Channel details, or by default of the show or movie that makes up at least half the channel; a title without a Plex logo uses its poster, and "None" shows the channel number. Plex artwork is read with the viewer's own grant. The player shows Pause/Resume/Go Live and a "behind live" indicator only for custom channels.
+- **Live TV:** custom rows in the guide. The channel logo is the logo address if set, else the Plex logo (clearLogo) of the title picked in Channel details, or by default of the movie airing now (changing with each movie) or else the show or movie that makes up at least half the channel; a title without a Plex logo uses its poster, and "None" shows the channel number. Plex artwork is read with the viewer's own grant. The player shows Pause/Resume/Go Live and a "behind live" indicator only for custom channels.
 
 ## Collections, categories and the editor (October 18, 2026)
 
