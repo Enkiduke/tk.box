@@ -97,7 +97,7 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,onPlayAll,accou
       <button className="browse-layout icon-button" aria-label={prefs.layout==='grid'?'Show list view':'Show grid view'} onClick={()=>navigate({layout:prefs.layout==='grid'?'list':'grid'})}><Icon name={prefs.layout==='grid'?'list':'grid'}/></button>
       <span className="browse-count" aria-label={total===undefined?'Loading titles':`${total} titles`}>{total?.toLocaleString()}</span></>}
     </div>
-    {view==='categories'?<CategoryGrid genres={genres} onPick={genre=>navigate({view:'library',genre,shelf:'all',year:'',contentRating:'',q:''})}/>
+    {view==='categories'?<CategoryGrid library={library?.key} genres={genres} onPick={genre=>navigate({view:'library',genre,shelf:'all',year:'',contentRating:'',q:''})}/>
     :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal}/>
       :library&&<CollectionGrid library={library.key} open={id=>navigate({view:'collections',collection:id})} onPlayAll={onPlayAll}/>:<>
     {filterCount>0&&<div className="active-filters">{prefs.genre&&<button onClick={()=>navigate({genre:''})}>{genres.data?.genres.find(g=>g.id===prefs.genre)?.title??'Genre'} ×</button>}{prefs.shelf==='unwatched'&&<button onClick={()=>navigate({shelf:'all'})}>Unwatched ×</button>}{prefs.year&&<button onClick={()=>navigate({year:''})}>{prefs.year} ×</button>}{prefs.contentRating&&<button onClick={()=>navigate({contentRating:''})}>{prefs.contentRating} ×</button>}<button onClick={reset}>Clear</button></div>}
@@ -132,9 +132,14 @@ function CollectionGrid({library,open,onPlayAll}:{library:string;open:(id:string
 }
 // Categories are the library's genres; picking one shows the Library filtered to it.
 const tileHue=(title:string)=>[...title].reduce((h,c)=>(h*31+c.charCodeAt(0))%360,7);
-function CategoryGrid({genres,onPick}:{genres:{data?:{genres:Genre[]};error?:Error;reload:()=>void};onPick:(id:string)=>void}) {
+// Fade art in only once it is decoded, else the fade runs on a blank image and the art pops in at the end.
+const fadeIn=(img:HTMLImageElement|null)=>{img?.decode().then(()=>img.classList.add('loaded'),()=>{img.hidden=true;});};
+// Like Plex, each tile shows a backdrop from the genre under its colour; tiles stay plain until the art arrives.
+function CategoryGrid({library,genres,onPick}:{library?:string;genres:{data?:{genres:Genre[]};error?:Error;reload:()=>void};onPick:(id:string)=>void}) {
+  const art=useApi<{art:Record<string,string>}>(library?`/catalog/libraries/${library}/genres/art`:undefined);
   if(genres.error)return <ErrorNotice message={genres.error.message} retry={genres.reload}/>;
   if(!genres.data)return <Loading/>;
   if(!genres.data.genres.length)return <Empty title="No categories">This library has no genres yet.</Empty>;
-  return <div className="category-grid">{genres.data.genres.map(g=><button key={g.id} className="category-tile" style={{'--hue':tileHue(g.title)} as CSSProperties} onClick={()=>onPick(g.id)}>{g.title}</button>)}</div>;
+  return <div className="category-grid">{genres.data.genres.map(g=>{const src=art.data?.art[g.id];
+    return <button key={g.id} className="category-tile" style={{'--hue':tileHue(g.title)} as CSSProperties} onClick={()=>onPick(g.id)}>{src&&<img src={src} alt="" decoding="async" ref={fadeIn}/>}<span>{g.title}</span></button>;})}</div>;
 }

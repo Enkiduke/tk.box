@@ -205,6 +205,26 @@ export class PlexAdapter {
     const result=z.object({MediaContainer:z.object({Directory:z.array(z.object({key:z.union([z.string().regex(/^\d+$/).max(20),z.number().int().nonnegative()]).transform(String),title:z.string().max(200)})).max(2000).default([])})}).parse(await this.json(url,grant.serverToken));
     return {genres:result.MediaContainer.Directory.map(({key,title})=>({id:key,title}))};
   }
+  // Like Plex's Categories: each genre's tile shows the backdrop of a random title from it, a different title per
+  // genre where the library has one, so tiles don't repeat the same art. Plex does the shuffling, so it costs nothing extra.
+  async catalogGenreArt(grant:PlexGrant,libraryId:string) {
+    const library=this.library(grant,libraryId),{genres}=await this.catalogGenres(grant,libraryId);
+    const section=z.union([z.string(),z.number()]).transform(String).optional();
+    const page=z.object({MediaContainer:z.object({librarySectionID:section,Metadata:z.array(z.object({ratingKey:z.string().regex(/^\d+$/).max(20),art:z.string().max(500).optional(),librarySectionID:section})).max(8).default([])})});
+    const candidates=async(genre:string)=>{
+      const url=new URL(`/library/sections/${libraryId}/all`,this.config.PLEX_URL);
+      url.searchParams.set('type',library.type==='movie'?'1':'2');url.searchParams.set('genre',genre);url.searchParams.set('sort','random');
+      url.searchParams.set('X-Plex-Container-Start','0');url.searchParams.set('X-Plex-Container-Size','8');url.searchParams.set('includeFields','ratingKey,art,librarySectionID');
+      // A genre whose lookup fails just keeps its plain tile.
+      try {const container=page.parse(await this.json(url,grant.serverToken)).MediaContainer;return container.Metadata.filter(n=>artworkPath(n.art)&&(n.librarySectionID??container.librarySectionID??libraryId)===libraryId).map(n=>n.ratingKey);}
+      catch {return [];}
+    };
+    const found:string[][]=[];
+    for(let i=0;i<genres.length;i+=6)found.push(...await Promise.all(genres.slice(i,i+6).map(g=>candidates(g.id))));
+    const used=new Set<string>(),art:Record<string,string>={};
+    genres.forEach((g,i)=>{const ids=found[i]??[],pick=ids.find(id=>!used.has(id))??ids[0];if(pick){used.add(pick);art[g.id]=`/api/v1/catalog/items/${pick}/artwork?kind=tile`;}});
+    return {art};
+  }
   async catalogIndex(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>) {
     const library=this.library(grant,libraryId),query=catalogQuery.parse(input);
     requireThat(['all','unwatched'].includes(query.shelf),'INVALID_INDEX','Jump navigation requires a full library listing.');
@@ -373,7 +393,7 @@ export class PlexAdapter {
       .map(c=>({id:`collection:${c.ratingKey}`,title:c.title,count:c.childCount,kind:c.subtype==='show'?'show' as const:'movie' as const}))};
   }
   async artwork(grant:PlexGrant,id:string,kind:ArtworkKind) {
-    const {node}=await this.catalogNode(grant,id),path=kind==='logo'?logoPath(node):artworkPath(kind==='backdrop'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
+    const {node}=await this.catalogNode(grant,id),path=kind==='logo'?logoPath(node):artworkPath(kind==='backdrop'||kind==='tile'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
     requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
     return this.cachedArtwork(grant,path,kind);
   }
@@ -385,7 +405,7 @@ export class PlexAdapter {
     return pending;
   }
   private async loadArtwork(path:string,kind:ArtworkKind,serverToken:string) {
-    const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360,540]:kind==='logo'?[800,400]:[1280,720];
+    const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360,540]:kind==='logo'?[800,400]:kind==='tile'?[800,450]:[1280,720];
     url.searchParams.set('url',path);url.searchParams.set('width',String(width));url.searchParams.set('height',String(height));url.searchParams.set('minSize','1');url.searchParams.set('upscale','0');
     // Logos are transparent; PNG keeps the transparency a JPEG transcode would fill in.
     if(kind==='logo')url.searchParams.set('format','png');
