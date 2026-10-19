@@ -2,12 +2,13 @@ import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {Principal,Library,CatalogItem,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
 import {api,ApiClientError} from './api.js';
-import {useApi,useRoute,useScrolled,link,invalidate} from './hooks.js';
+import {useApi,useRoute,useScrolled,link,replaceRoute,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram} from './player.js';
 import {Icon,ErrorNotice,Loading,Empty,ActionNotice} from './components.js';
 import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
+import {HeaderSearch} from './header-search.js';
 // Administration is rarely visited, so it loads on demand.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
@@ -25,7 +26,17 @@ function App() {
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
   const itemId=route.params.get('item');
-  useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
+  const searchReturnTo=useRef('#home');
+  const routeHash=link(route.page,Object.fromEntries(route.params));
+  useEffect(()=>{if(['home','movies','shows','live','settings'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
+  const changeSearch=useCallback((value:string)=>{
+    const {page,params}=routeRef.current;
+    if(!value.trim()){if(page==='search')replaceRoute(searchReturnTo.current);return;}
+    const next=link('search',{q:value});
+    if(page==='search')replaceRoute(next);
+    else {searchReturnTo.current=['home','movies','shows','live','settings'].includes(page)?link(page,Object.fromEntries(params)):'#home';window.location.hash=next;}
+  },[]);
+  useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const banner=document.querySelector<HTMLButtonElement>('.nav-search-toggle');if(banner?.getClientRects().length){banner.click();return;}const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   useEffect(()=>{if(!itemId)window.scrollTo({top:0,behavior:'instant'});},[route.page]);
   // Stable callbacks keep memoized cards from re-rendering on unrelated shell updates.
   const openItem=useCallback((id:string)=>{setError('');const {page,params}=routeRef.current,next=new URLSearchParams(params);next.set('item',id);window.location.hash=`${page==='watch'?'home':page}?${next}`;},[]);
@@ -130,7 +141,7 @@ function App() {
     :<p>Set up your Plex server in the local configuration to enable sign-in.</p>}<small className="muted">Your Plex password stays with Plex.</small></div></section>;
   const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play}/>
-    :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play}/>
+    :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout}/></Suspense></div>
     :watching?(!session&&<div className="page"><Empty title="Nothing is playing"><a href="#home">Find something to watch</a></Empty></div>)
@@ -140,7 +151,7 @@ function App() {
     {!watching&&<header className={`nav ${scrolled||route.page!=='home'||!me?'solid':''}`}>
       <a href="#home" className="brand" aria-label="tk.box home">tk.box</a>
       {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}>{label}</a>)}</nav>}
-      {me&&<div className="nav-actions"><a href="#search" className="icon-button" aria-label="Search (Ctrl K)" aria-current={route.page==='search'?'page':undefined}><Icon name="search" size={22}/></a><a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
+      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/><a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
     </header>}
     <main id="main-content" tabIndex={-1}>
       <ActionNotice/>

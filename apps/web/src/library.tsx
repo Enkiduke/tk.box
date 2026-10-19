@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {CatalogItem,CatalogPage,Library} from '../../../packages/contracts/src/index.js';
-import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,replaceRoute} from './hooks.js';
+import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveNow,shuffled,type WatchChannel} from './live.js';
@@ -14,6 +14,8 @@ const items=(library:Library,query:string)=>`/catalog/libraries/${library.key}/i
 const recent=(library:Library)=>items(library,'shelf=recent&limit=20');
 const playable=(item:CatalogItem)=>item.type==='movie'||item.type==='episode';
 const page=(library:Library)=>library.type==='movie'?'movies':'shows';
+const heroTitle=(item:CatalogItem)=>item.type==='episode'?item.showTitle??'TV Show':item.type==='season'?item.showTitle??item.parentTitle??'TV Show':item.title;
+const heroSubtitle=(item:CatalogItem)=>item.type==='episode'?[item.seasonNumber!==undefined?`Season ${item.seasonNumber}`:undefined,item.episodeNumber!==undefined?`Episode ${item.episodeNumber}`:undefined,item.title].filter(Boolean).join(' · '):item.type==='season'?(item.seasonNumber!==undefined?`Season ${item.seasonNumber}`:item.title):undefined;
 function interleave<T>(lists:T[][]) {const out:T[]=[];for(let i=0;i<Math.max(0,...lists.map(l=>l.length));i++)for(const list of lists)if(list[i]!==undefined)out.push(list[i]!);return out;}
 
 function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
@@ -34,8 +36,9 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
     <FadeImage key={item.id} className="hero-art" src={item.backdropUrl} alt="" fetchPriority="high" decoding="async"/>
     <div className="hero-shade"/>
     <div className="hero-content" key={`content-${item.id}`}>
-      <p className="hero-kicker">{item.type==='show'?'Series':item.type==='episode'||item.type==='season'?item.showTitle??'Series':'Movie'} · Recently added</p>
-      <h1>{item.title}</h1>
+      <p className="hero-kicker">{item.type==='movie'?'Movie':'TV Shows'} · Recently added</p>
+      <h1>{heroTitle(item)}</h1>
+      {heroSubtitle(item)&&<p className="hero-episode">{heroSubtitle(item)}</p>}
       <p className="hero-meta">{[meta(item),item.genres.slice(0,2).join(' · ')].filter(Boolean).join(' · ')}</p>
       {item.summary&&<p className="hero-summary">{item.summary}</p>}
       <div className="button-row" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}>
@@ -43,7 +46,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
         <button className="secondary large" onClick={()=>onOpen(item.id)}><Icon name="info"/>More info</button>
       </div>
     </div>
-    {featured.length>1&&<div className="hero-dots" role="group" aria-label="Featured titles">{featured.map((media,i)=><button key={media.id} aria-label={`Show ${media.title}`} aria-pressed={index%featured.length===i} onClick={()=>setIndex(i)}/>)}</div>}
+    {featured.length>1&&<div className="hero-dots" role="group" aria-label="Featured titles">{featured.map((media,i)=><button key={media.id} aria-label={`Show ${[heroTitle(media),heroSubtitle(media)].filter(Boolean).join(' · ')}`} aria-pressed={index%featured.length===i} onClick={()=>setIndex(i)}/>)}</div>}
   </section>;
 }
 // Plex's On Deck mixes titles paused partway with the next episode of shows the viewer keeps
@@ -93,15 +96,14 @@ function SearchLibrary({library,q,onOpen,onPlay}:{library:Library;q:string;onOpe
   if(data.data&&!data.data.items.length&&!offset)return null;
   return <section className="search-group"><h2>{library.title}{data.data?.total!==undefined&&<span>{data.data.total}</span>}</h2>{data.loading&&!data.data?<Loading cards/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<><Posters items={data.data.items} onOpen={onOpen} onPlay={onPlay}/><Pagination page={data.data} onChange={setOffset}/></>}</section>;
 }
-export function Search({libraries,params,onOpen,onPlay}:BrowseProps&{params:URLSearchParams;onPlay:PlayFn}) {
-  const q=params.get('q')??'',[text,setText]=useState(q),settled=useDebounced(text.trim(),300);
+export function Search({libraries,params,onOpen,onPlay,onSearchChange}:BrowseProps&{params:URLSearchParams;onPlay:PlayFn;onSearchChange:(value:string)=>void}) {
+  const text=params.get('q')??'',q=useDebounced(text.trim(),300);
   const channels=useApi<{channels:{id:string;name:string;number:number}[]}>(q?'/iptv/channels':undefined);
-  useEffect(()=>{if(settled!==q)replaceRoute(link('search',{q:settled}));},[settled]);
-  useEffect(()=>{if(q!==settled)setText(q);},[q]);
   const matches=channels.data?.channels.filter(c=>c.name.toLocaleLowerCase().includes(q.toLocaleLowerCase())||String(c.number)===q).slice(0,12)??[];
   // Library hooks are keyed by query, so each result set remounts with a fresh page offset.
   return <div className="page search-page">
-    <form className="search-box" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('search',{q:text.trim()}));}}><Icon name="search" size={22}/><input autoFocus aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} onChange={e=>setText(e.target.value)}/>{text&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>setText('')}><Icon name="close" size={18}/></button>}</form>
+    <h1 className="search-heading">Search</h1>
+    <form className="search-box" role="search" onSubmit={e=>{e.preventDefault();onSearchChange(text.trim());}}><Icon name="search" size={22}/><input autoFocus={window.matchMedia('(max-width:760px)').matches} aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} onChange={e=>onSearchChange(e.target.value)}/>{text&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>onSearchChange('')}><Icon name="close" size={18}/></button>}</form>
     {q?<>{matches.length>0&&<section className="search-group"><h2>Channels</h2><div className="channel-chips">{matches.map(c=><a href={link('live',{channel:c.id})} key={c.id}>{c.name}</a>)}</div></section>}
       {channels.error&&<ErrorNotice message="Channels could not be searched." retry={channels.reload}/>}
       {libraries.map(l=><SearchLibrary key={`${q}-${l.key}`} library={l} q={q} onOpen={onOpen} onPlay={onPlay}/>)}</>
