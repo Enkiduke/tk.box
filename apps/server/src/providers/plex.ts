@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -200,12 +200,30 @@ export class PlexAdapter {
   }
   async catalogIndex(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>) {
     const library=this.library(grant,libraryId),query=catalogQuery.parse(input);
-    requireThat(query.sort==='title'&&['all','unwatched'].includes(query.shelf),'INVALID_INDEX','Alphabetical navigation requires a title-sorted library.');
+    requireThat(['all','unwatched'].includes(query.shelf),'INVALID_INDEX','Jump navigation requires a full library listing.');
+    if(query.sort!=='title')return this.sortedIndex(grant,libraryId,library.type,query,query.sort);
     const url=new URL(`/library/sections/${libraryId}/firstCharacter`,this.config.PLEX_URL);
     applyCatalogFilters(url,query,library.type);if(query.shelf==='unwatched')url.searchParams.set('unwatched','1');
     const result=z.object({MediaContainer:z.object({Directory:z.array(z.object({title:z.string().max(16),size:z.coerce.number().int().nonnegative().max(1000000)})).max(512).default([])})}).parse(await this.json(url,grant.serverToken));
     let offset=0;const entries=result.MediaContainer.Directory.map(row=>{const value={label:row.title,count:row.size,offset};offset+=row.size;return value;});
     return {entries:entries.filter(e=>e.count>0),total:offset};
+  }
+  // Plex only buckets by first letter, so other sorts read the sorted field for every item
+  // (metadata only, in pages) and bucket the values in that order.
+  private async sortedIndex(grant:PlexGrant,libraryId:string,type:string,query:CatalogQuery,sort:Exclude<CatalogQuery['sort'],'title'>) {
+    const field=({newest:'addedAt',year:'year',rating:'rating',duration:'duration'} as const)[sort];
+    const page=z.object({MediaContainer:z.object({Metadata:z.array(z.object({[field]:z.number().optional()})).max(500).default([]),totalSize:z.coerce.number().int().nonnegative().max(50000).optional()})});
+    const fetchPage=async(start:number)=>{
+      const url=new URL(`/library/sections/${libraryId}/all`,this.config.PLEX_URL);applyCatalogFilters(url,query,type);
+      url.searchParams.set('X-Plex-Container-Start',String(start));url.searchParams.set('X-Plex-Container-Size','500');
+      url.searchParams.set('includeFields',field);url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Guid,Collection,Producer,Genre,Image');
+      return page.parse(await this.json(url,grant.serverToken)).MediaContainer;
+    };
+    const first=await fetchPage(0),total=first.totalSize??first.Metadata.length,starts:number[]=[];
+    for(let start=500;start<total;start+=500)starts.push(start);
+    const pages=[first];for(let i=0;i<starts.length;i+=4)pages.push(...await Promise.all(starts.slice(i,i+4).map(fetchPage)));
+    const values=pages.flatMap(p=>p.Metadata.map(node=>(node as Record<string,number|undefined>)[field])).slice(0,total);
+    return {entries:sortIndex(sort,values),total:values.length};
   }
   async catalogPage(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>):Promise<CatalogPage> {
     const library=this.library(grant,libraryId),query=catalogQuery.parse(input);

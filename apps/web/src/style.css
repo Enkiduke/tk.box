@@ -265,6 +265,8 @@ main{min-height:100vh}
 .alphabet-rail button:hover{background:var(--surface-2);color:var(--text)}
 .alphabet-rail button[aria-current=location]{color:var(--accent-ink);background:var(--accent)}
 .alphabet-rail button:disabled{opacity:.25}
+.catalog-with-index.wide{padding-right:44px}
+.alphabet-rail.wide button{width:auto;min-width:24px;padding:0 5px;white-space:nowrap}
 .library-browser .notice.error{padding:10px 12px;font-size:13px;margin-bottom:16px}
 
 /* Search */

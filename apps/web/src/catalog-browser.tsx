@@ -20,6 +20,7 @@ type View='library'|'collections'|'categories';
 type Collection={id:string;title:string;summary:string;count?:number;kind:'movie'|'show';posterUrl?:string};
 type Genre={id:string;title:string};
 const sortNames={title:'Title',newest:'Date added',year:'Year',rating:'Rating',duration:'Duration'};
+const railNames={title:'letter',newest:'date added',year:'year',rating:'rating',duration:'length'};
 type WindowHandle={jump:(index:number)=>void};
 const CatalogWindow=forwardRef<WindowHandle,{path?:string;layout:Layout;onOpen:(id:string)=>void;onPlay:PlayFn;onTotal:(total:number|undefined)=>void;onPosition:(index:number)=>void}>(function CatalogWindow({path,layout,onOpen,onPlay,onTotal,onPosition},handle) {
   const root=useRef<HTMLDivElement>(null),feed=useCatalogFeed(path);
@@ -79,7 +80,7 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,accountId}:{typ
   const query=new URLSearchParams({q,sort:prefs.sort,direction:prefs.direction,genre:prefs.genre,shelf:prefs.shelf,...(prefs.year?{year:prefs.year}:{}),contentRating:prefs.contentRating});
   const path=view==='library'?library?`/catalog/libraries/${library.key}/items?${query}`:undefined:collection?`/catalog/collections/${collection}/items`:undefined;
   const genres=useApi<{genres:{id:string;title:string}[]}>(library?`/catalog/libraries/${library.key}/genres`:undefined);
-  const index=useApi<Alphabet>(view==='library'&&library&&prefs.sort==='title'?`/catalog/libraries/${library.key}/index?${query}`:undefined);
+  const index=useApi<Alphabet>(view==='library'&&library?`/catalog/libraries/${library.key}/index?${query}`:undefined);
   useEffect(()=>{window.scrollTo({top:0,behavior:'instant'});},[path,view]);
   const filterCount=Number(!!prefs.genre)+Number(prefs.shelf!=='all')+Number(!!prefs.year)+Number(!!prefs.contentRating);
   const active=index.data?.entries.filter(e=>e.offset<=position).at(-1)?.label;
@@ -100,8 +101,8 @@ export function LibraryView({type,libraries,params,onOpen,onPlay,accountId}:{typ
     :view==='collections'?collection?<CollectionView id={collection} path={path} layout={prefs.layout} back={()=>navigate({view:'collections'})} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal}/>
       :library&&<CollectionGrid library={library.key} open={id=>navigate({view:'collections',collection:id})}/>:<>
     {filterCount>0&&<div className="active-filters">{prefs.genre&&<button onClick={()=>navigate({genre:''})}>{genres.data?.genres.find(g=>g.id===prefs.genre)?.title??'Genre'} ×</button>}{prefs.shelf==='unwatched'&&<button onClick={()=>navigate({shelf:'all'})}>Unwatched ×</button>}{prefs.year&&<button onClick={()=>navigate({year:''})}>{prefs.year} ×</button>}{prefs.contentRating&&<button onClick={()=>navigate({contentRating:''})}>{prefs.contentRating} ×</button>}<button onClick={reset}>Clear</button></div>}
-    <div className={prefs.sort==='title'?'catalog-with-index':''}><CatalogWindow ref={windowRef} path={path} layout={prefs.layout} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal} onPosition={setPosition}/></div>
-    {prefs.sort==='title'&&<nav className="alphabet-rail" aria-label="Jump to letter">{index.error?<button title="Retry alphabet" aria-label="Reload alphabet" onClick={index.reload}>↻</button>:index.data&&index.data.total!==total&&total!==undefined?<button title="Refresh alphabet" aria-label="Refresh alphabet" onClick={index.reload}>↻</button>:(index.data?.entries??Array.from('#ABCDEFGHIJKLMNOPQRSTUVWXYZ',label=>({label,offset:0,count:0}))).map(entry=><button key={entry.label} aria-label={`Jump to ${entry.label}`} aria-current={active===entry.label?'location':undefined} disabled={!entry.count} title={`${entry.label} · ${entry.count} titles`} onClick={()=>windowRef.current?.jump(entry.offset)}>{entry.label}</button>)}</nav>}
+    <div className={prefs.sort==='title'?'catalog-with-index':'catalog-with-index wide'}><CatalogWindow ref={windowRef} path={path} layout={prefs.layout} onOpen={onOpen} onPlay={onPlay} onTotal={setTotal} onPosition={setPosition}/></div>
+    <nav className={prefs.sort==='title'?'alphabet-rail':'alphabet-rail wide'} aria-label={`Jump to ${railNames[prefs.sort]}`}>{index.error?<button title="Retry index" aria-label="Reload index" onClick={index.reload}>↻</button>:index.data&&index.data.total!==total&&total!==undefined?<button title="Refresh index" aria-label="Refresh index" onClick={index.reload}>↻</button>:(index.data?.entries??(prefs.sort==='title'?Array.from('#ABCDEFGHIJKLMNOPQRSTUVWXYZ',label=>({label,offset:0,count:0})):[])).map(entry=><button key={entry.label} aria-label={`Jump to ${entry.label}`} aria-current={active===entry.label?'location':undefined} disabled={!entry.count} title={`${entry.label} · ${entry.count} titles`} onClick={()=>windowRef.current?.jump(entry.offset)}>{entry.label}</button>)}</nav>
     </>}
   </section>;
 }
