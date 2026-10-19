@@ -19,15 +19,17 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
   const data=useApiAll<CatalogPage>(libraries.map(recent));
   const featured=interleave(data.data.map(p=>p?.items.filter(i=>i.backdropUrl)??[])).slice(0,6);
   const [index,setIndex]=useState(0),[paused,setPaused]=useState(false),item=featured[index%Math.max(1,featured.length)];
+  // Advance every 8s; keyed on index so picking a dot restarts the clock. Reduced motion only drops the fades (CSS).
   useEffect(()=>{
-    if(paused||featured.length<2||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-    const timer=setInterval(()=>{if(!document.hidden)setIndex(i=>(i+1)%featured.length);},9000);
+    if(paused||featured.length<2)return;
+    const timer=setInterval(()=>{if(!document.hidden)setIndex(i=>(i+1)%featured.length);},8000);
     return()=>clearInterval(timer);
-  },[paused,featured.length]);
+  },[paused,index,featured.length]);
   // Warm the next backdrop so it is ready before the next rotation.
   useEffect(()=>{const next=featured[(index+1)%Math.max(1,featured.length)];if(next?.backdropUrl)new Image().src=next.backdropUrl;},[index,featured.length]);
   if(!item)return data.loading?<div className="hero hero-loading" aria-busy="true"/>:<div className="hero-spacer"/>;
-  return <section className="hero" aria-label="Featured" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)} onFocus={()=>setPaused(true)} onBlur={()=>setPaused(false)}>
+  // Pause only while the pointer is on the buttons or keyboard focus is inside, not for a mouse resting anywhere on the art.
+  return <section className="hero" aria-label="Featured" onFocus={e=>setPaused(e.target.matches(':focus-visible'))} onBlur={()=>setPaused(false)}>
     <FadeImage key={item.id} className="hero-art" src={item.backdropUrl} alt="" fetchPriority="high" decoding="async"/>
     <div className="hero-shade"/>
     <div className="hero-content" key={`content-${item.id}`}>
@@ -35,7 +37,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
       <h1>{item.title}</h1>
       <p className="hero-meta">{[meta(item),item.genres.slice(0,2).join(' · ')].filter(Boolean).join(' · ')}</p>
       {item.summary&&<p className="hero-summary">{item.summary}</p>}
-      <div className="button-row">
+      <div className="button-row" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}>
         {playable(item)?<button className="primary large" disabled={busy} onClick={()=>onPlay(item)}><Icon name="play"/>{item.viewOffsetMs>0?'Resume':'Play'}</button>:<button className="primary large" onClick={()=>onOpen(item.id)}><Icon name="play"/>Episodes</button>}
         <button className="secondary large" onClick={()=>onOpen(item.id)}><Icon name="info"/>More info</button>
       </div>
