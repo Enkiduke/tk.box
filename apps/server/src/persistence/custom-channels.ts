@@ -33,7 +33,9 @@ export const draftOrder = z.object({ expectedRevision: revision, entryIds: z.arr
 export const draftEntries = z.object({ expectedRevision: revision, entryIds: z.array(z.string().uuid()).min(1).max(MAX_ENTRIES) }).strict();
 export const draftRevision = z.object({ expectedRevision: revision }).strict();
 
-const label = (e: DraftEntry) => e.kind === 'episode' ? `S${e.season ?? '?'}E${e.episode ?? '?'} · ${e.title}` : e.year !== undefined ? String(e.year) : undefined;
+// Episodes read "S1E3 · Title", leaving out whichever number Plex doesn't have.
+const episodeCode = (e: DraftEntry) => `${e.season !== undefined ? `S${e.season}` : ''}${e.episode !== undefined ? `E${e.episode}` : ''}`;
+const label = (e: DraftEntry) => e.kind === 'episode' ? [episodeCode(e), e.title].filter(Boolean).join(' · ') : e.year !== undefined ? String(e.year) : undefined;
 // Guide/scheduler form of an entry: episodes air under their show's name.
 const toEntry = (e: DraftEntry): Entry => ({ occurrenceId: e.entryId, mediaId: e.mediaId, title: e.kind === 'episode' ? e.showTitle ?? e.title : e.title, ...(label(e) ? { subtitle: label(e) } : {}), durationMs: e.durationMs, mediaOffsetMs: 0 });
 const sameList = (a: DraftEntry[], b: DraftEntry[]) => a.length === b.length && a.every((e, i) => e.entryId === b[i]!.entryId);

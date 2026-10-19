@@ -485,6 +485,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .guide-program{position:absolute;top:4px;bottom:4px;display:block;min-width:0;padding:4px 10px 7px;border:0;border-right:3px solid var(--surface);border-radius:8px;background:var(--surface-2);text-align:left;white-space:normal;overflow:hidden;font-weight:400}
 .guide-program:hover{background:var(--surface-3)}
 .guide-program strong{display:block;font-size:13px;line-height:17px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-bottom:1px}
+.guide-program strong em{font-style:normal;font-weight:400;color:var(--muted)}
 .guide-program span{display:block;font-size:11.5px;line-height:14px;color:var(--muted);white-space:nowrap}
 /* Program text sits above the now-line; the shadow clears the line behind the letters. */
 .guide-program.airing strong,.guide-program.airing span{position:relative;z-index:2;text-shadow:0 0 3px #2e2715,0 0 3px #2e2715}
@@ -626,6 +627,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .on-now-play{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--surface-3);color:var(--text);opacity:.85}
 .on-now-card:hover .on-now-play{background:#fff;color:#0c0c10;opacity:1}
 .on-now-title{font-size:13.5px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.on-now-subtitle{font-size:12.5px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-top:-4px}
 .on-now-meta{font-size:12px;color:var(--muted)}
 .station-button{display:flex;align-items:center;gap:10px}
 .station-button>span{min-width:0}
