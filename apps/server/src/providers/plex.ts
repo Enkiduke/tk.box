@@ -89,9 +89,17 @@ export class PlexAdapter {
     return { Accept: 'application/json', 'X-Plex-Product': 'tk.box', 'X-Plex-Version': '0.0.1',
       'X-Plex-Client-Identifier': this.clientId, ...(token ? { 'X-Plex-Token': token } : {}) };
   }
-  private async json(url: URL, token?: string, method = 'GET') {
+  // `sameOrigin` follows redirects that stay on the requested origin (Discover adds the viewer's preferred
+  // services to some shelves that way); any other redirect is refused, so the token never leaves that host.
+  private async json(url: URL, token?: string, method = 'GET', sameOrigin = false) {
     try {
-      const response = await this.transport(url, { method, headers: this.headers(token), redirect: 'error', signal: AbortSignal.timeout(10000) });
+      let response = await this.transport(url, { method, headers: this.headers(token), redirect: sameOrigin ? 'manual' : 'error', signal: AbortSignal.timeout(10000) });
+      for (let hops = 0; sameOrigin && response.status >= 300 && response.status < 400; hops++) {
+        const next = new URL(response.headers.get('location') ?? '', url);
+        await response.body?.cancel();
+        if (hops >= 3 || next.origin !== url.origin) throw new AppError('PLEX_UNAVAILABLE', 'Plex redirected the request elsewhere.', 502);
+        response = await this.transport(next, { method, headers: this.headers(token), redirect: 'manual', signal: AbortSignal.timeout(10000) });
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new AppError(response.status === 401 || response.status === 403 ? 'PLEX_ACCESS_DENIED' : 'PLEX_UNAVAILABLE', 'Plex request could not be completed.', response.status === 401 || response.status === 403 ? 403 : 502);
@@ -106,7 +114,9 @@ export class PlexAdapter {
           chunks.push(chunk);
         }
       } finally { reader.releaseLock(); }
-      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      // Discover's watchlist actions answer with an empty body.
+      const text = Buffer.concat(chunks).toString('utf8');
+      return (text ? JSON.parse(text) : {}) as unknown;
     } catch (e) {
       if (e instanceof AppError) throw e;
       throw new AppError('PLEX_UNAVAILABLE', 'Plex is unavailable or returned invalid data.', 502);
@@ -164,6 +174,25 @@ export class PlexAdapter {
     const isOwner = account.id === this.config.PLEX_OWNER_ACCOUNT_ID;
     requireThat(!isOwner || resource.owned, 'PLEX_ACCESS_DENIED', 'Configured owner does not own this Plex server.', 403);
     return { accountId: account.id, role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
+  }
+  // Plex's cloud catalog (watchlist, Discover shelves, search), read with the viewer's own Plex account token.
+  async discover(accountToken: string, path: string, query: Record<string, string | number> = {}, method = 'GET') {
+    const url = new URL(path, 'https://discover.provider.plex.tv');
+    requireThat(url.origin === 'https://discover.provider.plex.tv', 'INVALID_REQUEST', 'Discover requests stay on Plex.');
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+    return this.json(url, accountToken, method, true);
+  }
+  // This server's copy of a title the viewer can open: titles with that name whose guid (plex://, imdb://, tmdb://, tvdb://) matches.
+  async libraryMatch(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]) {
+    if (!guids.length || !title.trim()) return undefined;
+    const matches = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({ ratingKey: plexId, guid: z.string().optional(), Guid: z.array(z.object({ id: z.string() })).optional() })).default([]) }) });
+    const found = await Promise.all(grant.libraries.filter(l => l.type === kind).map(async library => {
+      const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
+      for (const [key, value] of Object.entries({ type: kind === 'movie' ? '1' : '2', title: title.trim().slice(0, 100), includeGuids: '1', 'X-Plex-Container-Start': '0', 'X-Plex-Container-Size': '50' })) url.searchParams.set(key, value);
+      const items = await this.json(url, grant.serverToken).then(data => matches.parse(data).MediaContainer.Metadata, () => []);
+      return items.find(item => (item.guid && guids.includes(item.guid)) || item.Guid?.some(g => guids.includes(g.id)))?.ratingKey;
+    }));
+    return found.find(Boolean);
   }
   async metadata(grant: PlexGrant, ratingKey: string, options: { markers?: boolean } = {}) {
     requireThat(/^\d+$/.test(ratingKey), 'INVALID_MEDIA', 'Invalid Plex media identifier.');

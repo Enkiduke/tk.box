@@ -23,6 +23,8 @@ import { IptvStore } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { registerIptv } from './iptv-api.js';
 import { registerCatalog } from './catalog-api.js';
+import { registerExplore } from './explore-api.js';
+import { ExploreStore } from './persistence/explore-store.js';
 import { LiveTv } from './services/live-tv.js';
 import { HealthStore } from './persistence/channel-health-store.js';
 import { ChannelHealth } from './services/channel-health.js';
@@ -151,6 +153,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); return {status: 'stopped'}; });
   registerCatalog(app,plex,auth);
+  registerExplore(app, plex, new ExploreStore(db, vault), auth, admin, hash => identity.accountToken(hash));
   app.get('/health', async () => ({status: 'ok'}));
   app.get('/api/v1/setup', async () => ({plexConfigured: config.plexConfigured, milestone: 0}));
   app.post('/api/v1/auth/plex/start', { config: {rateLimit: {max: 10, timeWindow: 60000}} }, async (_req, reply) => {

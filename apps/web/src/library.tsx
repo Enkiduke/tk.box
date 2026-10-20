@@ -146,7 +146,7 @@ function RatingMark({rating}:{rating:ExternalRating}) {
   const icon=rating.fresh===false&&rating.source==='tomatometer'?ratingIcons.tomatometerRotten:rating.fresh===false&&rating.source==='popcornmeter'?ratingIcons.popcornmeterRotten:ratingIcons[rating.source];
   return <img className={`rating-mark ${rating.source}`} src={icon} alt="" aria-hidden="true"/>;
 }
-function Ratings({ratings}:{ratings:ExternalRating[]}) {
+export function Ratings({ratings}:{ratings:ExternalRating[]}) {
   return <ul className="ratings">{ratings.map(rating=>{
     const value=rating.source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`;
     return <li key={rating.source} title={ratingNames[rating.source]}><RatingMark rating={rating}/><span className="sr-only">{ratingNames[rating.source]}</span>{value}</li>;

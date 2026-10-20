@@ -12,13 +12,14 @@ import {HeaderSearch} from './header-search.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 // Administration is rarely visited, so it loads on demand.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
+const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
 import './style.css';
 
 type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;markers?:SkipMarker[];source?:SourceInfo;quality?:Quality;qualityOptions?:QualityOption[];audioStreamId?:string;item:CatalogItem};
 type Session=VodSession|LiveSession;
 const fetchPage=(path:string)=>api<CatalogPage>(path);
-const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['live','Live TV']] as const;
+const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['explore','Explore'],['live','Live TV']] as const;
 // Opens synchronously in the click so popup blockers allow it; the caller points it at Plex once the auth URL arrives.
 function openPlexPopup(url='') {
   const width=520,height=720,left=Math.round(window.screenX+(window.outerWidth-width)/2),top=Math.round(window.screenY+(window.outerHeight-height)/2);
@@ -41,13 +42,13 @@ function App() {
   const itemId=route.params.get('item');
   const searchReturnTo=useRef('#home');
   const routeHash=link(route.page,Object.fromEntries(route.params));
-  useEffect(()=>{if(['home','movies','shows','live','settings'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
+  useEffect(()=>{if(['home','movies','shows','explore','live','settings'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
   const changeSearch=useCallback((value:string)=>{
     const {page,params}=routeRef.current;
     if(!value.trim()){if(page==='search')replaceRoute(searchReturnTo.current);return;}
     const next=link('search',{q:value});
     if(page==='search')replaceRoute(next);
-    else {searchReturnTo.current=['home','movies','shows','live','settings'].includes(page)?link(page,Object.fromEntries(params)):'#home';window.location.hash=next;}
+    else {searchReturnTo.current=['home','movies','shows','explore','live','settings'].includes(page)?link(page,Object.fromEntries(params)):'#home';window.location.hash=next;}
   },[]);
   useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const banner=document.querySelector<HTMLButtonElement>('.nav-search-toggle');if(banner?.getClientRects().length){banner.click();return;}const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   useEffect(()=>{if(!itemId)window.scrollTo({top:0,behavior:'instant'});},[route.page]);
@@ -191,6 +192,7 @@ function App() {
   const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
+    :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onOpen={openItem}/></Suspense></div>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout}/></Suspense></div>
     :watching?(!session&&!tuning&&<div className="page"><Empty title="Nothing is playing"><a href="#home">Find something to watch</a></Empty></div>)

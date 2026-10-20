@@ -29,6 +29,9 @@ const paths:Record<string,ReactNode>={
   'skip-next':<><path d="M6 5.5v13a.8.8 0 0 0 1.2.7l9.3-6.5a.8.8 0 0 0 0-1.4L7.2 4.8A.8.8 0 0 0 6 5.5z" fill="currentColor" stroke="none"/><path d="M18.5 5v14" strokeWidth="2.2"/></>,
   queue:<path d="M3 6h13M3 12h13M3 18h8m4-2.5v5l4.5-2.5z"/>,
   collection:<><rect x="3" y="8" width="14" height="13" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v11"/></>,tag:<><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></>,unwatched:<><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></>,
+  explore:<><circle cx="12" cy="12" r="9.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></>,trending:<path d="m3 17 6-6 4 4 8-8m-5 0h5v5"/>,
+  clock:<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
+  calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4m8-4v4"/></>,
 };
 paths.settings=paths.gear;
 export function Icon({name,size=20}:{name:string;size?:number}) {
