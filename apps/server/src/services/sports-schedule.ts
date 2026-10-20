@@ -2,14 +2,18 @@ import type { IptvStore } from '../persistence/iptv-store.js';
 import type { HealthStore } from '../persistence/channel-health-store.js';
 import { allowed, type SportsStore } from '../persistence/sports-store.js';
 import { SourceFetchError } from '../providers/source-fetch.js';
-import { espnEvents, espnDay, espnUrl, tsdbEvents, tsdbUrls, tsdbDayUrl, fetchJson } from '../providers/sports-feeds.js';
+import { espnEvents, espnDay, espnUrl, espnLeagueLogo, tsdbEvents, tsdbUrls, tsdbDayUrl, tsdbLeagueUrl, tsdbLeagueLogo, fetchJson } from '../providers/sports-feeds.js';
+import { ChannelLogos } from '../providers/channel-logos.js';
 import { channelWindow, learnZones, type SportsEvent, type Window } from './sports-match.js';
 
 export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: string; zone: string; nameHours: number; tickMs: number };
-type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[] };
+// A job may also name its league's logo, read from the same response.
+type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[]; logo?: { key: string; read: (body: unknown) => string | undefined } };
+type Image = { type: string; bytes: Buffer };
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // TheSportsDB allows 30 requests a minute on the free key; ESPN publishes no limit, so stay gentle.
 const SPACING = { espn: 500, tsdb: 2500 };
+const logos = new ChannelLogos();
 
 // Keeps a rolling schedule (yesterday through the day after tomorrow) and turns it into per-channel
 // air windows for event-driven sources. Fetching only happens while some source uses sports events.
@@ -25,16 +29,20 @@ export class SportsSchedule {
   lastError: string | null = null;
   constructor(private iptv: IptvStore, private store: SportsStore, private health: HealthStore, private pump: () => void,
     private options: SportsOptions, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
-    private get: (url: string) => Promise<unknown> = fetchJson()) {
+    private get: (url: string) => Promise<unknown> = fetchJson(), private image: (url: string) => Promise<Image> = url => logos.get(url)) {
     this.timer = setInterval(() => { void this.tick(); }, options.tickMs); this.timer.unref();
   }
   private jobs(now: number): Job[] {
     const days = [-1, 0, 1, 2].map(d => espnDay(now + d * DAY)), today = espnDay(now);
-    const espn = this.options.espn.flatMap(path => days.map(day => ({ url: espnUrl(path, day), provider: 'espn' as const, every: day === today ? 10 * MINUTE : HOUR, parse: (b: unknown) => espnEvents(path, b) })));
+    const espn = this.options.espn.flatMap(path => days.map(day => ({ url: espnUrl(path, day), provider: 'espn' as const, every: day === today ? 10 * MINUTE : HOUR, parse: (b: unknown) => espnEvents(path, b),
+      logo: { key: path, read: espnLeagueLogo } })));
     const iso = [0, 1, 2].map(d => new Date(now + d * DAY).toISOString().slice(0, 10));
     const tsdb = [...this.options.tsdb.flatMap(id => tsdbUrls(this.options.tsdbKey, id)), ...iso.map(day => tsdbDayUrl(this.options.tsdbKey, day, 'Fighting'))]
       .map(url => ({ url, provider: 'tsdb' as const, every: 6 * HOUR, parse: tsdbEvents }));
-    return [...espn, ...tsdb];
+    // TheSportsDB badges: the configured leagues and any league a fight card turned up, looked up weekly.
+    const ids = new Set([...this.options.tsdb, ...this.store.leagues(0).flatMap(l => /^tsdb:\d+$/.test(l.key) ? [l.key.slice(5)] : [])]);
+    const badges = [...ids].map(id => ({ url: tsdbLeagueUrl(this.options.tsdbKey, id), provider: 'tsdb' as const, every: 7 * DAY, parse: () => [], logo: { key: `tsdb:${id}`, read: tsdbLeagueLogo } }));
+    return [...espn, ...tsdb, ...badges];
   }
   // Rematching decrypts every channel and its listings, so it runs after new data or every five minutes.
   invalidate() { this.stale = true; void this.tick(); }
@@ -49,8 +57,9 @@ export class SportsSchedule {
         if (this.closed) return;
         if ((this.due.get(job.url) ?? 0) > Date.now() || this.backoff[job.provider] > Date.now()) continue;
         try {
-          const events = job.parse(await this.get(job.url));
+          const body = await this.get(job.url), events = job.parse(body), logo = job.logo?.read(body);
           this.store.upsert(events); this.due.set(job.url, Date.now() + job.every); fetched++;
+          if (job.logo && logo) this.store.setLogoUrl(job.logo.key, logo);
         } catch (error) {
           // Rate limited: the whole provider waits. Anything else: this request alone retries later.
           if (error instanceof SourceFetchError && error.retryAt) this.backoff[job.provider] = error.retryAt;
@@ -61,6 +70,11 @@ export class SportsSchedule {
         await new Promise(r => setTimeout(r, SPACING[job.provider]));
       }
       if (fetched) { this.lastSync = Date.now(); this.stale = true; this.store.prune(); }
+      // A logo that fails is retried on a later tick, once ChannelLogos stops refusing it.
+      for (const { key, url } of this.store.logosMissing()) {
+        if (this.closed) return;
+        try { this.store.saveLogo(key, url, await this.image(url)); } catch { this.log('league logo unavailable', { league: key }); }
+      }
       if (this.stale || Date.now() - this.lastMatch >= 5 * MINUTE) this.match();
       // Every minute: number what just went live or is starting soon, release what ended, check what appeared.
       for (const source of sources) {

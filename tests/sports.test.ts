@@ -8,7 +8,7 @@ import { SportsStore, type SportsSettings } from '../apps/server/src/persistence
 import { SportsSchedule } from '../apps/server/src/services/sports-schedule.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { channelWindow, eventScore, nameTime, cleanTitle, type SportsEvent } from '../apps/server/src/services/sports-match.js';
-import { espnEvents, tsdbEvents } from '../apps/server/src/providers/sports-feeds.js';
+import { espnEvents, tsdbEvents, espnLeagueLogo, tsdbLeagueLogo } from '../apps/server/src/providers/sports-feeds.js';
 
 const HOUR = 3600_000, now = Date.parse('2026-10-18T17:30:00Z');
 // Shapes as returned by ESPN's scoreboard and TheSportsDB's free v1 API on 2026-10-18.
@@ -305,4 +305,18 @@ test('live sports: event rows follow sport and league priority, sit above or bel
   save({ numberStart: 700 });
   assert.equal(iptv.renumberEvents(), 4);
   assert.deepEqual(iptv.stacks().map(c => c.number), [1, 700, 701, 702, 703], 'a new block renumbers live event channels in guide order');
+});
+
+test('league logos prefer the dark version and are downloaded again when their address changes', () => {
+  assert.equal(espnLeagueLogo({ leagues: [{ logos: [{ href: 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png', rel: ['full', 'default'] }, { href: 'https://a.espncdn.com/i/teamlogos/leagues/500-dark/nfl.png', rel: ['full', 'dark'] }] }] }), 'https://a.espncdn.com/i/teamlogos/leagues/500-dark/nfl.png');
+  assert.equal(espnLeagueLogo({ leagues: [{ logos: [{ href: 'http://insecure/nfl.png' }] }] }), undefined);
+  assert.equal(tsdbLeagueLogo({ leagues: [{ strBadge: null, strLogo: 'https://r2.thesportsdb.com/images/media/league/logo/wwe.png' }] }), 'https://r2.thesportsdb.com/images/media/league/logo/wwe.png');
+  const store = new SportsStore(openDatabase(':memory:')), image = { type: 'image/png', bytes: Buffer.from('png') };
+  store.setLogoUrl('football/nfl', 'https://a/1.png');
+  assert.deepEqual(store.logosMissing(), [{ key: 'football/nfl', url: 'https://a/1.png' }]);
+  store.saveLogo('football/nfl', 'https://a/1.png', image);
+  store.setLogoUrl('football/nfl', 'https://a/1.png');
+  assert.deepEqual(store.logosMissing(), []);
+  store.setLogoUrl('football/nfl', 'https://a/2.png');
+  assert.deepEqual(store.logosMissing(), [{ key: 'football/nfl', url: 'https://a/2.png' }]);
 });

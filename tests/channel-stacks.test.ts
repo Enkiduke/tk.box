@@ -61,6 +61,23 @@ test('feeds of one station share a guide row that defaults to FHD and keeps ever
   assert.equal(store.guidePage('viewer','favorites',0,3600000,0,30).total,0);
 });
 
+test('favorites leave their source for a Favorites group at the top of the guide',()=>{
+  const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
+  store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: MSNBC FHD'),entry('US: FOX NEWS FHD')));
+  listAll(store,s.id);
+  const before=store.guidePage('viewer','all',0,3600000,0,30),last=before.channels.at(-1)!;
+  assert.deepEqual(before.sources,[{id:s.id,name:'Fixture',count:3}]);
+  store.favorite('viewer',last.id,true);
+  const page=store.guidePage('viewer','all',0,3600000,0,30);
+  assert.equal(page.channels[0]!.id,last.id);assert.equal(page.channels[0]!.group,'favorites');
+  assert.deepEqual(page.channels.slice(1).map(c=>c.group),[s.id,s.id]);
+  assert.deepEqual(page.sources,[{id:'favorites',name:'Favorites',count:1},{id:s.id,name:'Fixture',count:2}]);
+  // Paging follows the new order.
+  assert.equal(store.guidePage('viewer','all',0,3600000,1,1).channels[0]!.id,before.channels[0]!.id);
+  // The Favorites filter is all favorites, so rows keep their source group.
+  assert.equal(store.guidePage('viewer','favorites',0,3600000,0,30).channels[0]!.group,s.id);
+});
+
 test('administrators can keep a feed separate or stack it under another station',()=>{
   const {store}=fixture(),s=store.create('owner',{kind:'m3u',name:'Fixture'});
   store.ingest('owner',s.id,0,playlist(entry('US: CNN FHD'),entry('US: CNN SD'),entry('HLN HD')));listAll(store,s.id);

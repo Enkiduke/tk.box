@@ -110,5 +110,14 @@ export class SportsStore {
   }
   windows(sourceId: string) { return new Map((this.db.prepare('SELECT * FROM sports_windows WHERE source_id=?').all(sourceId) as WindowRow[]).map(r => [r.channel_id, r])); }
   window(channelId: string) { return this.db.prepare('SELECT * FROM sports_windows WHERE channel_id=?').get(channelId) as WindowRow | undefined; }
+  // A league's logo address as last published. A new address drops the saved image so it is downloaded again.
+  setLogoUrl(key: string, url: string, now = Date.now()) {
+    this.db.prepare(`INSERT INTO sports_league_logos(league_key,url,checked_at) VALUES(?,?,?)
+      ON CONFLICT(league_key) DO UPDATE SET bytes=CASE WHEN url IS excluded.url THEN bytes ELSE NULL END,type=CASE WHEN url IS excluded.url THEN type ELSE NULL END,url=excluded.url,checked_at=excluded.checked_at`).run(key, url, now);
+  }
+  logosMissing() { return this.db.prepare('SELECT league_key AS key,url FROM sports_league_logos WHERE url IS NOT NULL AND bytes IS NULL').all() as { key: string; url: string }[]; }
+  saveLogo(key: string, url: string, image: { type: string; bytes: Buffer }) {
+    this.db.prepare('UPDATE sports_league_logos SET type=?,bytes=? WHERE league_key=? AND url=?').run(image.type, image.bytes, key, url);
+  }
   count(from: number) { return (this.db.prepare('SELECT COUNT(*) AS n FROM sports_events WHERE end>=?').get(from) as { n: number }).n; }
 }

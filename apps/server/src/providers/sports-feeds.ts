@@ -70,3 +70,16 @@ export const espnUrl = (path: string, day: string) => `https://site.api.espn.com
 export const tsdbUrls = (key: string, league: string) => [`https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(key)}/eventsnextleague.php?id=${league}`, `https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(key)}/eventspastleague.php?id=${league}`];
 // Fight cards by day: three per day on the free key, which still catches cards a league list misses.
 export const tsdbDayUrl = (key: string, day: string, sport: string) => `https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(key)}/eventsday.php?d=${day}&s=${encodeURIComponent(sport)}`;
+export const tsdbLeagueUrl = (key: string, league: string) => `https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(key)}/lookupleague.php?id=${encodeURIComponent(league)}`;
+
+// League logos for event channels with no logo of their own. ESPN's scoreboard names its league's logos;
+// the version drawn for dark backgrounds suits the guide's tiles. TheSportsDB has a badge per league.
+const https = (url: unknown) => typeof url === 'string' && /^https:\/\//i.test(url) ? url : undefined;
+export function espnLeagueLogo(body: unknown) {
+  const logos = (body as { leagues?: { logos?: { href?: string; rel?: string[] }[] }[] }).leagues?.[0]?.logos ?? [];
+  return https((logos.find(l => l.rel?.includes('dark')) ?? logos[0])?.href);
+}
+export function tsdbLeagueLogo(body: unknown) {
+  const league = (body as { leagues?: { strBadge?: string | null; strLogo?: string | null }[] | null }).leagues?.[0];
+  return https(league?.strBadge) ?? https(league?.strLogo);
+}
