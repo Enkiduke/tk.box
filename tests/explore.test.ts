@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
+import {Seerr,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrStatus,statusIndex} from '../apps/server/src/providers/seerr.js';
+import {traktItems} from '../apps/server/src/providers/trakt.js';
+import {discoverIds,discoverItem} from '../apps/server/src/providers/plex-discover.js';
+import {imagePath} from '../apps/server/src/providers/explore-images.js';
+import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
+import {openDatabase} from '../apps/server/src/persistence/database.js';
+import {Vault} from '../apps/server/src/security/vault.js';
+
+test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
+  assert.equal(seerrStatus(undefined),undefined);
+  assert.equal(seerrStatus({status:5}),'available');
+  assert.equal(seerrStatus({status:4}),'partial');
+  assert.equal(seerrStatus({status:3}),'requested');
+  assert.equal(seerrStatus({status:2}),'requested');
+  // A request waiting for approval counts; a declined (3) or completed (5) one does not.
+  assert.equal(seerrStatus({status:1,requests:[{status:1}]}),'requested');
+  assert.equal(seerrStatus({status:1,requests:[{status:3},{status:5}]}),undefined);
+  // A 4K request says nothing about the standard copy, and the other way round.
+  assert.equal(seerrStatus({status:1,requests:[{status:1,is4k:true}]}),undefined);
+  assert.equal(seerrStatus({status:5,status4k:1,requests:[{status:2,is4k:true}]},true),'requested');
+  // Overseerr's deleted and Jellyseerr's blocklisted codes get no badge.
+  assert.equal(seerrStatus({status:6}),undefined);
+});
+test('Seerr seasons leave out specials and mark seasons on the server or requested',()=>{
+  const seasons=seerrSeasons({id:1,seasons:[{seasonNumber:0,name:'Specials'},{seasonNumber:1,name:'Season 1',episodeCount:8},{seasonNumber:2,name:'Season 2'},{seasonNumber:3,name:''}],
+    mediaInfo:{status:4,seasons:[{seasonNumber:1,status:5}],requests:[{status:2,seasons:[{seasonNumber:2}]},{status:3,seasons:[{seasonNumber:3}]},{status:1,is4k:true,seasons:[{seasonNumber:3}]}]}});
+  assert.deepEqual(seasons,[{number:1,name:'Season 1',episodeCount:8,status:'available'},{number:2,name:'Season 2',status:'requested'},{number:3,name:'Season 3'}]);
+});
+test('Seerr titles map TMDB fields for movies and shows and skip people',()=>{
+  const movie=seerrItem({id:603,mediaType:'movie',title:'The Matrix',releaseDate:'1999-03-31',posterPath:'/p.jpg',voteAverage:8.2,mediaInfo:{status:5}});
+  assert.equal(movie?.key,'movie:tmdb:603');assert.equal(movie?.year,1999);assert.equal(movie?.status,'available');
+  assert.equal(movie?.posterUrl,`/api/v1/explore/image?u=${encodeURIComponent('https://image.tmdb.org/t/p/w342/p.jpg')}`);
+  // Single-type discover rows omit mediaType; TMDB sends empty strings for missing translations.
+  const show=seerrItem({id:1399,title:'',name:'Game of Thrones',firstAirDate:'2011-04-17'},'tv');
+  assert.equal(show?.kind,'show');assert.equal(show?.title,'Game of Thrones');
+  assert.equal(seerrItem({id:1,mediaType:'person',name:'Someone'}),undefined);
+});
+test('Seerr renews an expired session with the Plex token and retries once',async()=>{
+  const calls:string[]=[];let session=0;
+  const transport=(async(url:URL,init?:RequestInit)=>{
+    const path=new URL(url).pathname,cookie=new Headers(init?.headers).get('cookie');calls.push(`${init?.method??'GET'} ${path} ${cookie??''}`);
+    if(path==='/api/v1/auth/plex'){session++;return new Response('{}',{headers:{'set-cookie':`connect.sid=s${session}; Path=/; HttpOnly`}});}
+    if(path==='/api/v1/auth/me')return Response.json({id:7,displayName:'Viewer',permissions:32});
+    // The first session expires before the row is read.
+    if(cookie==='connect.sid=s1')return Response.json({message:'Unauthorized'},{status:401});
+    return Response.json({results:[{id:1,mediaType:'movie',title:'A'}],totalPages:3,totalResults:60});
+  }) as typeof fetch;
+  const seerr=new Seerr(()=>({url:'http://seerr.test'}),transport);
+  const page=await seerr.row('1','plex-token','trending',1);
+  assert.equal(page.items.length,1);assert.equal(page.hasMore,true);assert.equal(page.total,60);
+  assert.equal(session,2);assert.equal(calls.filter(c=>c.includes('/discover/trending')).length,2);
+  // A second refusal is a permission problem, not another sign-in.
+  const denied=new Seerr(()=>({url:'http://seerr.test'}),(async(url:URL)=>{const path=new URL(url).pathname;
+    if(path==='/api/v1/auth/plex')return new Response('{}',{headers:{'set-cookie':'connect.sid=x; Path=/'}});
+    if(path==='/api/v1/auth/me')return Response.json({id:7,permissions:0});
+    return Response.json({message:'You do not have permission to make 4K requests.'},{status:403});}) as typeof fetch);
+  await assert.rejects(denied.request('1','plex-token','movie',603,undefined,true),{code:'SEERR_FORBIDDEN',message:'You do not have permission to make 4K requests.'});
+});
+test('Trakt lists keep whole movies and shows only',()=>{
+  const items=traktItems([{type:'movie',movie:{title:'Heat',year:1995,ids:{trakt:1,tmdb:949},images:{poster:['walter-r2.trakt.tv/images/movies/p.jpg.webp']}}},
+    {type:'season',show:{title:'Lost',ids:{trakt:2,tmdb:4607}}},{type:'show',show:{title:'Lost',ids:{trakt:2,tmdb:4607},aired_episodes:121}},{type:'movie',movie:{title:'No ids',ids:{}}}]);
+  assert.deepEqual(items.map(i=>i.key),['movie:tmdb:949','show:tmdb:4607']);
+  assert.equal(items[0]!.posterUrl,imagePath('https://walter-r2.trakt.tv/images/movies/p.jpg.webp'));
+  assert.equal(items[1]!.episodeCount,121);
+  // Popular and recommendation lists are bare media of the row's kind.
+  assert.equal(traktItems([{title:'Dune',year:2021,ids:{tmdb:438631}}],'movie')[0]?.kind,'movie');
+});
+test('Plex Discover titles carry their external ids and only proxy catalog hosts',()=>{
+  const m={ratingKey:'5d77',guid:'plex://movie/5d77',type:'movie',title:'Emma.',year:2020,thumb:'https://metadata-static.plex.tv/a.jpg',Guid:[{id:'imdb://tt9214832'},{id:'tmdb://556678'},{id:'tvdb://x'}]};
+  assert.deepEqual(discoverIds(m),{plex:'5d77',plexGuid:'plex://movie/5d77',imdb:'tt9214832',tmdb:556678});
+  assert.equal(discoverItem(m)?.key,'movie:tmdb:556678');
+  assert.equal(discoverItem({...m,type:'episode'}),undefined);
+  assert.equal(imagePath('https://evil.example/a.jpg'),undefined);
+  assert.equal(imagePath('http://image.tmdb.org/a.jpg'),undefined);
+  assert.ok(imagePath('https://images.plex.tv/photo?url=x'));
+});
+test('Explore settings keep the Trakt secret sealed and unlink viewers when the app changes',()=>{
+  const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
+  db.prepare('INSERT INTO users(account_id) VALUES(?)').run('1');
+  let view=store.update('1',0,{seerrUrl:'https://seerr.test/',traktClientId:'abc',traktClientSecret:'shh'});
+  assert.deepEqual(view,{revision:1,seerrUrl:'https://seerr.test',seerrKeySet:false,traktClientId:'abc',traktSecretSet:true});
+  assert.ok(!JSON.stringify(db.prepare('SELECT value FROM explore_settings').get()).includes('shh'));
+  assert.deepEqual(store.trakt(),{clientId:'abc',secret:'shh'});
+  store.saveTraktLink('1',{access:'a',refresh:'r',expires:1},'viewer');
+  // Saving without a secret keeps it; the same client keeps viewers linked.
+  view=store.update('1',1,{seerrUrl:'',traktClientId:'abc'});
+  assert.equal(view.traktSecretSet,true);assert.equal(store.traktLink('1')?.username,'viewer');
+  store.update('1',2,{seerrUrl:'',traktClientId:'other'});
+  assert.equal(store.traktLink('1'),undefined);
+  assert.throws(()=>store.update('1',2,{seerrUrl:'',traktClientId:'x'}),{code:'REVISION_CONFLICT'});
+  assert.throws(()=>store.update('1',3,{seerrUrl:'https://user:pw@seerr.test',traktClientId:''}));
+});
+test('With the API key, browsing reads Seerr without signing anyone in and lists statuses by title',async()=>{
+  const calls:string[]=[];
+  const transport=(async(url:URL,init?:RequestInit)=>{
+    const u=new URL(url);calls.push(`${u.pathname}?${u.searchParams.get('skip')??''} ${new Headers(init?.headers).get('x-api-key')??''}`);
+    if(u.pathname==='/api/v1/media'){const skip=Number(u.searchParams.get('skip'));
+      return Response.json({pageInfo:{pages:2},results:skip?[{mediaType:'tv',tmdbId:1399,status:4}]:[{mediaType:'movie',tmdbId:603,status:3},{mediaType:'movie',tmdbId:604,status:1,status4k:5},{mediaType:'movie',tmdbId:605,status:1}]});}
+    return Response.json({results:[{id:1,mediaType:'movie',title:'A',mediaInfo:{status:5}}],totalPages:1});
+  }) as typeof fetch;
+  const seerr=new Seerr(()=>({url:'http://seerr.test',apiKey:'k'}),transport);
+  assert.equal((await seerr.row('1','plex-token','trending',1)).items[0]?.status,'available');
+  const index=await seerr.statuses();
+  assert.deepEqual([...index!],[['movie:tmdb:603','requested'],['movie:tmdb:604','available'],['show:tmdb:1399','partial']]);
+  await seerr.statuses();
+  assert.ok(!calls.some(c=>c.startsWith('/api/v1/auth')));assert.ok(calls.every(c=>c.endsWith(' k')));
+  // Kept for a few minutes: both pages were read once.
+  assert.equal(calls.filter(c=>c.startsWith('/api/v1/media')).length,2);
+  assert.equal(await new Seerr(()=>({url:'http://seerr.test'}),transport).statuses(),undefined);
+  assert.equal(statusIndex([{mediaType:'person',tmdbId:1,status:5}]).size,0);
+});
+test('Seerr facts and Rotten Tomatoes scores read like the library: flags, streaming services for the region, 0–10 scores',()=>{
+  const facts=seerrFacts({id:1,status:'Ended',firstAirDate:'2015-09-08',originalLanguage:'en',productionCountries:[{iso_3166_1:'US',name:'United States of America'}],
+    watchProviders:[{iso_3166_1:'GB',flatrate:[{name:'BBC iPlayer',logoPath:'/b.jpg'}]},{iso_3166_1:'US',flatrate:[{name:'Paramount Plus',logoPath:'/p.jpg'},{name:'Paramount Plus Apple TV Channel',logoPath:'/c.jpg'},{name:'No logo'}]}]},'show','US');
+  assert.equal(facts.status,'Ended');assert.equal(facts.released,'2015-09-08');assert.equal(facts.language,'en');
+  assert.deepEqual(facts.countries,[{code:'US',name:'United States of America',flagUrl:imagePath('https://flagcdn.com/w40/us.png')}]);
+  assert.deepEqual(facts.providers?.map(p=>[p.name,!!p.logoUrl]),[['Paramount Plus',true],['No logo',false]]);
+  assert.deepEqual(seerrRatings({criticsScore:51,criticsRating:'Rotten',audienceScore:80,audienceRating:'Upright',url:'https://www.rottentomatoes.com/tv/x'},'show'),
+    {ratings:[{source:'tomatometer',score:5.1,fresh:false},{source:'popcornmeter',score:8,fresh:true}],url:'https://www.rottentomatoes.com/tv/x'});
+  const movie=seerrRatings({imdb:{criticsScore:7.4},rt:{criticsScore:0,url:'https://evil.example/'}},'movie');
+  assert.deepEqual(movie,{ratings:[{source:'imdb',score:7.4}]});
+  assert.deepEqual(seerrRatings(undefined,'movie'),{ratings:[]});
+});

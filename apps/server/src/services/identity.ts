@@ -71,6 +71,12 @@ export class IdentityService {
     }
     return undefined;
   }
+  // The viewer's Plex account token, for Plex's cloud catalog and Seerr sign-in. Call only after authenticate().
+  accountToken(hash: string) {
+    const row = this.db.prepare('SELECT encrypted_credential FROM sessions WHERE hash=?').get(hash) as {encrypted_credential: string} | undefined;
+    requireThat(row, 'UNAUTHENTICATED', 'Session expired or revoked.', 401);
+    return this.vault.open(row.encrypted_credential, hash);
+  }
   logout(cookie?: string) { if (cookie) this.db.prepare('DELETE FROM sessions WHERE hash=?').run(digest(cookie)); }
   reap(now = Date.now()) {
     this.db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);

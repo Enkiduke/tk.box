@@ -7,6 +7,7 @@ import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remembe
 import {CustomChannelSettings} from './channels.js';
 import {SubtitleSettings} from './subtitle-settings.js';
 import {HomePageSettings} from './home-page-settings.js';
+import {ExploreSettings} from './explore-settings.js';
 
 type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
@@ -532,16 +533,16 @@ function AccountSettings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
     <Card><div className="account-row"><span className="account-avatar" aria-hidden="true">{me.accountId.slice(0,1).toUpperCase()}</span><div className="grow"><strong>Plex account {me.accountId}</strong><p className="muted small">{me.role==='admin'?'Administrator · manages sources and shared settings':'Viewer'}</p></div><button onClick={onLogout}>Sign out</button></div></Card>
   </>;
 }
-const sections=[['channels','Channels','shows'],['sources','IPTV','live'],['sports','Live Sports','star'],['home','Home','home'],['playback','Playback','speed'],['account','Account','info']] as const;
+const sections=[['channels','Channels','shows'],['sources','IPTV','live'],['sports','Live Sports','star'],['explore','Explore','explore'],['home','Home','home'],['playback','Playback','speed'],['account','Account','info']] as const;
 export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   const admin=me.role==='admin',[section,setSectionState]=useState(()=>admin?remembered('section','sources'):'account');
   const setSection=(s:string)=>{setSectionState(s);remember('section',s);};
-  const available=admin?sections:sections.filter(s=>s[0]==='home'||s[0]==='playback'||s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
+  const available=admin?sections:sections.filter(s=>s[0]==='explore'||s[0]==='home'||s[0]==='playback'||s[0]==='account'),current=available.some(s=>s[0]===section)?section:available[0]![0];
   return <div className="settings">
     <div className="settings-title"><h1>Settings</h1><p className="muted">{admin?'Plex channels, IPTV sources, live sports and shared playback settings.':'Your Home page, subtitle style, account and connection.'}</p></div>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">{available.map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>setSection(id)}><Icon name={icon} size={18}/>{label}</button>)}</nav>
-      <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='home'?<HomePageSettings/>:current==='playback'?<PlaybackSettings admin={admin}/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
+      <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='sources'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>:current==='explore'?<ExploreSettings admin={admin}/>:current==='home'?<HomePageSettings/>:current==='playback'?<PlaybackSettings admin={admin}/>:<AccountSettings me={me} onLogout={onLogout}/>}</div>
     </div>
   </div>;
 }

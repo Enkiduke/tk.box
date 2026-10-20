@@ -1,0 +1,95 @@
+/* Explore: catalog rows from Plex Discover, Seerr and Trakt, and the title dialog with Seerr requests. */
+.explore-page{padding-bottom:64px}
+.explore-search{max-width:none}
+.explore-note{margin:0 0 18px;font-size:14px}
+/* Rows pad themselves to the gutter, as on Home. */
+.explore-rows{display:flex;flex-direction:column;gap:clamp(24px,3vw,40px);margin:4px calc(var(--gutter)*-1) 0}
+.explore-row-title{display:inline-flex;align-items:center;gap:10px}
+.explore-row-title svg{color:var(--muted);flex:none}
+.explore-count{margin-left:10px;font-size:13px;font-weight:500;color:var(--muted)}
+.explore-row-error{padding:0 var(--gutter)}
+.explore-badge{position:absolute;top:6px;left:6px;z-index:1;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 7px;border-radius:4px;background:rgba(12,12,16,.82);backdrop-filter:blur(4px);font-size:11px;font-weight:700;color:#e6e6ea}
+.explore-badge.available{color:#7fd8a0}
+.explore-badge.partial{color:#b8e07a}
+.explore-badge.requested{color:var(--accent)}
+.explore-status{background:rgba(12,12,16,.55)}
+.explore-status.available{color:#7fd8a0;border-color:rgba(127,216,160,.4)}
+.explore-status.partial{color:#b8e07a;border-color:rgba(184,224,122,.4)}
+.explore-status.requested{color:var(--accent);border-color:rgba(245,184,46,.45)}
+.explore-grid{display:flex;flex-direction:column;gap:18px}
+.explore-grid-head{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.explore-grid-head h1{display:flex;align-items:baseline;margin:0;font-size:clamp(22px,2.4vw,30px)}
+.explore-grid-head .crumb{display:inline-flex;align-items:center;margin:0;color:#ddd}
+.explore-more{display:grid;place-items:center;min-height:80px}
+.small-spinner{width:22px;height:22px;--ring:2px}
+
+/* Title dialog. Every section shares one inset so the hero, body and seasons line up. */
+.explore-hero{display:flex;align-items:flex-end;gap:clamp(16px,2.4vw,28px)}
+.explore-hero-poster{flex:none;width:clamp(110px,14vw,160px);aspect-ratio:2/3;object-fit:cover;border-radius:var(--radius);box-shadow:0 12px 34px rgba(0,0,0,.6)}
+.explore-hero .detail-heading{min-width:0}
+.explore-hero .detail-facts{flex-direction:column;align-items:flex-start;gap:10px}
+.explore-hero .detail-meta{margin:0}
+.explore-badges{display:flex;flex-wrap:wrap;gap:8px;margin:0}
+.explore-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,340px);gap:clamp(20px,3vw,36px);align-items:start;padding:8px clamp(20px,4vw,40px) 28px}
+.explore-main{display:flex;flex-direction:column;gap:14px;min-width:0}
+.explore-main .synopsis,.explore-main .tagline{margin:0}
+.explore-done{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:600}
+
+/* Facts: the library's label-over-value list, with flags, small service logos and a line of text links. */
+.explore-facts{display:flex;flex-direction:column;gap:16px;font-size:14px}
+.explore-facts .detail-people{gap:14px}
+.explore-countries{display:flex;flex-wrap:wrap;gap:4px 12px}
+.explore-countries>span{display:inline-flex;align-items:center;gap:7px}
+.explore-flag{width:18px;height:auto;border-radius:2px;box-shadow:0 0 0 1px rgba(255,255,255,.12)}
+.explore-providers{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.explore-providers img{display:block;width:30px;height:30px;border-radius:7px;object-fit:cover;box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.explore-providers>span{font-size:13px}
+.explore-links{display:flex;flex-wrap:wrap;gap:4px 0;margin:0;font-size:12px;font-weight:600}
+.explore-links a{color:var(--muted)}
+.explore-links a:hover{color:var(--text)}
+.explore-links a+a:before{content:'·';margin:0 8px;color:var(--dim)}
+
+.explore-chips{display:flex;flex-wrap:wrap;gap:8px}
+.explore-chip{gap:6px;height:34px;padding:0 14px;border-radius:17px;border-color:var(--line-strong);background:transparent;color:var(--text);font-size:13px;font-weight:600}
+.explore-chip:hover{background:var(--surface-2)}
+/* Request window: a smaller dialog over the title's, laid out like Seerr's. */
+.request-dialog{width:min(620px,calc(100% - 32px));background:var(--surface);scrollbar-width:thin}
+.request-form{display:flex;flex-direction:column;gap:18px;padding:24px 26px 22px}
+.request-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.request-head h2{margin:2px 0 0;font-size:20px;line-height:1.25}
+.request-kicker{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.request-loading{display:flex;align-items:center;gap:12px;min-height:80px}
+.request-loading .loading{padding:0;min-height:0}
+.request-form .notice{justify-content:flex-start;gap:10px;margin:0}
+.request-notice{background:var(--accent-tint);border-color:rgba(245,184,46,.35);color:var(--text)}
+.request-notice svg{color:var(--accent);flex:none}
+.request-field{display:flex;flex-direction:column;gap:8px}
+.request-label{font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.request-field .toggle-group{align-self:flex-start}
+.request-field>p{margin:0}
+.request-advanced{border-top:1px solid var(--line);padding-top:14px}
+.request-advanced summary{display:inline-flex;align-items:center;gap:6px;font-size:15px;font-weight:650;color:var(--text);cursor:pointer;list-style:none;user-select:none}
+.request-advanced summary::-webkit-details-marker{display:none}
+.request-advanced summary svg{color:var(--muted);transition:transform .15s}
+.request-advanced[open] summary svg{transform:rotate(90deg)}
+.request-advanced summary:hover svg{color:var(--text)}
+.request-advanced-body{display:flex;flex-direction:column;gap:14px;padding-top:14px}
+.request-table{border:1px solid var(--line-strong);border-radius:10px;overflow:auto;max-height:340px}
+.request-row{display:grid;grid-template-columns:56px minmax(0,1fr) 90px 140px;align-items:center;gap:0;padding:10px 14px;border-bottom:1px solid var(--line);font-size:14px;color:var(--text);cursor:pointer}
+.request-row:last-child{border-bottom:0}
+.request-row:hover{background:var(--surface-2)}
+.request-row.is-taken{cursor:default;color:var(--muted)}
+.request-row.is-taken:hover{background:none}
+.request-row-head{position:sticky;top:0;z-index:1;background:var(--surface-2);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);cursor:default}
+.request-row-head:hover{background:var(--surface-2)}
+.request-season-name{display:flex;flex-direction:column;gap:2px;font-weight:600;min-width:0}
+.request-season-name small{font-size:12px;font-weight:400;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.explore-status.open{color:var(--muted)}
+.request-foot{display:flex;justify-content:flex-end;gap:10px;padding-top:4px}
+@media(max-width:760px){.explore-body{grid-template-columns:1fr}}
+.trakt-code{margin:0;font-size:28px;letter-spacing:.18em;font-variant-numeric:tabular-nums;color:var(--accent)}
+/* A hairline in the label's colour around titles that are available or requested; hover keeps the usual outline. */
+.explore-card.is-available .poster-art:after{box-shadow:inset 0 0 0 1px #7fd8a0}
+.explore-card.is-partial .poster-art:after{box-shadow:inset 0 0 0 1px #b8e07a}
+.explore-card.is-requested .poster-art:after{box-shadow:inset 0 0 0 1px var(--accent)}
+.explore-card .card-frame:hover .poster-art:after,.explore-card .poster-art:focus-visible:after{box-shadow:inset 0 0 0 2px var(--accent)}
