@@ -1,6 +1,6 @@
 # tk.box
 
-A self-hosted media app for your Plex library and IPTV channels. One web UI for browsing and watching Plex movies and shows, a unified live TV guide, and custom always-on channels built from your Plex library.
+A self-hosted media app for your Plex library and IPTV channels. One web UI for browsing and watching Plex movies and shows, discovering new titles, a unified live TV guide, and custom always-on channels built from your Plex library.
 
 > **Status:** early and in active development. Not production ready.
 
@@ -14,9 +14,18 @@ A self-hosted media app for your Plex library and IPTV channels. One web UI for 
 
 - **Plex sign-in** with the official Plex PIN flow
 - **Library browsing** — Home with featured titles and promoted collections, grid/list views, filters, sorting and an A–Z jump rail
+- **Explore** — discover and search titles from Plex Discover, Seerr and Trakt, manage your Plex watchlist and request movies and shows through Seerr
 - **Playback with resume** — Direct Play when the browser supports the file, otherwise Plex-transcoded HLS
 - **Live TV** — import M3U/XMLTV sources, approve channels and watch through an FFmpeg relay, with a searchable guide and favorites
 - **Plex Channels** — looping channels made from Plex movies, shows and collections, shared on one wall clock, with Pause, Resume and Go Live
+
+## Explore
+
+Browse discovery shelves beyond your Plex library, search each source, and open title details to watch a local copy, add it to your Plex watchlist or request it through Seerr. Availability badges show which titles are available, partly available or already requested.
+
+Plex Discover is available with Plex sign-in. Add optional Seerr and Trakt connections in **Settings → Explore**. A Seerr API key enables availability badges on Plex and Trakt titles; viewers request through their own Plex-linked Seerr accounts. Connect your own Trakt account for your watchlist and recommendations.
+
+![Explore with Plex discovery shelves and availability badges](docs/screenshots/explore.png)
 
 ## Requirements
 
