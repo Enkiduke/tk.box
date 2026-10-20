@@ -555,8 +555,8 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .guide-caption{display:flex;justify-content:space-between;gap:15px;font-size:12px;color:var(--dim);margin:0 0 10px}
 .guide-caption>span:first-child{display:flex;align-items:center;gap:7px}
 .guide-caption i{width:7px;height:7px;background:var(--accent);border-radius:50%}
-.guide-scroll{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
-.guide-time,.guide-row{display:grid;grid-template-columns:230px minmax(650px,1fr);min-width:880px}
+.guide-scroll{overflow-x:hidden;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.guide-time,.guide-row{display:grid}
 .guide-time{position:sticky;top:0;z-index:4;padding:9px 0;background:var(--surface-2);font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);font-weight:600}
 .guide-time>span{padding-left:20px;font-size:11px;letter-spacing:.08em;position:sticky;left:0;z-index:3;background:var(--surface-2)}
 .guide-time>div{display:grid}
@@ -565,7 +565,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
 .guide-row:last-child{border-bottom:0}
 .guide-row.highlight,.guide-row.highlight .guide-station{background:#2a2414}
 /* Source heading: a quiet divider between groups, pinned left while the grid scrolls sideways. */
-.guide-source{min-width:880px;padding:18px 0 8px;border-bottom:1px solid var(--line);background:var(--surface)}
+.guide-source{padding:18px 0 8px;border-bottom:1px solid var(--line);background:var(--surface)}
 .guide-source span{position:sticky;left:0;display:inline-flex;align-items:baseline;gap:8px;padding:0 16px;font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .guide-source small{font-weight:500;letter-spacing:0;color:var(--dim)}
 .guide-time+.guide-source{padding-top:12px}
@@ -690,7 +690,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .poster-grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:18px 10px}
   .search-box{height:48px;margin-bottom:24px}.search-box input{font-size:16px}
   .guide-search{width:100%}
-  .guide-time,.guide-row{grid-template-columns:150px minmax(650px,1fr);min-width:800px}
   .station-button strong{font-size:13px}
   dialog{width:100%;max-height:100%;margin:0;border-radius:0;height:100%;max-width:100%;border:0}
   .media-dialog{width:100%}
@@ -717,8 +716,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .skeleton{animation-duration:1.6s!important;animation-iteration-count:infinite!important}
 }
 /* Live TV: channel logos and guide states */
-.channel-logo{display:grid;place-items:center;flex:none;border-radius:8px;background:var(--surface-3);overflow:hidden}
-.channel-logo img{width:100%;height:100%;object-fit:contain;padding:12%;background:#fff1}
+.channel-logo{position:relative;display:grid;place-items:center;flex:none;border-radius:8px;background:var(--surface-3);overflow:hidden}
+/* Pinned to the tile: as a grid item the image would size its track from its natural size and be cropped. */
+.channel-logo img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;padding:12%;background:#fff1}
 .channel-logo b{color:var(--accent);font-weight:750;letter-spacing:.02em}
 .station-button{display:flex;align-items:center;gap:10px}
 .station-button>span{min-width:0}
@@ -732,15 +732,22 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .program-subtitle{margin:-8px 0 12px;font-size:16px;color:var(--muted)}
 .program-description{margin:14px 0 0;max-width:62ch;line-height:1.6;color:var(--text)}
 .now-next dd small{display:block;margin-top:6px;font-size:13px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-@media (max-width:640px){.station-button .channel-logo{display:none}}
 .channel-next svg{transform:scaleX(-1)}
-.guide-time,.guide-row{grid-template-columns:270px minmax(650px,1fr);min-width:920px}
-@media (max-width:640px){.guide-time,.guide-row{grid-template-columns:150px minmax(650px,1fr);min-width:800px}}
 /* Logos: one fixed tile, left-aligned station cells */
-.channel-logo img{padding:6%;background:none}
+.channel-logo img{padding:8%;background:none}
 .station-button{justify-content:flex-start;text-align:left;gap:12px}
-.guide-time,.guide-row{grid-template-columns:250px minmax(650px,1fr);min-width:900px}
-@media (max-width:640px){.guide-time,.guide-row{grid-template-columns:150px minmax(650px,1fr);min-width:800px}}
+/* A station by its logo, its feed count on the logo's corner; the name only when the logo cannot say it */
+.station-identity{display:flex;align-items:center;gap:10px;min-width:0}
+.station-identity-text{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
+.station-identity-text strong{max-width:100%;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.station-logo{position:relative;flex:none;display:block}
+.station-identity.alone,.station-identity.alone .station-logo{flex:1}
+.channel-logo-name{padding:0 8px;color:var(--text);font-size:12px;font-weight:700;line-height:1.2;text-align:center;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.feed-count{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--surface-3);box-shadow:0 0 0 2px var(--surface);color:var(--text);font-size:10px;font-weight:750;line-height:16px;text-align:center}
+.station-now{max-width:100%;font-size:12.5px;color:#c4c4cc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.channel-item strong{color:#fff}
+/* The guide fits the window: the channel column scales a little with it and the programs take the rest, so it never scrolls sideways. */
+.guide-time,.guide-row{grid-template-columns:clamp(150px,14vw,210px) minmax(0,1fr)}
 /* Live player channel pop-out */
 .player-panel.channels{width:min(400px,calc(100vw - 32px));max-height:min(72vh,640px)}
 .channel-panel{display:flex;flex-direction:column;gap:8px}
@@ -754,11 +761,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .channel-item:hover:not(:disabled){background:rgba(255,255,255,.08)}
 .channel-item:disabled{opacity:1;cursor:default}
 .channel-item.playing{background:var(--accent-tint);box-shadow:inset 2px 0 0 var(--accent)}
-.channel-item-text{display:flex;flex-direction:column;gap:1px;min-width:0}
-.channel-item-text small{font-size:11px;color:#a9a9b4;letter-spacing:.04em}
-.channel-item-text small em{font-style:normal;color:var(--accent);font-weight:700}
-.channel-item-text strong{font-size:14px;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.channel-item-text>span{font-size:12.5px;color:#c4c4cc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .channel-panel-pages{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 6px;font-size:12px;color:#a9a9b4}
 
 /* Card options menu (Plex-style "⋯"): watch state, Continue Watching and navigation. */

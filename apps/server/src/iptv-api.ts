@@ -67,7 +67,7 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   });
   app.get('/api/v1/iptv/channels',async req=>{const {grant}=await auth(req);return {channels:store.stacks(),favorites:store.favorites(grant.accountId).map(c=>c.id)};});
   app.get('/api/v1/guide',async req=>{
-    const {grant}=await auth(req),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int(),filter:z.enum(['all','iptv','custom','favorites']).default('all'),q:z.string().trim().max(120).default(''),channel:z.string().uuid().optional(),offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(30)}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
+    const {grant}=await auth(req),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int(),filter:z.union([z.enum(['all','custom','favorites']),z.string().uuid()]).default('all'),q:z.string().trim().max(120).default(''),channel:z.string().uuid().optional(),offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(30)}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
     return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel,custom);
   });
   // Guide routes are shared by every channel kind; custom channel IDs are answered by the custom store.
@@ -88,7 +88,9 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     const urls=[await library.match(hints.name,hints.tvgId).catch(()=>undefined),...hints.urls].filter((u):u is string=>!!u);
     let image:{type:string;bytes:Buffer}|undefined;
     for(const url of urls){image=await logos.get(url).catch(()=>undefined);if(image)break;}
-    // An event channel with no logo of its own shows its sport. Short-lived: the slot's next event may be another sport.
+    // An event channel with no logo of its own shows its game's league, else its sport. Short-lived: the slot's next event may be another league.
+    const league=image?undefined:store.leagueLogo(channelParams(req.params));
+    if(league)return reply.type(league.type).header('Cache-Control','private, max-age=600').send(league.bytes);
     const sport=image?undefined:store.sportFor(channelParams(req.params));
     if(sport)return reply.type('image/svg+xml').header('Cache-Control','private, max-age=600').send(sportIcon(sport));
     if(!image)throw new AppError('LOGO_UNAVAILABLE','Logo unavailable.',404);
