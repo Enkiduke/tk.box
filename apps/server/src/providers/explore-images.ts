@@ -21,11 +21,12 @@ export const plexPhoto = (url: string | undefined, width: number, height: number
 export class ExploreImages {
   private cache = new ArtworkCache(48 * 1024 * 1024, 600, 3600000);
   private pending = new Map<string, Promise<{ bytes: Buffer; type: string }>>();
-  constructor(private transport: typeof fetch = fetch) {}
+  // Admin › Artwork reuses this for the artwork providers' hosts, with a larger limit for full-size pictures.
+  constructor(private transport: typeof fetch = fetch, private hosts: (host: string) => boolean = allowed, private maxBytes = 6 * 1024 * 1024) {}
   get(raw: string) {
     let url: URL;
     try { url = new URL(raw); } catch { throw new AppError('INVALID_IMAGE', 'Invalid image address.'); }
-    requireThat(url.protocol === 'https:' && allowed(url.hostname) && !url.username && !url.password, 'INVALID_IMAGE', 'Images are only loaded from catalog hosts.');
+    requireThat(url.protocol === 'https:' && this.hosts(url.hostname) && !url.username && !url.password, 'INVALID_IMAGE', 'Images are only loaded from catalog hosts.');
     const hit = this.cache.get(url.href); if (hit) return Promise.resolve(hit);
     let pending = this.pending.get(url.href);
     if (!pending) {
@@ -42,7 +43,7 @@ export class ExploreImages {
     if (!response.ok || !type || !['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'].includes(type)) { await response.body?.cancel(); throw new AppError('ARTWORK_NOT_FOUND', 'Artwork is unavailable.', 404); }
     const reader = response.body?.getReader(); requireThat(reader, 'ARTWORK_NOT_FOUND', 'Artwork is unavailable.', 404);
     const chunks: Uint8Array[] = []; let size = 0;
-    try { while (true) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; requireThat(size <= 6 * 1024 * 1024, 'ARTWORK_LIMIT', 'Artwork exceeded its size limit.', 502); chunks.push(chunk.value); } }
+    try { while (true) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; requireThat(size <= this.maxBytes, 'ARTWORK_LIMIT', 'Artwork exceeded its size limit.', 502); chunks.push(chunk.value); } }
     finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     requireThat(size > 0, 'ARTWORK_NOT_FOUND', 'Artwork is unavailable.', 404);
     return { bytes: Buffer.concat(chunks), type };

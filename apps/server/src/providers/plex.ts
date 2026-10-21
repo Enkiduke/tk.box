@@ -4,7 +4,7 @@ import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
 import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
-import type {CatalogPage} from '../../../../packages/contracts/src/index.js';
+import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
@@ -306,6 +306,32 @@ export class PlexAdapter {
     const items=container.Metadata.map(node=>{requireThat((node.librarySectionID??container.librarySectionID??libraryId)===libraryId,'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);return catalogDto(node,libraryId);});
     if(grouped){const cards=groupRecentEpisodes(items);return {items:cards.slice(0,query.limit),offset:0,limit:query.limit,hasMore:cards.length>query.limit||(container.totalSize!==undefined?items.length<container.totalSize:items.length===size)};}
     return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
+  }
+  // A library's titles added after `sinceMs`, newest first, read page by page until Plex's list gets back to then (at
+  // most `max` entries; `complete` says it got there). TV episodes that arrived together group as on the Recent shelf.
+  async addedSince(grant:PlexGrant,libraryId:string,sinceMs:number,max=2000) {
+    const library=this.library(grant,libraryId),size=100,items:CatalogItem[]=[];
+    let complete=false;
+    for(let offset=0;offset<max&&!complete;offset+=size) {
+      const url=new URL(`/library/sections/${libraryId}/recentlyAdded`,this.config.PLEX_URL);
+      url.searchParams.set('X-Plex-Container-Start',String(offset));url.searchParams.set('X-Plex-Container-Size',String(size));
+      url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Guid,Collection,Producer');
+      const nodes=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer.Metadata;
+      requireThat(nodes.length<=size,'PLEX_PAGINATION_INVALID','Plex did not honor the requested page limit.',502);
+      complete=nodes.length<size;
+      for(const node of nodes) {
+        if((node.addedAt??0)*1000<=sinceMs){complete=true;break;}
+        requireThat((node.librarySectionID??libraryId)===libraryId,'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);
+        items.push(catalogDto(node,libraryId));
+      }
+    }
+    return {items:library.type==='show'?groupRecentEpisodes(items):items,complete};
+  }
+  // Plex Media Server's notification feed, which pushes library changes as they happen. The token goes in a header,
+  // which Node's WebSocket takes though the DOM typings don't.
+  notificationSocket(grant:PlexGrant) {
+    const url=new URL('/:/websockets/notifications',this.config.PLEX_URL);url.protocol=url.protocol==='https:'?'wss:':'ws:';
+    return new WebSocket(url,{headers:this.headers(grant.serverToken)} as unknown as string[]);
   }
   async catalogChildren(grant:PlexGrant,id:string,input:Partial<CatalogQuery>):Promise<CatalogPage> {
     const {node,section}=await this.catalogNode(grant,id),query=catalogQuery.parse(input);

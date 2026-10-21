@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
-import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,type PlayFn} from './components.js';
+import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
@@ -217,7 +217,7 @@ function SeasonEpisodes({season,onUpNext,...play}:{season:CatalogItem;onOpen:(id
   return <section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2>{list.length>1&&<SeasonPicker seasons={list} current={list.find(s=>s.id===season.id)??season} onPick={s=>play.onOpen(s.id)}/>}</div>
     <Episodes seasonId={season.id} onUpNext={onUpNext} {...play}/></section>;
 }
-export function Details({id,onClose,onOpen,onPlay,busy,error}:{id:string;onClose:()=>void;onOpen:(id:string)=>void;error?:string}&PlayProps) {
+export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;onClose:()=>void;onOpen:(id:string)=>void;error?:string;admin?:boolean}&PlayProps) {
   const item=useApi<CatalogItem>(`/catalog/items/${id}`),media=useWithOverride(item.data),actions=useMediaMenu(media??{id,libraryId:'',type:'movie',title:'',summary:'',viewOffsetMs:0,watched:false,genres:[]},'detail',onOpen,onPlay,'secondary large icon-only'),[upNext,setUpNext]=useState<CatalogItem>();
   const target=media&&playable(media)?media:upNext,[failedLogo,setFailedLogo]=useState<string>();
   // An episode leads with its own still, uncovered, since the still often carries the episode's title card.
@@ -241,6 +241,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error}:{id:string;onClose
     <div className="button-row">
       <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
       {target&&target.viewOffsetMs>0&&<button className="secondary large" disabled={busy} onClick={()=>onPlay(target,'beginning')}>Start over</button>}
+      {admin&&artworkKey(media)&&<button className="secondary large" onClick={()=>editArtwork(artworkKey(media)!)}><Icon name="image"/>Edit artwork</button>}
       {actions.trigger}{actions.menu}
     </div>
   </div>;

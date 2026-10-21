@@ -17,6 +17,8 @@ const schema = z.object({
   PLEX_REQUIRED_LIBRARY_IDS: z.string().default(''),
   TRUSTED_PROXY_CIDRS: z.string().default(''),
   FFMPEG_PATH: z.string().default('ffmpeg'), FFPROBE_PATH: z.string().default('ffprobe'),
+  // The Python that runs the artwork engine (apps/artwork); a virtual environment with its requirements.txt.
+  PYTHON_PATH: z.string().default('python3'),
   SEGMENT_CACHE_MAX_BYTES: z.coerce.number().int().min(1048576).default(2147483648),
   // Same-host mode: absolute local directories media parts may be read from, separated like PATH.
   MEDIA_ROOTS: z.string().default(''),
@@ -25,7 +27,6 @@ const schema = z.object({
   // Sports events. Comma-separated ESPN sport/league paths and TheSportsDB league IDs; empty uses the defaults.
   SPORTS_ESPN_LEAGUES: z.string().default(''),
   SPORTS_TSDB_LEAGUES: z.string().default(''),
-  THESPORTSDB_API_KEY: z.string().regex(/^[\w-]+$/).default('123'),
   // Zone assumed for times written in channel names without one ("8PM").
   SPORTS_NAME_TIMEZONE: z.string().default('America/New_York').refine(zone => { try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); return true; } catch { return false; } }, 'Use an IANA time zone')
 });

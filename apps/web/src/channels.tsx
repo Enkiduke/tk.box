@@ -54,12 +54,12 @@ export function CustomChannelSettings() {
   if(open&&channels.some(c=>c.id===open.id))return <ChannelEditor key={open.id} id={open.id} startAdding={open.adding} back={()=>setOpen(undefined)}/>;
   const reorder=(from:number,to:number)=>void ordering.run(()=>api(`${base}/order`,'PUT',{ids:moveTo(channels.map(c=>c.id),from,to)}).then(changed));
   return <>
-    <SectionHead title="Plex channels" description="Make 24/7 channels from your Plex movies and shows. Programs play one after another and start over at the end, and everyone tuned in sees the same thing.">
+    <SectionHead title="Plex channels" description="24/7 channels from your Plex library.">
       {channels.length>0&&<button className="primary" onClick={()=>setCreate(true)}><Icon name="plus" size={16}/>New channel</button>}
     </SectionHead>
     {ordering.error&&<ErrorNotice message={ordering.error}/>}
     {list.loading&&!list.data?<Loading/>:list.error?<ErrorNotice message={list.error.message} retry={list.reload}/>:channels.length?<>
-      <p className="muted small list-note">Live TV lists Plex channels first, in this order.{channels.length>1&&' Drag channels or use the arrows to change it.'}</p>
+      <p className="muted small list-note">Live TV lists these first, in this order.</p>
       <ul className="source-rows">{channels.map((c,i)=><li key={c.id} className="source-item" {...drag('channels',i,reorder,channels.length>1&&!ordering.busy)}>
         {channels.length>1&&<MoveButtons name={c.name} index={i} count={channels.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}
         <button className="source-row" onClick={()=>setOpen({id:c.id})}>
@@ -84,11 +84,11 @@ function CreateChannel({onClose,created}:{onClose:()=>void;created:(c:Detail)=>v
   const [name,setName]=useState(''),[number,setNumber]=useState(''),mutation=useMutation(changed);
   return <Modal title="New channel" onClose={()=>{if(!mutation.busy)onClose();}}>
     <h2>New channel</h2>
-    <p className="muted">Give it a name. Next you’ll pick what plays on it. Nothing goes on air until you publish.</p>
+    <p className="muted">Nothing airs until you publish.</p>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{const c=await api<Detail>(base,'POST',{name,...(number?{number:Number(number)}:{})});onClose();created(c);});}}>
       <label>Channel name<input value={name} onChange={e=>setName(e.target.value)} required maxLength={120} autoFocus placeholder="Saturday Morning Cartoons"/></label>
-      <label>Channel number <span className="muted">(optional)</span><input type="number" min="1" max="999999" value={number} onChange={e=>setNumber(e.target.value)} placeholder="Next free number"/><small>Shared with IPTV channels, so each number can be used once. You can change it later.</small></label>
+      <label>Channel number <span className="muted">(optional)</span><input type="number" min="1" max="999999" value={number} onChange={e=>setNumber(e.target.value)} placeholder="Next free number"/><small>Shared with IPTV.</small></label>
       <div className="button-row"><button className="primary" disabled={mutation.busy||!name.trim()}>Next: add programs</button><button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button></div>
     </form>
   </Modal>;
@@ -124,7 +124,7 @@ function ChannelEditor({id,back,startAdding}:{id:string;back:()=>void;startAddin
     </div>
     {unpublished&&<div className="publish-bar" role="region" aria-label="Unpublished changes">
       <span><strong>{view.live?'You have changes that aren’t on air yet':'This channel isn’t on air yet'}</strong>
-        <small>{blocked?'Remove the programs that can’t play before publishing.':view.live?'When you publish, the program on now finishes first, then the new list takes over.':'Publish when the list looks right. It goes on air right away.'}</small></span>
+        <small>{blocked?'Remove the programs that can’t play before publishing.':view.live?'The current program finishes first.':'Goes on air right away.'}</small></span>
       <div className="button-row">
         {view.live&&<button disabled={mutation.busy} onClick={()=>apply('/draft/discard','POST',{},()=>setNotice('Changes discarded. The list is back to what’s on air.'))}>Discard changes</button>}
         <button className="primary" disabled={mutation.busy||blocked} onClick={()=>view.live?setPublish(true):apply('/publish','POST',{expectedPublication:view.publicationRevision},()=>setNotice('Published. The channel is on air in Live TV.'))}>{view.live?'Review & publish':mutation.busy?'Publishing…':'Publish channel'}</button>
@@ -187,7 +187,6 @@ function ProgramsPanel({view,busy,apply,setNotice,startAdding}:{view:Detail;busy
         <span className="program-actions"><MoveButtons name={e.title} index={i} count={entries.length} disabled={busy||filtering} onMove={to=>reorder(i,to)}/><button type="button" className="icon-button" aria-label={`Remove ${e.title}`} disabled={busy} onClick={()=>remove([e.entryId])}><Icon name="close" size={14}/></button></span>
       </li>;})}</ol>}
       {rows.length>PAGE&&<div className="list-footer"><span className="muted small">Showing {Math.min(shown,rows.length)} of {rows.length}</span>{shown<rows.length&&<button onClick={()=>setShown(n=>n+PAGE)}>Show {Math.min(PAGE,rows.length-shown)} more</button>}</div>}
-      {!filtering&&entries.length>1&&<p className="muted small list-note">Drag rows or use the arrows to reorder. Select programs to move, repeat or remove several at once.</p>}
     </>}
     {picker&&<ProgramPicker busy={busy} hasPrograms={entries.length>0} onClose={()=>setPicker(false)} add={add}/>}
     {arranging&&<ArrangeDialog busy={busy} onClose={()=>setArranging(false)} run={(arrange,label)=>apply('/draft/arrange','POST',{arrange},r=>{
@@ -250,7 +249,7 @@ function ProgramPicker({busy,hasPrograms,onClose,add}:{busy:boolean;hasPrograms:
   const results:ResultProps={picked,toggle,toggleItem,open};
   return <Modal title="Add programs" onClose={()=>{if(!busy)onClose();}}>
     <div className="picker">
-      <div><h2>Add programs</h2><p className="muted small">Tick single movies and episodes, or add a whole show, season, Plex collection or category at once.</p></div>
+      <div><h2>Add programs</h2></div>
       {libraries.error?<ErrorNotice message={libraries.error.message} retry={libraries.reload}/>:!libraries.data?<Loading/>:!usable.length?<p className="muted">No Movies or TV libraries are shared with this account.</p>:<>
         <div className="picker-head">
           {usable.length>1&&<label className="picker-library">Library<select value={current} onChange={e=>{setLibrary(e.target.value);setPath([]);}}>{usable.map(l=><option key={l.key} value={l.key}>{l.title}</option>)}</select></label>}
@@ -330,7 +329,7 @@ function syncSummary(s:Source) {
   if(s.lastError)return `Last check failed (${code(s.lastError)}). Programs are unchanged; it will try again.`;
   const r=s.lastResult;if(!r||!s.lastChecked)return s.autoAdd?'Not checked yet':undefined;
   const at=stamp(s.lastChecked),word=grouped(s.kind)?'title':'episode';
-  if(r.waiting)return `Waiting for an administrator to sign in to check Plex · ${at}`;
+  if(r.waiting)return `Waiting for a Plex admin token (Admin › Connections) · ${at}`;
   if(r.seeded)return `Now keeping track of new ${word}s · ${at}`;
   return r.added?`Added ${plural(r.added,`new ${word}`)} · ${at}`:`Up to date · checked ${at}`;
 }
@@ -342,7 +341,7 @@ function SourcesPanel({view,updated,setNotice,addPrograms}:{view:Detail;updated:
   if(!view.sources.length)return <Empty title="No shows or collections yet">When you add a whole show, season, collection or category, it’s listed here. You can then have new episodes and titles added automatically, or take the whole group off the channel at once. <button className="link-button" onClick={addPrograms}>Go to Programs</button></Empty>;
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="program-toolbar"><span className="muted small grow-left">Each group you added, with how many of its programs are on this channel. With automatic adding on, Plex is checked about every hour and new titles go on air at the end of the current program. Anything you remove from the list is never added back.</span>
+    <div className="program-toolbar"><span className="muted small grow-left">Auto-add checks Plex hourly. Removed titles aren’t added back.</span>
       <button disabled={mutation.busy||!enabled} onClick={check} title={enabled?undefined:'Turn on automatic adding for at least one first'}><Icon name="restart" size={16}/>{mutation.busy?'Checking…':'Check Plex now'}</button></div>
     <ul className="source-rows">{view.sources.map(s=>{const summary=syncSummary(s),review=s.lastResult?.review??[];return <li key={s.id} className="show-source">
       <div className="show-source-head"><Thumb icon={kindIcon[s.kind]}/><span className="program-text"><strong>{s.title}</strong><small>{kindLabel(s)} · {plural(s.programs,'program')} on this channel</small></span>
@@ -397,10 +396,10 @@ function DetailsPanel({view,saved,removed}:{view:Detail;saved:(c:Detail)=>void;r
   const titles=logoTitles(view.entries),shown=plexLogo==='none'?undefined:plexLogo||view.mainTitle?.id;
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <Card title="Channel details" description="These save right away and don’t need publishing.">
+    <Card title="Channel details" description="Saves right away.">
       <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>saved(await api<Detail>(`${base}/${view.id}`,'PATCH',{expectedRevision:view.revision,name,summary,enabled,logoUrl:logo.trim()||null,plexLogo:plexLogo||null,...(number?{number:Number(number)}:{})})));}}>
         <label>Channel name<input value={name} onChange={e=>setName(e.target.value)} required maxLength={120}/></label>
-        <label>Channel number<input type="number" min="1" max="999999" required value={number} onChange={e=>setNumber(e.target.value)}/><small>Shared with IPTV channels. Changing it doesn’t change what’s on.</small></label>
+        <label>Channel number<input type="number" min="1" max="999999" required value={number} onChange={e=>setNumber(e.target.value)}/><small>Shared with IPTV.</small></label>
         <label>Description <span className="muted">(optional)</span><textarea value={summary} onChange={e=>setSummary(e.target.value)} maxLength={1000} placeholder="Shown with the channel in Live TV"/></label>
         <label>Logo image address <span className="muted">(optional)</span><span className="logo-field">{logo.trim()&&/^https?:\/\//i.test(logo.trim())&&<img src={logo.trim()} alt="" className="logo-preview" onError={e=>{e.currentTarget.style.display='none';}} onLoad={e=>{e.currentTarget.style.display='';}}/>}<input type="url" value={logo} onChange={e=>setLogo(e.target.value)} maxLength={2000} placeholder="https://…/logo.png" spellCheck={false}/></span><small>PNG, JPEG, WebP or GIF up to 1 MB. Without one, Live TV uses the Plex logo below.</small></label>
         <label>Use Plex logo<span className="logo-field"><select value={plexLogo} onChange={e=>setPlexLogo(e.target.value)} disabled={!!logo.trim()}>
@@ -409,12 +408,12 @@ function DetailsPanel({view,saved,removed}:{view:Detail;saved:(c:Detail)=>void;r
           {plexLogo&&plexLogo!=='none'&&!titles.some(t=>t.id===plexLogo)&&<option value={plexLogo}>A title no longer on this channel</option>}
           <option value="none">None · show the channel’s initials</option>
         </select>{!logo.trim()&&shown&&<PlexLogoPreview id={shown}/>}</span>
-          <small>{logo.trim()?'The logo address above is used instead.':'Automatic shows the logo of the movie on now, changing with each movie. Otherwise it uses the show or movie that makes up at least half the channel. Titles without a Plex logo use their poster.'}</small></label>
-        <Switch label="Visible in Live TV" description="Turn off to hide the channel from viewers. Its schedule keeps running, so it’s on time when you turn it back on." checked={enabled} onChange={setEnabled}/>
+          <small>{logo.trim()?'The logo address above is used instead.':'The current movie’s logo, or the channel’s main title.'}</small></label>
+        <Switch label="Visible in Live TV" description="Hidden channels keep their schedule." checked={enabled} onChange={setEnabled}/>
         <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>{dirty?'Save details':'Saved'}</button></div>
       </form>
     </Card>
-    <Card title="Delete channel" className="danger-zone" description="Deletes the channel, its program list, schedule and number. Viewers’ favorites of it are removed." actions={<button className="danger" onClick={()=>setConfirm(true)}>Delete channel</button>}/>
+    <Card title="Delete channel" className="danger-zone" description="Deletes its programs, schedule and number." actions={<button className="danger" onClick={()=>setConfirm(true)}>Delete channel</button>}/>
     {confirm&&<Modal title="Delete channel" onClose={()=>{if(!remove.busy)setConfirm(false);}}><h2>Delete {view.name}?</h2><p>This can’t be undone. Its {plural(view.entries.length,'program')} and schedule are deleted; nothing in Plex changes.</p>{remove.error&&<ErrorNotice message={remove.error}/>}<div className="button-row"><button className="danger" disabled={remove.busy} onClick={()=>void remove.run(async()=>{await api(`${base}/${view.id}`,'DELETE',{expectedRevision:view.revision});setConfirm(false);removed();})}>Delete channel</button><button disabled={remove.busy} onClick={()=>setConfirm(false)}>Cancel</button></div></Modal>}
   </>;
 }

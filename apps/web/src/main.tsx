@@ -4,14 +4,16 @@ import type {Principal,Library,CatalogItem,CatalogPage,Quality,QualityOption} fr
 import {api,ApiClientError} from './api.js';
 import {useApi,useRoute,useScrolled,link,replaceRoute,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram,type SkipMarker} from './player.js';
-import {Icon,ErrorNotice,Loading,Empty,ActionNotice} from './components.js';
+import {Icon,ErrorNotice,Loading,Empty,ActionNotice,setArtworkEditor} from './components.js';
 import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
-// Administration is rarely visited, so it loads on demand.
+// Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
+const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
+const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
 import './style.css';
@@ -31,6 +33,9 @@ function openPlexPopup(url='') {
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean}>('/setup'),scrolled=useScrolled();
   const me=identity.error&&[401,403].includes(identity.error.status)?undefined:identity.data;
+  // Edit artwork, offered on every title's menu to admins, opens the title editor over the current page.
+  const [artwork,setArtwork]=useState<string>(),admin=me?.role==='admin';
+  useEffect(()=>{setArtworkEditor(admin?setArtwork:undefined);return()=>setArtworkEditor(undefined);},[admin]);
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
   const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>(),[authUrl,setAuthUrl]=useState('');
   const plexPopup=useRef<Window|null>(null);
@@ -42,13 +47,13 @@ function App() {
   const itemId=route.params.get('item');
   const searchReturnTo=useRef('#home');
   const routeHash=link(route.page,Object.fromEntries(route.params));
-  useEffect(()=>{if(['home','movies','shows','explore','live','settings'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
+  useEffect(()=>{if(['home','movies','shows','explore','live','settings','admin'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
   const changeSearch=useCallback((value:string)=>{
     const {page,params}=routeRef.current;
     if(!value.trim()){if(page==='search')replaceRoute(searchReturnTo.current);return;}
     const next=link('search',{q:value});
     if(page==='search')replaceRoute(next);
-    else {searchReturnTo.current=['home','movies','shows','explore','live','settings'].includes(page)?link(page,Object.fromEntries(params)):'#home';window.location.hash=next;}
+    else {searchReturnTo.current=['home','movies','shows','explore','live','settings','admin'].includes(page)?link(page,Object.fromEntries(params)):'#home';window.location.hash=next;}
   },[]);
   useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const banner=document.querySelector<HTMLButtonElement>('.nav-search-toggle');if(banner?.getClientRects().length){banner.click();return;}const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   useEffect(()=>{if(!itemId)window.scrollTo({top:0,behavior:'instant'});},[route.page]);
@@ -195,6 +200,7 @@ function App() {
     :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onOpen={openItem}/></Suspense></div>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout}/></Suspense></div>
+    :route.page==='admin'?<div className="page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
     :watching?(!session&&!tuning&&<div className="page"><Empty title="Nothing is playing"><a href="#home">Find something to watch</a></Empty></div>)
     :<div className="page"><Empty title="Page not found"><a href="#home">Return home</a></Empty></div>;
   return <div className={`app page-${route.page}`}>
@@ -202,7 +208,7 @@ function App() {
     {!watching&&<header className={`nav ${scrolled||route.page!=='home'||!me?'solid':''}`}>
       <a href="#home" className="brand" aria-label="tk.box home">tk.box</a>
       {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}>{label}</a>)}</nav>}
-      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/><a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
+      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
     </header>}
     <main id="main-content" tabIndex={-1}>
       <ActionNotice/>
@@ -211,7 +217,8 @@ function App() {
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
     <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
-    {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error}/>}
+    {me&&itemId&&/^\d+$/.test(itemId)&&<Details key={itemId} id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>}
+    {artwork&&<Suspense fallback={null}><TitleArtwork key={artwork} ratingKey={artwork} onClose={()=>setArtwork(undefined)}/></Suspense>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

@@ -154,6 +154,23 @@ export function openDatabase(path: string) {
       db.exec('CREATE TABLE sports_league_logos(league_key TEXT PRIMARY KEY, url TEXT, type TEXT, bytes BLOB, checked_at INTEGER NOT NULL)');
       db.prepare('INSERT INTO migrations VALUES(16)').run();
     }
+    // Artwork (Admin › Artwork): the engine's settings and layouts, which tk.box writes out as its config for each run,
+    // and the history of its jobs. Provider keys inside the settings are sealed.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=17').get()) {
+      db.exec(`CREATE TABLE artwork_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
+        CREATE TABLE artwork_layouts(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE TABLE artwork_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, args TEXT NOT NULL, actor TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','canceled')), created_at INTEGER NOT NULL,
+          started_at INTEGER, finished_at INTEGER, exit_code INTEGER, output TEXT NOT NULL DEFAULT '');`);
+      db.prepare('INSERT INTO migrations VALUES(17)').run();
+    }
+    // Artwork collections (custom and seasonal definitions, franchise sync and Radarr), and small values the artwork
+    // schedules keep between runs (last runs, the newly-added watermark).
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=18').get()) {
+      db.exec(`CREATE TABLE artwork_collections(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
+        CREATE TABLE artwork_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+      db.prepare('INSERT INTO migrations VALUES(18)').run();
+    }
   })();
   return db;
 }

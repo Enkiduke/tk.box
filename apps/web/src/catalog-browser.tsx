@@ -1,7 +1,7 @@
 import {forwardRef,useEffect,useImperativeHandle,useLayoutEffect,useRef,useState,type CSSProperties} from 'react';
 import type {CatalogItem,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useDebounced,link,replaceRoute} from './hooks.js';
-import {Artwork,Empty,ErrorNotice,Icon,Loading,Poster,type PlayFn} from './components.js';
+import {Artwork,Empty,ErrorNotice,Icon,Loading,Poster,artworkEntry,useMenu,type MenuEntry,type PlayFn} from './components.js';
 import {plural} from './settings-ui.js';
 import {useCatalogFeed} from './catalog-feed.js';
 import {catalogWindow,catalogPages} from './catalog-window.js';
@@ -126,9 +126,15 @@ function CollectionGrid({library,open,onPlayAll}:{library:string;open:(id:string
   if(list.error)return <ErrorNotice message={list.error.message} retry={list.reload}/>;
   if(!list.data)return <Loading cards/>;
   if(!list.data.collections.length)return <Empty title="No collections">Collections you make in Plex appear here.</Empty>;
-  return <div className="poster-grid">{list.data.collections.map(c=>{const count=c.count===undefined?'':plural(c.count,c.kind==='show'?'show':'movie');
-    return <div key={c.id} className="poster-card"><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button>{c.count!==0&&<button className="card-play" tabIndex={-1} aria-label={`Play ${c.title}`} onClick={()=>onPlayAll(`/catalog/collections/${c.id}/items`,c.title)}><Icon name="play" size={22}/></button>}</div>
-      <span className="poster-title">{c.title}</span><span className="poster-meta">{count}</span></div>;})}</div>;
+  return <div className="poster-grid">{list.data.collections.map(c=><CollectionCard key={c.id} collection={c} open={open} onPlayAll={onPlayAll}/>)}</div>;
+}
+// Right-click offers Play and, for admins, Edit artwork.
+function CollectionCard({collection:c,open,onPlayAll}:{collection:Collection;open:(id:string)=>void;onPlayAll:(path:string,title:string)=>void}) {
+  const count=c.count===undefined?'':plural(c.count,c.kind==='show'?'show':'movie');
+  const groups=()=>[c.count!==0?[{label:'Play',icon:'play',run:()=>onPlayAll(`/catalog/collections/${c.id}/items`,c.title)}]:[],artworkEntry(c.id)].filter((g:MenuEntry[])=>g.length);
+  const actions=useMenu(c.title,groups);
+  return <div className={`poster-card${actions.open?' menu-open':''}`} onContextMenu={e=>{if(groups().length)actions.onContextMenu(e);}}><div className="card-frame"><button className="poster-art" onClick={()=>open(c.id)} aria-label={count?`${c.title}, ${count}`:c.title}><Artwork src={c.posterUrl} fallback={<><Icon name="collection"/><span>{c.title}</span></>}/></button>{c.count!==0&&<button className="card-play" tabIndex={-1} aria-label={`Play ${c.title}`} onClick={()=>onPlayAll(`/catalog/collections/${c.id}/items`,c.title)}><Icon name="play" size={22}/></button>}</div>
+    <span className="poster-title">{c.title}</span><span className="poster-meta">{count}</span>{actions.menu}</div>;
 }
 // Categories are the library's genres; picking one shows the Library filtered to it.
 const tileHue=(title:string)=>[...title].reduce((h,c)=>(h*31+c.charCodeAt(0))%360,7);
