@@ -52,7 +52,7 @@ function ArtworkKeys() {
 }
 
 type Radarr={url:string;rootFolder:string;qualityProfileId:number;search:boolean};
-type CollectionsView={revision:number;definitions:unknown[]|null;franchise:Record<string,unknown>;radarr:Radarr;radarrKeySet:boolean};
+type CollectionsView={revision:number;definitions:unknown[]|null;franchise:Record<string,unknown>;radarr:Radarr;schedules:Record<string,unknown>;radarrKeySet:boolean};
 function RadarrConnection() {
   const view=useApi<CollectionsView>('/admin/artwork/collections'),[draft,setDraft]=useState<Radarr>(),[key,setKey]=useState(''),[done,setDone]=useState(false),mutation=useMutation(view.reload);
   useEffect(()=>{if(view.data){setDraft(view.data.radarr);setKey('');}},[view.data?.revision]);
@@ -61,8 +61,8 @@ function RadarrConnection() {
   if(view.error&&!view.data)return <Card title={title}><ErrorNotice message={view.error.message} retry={view.reload}/></Card>;
   if(!view.data||!draft)return null;
   const data=view.data,set=(patch:Partial<Radarr>)=>{setDone(false);setDraft({...draft,...patch});};
-  // Collections are saved as a whole, so their definitions, franchise options and Radarr download options go back unchanged.
-  const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:{definitions:data.definitions,franchise:data.franchise,radarr:draft},...(key.trim()?{radarrKey:key.trim()}:{})});invalidate('/admin/artwork/collections');setDone(true);});
+  // Collections are saved as a whole, so their definitions, franchise options, schedules and Radarr download options go back unchanged.
+  const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:{definitions:data.definitions,franchise:data.franchise,radarr:draft,schedules:data.schedules},...(key.trim()?{radarrKey:key.trim()}:{})});invalidate('/admin/artwork/collections');setDone(true);});
   return <Card title={title} description={description}>
     <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
       <div className="form-columns">
