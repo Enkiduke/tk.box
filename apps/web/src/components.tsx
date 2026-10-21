@@ -31,7 +31,11 @@ const paths:Record<string,ReactNode>={
   collection:<><rect x="3" y="8" width="14" height="13" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v11"/></>,tag:<><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></>,unwatched:<><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></>,
   explore:<><circle cx="12" cy="12" r="9.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></>,trending:<path d="m3 17 6-6 4 4 8-8m-5 0h5v5"/>,
   clock:<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
+  shield:<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z"/>,
+  image:<><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="m21 16-5-5-9 9"/></>,
   calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4m8-4v4"/></>,
+  trash:<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>,
+  key:<><circle cx="8" cy="15" r="4.5"/><path d="m11.2 11.8 8.8-8.8m-3.5 3.5 2.5 2.5m-5-0.5 2 2"/></>,
 };
 paths.settings=paths.gear;
 export function Icon({name,size=20}:{name:string;size?:number}) {
@@ -74,8 +78,15 @@ function CardText({item,onOpen,detail,titleClass,metaClass}:{item:CatalogItem;on
 export type PlayFn=(item:CatalogItem,from?:'resume'|'beginning')=>void;
 // Where a menu opens decides its entries: Continue Watching can remove a title, details already show Play.
 export type MenuContext='card'|'continue'|'upnext'|'detail'|'episode';
-type MenuEntry={label:string;icon:string;run:()=>void};
+export type MenuEntry={label:string;icon:string;run:()=>void};
 type MenuPosition={x:number;y:number;flipY:number;alignRight:boolean};
+// Admins edit artwork from any title's menu; main.tsx registers the editor once it knows the viewer is one.
+let artworkEditor:((ratingKey:string)=>void)|undefined;
+export const setArtworkEditor=(open?:(ratingKey:string)=>void)=>{artworkEditor=open;};
+export const editArtwork=(ratingKey:string)=>artworkEditor?.(ratingKey);
+export const artworkEntry=(ratingKey?:string):MenuEntry[]=>artworkEditor&&ratingKey?[{label:'Edit artwork',icon:'image',run:()=>editArtwork(ratingKey)}]:[];
+// Artwork is kept per movie, show or collection; seasons and episodes edit their show's.
+export const artworkKey=(item:CatalogItem)=>item.type==='episode'?item.showId:item.type==='season'?item.showId??item.parentId:item.id;
 function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>void,onPlay?:PlayFn):MenuEntry[][] {
   const playable=item.type==='movie'||item.type==='episode',resumable=playable&&item.viewOffsetMs>0,play:MenuEntry[]=[],state:MenuEntry[]=[],go:MenuEntry[]=[];
   if(onPlay&&context!=='detail'){play.push({label:resumable?'Resume':'Play',icon:'play',run:()=>onPlay(item)});if(resumable)play.push({label:'Play from beginning',icon:'restart',run:()=>onPlay(item,'beginning')});}
@@ -87,7 +98,7 @@ function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>voi
   if(show)go.push({label:'Go to show',icon:'shows',run:()=>onOpen(show)});
   if(item.type==='episode'&&item.parentId)go.push({label:'Go to season',icon:'list',run:()=>onOpen(item.parentId!)});
   if(context!=='detail')go.push({label:'More info',icon:'info',run:()=>onOpen(item.id)});
-  return [play,state,go].filter(group=>group.length);
+  return [play,state,go,context==='detail'?[]:artworkEntry(artworkKey(item))].filter(group=>group.length);
 }
 // Rendered in the top layer (Popover API), so scrolling rows and dialogs never clip it.
 function MediaMenu({title,groups,at,onClose}:{title:string;groups:MenuEntry[][];at:MenuPosition;onClose:(restoreFocus:boolean)=>void}) {
@@ -117,18 +128,23 @@ function MediaMenu({title,groups,at,onClose}:{title:string;groups:MenuEntry[][];
 }
 // The "⋯" button and right-click (or the keyboard context-menu key) open the same menu.
 export function useMediaMenu(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>void,onPlay?:PlayFn,buttonClass='card-more') {
+  const title=item.type==='episode'?`${item.showTitle??''} S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} ${item.title}`.trim():item.title;
+  return useMenu(title,()=>menuGroups(item,context,onOpen,onPlay),buttonClass);
+}
+// Groups are built when the menu opens. Without a "⋯" button the keyboard menu key opens it at the element.
+export function useMenu(title:string,groups:()=>MenuEntry[][],buttonClass='card-more') {
   const [at,setAt]=useState<MenuPosition>(),returnTo=useRef<HTMLElement|null>(null),closedAt=useRef(0),button=useRef<HTMLButtonElement>(null);
   const open=(position:MenuPosition)=>{returnTo.current=document.activeElement as HTMLElement|null;setAt(position);};
   const fromElement=(element:HTMLElement)=>{const r=element.getBoundingClientRect();open({x:r.right,y:r.bottom+4,flipY:r.top-4,alignRight:true});};
   const onContextMenu=(event:MouseEvent)=>{
     event.preventDefault();
     if(event.clientX||event.clientY)open({x:event.clientX,y:event.clientY,flipY:event.clientY,alignRight:false});
-    else if(button.current)fromElement(button.current);
+    else fromElement(button.current??event.currentTarget as HTMLElement);
   };
-  const title=item.type==='episode'?`${item.showTitle??''} S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} ${item.title}`.trim():item.title,card=buttonClass==='card-more';
+  const card=buttonClass==='card-more';
   // A click on the button that light-dismissed the open menu must not reopen it.
   const trigger=<button ref={button} type="button" className={buttonClass} tabIndex={card?-1:undefined} aria-label={`More options for ${title}`} aria-haspopup="menu" aria-expanded={!!at} onClick={e=>{if(!at&&Date.now()-closedAt.current>200)fromElement(e.currentTarget);}}><Icon name="more" size={card?18:22}/></button>;
-  const menu=at&&<MediaMenu title={`Options for ${title}`} groups={menuGroups(item,context,onOpen,onPlay)} at={at} onClose={restore=>{closedAt.current=Date.now();setAt(undefined);if(restore)returnTo.current?.focus({preventScroll:true});}}/>;
+  const menu=at&&<MediaMenu title={`Options for ${title}`} groups={groups()} at={at} onClose={restore=>{closedAt.current=Date.now();setAt(undefined);if(restore)returnTo.current?.focus({preventScroll:true});}}/>;
   return {trigger,menu,onContextMenu,open:!!at};
 }
 // Memoized: virtualized grids re-render rows while scrolling, but card props rarely change.
@@ -248,8 +264,8 @@ export function Pagination({page,onChange}:{page:CatalogPage;onChange:(offset:nu
   if(!page.offset&&!page.hasMore)return null;
   return <div className="pagination"><span>{page.total!==undefined?`${page.total.toLocaleString()} titles`:''}{page.items.length?` · ${page.offset+1}–${page.offset+page.items.length}`:''}</span><div><button disabled={!page.offset} onClick={()=>onChange(Math.max(0,page.offset-page.limit))}>Previous</button><button disabled={!page.hasMore} onClick={()=>onChange(page.offset+page.limit)}>Next</button></div></div>;
 }
-export function Modal({title,onClose,children,variant}:{title:string;onClose:()=>void;children:ReactNode;variant?:'media'}) {
+export function Modal({title,onClose,children,variant}:{title:string;onClose:()=>void;children:ReactNode;variant?:'media'|'wide'}) {
   const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
   useEffect(()=>{const dialog=ref.current!;dialog.showModal();document.documentElement.classList.add('modal-open');return()=>{dialog.close();document.documentElement.classList.remove('modal-open');};},[]);
-  return <dialog ref={ref} className={variant==='media'?'media-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===ref.current)close.current();}}><div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={onClose}><Icon name="close"/></button>{children}</div></dialog>;
+  return <dialog ref={ref} className={variant==='media'?'media-dialog':variant==='wide'?'wide-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===ref.current)close.current();}}><div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={onClose}><Icon name="close"/></button>{children}</div></dialog>;
 }

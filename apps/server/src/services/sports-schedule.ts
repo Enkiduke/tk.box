@@ -6,7 +6,7 @@ import { espnEvents, espnDay, espnUrl, espnLeagueLogo, tsdbEvents, tsdbUrls, tsd
 import { ChannelLogos } from '../providers/channel-logos.js';
 import { channelWindow, learnZones, type SportsEvent, type Window } from './sports-match.js';
 
-export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: string; zone: string; nameHours: number; tickMs: number };
+export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: () => string; zone: string; nameHours: number; tickMs: number };
 // A job may also name its league's logo, read from the same response.
 type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[]; logo?: { key: string; read: (body: unknown) => string | undefined } };
 type Image = { type: string; bytes: Buffer };
@@ -37,11 +37,13 @@ export class SportsSchedule {
     const espn = this.options.espn.flatMap(path => days.map(day => ({ url: espnUrl(path, day), provider: 'espn' as const, every: day === today ? 10 * MINUTE : HOUR, parse: (b: unknown) => espnEvents(path, b),
       logo: { key: path, read: espnLeagueLogo } })));
     const iso = [0, 1, 2].map(d => new Date(now + d * DAY).toISOString().slice(0, 10));
-    const tsdb = [...this.options.tsdb.flatMap(id => tsdbUrls(this.options.tsdbKey, id)), ...iso.map(day => tsdbDayUrl(this.options.tsdbKey, day, 'Fighting'))]
+    // The key is read for every pass, so a key saved in Admin › Connections is used from the next fetch on.
+    const key = this.options.tsdbKey();
+    const tsdb = [...this.options.tsdb.flatMap(id => tsdbUrls(key, id)), ...iso.map(day => tsdbDayUrl(key, day, 'Fighting'))]
       .map(url => ({ url, provider: 'tsdb' as const, every: 6 * HOUR, parse: tsdbEvents }));
     // TheSportsDB badges: the configured leagues and any league a fight card turned up, looked up weekly.
     const ids = new Set([...this.options.tsdb, ...this.store.leagues(0).flatMap(l => /^tsdb:\d+$/.test(l.key) ? [l.key.slice(5)] : [])]);
-    const badges = [...ids].map(id => ({ url: tsdbLeagueUrl(this.options.tsdbKey, id), provider: 'tsdb' as const, every: 7 * DAY, parse: () => [], logo: { key: `tsdb:${id}`, read: tsdbLeagueLogo } }));
+    const badges = [...ids].map(id => ({ url: tsdbLeagueUrl(key, id), provider: 'tsdb' as const, every: 7 * DAY, parse: () => [], logo: { key: `tsdb:${id}`, read: tsdbLeagueLogo } }));
     return [...espn, ...tsdb, ...badges];
   }
   // Rematching decrypts every channel and its listings, so it runs after new data or every five minutes.

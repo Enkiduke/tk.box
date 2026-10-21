@@ -69,7 +69,7 @@ test('an event-driven source shows only channels whose event is on, numbers them
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="ev${i}" group-title="Sports",${n}\nhttps://streams.invalid/${i}`).join('\n')));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   store.upsert(events, now);
-  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'America/New_York', nameHours: 3, tickMs: 3600_000 });
+  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'America/New_York', nameHours: 3, tickMs: 3600_000 });
   schedule.match(now); schedule.close();
   const byName = new Map(iptv.adminChannels(s.id).map(c => [c.name, c]));
   assert.deepEqual(names.map(n => byName.get(n)!.number !== null), [true, false, false, false, false], 'only the live game is numbered; later events wait until starting soon');
@@ -95,7 +95,7 @@ test('viewer visibility and checks follow the window in real time', () => {
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   const shift = (e: SportsEvent, start: number): SportsEvent => ({ ...e, start, end: start + 3 * HOUR, state: 'pre' });
   store.upsert([shift(nfl[0]!, t - HOUR), shift(nfl[1]!, t + 5 * HOUR)], t);
-  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
+  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
   const stacks = iptv.stacks();
   assert.deepEqual(stacks.map(c => c.name), ['Texans vs Jaguars'], 'the later game stays hidden until 30 minutes before');
   const program = iptv.guidePage('owner', 'all', t - HOUR, t + HOUR, 0, 10).channels[0]!.programs.find(p => p.program)!.program!;
@@ -147,7 +147,7 @@ test('feeds of one event combine into one selectable row, with or without a sche
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="f${i}",${n}\nhttps://streams.invalid/${i}`).join('\n')));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   store.upsert([{ ...nfl[0]!, start: t - HOUR, end: t + 2 * HOUR }], t);
-  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
+  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
   const rows = iptv.stacks().map(r => ({ name: r.name, feeds: r.feeds.map(f => f.name).sort() }));
   assert.equal(rows.length, 3, 'one row per event');
   assert.deepEqual(rows.map(r => r.feeds.length).sort(), [1, 2, 3]);
@@ -171,7 +171,7 @@ test('the guide leads into an event with "starting soon" and is blank after it, 
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   const kickoff = t + 10 * 60_000;
   store.upsert([{ ...nfl[0]!, start: kickoff, end: kickoff + 3 * HOUR, state: 'pre' }], t);
-  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
+  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
   const rows = iptv.guidePage('viewer', 'all', t - HOUR, t + 5 * HOUR, 0, 10).channels[0]!.programs;
   const lead = rows.find(r => r.program?.status === 'starting_soon')!;
   assert.deepEqual([lead.start, lead.end, lead.program!.title, lead.program!.subtitle], [kickoff - 30 * 60_000, kickoff, 'Houston Texans at Jacksonville Jaguars', 'Starting soon']);
@@ -192,7 +192,7 @@ test('a sports source is checked and numbered only while live or starting soon, 
   assert.equal(health.queueSource(s.id, t), 0, 'checking "all" checks only live and starting-soon channels');
   const shift = (e: SportsEvent, start: number): SportsEvent => ({ ...e, start, end: start + 3 * HOUR, state: 'pre' });
   store.upsert([shift(nfl[0]!, t - HOUR), shift(nfl[1]!, t + 20 * 60_000)], t);
-  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
+  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
   schedule.match(t);
   const ids = new Map(iptv.adminChannels(s.id).map(c => [c.name, c.id]));
   const approved = () => iptv.adminChannels(s.id).filter(c => c.number !== null).map(c => c.name).sort();
@@ -254,7 +254,7 @@ test('event channels without a logo get an icon for their sport', async () => {
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",NFL 02: Texans vs Jaguars\nhttps://streams.invalid/a'));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   store.upsert([{ ...nfl[0]!, start: t - HOUR, end: t + 2 * HOUR }], t);
-  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
+  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
   assert.equal(iptv.sportFor(iptv.stacks()[0]!.id), 'football');
 });
 
@@ -270,7 +270,7 @@ function liveSports() {
   iptv.ingest('owner', s.id, 0, playlist());
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   store.upsert([live(nfl[0]!), live(ufc[0]!), ...epl], t);
-  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
+  const schedule = new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 });
   schedule.close();
   const save = (patch: Partial<SportsSettings>) => { const { revision, ...current } = store.settings(); store.setSettings('owner', revision, { ...current, ...patch }); schedule.match(t); };
   return { iptv, store, save, source: s.id, playlist };

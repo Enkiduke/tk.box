@@ -4,8 +4,8 @@ import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 
 // Automatic new episodes for custom channels. Each enabled show or season selection is read from Plex now and then
 // (and on demand), and genuinely new playable episodes are added through CustomChannelStore.applySync, which
-// publishes at the next program boundary. Plex is read as an administrator: the background check borrows a signed-in
-// administrator's current session and simply waits when there is none, so no long-lived token is stored.
+// publishes at the next program boundary. Plex is read with the Plex admin token from Admin › Connections
+// (services/plex-background.ts); the background check waits while there is no working one.
 export class EpisodeSync {
   private running = new Map<string, Promise<SyncResult>>();
   private timer?: NodeJS.Timeout;

@@ -10,3 +10,4 @@ data/
 coverage/
 references/
 /init.mp4
+__pycache__/

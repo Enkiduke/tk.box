@@ -4,7 +4,7 @@ Updated October 17, 2026. **Milestone 0 foundations implemented; integration acc
 
 ## Latest pass: custom channels, phase 4 (automatic new episodes)
 
-- Each show or season on a custom channel can automatically add new episodes (off by default, toggled per selection in the Shows tab). New episodes take their place in season and episode order, or follow the show's last entry if the list was rearranged. Removed episodes never come back. Each addition goes on air at the end of the current program and merges with any publish already waiting. Episodes with no runtime or that can't be played are held back. Checks run hourly and on demand, as a signed-in administrator; no Plex token is stored for this.
+- Each show or season on a custom channel can automatically add new episodes (off by default, toggled per selection in the Shows tab). New episodes take their place in season and episode order, or follow the show's last entry if the list was rearranged. Removed episodes never come back. Each addition goes on air at the end of the current program and merges with any publish already waiting. Episodes with no runtime or that can't be played are held back. Checks run hourly and on demand, reading Plex with the Plex admin token from Admin › Connections.
 
 ## Previous pass: custom channels, phase 3 (Pause, Resume, Go Live)
 
