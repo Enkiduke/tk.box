@@ -3,7 +3,7 @@ import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../pack
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
-import {LiveNow,shuffled,type WatchChannel} from './live.js';
+import {LiveEventsNow,LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
 import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 
@@ -99,7 +99,7 @@ export function Home({libraries,onOpen,onPlay,onWatch,busy}:BrowseProps&PlayProp
       <OnDeckRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>
       {settings.collectionRows&&<PromotedRows libraries={libraries} onOpen={onOpen} onPlay={onPlay} busy={busy}/>}
       {libraries.map(l=><LazyRow key={`recent-${l.key}`} title={`Recently added in ${l.title}`} path={recent(l)} href={link(page(l),{library:l.key,sort:'newest',direction:'desc'})} onOpen={onOpen} onPlay={onPlay}/>)}
-      {settings.liveRow&&<LiveNow onWatch={onWatch} busy={busy}/>}
+      {settings.liveRow&&<><LiveEventsNow onWatch={onWatch} busy={busy}/><LiveNow onWatch={onWatch} busy={busy}/></>}
     </div>
   </div>;
 }

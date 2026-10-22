@@ -67,8 +67,8 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
   });
   app.get('/api/v1/iptv/channels',async req=>{const {grant}=await auth(req);return {channels:store.stacks(),favorites:store.favorites(grant.accountId).map(c=>c.id)};});
   app.get('/api/v1/guide',async req=>{
-    const {grant}=await auth(req),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int(),filter:z.union([z.enum(['all','custom','favorites']),z.string().uuid()]).default('all'),q:z.string().trim().max(120).default(''),channel:z.string().uuid().optional(),offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(30)}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
-    return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel,custom);
+    const {grant}=await auth(req),input=z.object({start:z.coerce.number().int(),end:z.coerce.number().int(),filter:z.union([z.enum(['all','custom','favorites']),z.string().uuid()]).default('all'),q:z.string().trim().max(120).default(''),channel:z.string().uuid().optional(),offset:z.coerce.number().int().min(0).max(1000000).default(0),limit:z.coerce.number().int().min(1).max(60).default(30),kind:z.enum(['channels','events']).optional()}).strict().refine(v=>v.end>v.start&&v.end-v.start<=48*3600000).parse(req.query);
+    return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel,custom,input.kind);
   });
   // Guide routes are shared by every channel kind; custom channel IDs are answered by the custom store.
   app.get('/api/v1/iptv/channels/:id/logo',async(req,reply)=>{

@@ -313,7 +313,7 @@ export class IptvStore {
     return [...groups.values()].map(group=>{
       const position=Math.min(...group.map(f=>f.position)),feeds=group.sort((a,b)=>b.rank-a.rank||Number(b.online)-Number(a.online)||a.position-b.position||a.number-b.number);
       const {rank:_,online:__,label:___,event:____,...primary}=feeds[0]!,event=feeds.find(f=>f.event)?.event;
-      return {row:{...primary,position,feeds:feeds.map(f=>({id:f.id,name:f.label??f.name,number:f.number,...(f.quality?{quality:f.quality}:{})}))},event:event&&order(event)};
+      return {row:{...primary,position,feeds:feeds.map(f=>({id:f.id,name:f.label??f.name,number:f.number,...(f.quality?{quality:f.quality}:{})})),...(event?{event:true as const}:{})},event:event&&order(event)};
     }).sort((a,b)=>{
       const bySource=sources.get(a.row.sourceId)!-sources.get(b.row.sourceId)!;if(bySource)return bySource;
       if(!!a.event!==!!b.event)return (a.event?-1:1)*(top?1:-1);
@@ -541,13 +541,14 @@ export class IptvStore {
   // Favorites lead the guide as their own group, pulled out of their sources; then custom channels, then IPTV sources
   // in the administrator's order. Each row names its group so the client can head each one (across pages too).
   // A filter other than the fixed ones names an IPTV source: that source's channels alone. Categories are every IPTV source
-  // with channels, in guide order whatever the filter, for the guide's filter chips.
-  guidePage(account:string,filter:string,start:number,end:number,offset:number,limit:number,q='',channelId?:string,custom?:CustomChannelStore) {
+  // with channels, in guide order whatever the filter, for the guide's filter chips. A kind keeps live event rows alone, or
+  // everything else (Home shows them as separate rows).
+  guidePage(account:string,filter:string,start:number,end:number,offset:number,limit:number,q='',channelId?:string,custom?:CustomChannelStore,kind?:'channels'|'events') {
     const favorites=new Set((this.db.prepare('SELECT channel_id FROM iptv_favorites WHERE account_id=?').all(account) as {channel_id:string}[]).map(c=>c.channel_id));
     const search=q.trim().toLocaleLowerCase(),source=['all','custom','favorites'].includes(filter)?undefined:filter,stacks=this.stacks();
     const categories=[...new Set(stacks.map(c=>c.sourceId))].map(id=>({id,name:this.source(id).name}));
-    const customs=source||!custom?[]:custom.stations(account,filter==='favorites',search,channelId);
-    const channels=filter==='custom'?[]:stacks.filter(c=>(!source||c.sourceId===source)&&(filter!=='favorites'||c.feeds.some(f=>favorites.has(f.id)))&&(!channelId||c.feeds.some(f=>f.id===channelId))&&(!search||c.name.toLocaleLowerCase().includes(search)||c.feeds.some(f=>f.name.toLocaleLowerCase().includes(search)||String(f.number).includes(search)))),cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>();
+    const customs=source||!custom||kind==='events'?[]:custom.stations(account,filter==='favorites',search,channelId);
+    const channels=filter==='custom'?[]:stacks.filter(c=>(!source||c.sourceId===source)&&(!kind||!!c.event===(kind==='events'))&&(filter!=='favorites'||c.feeds.some(f=>favorites.has(f.id)))&&(!channelId||c.feeds.some(f=>f.id===channelId))&&(!search||c.name.toLocaleLowerCase().includes(search)||c.feeds.some(f=>f.name.toLocaleLowerCase().includes(search)||String(f.number).includes(search)))),cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>();
     // The Favorites filter is all favorites already, and a source filter is one source, so both leave favorites in place.
     const pull=filter!=='favorites'&&!source;
     const rows=[...customs.map(c=>({kind:'custom' as const,c,favorite:c.favorite,group:'custom'})),...channels.map(c=>{const favorite=c.feeds.some(f=>favorites.has(f.id));return {kind:'iptv' as const,c,favorite,group:c.sourceId};})]

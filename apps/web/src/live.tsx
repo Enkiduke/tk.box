@@ -63,11 +63,12 @@ const rank=(id:string,seed:string)=>{let h=2166136261;for(const ch of seed+id)h=
 export const shuffled=<T extends {id:string}>(list:T[],seed:string)=>[...list].sort((a,b)=>rank(a.id,seed)-rank(b.id,seed));
 function useNow(){const [now,setNow]=useState(Date.now);useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(timer);},[]);return now;}
 
-// Home's one Live TV row: what's on now and next, capped (Settings › Home) so it never becomes the guide.
-// Favorites come first; without any, the first channels of the lineup stand in. Shuffled, it picks from the first 60.
+// Home's Live TV rows: what's on now and next, capped (Settings › Home) so they never become the guide. Regular channels
+// and live events are separate rows. Favorites come first; without any, the first channels of the lineup stand in.
+// Shuffled, it picks from the first 60.
 export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
   const settings=useHomeSettings(),[seed]=useState(()=>Math.random().toString(36));
-  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveShuffle?60:settings.liveCount}`;
+  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveShuffle?60:settings.liveCount}&kind=channels`;
   const favorites=useApi<Guide>(`${base}&filter=favorites`),none=favorites.data?.channels.length===0;
   const lineup=useApi<Guide>(none?`${base}&filter=all`:undefined),data=none?lineup:favorites;
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start,none]);
@@ -75,9 +76,22 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
   if(!data.data?.channels.length)return null;
   // The order is fixed for this visit, so the minute refresh does not reshuffle the row.
   const channels=(settings.liveShuffle?shuffled(data.data.channels,seed):data.data.channels).slice(0,settings.liveCount);
-  // Laid out like the poster rows at half height: a 4:3 frame (the logo stands in for art) with a banner like the poster
-  // overlays, then title and meta below.
-  return <Row title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})} drift={settings.liveScroll?liveSpeedPx[settings.liveSpeed]:0}>{channels.map(c=>{
+  return <LiveRow title={none?'On Live TV now':'On your channels now'} href={link('live',{filter:none?'all':'favorites'})} channels={channels} now={now} onWatch={onWatch} busy={busy}/>;
+}
+// Live events on now, in the guide's sport and league order; the row is gone while nothing is on.
+export function LiveEventsNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
+  const settings=useHomeSettings(),now=useNow(),start=Math.floor(now/1800000)*1800000;
+  const data=useApi<Guide>(`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveCount}&kind=events`);
+  useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start]);
+  if(data.error)return <ErrorNotice message="Live events could not be loaded." retry={data.reload}/>;
+  if(!data.data?.channels.length)return null;
+  return <LiveRow title="Live events now" href={link('live',{filter:'all'})} channels={data.data.channels} now={now} onWatch={onWatch} busy={busy}/>;
+}
+// Laid out like the poster rows at half height: a 4:3 frame (the logo stands in for art) with a banner like the poster
+// overlays, then title and meta below.
+function LiveRow({title,href,channels,now,onWatch,busy}:{title:string;href:string;channels:Station[];now:number;onWatch:WatchChannel;busy:boolean}) {
+  const settings=useHomeSettings();
+  return <Row title={title} href={href} drift={settings.liveScroll?liveSpeedPx[settings.liveSpeed]:0}>{channels.map(c=>{
     const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
     return <div className="poster-card" key={c.id}>
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
