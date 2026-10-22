@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
@@ -254,13 +254,13 @@ export class PlexAdapter {
       url.searchParams.set('type',library.type==='movie'?'1':'2');url.searchParams.set('genre',genre);url.searchParams.set('sort','random');
       url.searchParams.set('X-Plex-Container-Start','0');url.searchParams.set('X-Plex-Container-Size','8');url.searchParams.set('includeFields','ratingKey,art,librarySectionID');
       // A genre whose lookup fails just keeps its plain tile.
-      try {const container=page.parse(await this.json(url,grant.serverToken)).MediaContainer;return container.Metadata.filter(n=>artworkPath(n.art)&&(n.librarySectionID??container.librarySectionID??libraryId)===libraryId).map(n=>n.ratingKey);}
+      try {const container=page.parse(await this.json(url,grant.serverToken)).MediaContainer;return container.Metadata.filter(n=>artworkPath(n.art)&&(n.librarySectionID??container.librarySectionID??libraryId)===libraryId).map(n=>({id:n.ratingKey,art:n.art}));}
       catch {return [];}
     };
-    const found:string[][]=[];
+    const found:{id:string;art?:string}[][]=[];
     for(let i=0;i<genres.length;i+=6)found.push(...await Promise.all(genres.slice(i,i+6).map(g=>candidates(g.id))));
     const used=new Set<string>(),art:Record<string,string>={};
-    genres.forEach((g,i)=>{const ids=found[i]??[],pick=ids.find(id=>!used.has(id))??ids[0];if(pick){used.add(pick);art[g.id]=`/api/v1/catalog/items/${pick}/artwork?kind=tile`;}});
+    genres.forEach((g,i)=>{const ids=found[i]??[],pick=ids.find(n=>!used.has(n.id))??ids[0];if(pick){used.add(pick.id);art[g.id]=versioned(`/api/v1/catalog/items/${pick.id}/artwork?kind=tile`,pick.art);}});
     return {art};
   }
   async catalogIndex(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>) {

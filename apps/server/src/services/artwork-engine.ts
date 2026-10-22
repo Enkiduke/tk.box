@@ -59,6 +59,8 @@ export class ArtworkEngine {
   private known?: { at: number; ready: boolean; version?: string; error?: string };
   private checking?: Promise<NonNullable<ArtworkEngine['known']>>;
   readonly workDir: string;
+  // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
+  finished?: () => void;
   // `traktClientId` is Explore's Trakt app, which the collection providers can also use.
   constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private traktClientId: () => string | undefined = () => undefined) {
     this.workDir = join(paths.dataDir, 'artwork');
@@ -166,7 +168,7 @@ export class ArtworkEngine {
     if (status === 'succeeded') try { job.done?.(); } catch (e) { this.log('artwork job follow-up failed', { jobId: job.id, error: (e as Error).message }); }
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('artwork job finished', { jobId: job.id, status, code });
-    this.current = undefined; this.store.pruneJobs(); void this.next();
+    this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // Written whole and then moved into place, so the engine never reads a half-written config.
   private writeConfig(libraries: ArtworkLibrary[], name: string, changes: Partial<Inputs> = {}) {
