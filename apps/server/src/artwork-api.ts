@@ -7,6 +7,7 @@ import type {ArtworkEngine,ArtworkRun} from './services/artwork-engine.js';
 import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
 import {requireThat} from './errors.js';
+import {remoteJson} from './providers/remote-json.js';
 
 // Admin › Artwork: the engine's settings, layouts, titles, collections, schedules and jobs. Every route is
 // administrator-only. Jobs and the worker run as the administrator who asked, with their Plex token, which the engine
@@ -158,6 +159,15 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     const {grant}=await admin(request);
     const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),({radarrKey:_,...collections})=>engine.check({collections},grant.libraries));
     changed(grant);return saved;
+  });
+  // The saved Radarr's quality profiles, so downloads can name one (the engine is given its ID).
+  app.get('/api/v1/admin/artwork/collections/radarr-profiles',async request=>{
+    await admin(request);const {radarr,radarrKey}=store.collectionsConfig();
+    if(!radarr.url||!radarrKey)return {connected:false,profiles:[]};
+    const response=await remoteJson(new URL(`${radarr.url}/api/v3/qualityprofile`),{headers:{'X-Api-Key':radarrKey}},'Radarr',fetch,8000);
+    requireThat(response.status<400,'CATALOG_UNAVAILABLE',response.status===401?'Radarr refused the API key.':`Radarr answered ${response.status}.`,502);
+    const profiles=z.array(z.object({id:z.number().int(),name:z.string()}).passthrough()).catch([]).parse(response.data);
+    return {connected:true,profiles:profiles.map(({id,name})=>({id,name}))};
   });
   app.post('/api/v1/admin/artwork/collections/discover',async request=>{
     const input=z.object({mode:z.enum(['recommendations','browse','universes','preview']),provider:z.enum(['all','tmdb','trakt','mdblist','imdb','letterboxd','flixpatrol']).optional(),

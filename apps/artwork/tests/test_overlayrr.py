@@ -1832,7 +1832,15 @@ class CLIAndHTTPTests(unittest.TestCase):
             self.assertEqual(artwork.returncode, 0, artwork.stderr)  # Collection definitions aren't the artwork engine's to judge
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
             self.assertEqual(collections.returncode, 1)
-            self.assertIn("needs members or at least one rule", collections.stderr)
+            self.assertIn("Empty needs titles, a list or a rule before it can be turned on", collections.stderr)
+            # Off, it is a draft; Radarr downloads without a quality profile ID use Radarr's first one.
+            config["collections"] = [{"name": "Empty", "library": "Movies", "type": "movie", "enabled": False, "acquire": True},
+                                     {"name": "Picks", "library": "Movies", "type": "movie", "acquire": True, "members": [{"tmdb_id": 948}]}]
+            config["radarr"] = {"url": "http://radarr.local:7878", "api_key": "${RADARR_API_KEY}", "root_folder": "/movies"}
+            path.write_text(json.dumps(config), encoding="utf-8")
+            collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
+            self.assertEqual(collections.returncode, 0, collections.stderr)
+            del config["radarr"]
             config["layouts"], config["collections"], config["workers"] = {}, [], 2
             path.write_text(json.dumps(config), encoding="utf-8")
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)

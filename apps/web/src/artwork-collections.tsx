@@ -88,7 +88,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
         </Card>
         <Card title="Radarr downloads" description="For seasonal collections that download missing movies.">
           {!data.radarr.url&&<p className="muted small">Radarr isn’t connected. Add it in <a href="#admin?section=connections">Admin › Connections</a>.</p>}
-          <label className="narrow">Quality profile ID<input type="number" min="0" value={draft.radarr.qualityProfileId} onChange={e=>radarr({qualityProfileId:Number(e.target.value)})}/><small>Radarr › Settings › Profiles</small></label>
+          <QualityProfile value={draft.radarr.qualityProfileId} set={qualityProfileId=>radarr({qualityProfileId})}/>
           <Switch label="Search for movies when added" checked={draft.radarr.search} onChange={v=>radarr({search:v})}/>
         </Card>
       </>:tab==='schedules'?<>
@@ -126,6 +126,15 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)} save={value=>{setDefinition(editing,value);setEditing(undefined);}}/>}
     {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);setEditing(draft.definitions.length);}}/>}
   </div>;
+}
+// The saved Radarr's quality profiles by name; the engine is given the chosen one's ID, and none means Radarr's first.
+function QualityProfile({value,set}:{value:number;set:(id:number)=>void}) {
+  const view=useApi<{connected:boolean;profiles:{id:number;name:string}[]}>('/admin/artwork/collections/radarr-profiles'),profiles=view.data?.profiles??[];
+  return <label className="narrow">Quality profile<select value={value} disabled={!view.data?.connected} onChange={e=>set(Number(e.target.value))}>
+      <option value={0}>Radarr’s first profile{profiles[0]?` (${profiles[0].name})`:''}</option>
+      {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+      {value>0&&!profiles.some(p=>p.id===value)&&<option value={value}>{view.data?.connected?`Missing profile (ID ${value})`:`ID ${value}`}</option>}</select>
+    {view.error?<small className="danger">{view.error.message}</small>:view.loading&&!view.data?<small>Loading profiles from Radarr…</small>:null}</label>;
 }
 // One scheduled job: a switch, its time of day (or minutes between checks), and when it last ran.
 export function ScheduleRow<T extends Daily|EveryFew>({label,hint,state,value,set}:{label:string;hint:string;state?:ScheduleState;value:T;set:(value:T)=>void}) {
