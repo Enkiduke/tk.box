@@ -25,3 +25,10 @@ const GLYPHS: Record<Sport, string> = {
 export function sportIcon(sport: Sport) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 64 64" width="96" height="96" color="${ACCENT}" fill="none" stroke="${ACCENT}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${GLYPHS[sport] ?? GLYPHS.sports}</svg>`;
 }
+
+// An event channel's matchup: both teams' downloaded logos either side of "vs". Only raster images the logo
+// fetcher accepted are embedded, so the markup stays script-free.
+export function matchupLogo(left: { type: string; bytes: Buffer }, right: { type: string; bytes: Buffer }) {
+  const team = (x: number, i: { type: string; bytes: Buffer }) => `<image x="${x}" y="4" width="72" height="72" preserveAspectRatio="xMidYMid meet" href="data:${i.type};base64,${i.bytes.toString('base64')}"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 176 80" width="176" height="80">${team(0, left)}<text x="88" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="17" font-weight="700" fill="${ACCENT}">vs</text>${team(104, right)}</svg>`;
+}

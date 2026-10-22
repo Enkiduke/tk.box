@@ -320,3 +320,16 @@ test('league logos prefer the dark version and are downloaded again when their a
   store.setLogoUrl('football/nfl', 'https://a/2.png');
   assert.deepEqual(store.logosMissing(), [{ key: 'football/nfl', url: 'https://a/2.png' }]);
 });
+
+test('matchup logos follow the title: away then home on ESPN, home then away on TheSportsDB', () => {
+  const [game] = espnEvents('football/nfl', { events: [{ id: '1', name: 'Houston Texans at Jacksonville Jaguars', date: '2026-10-18T17:00Z', competitions: [{ competitors: [
+    { homeAway: 'home', team: { displayName: 'Jacksonville Jaguars', logo: 'https://a.espncdn.com/jax.png' } },
+    { homeAway: 'away', team: { displayName: 'Houston Texans', logo: 'https://a.espncdn.com/hou.png' } }] }] }] });
+  assert.deepEqual(game!.logos, ['https://a.espncdn.com/hou.png', 'https://a.espncdn.com/jax.png']);
+  const [missing] = espnEvents('football/nfl', { events: [{ id: '2', name: 'A at B', date: '2026-10-18T17:00Z', competitions: [{ competitors: [
+    { homeAway: 'home', team: { displayName: 'Bees', logo: 'https://a.espncdn.com/b.png' } }, { homeAway: 'away', team: { displayName: 'Aces' } }] }] }] });
+  assert.deepEqual(missing!.logos, []);
+  const [match] = tsdbEvents({ events: [{ idEvent: '3', strEvent: 'Arsenal vs Chelsea', strSport: 'Soccer', strLeague: 'EPL', strTimestamp: '2026-10-18T15:00:00', strHomeTeam: 'Arsenal', strAwayTeam: 'Chelsea',
+    strHomeTeamBadge: 'https://r2.thesportsdb.com/ars.png', strAwayTeamBadge: 'https://r2.thesportsdb.com/che.png' }] });
+  assert.deepEqual(match!.logos, ['https://r2.thesportsdb.com/ars.png', 'https://r2.thesportsdb.com/che.png']);
+});

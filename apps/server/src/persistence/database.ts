@@ -171,6 +171,11 @@ export function openDatabase(path: string) {
         CREATE TABLE artwork_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
       db.prepare('INSERT INTO migrations VALUES(18)').run();
     }
+    // Both teams' logo addresses per event (JSON), for an event channel's matchup logo.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=19').get()) {
+      db.exec('ALTER TABLE sports_events ADD COLUMN logos TEXT');
+      db.prepare('INSERT INTO migrations VALUES(19)').run();
+    }
   })();
   return db;
 }

@@ -7,6 +7,8 @@ export type SportsEvent = {
   start: number; end: number; state: 'pre' | 'in' | 'post'; timeKnown: boolean;
   // Alias lists for each side (teams or fighters), already normalized.
   sides: string[][]; abbreviations: string[];
+  // Both teams' logo addresses in title order ("Away at Home", "Home vs Away"), when the schedule names them.
+  logos?: string[];
 };
 export type Window = { eventId: string | null; title: string; league: string; start: number; end: number; state: SportsEvent['state'] | null; matchedBy: 'event' | 'epg_event' | 'name_time' | 'epg'; sport?: Sport; leagueKey?: string };
 export type ChannelInput = { id: string; name: string; group: string; programs: { start: number; end: number; title: string; subtitle?: string }[] };

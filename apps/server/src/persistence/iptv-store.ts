@@ -300,6 +300,11 @@ export class IptvStore {
   leagueLogo(id:string) {
     return this.db.prepare('SELECT l.type,l.bytes FROM sports_windows w JOIN iptv_channels c ON c.id=w.channel_id AND c.event=1 JOIN sports_league_logos l ON l.league_key=w.league_key WHERE w.channel_id=? AND l.bytes IS NOT NULL').get(id) as {type:string;bytes:Buffer}|undefined;
   }
+  // Both teams' logo addresses of the game a visible event channel carries, when its schedule named them.
+  matchupLogos(id:string) {
+    const row=this.db.prepare('SELECT e.logos FROM sports_windows w JOIN iptv_channels c ON c.id=w.channel_id AND c.event=1 JOIN sports_events e ON e.id=w.event_id WHERE w.channel_id=? AND e.logos IS NOT NULL').get(id) as {logos:string}|undefined;
+    return row?JSON.parse(row.logos) as [string,string]:undefined;
+  }
   visible() {return this.feeds().map(({rank:_,online:__,label:___,event:____,...feed})=>feed);}
   // One lineup row per station within a source, like identity. The default feed is the best quality (FHD, then HD), primary before
   // backup, then a feed confirmed working; the row keeps the earliest lineup position of its feeds.

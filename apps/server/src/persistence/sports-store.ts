@@ -83,15 +83,15 @@ export class SportsStore {
   // A live status only moves forward; the end follows it: still playing extends, finished closes.
   upsert(events: SportsEvent[], now = Date.now()) {
     const get = this.db.prepare('SELECT state,ended_at FROM sports_events WHERE id=?');
-    const put = this.db.prepare(`INSERT INTO sports_events(id,source,sport,league,title,start,end,state,time_known,sides,abbreviations,ended_at,updated_at,league_key)
-      VALUES(@id,@source,@sport,@league,@title,@start,@end,@state,@time_known,@sides,@abbreviations,@ended_at,@now,@leagueKey)
-      ON CONFLICT(id) DO UPDATE SET sport=excluded.sport,league=excluded.league,league_key=excluded.league_key,title=excluded.title,start=excluded.start,end=excluded.end,state=excluded.state,time_known=excluded.time_known,sides=excluded.sides,abbreviations=excluded.abbreviations,ended_at=excluded.ended_at,updated_at=excluded.updated_at`);
+    const put = this.db.prepare(`INSERT INTO sports_events(id,source,sport,league,title,start,end,state,time_known,sides,abbreviations,ended_at,updated_at,league_key,logos)
+      VALUES(@id,@source,@sport,@league,@title,@start,@end,@state,@time_known,@sides,@abbreviations,@ended_at,@now,@leagueKey,@logos)
+      ON CONFLICT(id) DO UPDATE SET sport=excluded.sport,league=excluded.league,league_key=excluded.league_key,title=excluded.title,start=excluded.start,end=excluded.end,state=excluded.state,time_known=excluded.time_known,sides=excluded.sides,abbreviations=excluded.abbreviations,logos=excluded.logos,ended_at=excluded.ended_at,updated_at=excluded.updated_at`);
     this.db.transaction(() => {
       for (const e of events) {
         const old = get.get(e.id) as { state: string; ended_at: number | null } | undefined;
         const ended = e.state === 'post' ? old?.ended_at ?? (old?.state === 'in' ? now : Math.min(now, e.end)) : null;
         const end = e.state === 'in' ? Math.max(e.end, now + GRACE_MS) : ended ?? e.end;
-        put.run({ ...e, end, time_known: Number(e.timeKnown), sides: JSON.stringify(e.sides), abbreviations: JSON.stringify(e.abbreviations), ended_at: ended, now });
+        put.run({ ...e, end, time_known: Number(e.timeKnown), sides: JSON.stringify(e.sides), abbreviations: JSON.stringify(e.abbreviations), logos: e.logos?.length === 2 ? JSON.stringify(e.logos) : null, ended_at: ended, now });
       }
     })();
   }
