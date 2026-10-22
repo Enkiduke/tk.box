@@ -23,6 +23,7 @@ import { IptvStore } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { registerIptv } from './iptv-api.js';
 import { registerCatalog } from './catalog-api.js';
+import { ClientEvents, registerEvents } from './events-api.js';
 import { registerExplore } from './explore-api.js';
 import { ExploreStore } from './persistence/explore-store.js';
 import { LiveTv } from './services/live-tv.js';
@@ -176,6 +177,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); return {status: 'stopped'}; });
   registerCatalog(app,plex,auth);
+  // Open pages hear when artwork or cleanup jobs change the library, and reload what they show.
+  const events = new ClientEvents();
+  registerEvents(app, events, auth);
   const exploreStore = new ExploreStore(db, vault);
   registerExplore(app, plex, exploreStore, auth, admin, hash => identity.accountToken(hash));
   // Artwork: the engine runs as a separate Python process, apart from every playback path.
@@ -185,6 +189,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
   const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message));
   registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin);
+  artwork.finished = () => events.publish('library');
   app.addHook('onReady', async () => { artworkSchedule.start(); });
   app.addHook('onClose', async () => { artworkSchedule.close(); artworkWorker.close(); artwork.close(); });
   // Clean Up: the purge script runs as a separate Python process too. Seerr is Explore's connection, Radarr is Collections'.
@@ -196,6 +201,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, plexUrl: config.PLEX_URL},
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
+  cleanup.finished = () => events.publish('library');
   app.addHook('onReady', async () => { cleanup.start(); });
   app.addHook('onClose', async () => { cleanup.close(); });
   app.get('/health', async () => ({status: 'ok'}));

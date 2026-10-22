@@ -67,6 +67,8 @@ export class CleanupEngine {
   private timer?: NodeJS.Timeout;
   private ticking = false;
   readonly workDir: string;
+  // Called after each job that ran: it may have removed titles or changed their posters in Plex.
+  finished?: () => void;
   constructor(private store: CleanupStore, readonly paths: Paths, private services: () => CleanupServices, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
@@ -153,7 +155,7 @@ export class CleanupEngine {
     if (running.canceled) say('Canceled.');
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('clean up job finished', { jobId: job.id, status, code });
-    this.current = undefined; this.store.pruneJobs(); void this.next();
+    this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // Written whole and then moved into place, so the script never reads a half-written config.
   private writeConfig(settings: CleanupSettings, services: CleanupServices) {

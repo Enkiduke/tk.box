@@ -36,6 +36,17 @@ function App() {
   // Edit artwork, offered on every title's menu to admins, opens the title editor over the current page.
   const [artwork,setArtwork]=useState<string>(),admin=me?.role==='admin';
   useEffect(()=>{setArtworkEditor(admin?setArtwork:undefined);return()=>setArtworkEditor(undefined);},[admin]);
+  // When an artwork or cleanup job finishes, the server says so and every view on screen reloads its titles; changed
+  // art has a new address, so only those posters load again. After a dropped stream it reloads once, for what it missed.
+  const signedIn=me?.accountId;
+  useEffect(()=>{
+    if(!signedIn||!('EventSource' in window))return;
+    const events=new EventSource('/api/v1/events');let dropped=false;
+    events.addEventListener('library',()=>invalidate('/catalog'));
+    events.addEventListener('open',()=>{if(dropped)invalidate('/catalog');dropped=false;});
+    events.addEventListener('error',()=>{dropped=true;});
+    return()=>events.close();
+  },[signedIn]);
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
   const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>(),[authUrl,setAuthUrl]=useState('');
   const plexPopup=useRef<Window|null>(null);
