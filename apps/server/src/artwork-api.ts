@@ -34,13 +34,15 @@ function jobArgs(input:z.infer<typeof jobInput>):{label:string;args:string[]} {
 const rel=z.string().min(3).max(400).refine(v=>!v.split('/').some(p=>p===''||p==='.'||p==='..'),'Invalid path');
 const kind=z.enum(['poster','logo']);
 const fileName=z.string().regex(/^[\w .()-]{1,120}$/);
-const plexPath=z.string().max(500).regex(/^\/library\/metadata\/\d+\/[\w/]+$/);
+// A title's artwork in Plex: its current one (/thumb/123) or one of the posters its agents offered (/file?url=metadata%3A…).
+const plexPath=z.string().max(500).regex(/^\/library\/metadata\/\d+\/(?:[\w/]+|file\?url=[\w%.-]+)$/);
 const link=z.string().url().max(2000);
 const width=z.coerce.number().int().min(64).max(2000).optional();
 const crop=z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().positive().max(1),h:z.number().positive().max(1)}).strict();
 const templateMode=z.enum(['poster','season','episode']);
 const templateValues=z.record(z.string().regex(/^[a-z_]{1,60}$/),z.unknown()).refine(v=>JSON.stringify(v).length<=40000,'Too many settings');
-const providerHosts=(host:string)=>['image.tmdb.org','assets.fanart.tv','artworks.thetvdb.com'].includes(host);
+// Plex's own candidates also link to its metadata CDN (Gracenote stills) and IMDb's image host.
+const providerHosts=(host:string)=>['image.tmdb.org','assets.fanart.tv','artworks.thetvdb.com','metadata-static.plex.tv','m.media-amazon.com'].includes(host);
 const images={config:{rateLimit:{max:1200,timeWindow:60000}}};
 const libraries=(grant:PlexGrant)=>grant.libraries.filter(l=>['movie','show'].includes(l.type));
 const runOf=(grant:PlexGrant):ArtworkRun=>({token:grant.serverToken,libraries:grant.libraries});
