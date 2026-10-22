@@ -9,7 +9,7 @@ const cache=new Map<string,{data:unknown;time:number}>(),inflight=new Map<string
 // Mounted views reading an invalidated path refetch, keeping their current data on screen meanwhile.
 const watchers=new Set<(prefix:string)=>void>();
 export function invalidate(prefix='') {for(const key of [...cache.keys()])if(key.startsWith(prefix))cache.delete(key);for(const watcher of watchers)watcher(prefix);}
-const useInvalidation=(paths:(string|undefined)[],refresh:()=>void,key:string)=>useEffect(()=>{const watcher=(prefix:string)=>{if(paths.some(p=>p?.startsWith(prefix)))refresh();};watchers.add(watcher);return()=>{watchers.delete(watcher);};},[key]);
+export const useInvalidation=(paths:(string|undefined)[],refresh:()=>void,key:string)=>useEffect(()=>{const watcher=(prefix:string)=>{if(paths.some(p=>p?.startsWith(prefix)))refresh();};watchers.add(watcher);return()=>{watchers.delete(watcher);};},[key]);
 export function fetchCached<T>(path:string):Promise<T> {
   let pending=inflight.get(path);
   if(!pending){
