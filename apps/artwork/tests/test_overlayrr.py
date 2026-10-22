@@ -1370,16 +1370,31 @@ class ArtworkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No logo found for Hulu"):
             self.artwork.select({"type": "collection", "service": "Hulu"}, sp.Style())
 
-    def test_curated_collection_is_left_alone_and_is_not_missing_artwork(self):
+    def test_curated_collection_gets_a_title_poster_or_is_left_alone_when_missing_art_is_skipped(self):
         path = self.folder_job()
         self.config["items"] = [{"type": "collection", "rating_key": "77", "title": "What Should I Watch?"}]
         path.write_text(json.dumps(self.config), encoding="utf-8")
-        self.http.replies[self.artwork.plex.url + "/library/metadata/77/children"] = b"<MediaContainer/>"
+        for key in ("77", "78"):
+            self.http.replies[self.artwork.plex.url + f"/library/metadata/{key}/children"] = b"<MediaContainer/>"
         self.http.replies[common.TMDB + "/search/collection"] = {"results": []}  # No franchise of that name
+        result, text = self.run_folder_job(path)
+        self.assertEqual(result, 0, text)
+        self.assertNotIn("LEFT", text)
+        folders = list((self.base / "assets" / "collections").glob("*{plex-77}"))
+        self.assertEqual(len(folders), 1)
+        self.assertIsNotNone(sp.ArtworkFiles.source(folders[0], "poster"))  # The drawn background, kept as its poster
+
+        self.config["missing_art"] = "skip"
+        self.config["items"] = [{"type": "collection", "rating_key": "78", "title": "Date Night"}]
+        path.write_text(json.dumps(self.config), encoding="utf-8")
         result, text = self.run_folder_job(path)
         self.assertEqual(result, 0)  # Not missing artwork, so a scheduled run stays green
         self.assertIn("LEFT (no TMDb collection", text)
         self.assertFalse(any(call[0] in ("POST", "PUT") for call in self.http.calls))
+        # Its folder is made anyway, so it is listed and a poster of your own can be chosen for it
+        folders = list((self.base / "assets" / "collections").glob("*{plex-78}"))
+        self.assertEqual(len(folders), 1)
+        self.assertEqual(json.loads((folders[0] / ".overlayrr.json").read_text(encoding="utf-8"))["rating_key"], "78")
 
 
     def test_recent_collections_are_created_once_and_get_chart_posters(self):

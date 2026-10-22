@@ -413,6 +413,16 @@ class ArtworkFiles:
         atomic_write(path, data)
         return path
 
+    def keep(self, item):
+        """A title's folder without art yet (a curated collection nothing could be found for), so it is listed in Artwork and
+        a poster of your own has somewhere to go."""
+        with self.lock:
+            folder = self.folder(item, create=True)
+            if not (folder / ".overlayrr.json").exists():
+                metadata = {key: item[key] for key in ("type", "title", "year", "rating_key") if item.get(key) is not None}
+                atomic_write(folder / ".overlayrr.json", json.dumps(metadata, indent=2).encode())
+            return folder
+
     def save(self, item, background, logo, stock):
         with self.lock:
             folder = self.folder(item, create=True)
@@ -2455,6 +2465,10 @@ class Artwork(Metadata):
             headers = self.plex.headers
         if not background_source:
             if item["type"] == "collection":
+                # No TMDb collection (a curated one, "What Should I Watch?"): drawn like a custom collection, its title over a
+                # gradient, unless missing art is skipped. A poster of your own in its folder replaces it.
+                if option(self.config, "missing_art") != "skip" and item.get("title"):
+                    return self.select_custom(item, style)
                 return None, None, True
             raise ValueError("No poster found; provide a local poster override or a provider ID")
         background = self.http.image(background_source, self.base, headers)
@@ -3048,9 +3062,10 @@ class Batch:
         background, logo, stock = selection or artwork.select(item, style, saved_stock, self.styles[item["layout_key"][0], False])
         if background is None:
             if item["type"] == "collection" and not item.get("tmdb_id"):
-                # A curated collection ("What Should I Watch?") with no TMDb franchise and no poster of yours: not ours to
-                # replace, and not missing artwork either.
-                return "LEFT (no TMDb collection; put a poster in its folder to include it)", output
+                # A curated collection with no TMDb franchise while missing art is skipped: not missing artwork either. Its
+                # folder is still made, so a poster can be chosen for it.
+                sources.keep(item)
+                return "LEFT (no TMDb collection; choose a poster for it in Artwork to include it)", output
             return "SKIP", output
         folder = sources.save(item, background, logo, stock)
         output = self.destination(item, folder)
