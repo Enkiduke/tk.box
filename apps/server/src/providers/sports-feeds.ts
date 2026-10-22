@@ -27,11 +27,14 @@ const EXTRA: Record<string, string> = { 'football/college-football': '&groups=80
 type Fetch = (url: string) => Promise<unknown>;
 export const fetchJson = (fetcher = new RestrictedSourceFetcher()): Fetch => async url => JSON.parse((await fetcher.fetch({ url, headers: { accept: 'application/json', 'user-agent': 'tk.box' }, allowInsecureHttp: false })).toString('utf8'));
 
-type EspnTeam = { displayName?: string; shortDisplayName?: string; name?: string; location?: string; abbreviation?: string };
+type EspnTeam = { displayName?: string; shortDisplayName?: string; name?: string; location?: string; abbreviation?: string; logo?: string };
 type EspnEvent = { id: string; name: string; date: string; endDate?: string; status?: { type?: { state?: string } };
-  competitions?: { competitors?: { team?: EspnTeam; athlete?: { displayName?: string; shortName?: string } }[] }[] };
+  competitions?: { competitors?: { homeAway?: string; team?: EspnTeam; athlete?: { displayName?: string; shortName?: string } }[] }[] };
 const aliases = (...names: (string | undefined)[]) => [...new Set(names.filter((n): n is string => !!n && n.length > 2).map(n => norm(n).trim()))];
 const state = (s?: string): SportsEvent['state'] => s === 'in' ? 'in' : s === 'post' ? 'post' : 'pre';
+const https = (url: unknown) => typeof url === 'string' && /^https:\/\//i.test(url) ? url : undefined;
+// Both teams' logos in the order the title names them, or none.
+const pair = (a: unknown, b: unknown) => { const logos = [https(a), https(b)]; return logos.every(Boolean) ? logos as string[] : []; };
 
 export function espnEvents(path: string, body: unknown): SportsEvent[] {
   const [sport = 'default', league = path] = path.split('/'), json = body as { events?: EspnEvent[]; leagues?: { abbreviation?: string; name?: string }[] };
@@ -40,14 +43,16 @@ export function espnEvents(path: string, body: unknown): SportsEvent[] {
     const start = Date.parse(e.date);
     if (!e.id || !e.name || !Number.isFinite(start)) return [];
     // Team sports list two teams; fight cards list one competition per bout and are matched by title.
-    const teams = (e.competitions?.[0]?.competitors ?? []).map(c => c.team).filter((t): t is EspnTeam => !!t);
+    const competitors = e.competitions?.[0]?.competitors ?? [], teams = competitors.map(c => c.team).filter((t): t is EspnTeam => !!t);
+    // ESPN titles games "Away at Home".
+    const [away, home] = [...competitors].sort((a, b) => Number(a.homeAway !== 'away') - Number(b.homeAway !== 'away')).map(c => c.team?.logo);
     const end = e.endDate && sport === 'golf' ? Date.parse(e.endDate) : start + duration(sport);
     return [{ id: `espn:${e.id}`, source: 'espn' as const, sport, league: leagueName, leagueKey: path, title: e.name, start, end: Number.isFinite(end) && end > start ? end : start + duration(sport), state: state(e.status?.type?.state), timeKnown: true,
       sides: teams.length === 2 ? teams.map(t => aliases(t.displayName, t.shortDisplayName, t.name, t.location)) : [],
-      abbreviations: teams.length === 2 && teams.every(t => t.abbreviation) ? teams.map(t => t.abbreviation!) : [] }];
+      abbreviations: teams.length === 2 && teams.every(t => t.abbreviation) ? teams.map(t => t.abbreviation!) : [], logos: teams.length === 2 ? pair(away, home) : [] }];
   });
 }
-type TsdbEvent = { idEvent: string; idLeague?: string | null; strEvent?: string; strSport?: string; strLeague?: string; strTimestamp?: string | null; dateEvent?: string | null; strTime?: string | null; strHomeTeam?: string | null; strAwayTeam?: string | null; strStatus?: string | null };
+type TsdbEvent = { idEvent: string; idLeague?: string | null; strEvent?: string; strSport?: string; strLeague?: string; strTimestamp?: string | null; dateEvent?: string | null; strTime?: string | null; strHomeTeam?: string | null; strAwayTeam?: string | null; strHomeTeamBadge?: string | null; strAwayTeamBadge?: string | null; strStatus?: string | null };
 const SPORTS: Record<string, string> = { fighting: 'mma', 'american football': 'football', 'ice hockey': 'hockey', motorsport: 'racing' };
 export function tsdbEvents(body: unknown): SportsEvent[] {
   return ((body as { events?: TsdbEvent[] | null }).events ?? []).flatMap(e => {
@@ -60,7 +65,7 @@ export function tsdbEvents(body: unknown): SportsEvent[] {
     const sides = e.strHomeTeam && e.strAwayTeam ? [aliases(e.strHomeTeam, e.strHomeTeam.split(' ').pop()), aliases(e.strAwayTeam, e.strAwayTeam.split(' ').pop())] : [];
     const finished = /^(FT|AET|PEN|Match Finished|Finished)$/i.test(e.strStatus ?? '');
     // A date-only event covers that evening in the Americas: 12:00 UTC to 08:00 UTC the next day.
-    return [{ id: `tsdb:${e.idEvent}`, source: 'tsdb' as const, sport, league, leagueKey: e.idLeague ? `tsdb:${e.idLeague}` : `tsdb:${norm(league).trim() || sport}`, title: e.strEvent, start: timeKnown ? start : start + 12 * HOUR, end: timeKnown ? start + duration(sport) : start + 32 * HOUR, state: finished ? 'post' as const : 'pre' as const, timeKnown, sides, abbreviations: [] }];
+    return [{ id: `tsdb:${e.idEvent}`, source: 'tsdb' as const, sport, league, leagueKey: e.idLeague ? `tsdb:${e.idLeague}` : `tsdb:${norm(league).trim() || sport}`, title: e.strEvent, start: timeKnown ? start : start + 12 * HOUR, end: timeKnown ? start + duration(sport) : start + 32 * HOUR, state: finished ? 'post' as const : 'pre' as const, timeKnown, sides, abbreviations: [], logos: sides.length ? pair(e.strHomeTeamBadge, e.strAwayTeamBadge) : [] }];
   });
 }
 
@@ -74,7 +79,6 @@ export const tsdbLeagueUrl = (key: string, league: string) => `https://www.thesp
 
 // League logos for event channels with no logo of their own. ESPN's scoreboard names its league's logos;
 // the version drawn for dark backgrounds suits the guide's tiles. TheSportsDB has a badge per league.
-const https = (url: unknown) => typeof url === 'string' && /^https:\/\//i.test(url) ? url : undefined;
 export function espnLeagueLogo(body: unknown) {
   const logos = (body as { leagues?: { logos?: { href?: string; rel?: string[] }[] }[] }).leagues?.[0]?.logos ?? [];
   return https((logos.find(l => l.rel?.includes('dark')) ?? logos[0])?.href);

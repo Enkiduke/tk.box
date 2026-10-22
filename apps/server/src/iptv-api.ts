@@ -6,7 +6,7 @@ import { sourceEndpoint } from './providers/source-fetch.js';
 import { AppError } from './errors.js';
 import { ChannelLogos } from './providers/channel-logos.js';
 import { LogoLibrary } from './providers/logo-library.js';
-import { sportIcon } from './providers/sport-icons.js';
+import { sportIcon, matchupLogo } from './providers/sport-icons.js';
 import type { CustomChannelStore } from './persistence/custom-channels.js';
 
 type Access=(req:FastifyRequest)=>Promise<{grant:{accountId:string}}>;
@@ -84,6 +84,9 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
       return reply.type(image.type).header('Cache-Control',`private, max-age=${url||keyed?3600:600}`).send(image.bytes);
     }
     const hints=store.logo(channelParams(req.params));
+    // An event channel whose game names both teams shows the matchup, over the provider's single logo. Short-lived like the league logo.
+    const teams=store.matchupLogos(channelParams(req.params)),matchup=teams&&await Promise.all(teams.map(async u=>logos.get(u))).catch(()=>undefined);
+    if(matchup)return reply.type('image/svg+xml').header('Cache-Control','private, max-age=600').send(matchupLogo(matchup[0]!,matchup[1]!));
     // Standardized library logo first, then the playlist logo, then the guide's channel icon.
     const urls=[await library.match(hints.name,hints.tvgId).catch(()=>undefined),...hints.urls].filter((u):u is string=>!!u);
     let image:{type:string;bytes:Buffer}|undefined;
