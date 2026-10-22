@@ -512,15 +512,19 @@ def validate_collections(config):
             raise ValueError("year_from must not exceed year_to")
         if "title_contains" in rules and (not isinstance(rules["title_contains"], str) or not rules["title_contains"].strip()):
             raise ValueError("title_contains must be nonempty text")
-        if not members and not rules and not source:
-            raise ValueError("A collection needs members or at least one rule")
+        # A collection that is off may still be a draft; it needs something to hold only once it is on.
+        enabled = entry.get("enabled", True)
+        if enabled and not members and not rules and not source:
+            raise ValueError(f"{entry['name']} needs titles, a list or a rule before it can be turned on")
         visibility = entry.get("visibility", {})
         if not isinstance(visibility, dict) or set(visibility) - {"home", "shared", "recommended"} or any(type(v) is not bool for v in visibility.values()):
             raise ValueError("visibility accepts home, shared and recommended booleans")
         if entry.get("cleanup", "keep") not in ("keep", "remove-delete"):
             raise ValueError("Collection cleanup must be keep or remove-delete")
-        if entry.get("acquire") and (entry["type"] != "movie" or not (source or any("tmdb_id" in m for m in members))):
-            raise ValueError("Radarr acquisition needs movie members with tmdb_id")
+        if entry.get("acquire") and entry["type"] != "movie":
+            raise ValueError(f"{entry['name']}: only movie collections can download through Radarr")
+        if enabled and entry.get("acquire") and not (source or any("tmdb_id" in m for m in members)):
+            raise ValueError(f"{entry['name']}: Radarr downloads need titles with TMDb IDs (tmdb:123) or a list")
         if entry.get("cleanup") == "remove-delete" and (not entry.get("schedule") or not entry.get("acquire")):
             raise ValueError("remove-delete requires a seasonal collection with acquire: true")
     radarr = config.get("radarr", {})
@@ -528,12 +532,13 @@ def validate_collections(config):
         raise ValueError("Unsupported radarr settings")
     if "search" in radarr and type(radarr["search"]) is not bool:
         raise ValueError("radarr.search must be true or false")
-    if any(entry.get("acquire") for entry in definitions):
+    # Without a quality profile ID, downloads use Radarr's first quality profile.
+    if "quality_profile_id" in radarr and (type(radarr["quality_profile_id"]) is not int or radarr["quality_profile_id"] < 1):
+        raise ValueError("radarr.quality_profile_id must be a positive integer")
+    if any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
         for key in ("url", "api_key", "root_folder"):
             if not isinstance(radarr.get(key), str) or not radarr[key].strip():
                 raise ValueError(f"radarr.{key} is required for acquisition")
-        if type(radarr.get("quality_profile_id")) is not int or radarr["quality_profile_id"] < 1:
-            raise ValueError("radarr.quality_profile_id must be a positive integer")
     return definitions
 
 
@@ -562,7 +567,7 @@ def collection_members(entry, items):
 
 def seasonal_radarr(artwork, definitions, items, apply, today):
     """Only a successful add recorded here AND its private Radarr tag grant cleanup ownership."""
-    if not any(entry.get("acquire") for entry in definitions):
+    if not any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
         return
     settings = artwork.config["radarr"]
     url = settings["url"].rstrip("/")
@@ -607,9 +612,10 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
     missing = acquisition - existing.keys() - present
     if missing:
         profiles, roots = request("GET", "qualityprofile"), request("GET", "rootfolder")
-        if settings["quality_profile_id"] not in {p["id"] for p in profiles}:
+        profile = settings.get("quality_profile_id") or next((p["id"] for p in profiles), None)
+        if profile not in {p["id"] for p in profiles}:
             available = ", ".join(str(p["id"]) for p in profiles) or "none"
-            raise ValueError(f"Radarr quality profile ID {settings['quality_profile_id']} does not exist. Available IDs: {available}")
+            raise ValueError(f"Radarr quality profile ID {profile} does not exist. Available IDs: {available}")
         root_folder = next((r["path"] for r in roots if r["path"].rstrip("/") == settings["root_folder"].rstrip("/")), None)
         if root_folder is None:
             available = ", ".join(repr(r["path"]) for r in roots) or "none"
@@ -633,7 +639,7 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
                    and str(i.get("year", "")) == str(movie.get("year", "")) for i in items):
                 print(f"SKIP tmdb:{tmdb_id}: title/year already in Plex", flush=True)
                 continue
-            added = request("POST", "movie", json={"tmdbId": tmdb_id, "title": movie["title"], "qualityProfileId": settings["quality_profile_id"],
+            added = request("POST", "movie", json={"tmdbId": tmdb_id, "title": movie["title"], "qualityProfileId": profile,
                             "rootFolderPath": root_folder, "monitored": True, "minimumAvailability": "released", "tags": [tag],
                             "addOptions": {"searchForMovie": option(settings, "search")}})
             state["movies"][str(tmdb_id)] = {"id": added["id"], "path": added.get("path"), "owners": [identity(e) for e in definitions
