@@ -135,6 +135,34 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .artwork-discover-rows li{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .artwork-discover-rows small{display:block}
 .artwork-discover-list{max-height:30vh;overflow:auto;margin:0;padding-left:22px;columns:2;font-size:13px}
+/* Clean Up: keep the condition, timer and its starting point together. */
+.cleanup-settings .settings-card{margin-bottom:0}
+.cleanup-note{margin:0;padding:10px 12px;border-radius:6px;background:var(--surface-2);color:var(--muted);font-size:12px;line-height:1.55}
+.cleanup-delete-note{color:var(--danger)}
+.cleanup-rule-group{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.cleanup-group-head{padding:14px 16px;background:var(--surface-2)}
+.cleanup-group-head h4{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0;font-size:13px;font-weight:600}
+.cleanup-group-head .badge{font-size:10px;font-weight:500}
+.cleanup-group-head p{margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.5;max-width:76ch}
+.cleanup-rule{display:grid;grid-template-columns:minmax(0,1fr) 136px;align-items:center;gap:24px;padding:16px;border-top:1px solid var(--line)}
+.cleanup-rule-copy label{margin:0;color:var(--text);font-size:13px;font-weight:600}
+.cleanup-rule-copy p{margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55;max-width:66ch}
+.cleanup-duration{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
+.cleanup-duration>div,.cleanup-days-input{display:flex;align-items:center;gap:9px}
+.cleanup-duration input,.cleanup-days-input input{width:86px;text-align:center;font-variant-numeric:tabular-nums}
+.cleanup-settings .cleanup-user-ids{margin:0;padding:16px;border-top:1px solid var(--line);font-size:13px}
+.cleanup-user-ids input{max-width:420px}
+.cleanup-user-ids small{max-width:76ch}
+.cleanup-settings .cleanup-help summary{margin:0;color:var(--muted);font-size:12px;cursor:pointer}
+.cleanup-help p{margin:10px 0 0;color:var(--muted);font-size:12px;line-height:1.65;max-width:85ch}
+.cleanup-season-options{display:flex;flex-direction:column;gap:18px;padding-left:16px;border-left:2px solid var(--line-strong)}
+@media(max-width:600px){
+  .cleanup-rule{grid-template-columns:minmax(0,1fr);gap:12px}
+  .cleanup-duration{flex-direction:row;align-items:center;gap:12px}
+  .cleanup-group-head,.cleanup-rule{padding:12px}
+  .cleanup-settings .cleanup-user-ids{padding:12px}
+}
+
 /* Clean Up › Status */
 .cleanup-filters{margin:0}
 .cleanup-filters .grow{min-width:220px}
