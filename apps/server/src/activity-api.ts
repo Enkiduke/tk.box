@@ -5,7 +5,7 @@ import type { IptvStore } from './persistence/iptv-store.js';
 import type { LiveTv } from './services/live-tv.js';
 import type { CustomTv } from './services/custom-tv.js';
 import type { VodTranscodes } from './services/vod-transcode.js';
-import { describeClient, isLocalAddress, type Activity, type StreamKind } from './services/activity.js';
+import { describeClient, isLocalAddress, PlexFreshness, type Activity, type StreamKind } from './services/activity.js';
 
 type Admin = (req: { cookies: Record<string, string | undefined> }) => Promise<{ grant: PlexGrant }>;
 type Title = { title: string; type: string; year?: number; show?: string; album?: string; season?: number; episode?: number; durationMs?: number; posterId?: string };
@@ -38,7 +38,7 @@ export function registerActivity(app: FastifyInstance, activity: Activity, plex:
   end: (s: { id: string; kind: StreamKind; hash: string }) => void) {
   const { live, customTv, iptv, transcodes } = services;
   // Titles are read with the administrator's grant, which reaches every library; a failed lookup just shows no title.
-  const titles = new Map<string, Promise<Title | undefined>>();
+  const titles = new Map<string, Promise<Title | undefined>>(), fresh = new PlexFreshness();
   const title = (grant: PlexGrant, id: string | undefined) => {
     if (!id) return undefined;
     if (titles.size > 300) titles.clear();
@@ -73,7 +73,7 @@ export function registerActivity(app: FastifyInstance, activity: Activity, plex:
     }));
     // Plex's own apps, read live from Plex; when Plex can't be reached, tk.box's streams still show.
     let plexError: string | undefined, others: ReturnType<typeof plexRow>[] = [];
-    try { others = (await plex.sessions(grant)).map(m => plexRow(m, now)); } catch { plexError = 'Plex’s own streams couldn’t be read. Only tk.box streams are shown.'; }
+    try { others = fresh.filter((await plex.sessions(grant)).map(m => plexRow(m, now)), now); } catch { plexError = 'Plex’s own streams couldn’t be read. Only tk.box streams are shown.'; }
     const all = [...rows.map(r => ({ ...r, canStop: true })), ...others], total = (list: typeof all) => list.reduce((n, r) => n + r.rateKbps, 0);
     return { streams: all, transcodes: all.filter(r => r.delivery === 'transcode').length, bandwidthKbps: total(all), wanBandwidthKbps: total(all.filter(r => !r.local)), plexError };
   });

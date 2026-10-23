@@ -149,7 +149,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const parts = new PartProxy(plex), customTv = new CustomTv(custom, plex, localMedia, parts, budget, config.CACHE_DIR, () => settings.get().pauseRetentionMinutes * 60000, config.SEGMENT_CACHE_MAX_BYTES,
     config.FFMPEG_PATH, (message, detail) => app.log.warn(detail, message));
   // Pause, Resume and Go Live exist only on custom channels; IPTV stays strictly live.
-  const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only Plex channels can be paused.', 409); return run(); };
+  const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only Plex channels can be paused.', 409); activity.touch(id); return run(); };
   app.get<{Params: {id: string}}>('/api/v1/live/sessions/:id/state', async req => { const {hash} = await auth(req); return timeshift(req.params.id, () => customTv.state(req.params.id, hash)); });
   app.post<{Params: {id: string}}>('/api/v1/live/sessions/:id/pause', async req => {
     const {hash} = await auth(req), input = z.object({displayedUtc: z.number().finite()}).strict().parse(req.body);

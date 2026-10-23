@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Activity,describeClient,isLocalAddress,type StreamOpen} from '../apps/server/src/services/activity.js';
+import {Activity,PlexFreshness,describeClient,isLocalAddress,type StreamOpen} from '../apps/server/src/services/activity.js';
 import {plexRow} from '../apps/server/src/activity-api.js';
 
 const vod=(over:Partial<StreamOpen>={}):StreamOpen=>({id:'a',kind:'vod',hash:'h',accountId:'1',delivery:'transcode',ip:'203.0.113.5',positionMs:60000,durationMs:600000,...over});
@@ -25,13 +25,23 @@ test('progress from another session is ignored, and stopped ends the stream', ()
   assert.equal(activity.list(()=>true,1000).length,0);
 });
 
-test('idle streams drop out: library after a missed paused check-in, live sooner, and when the service has ended them', () => {
-  const activity=new Activity({vod:150000,live:60000});
-  activity.open(vod(),0);activity.open(vod({id:'b',kind:'live',delivery:'remux'}),0);activity.open(vod({id:'c',kind:'custom',delivery:'remux'}),0);
-  assert.deepEqual(activity.list(()=>true,90000).map(s=>s.id),['a']);
-  activity.touch('a',0,140000);
-  assert.equal(activity.list(()=>true,200000).length,1);
-  assert.equal(activity.list(s=>s.id!=='a',200000).length,0);
+test('streams whose browser went away drop out: playing after missed 10-second reports, paused after a missed minute, live sooner', () => {
+  const activity=new Activity({playing:35000,paused:150000,live:30000});
+  activity.open(vod(),0);activity.open(vod({id:'p'}),0);activity.open(vod({id:'b',kind:'live',delivery:'remux'}),0);activity.open(vod({id:'c',kind:'custom',delivery:'remux'}),0);
+  activity.progress('p','h',60000,'paused',0);activity.touch('a',0,20000);activity.touch('b',0,20000);
+  assert.deepEqual(activity.list(()=>true,40000).map(s=>s.id).sort(),['a','b','p']);
+  assert.deepEqual(activity.list(()=>true,100000).map(s=>s.id),['p']);
+  assert.equal(activity.list(()=>true,160000).length,0);
+  activity.open(vod({id:'d'}),200000);
+  assert.equal(activity.list(s=>s.id!=='d',200000).length,0,'the delivering service can end it first');
+});
+
+test('a Plex session left playing with a frozen position (a closed tab) is hidden; paused and moving ones stay', () => {
+  const fresh=new PlexFreshness(45000),row=(id:string,state:string,positionMs:number)=>({id,state,positionMs});
+  fresh.filter([row('ghost','playing',1000),row('paused','paused',5000),row('moving','playing',1000)],0);
+  assert.equal(fresh.filter([row('ghost','playing',1000),row('paused','paused',5000),row('moving','playing',30000)],30000).length,3);
+  assert.deepEqual(fresh.filter([row('ghost','playing',1000),row('paused','paused',5000),row('moving','playing',60000)],50000).map(r=>r.id),['paused','moving']);
+  assert.deepEqual(fresh.filter([row('ghost','playing',2000)],60000).map(r=>r.id),['ghost'],'it comes back once its position moves again');
 });
 
 test('bandwidth is measured over the last 30 seconds, and estimated from the file for direct play', () => {
