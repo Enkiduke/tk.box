@@ -1,8 +1,9 @@
 import { isIP } from 'node:net';
 
 // Admin › Activity: every stream being watched right now, on-demand, IPTV and custom channels alike.
-// Kept in memory only. The routes that deliver media report each session's start, requests, progress and stop;
-// a session nobody has asked anything of for a while is dropped (a paused title still checks in every minute).
+// Kept in memory only. The routes that deliver media report each session's start, requests, progress and stop.
+// A closed browser sends no stop, so a session that stops checking in is dropped: a playing title reports every
+// 10 seconds and a paused one every minute; live players fetch segments every few seconds, or poll while paused.
 export type StreamKind = 'vod' | 'live' | 'custom';
 export type StreamDelivery = 'direct' | 'remux' | 'transcode';
 export type StreamSource = { videoCodec?: string; audioCodec?: string; width?: number; height?: number; container?: string; bitrateKbps?: number };
@@ -15,7 +16,7 @@ const RATE_WINDOW_MS = 30000;
 
 export class Activity {
   private streams = new Map<string, Stream>();
-  constructor(private idleMs = { vod: 150000, live: 60000 }) {}
+  constructor(private idleMs = { playing: 35000, paused: 150000, live: 30000 }) {}
   open(s: StreamOpen, now = Date.now()) {
     this.streams.set(s.id, { ...s, started: now, seen: now, state: 'playing', positionAt: now, sent: [] });
     if (this.streams.size > 500) this.prune(now);
@@ -41,7 +42,9 @@ export class Activity {
     for (const s of [...this.streams.values()]) if (!alive(s)) this.streams.delete(s.id);
     return [...this.streams.values()].sort((a, b) => a.started - b.started).map(s => ({ ...s, positionMs: this.position(s, now), rateKbps: this.rate(s, now) }));
   }
-  private prune(now: number) { for (const s of [...this.streams.values()]) if (now - s.seen > (s.kind === 'vod' ? this.idleMs.vod : this.idleMs.live)) this.streams.delete(s.id); }
+  private prune(now: number) {
+    for (const s of [...this.streams.values()]) if (now - s.seen > (s.kind !== 'vod' ? this.idleMs.live : s.state === 'paused' ? this.idleMs.paused : this.idleMs.playing)) this.streams.delete(s.id);
+  }
   // The last reported position, carried forward while playing (the player reports every 10 seconds).
   private position(s: Stream, now: number) {
     if (s.positionMs === undefined) return undefined;
@@ -76,4 +79,23 @@ export function isLocalAddress(ip: string) {
   }
   const v6 = ip.toLowerCase();
   return v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6);
+}
+
+// Plex keeps a session listed for a while after its app goes away (a closed browser tab), still marked playing.
+// A playing session's position advances with every report from its app, so one that stays put has been abandoned.
+export class PlexFreshness {
+  private seen = new Map<string, { offset?: number; since: number }>();
+  constructor(private staleMs = 45000) {}
+  // Call with every session in one listing; sessions no longer listed are forgotten.
+  filter<T extends { id: string; state: string; positionMs?: number; live?: boolean }>(rows: T[], now = Date.now()) {
+    const current = new Map<string, { offset?: number; since: number }>();
+    const kept = rows.filter(r => {
+      const last = this.seen.get(r.id), moved = !last || last.offset !== r.positionMs || r.state !== 'playing';
+      const entry = moved ? { offset: r.positionMs, since: now } : last;
+      current.set(r.id, entry);
+      return r.live || r.positionMs === undefined || now - entry.since < this.staleMs;
+    });
+    this.seen = current;
+    return kept;
+  }
 }
