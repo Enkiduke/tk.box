@@ -152,6 +152,15 @@ export class CustomTv {
   close() { clearInterval(this.timer); for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
   get count() { return this.stations.size; }
+  // Administrator activity: the program a viewer is seeing (at its own cursor when paused or behind) and how far into it.
+  watching(id: string, now = Date.now()) {
+    const viewer = this.viewers.get(id), station = viewer && this.stations.get(viewer.channelId);
+    if (!viewer || !station) return undefined;
+    const s = viewer.cursor.inspect(now), at = s.state === 'LIVE' ? station.segments.at(-1)?.end ?? now : s.cursor;
+    const airing = [...station.airings].reverse().find(a => a.start <= at) ?? station.airings[0];
+    return { delivery: (station.encode ? 'transcode' : 'remux') as LiveDelivery, source: station.source ?? {}, state: s.state, behindLiveMs: s.state === 'LIVE' ? 0 : s.behindLiveMs,
+      mediaId: airing?.mediaId, mediaMs: airing?.mediaId ? Math.max(0, Math.round(airing.mediaStartMs + (at - airing.start))) : undefined };
+  }
   // Administrator diagnostics: what the pause buffer actually holds.
   usage(now = Date.now()) {
     const stations = [...this.stations.values()], delayed = [...this.viewers.values()].filter(v => ['PAUSED', 'PLAYING_DELAYED'].includes(v.cursor.inspect(now).state));

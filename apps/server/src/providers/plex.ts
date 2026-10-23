@@ -6,13 +6,15 @@ import { AppError, requireThat } from '../errors.js';
 import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
 
-const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String) });
+const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
 const resourceSchema = z.array(z.object({ clientIdentifier: z.string(), provides: z.string(), owned: z.boolean(), accessToken: z.string().min(1).optional() }));
 const librariesSchema = z.object({ MediaContainer: z.object({ Directory: z.array(z.object({ key: z.string(), title: z.string(), type: z.string() })).default([]) }) });
 export const metadataSchema = z.object({
   ratingKey: z.string(), librarySectionID: z.union([z.string(), z.number()]).transform(String),
   title: z.string(), duration: z.number().positive(), type: z.enum(['movie', 'episode']),
+  year: z.number().int().optional(), grandparentTitle: z.string().max(500).optional(), grandparentRatingKey: z.union([z.string(), z.number()]).transform(String).optional(),
+  parentIndex: z.number().int().nonnegative().optional(), index: z.number().int().nonnegative().optional(),
   viewOffset: z.number().optional(),
   viewCount: z.number().int().nonnegative().optional(), lastViewedAt: z.number().optional(),
   // Plex's detected intro and credits sections (requested with includeMarkers); `final` marks the closing credits.
@@ -79,7 +81,8 @@ const collectionContainer = z.object({ MediaContainer: z.object({ librarySection
 export type ChannelRoot = { id: string; type: 'movie' | 'show' | 'season' | 'episode' | 'collection' | 'genre'; title: string; season?: number };
 export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; seasonId?: string; season?: number; episode?: number; year?: number; date?: string; durationMs: number;
   video?: { codec?: string; width?: number; height?: number; container?: string } };
-export type PlexGrant = { accountId: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
+// `name` is the Plex account's display name, for Admin › Activity.
+export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
 
 export class PlexAdapter {
   private images=new ArtworkCache();
@@ -173,7 +176,8 @@ export class PlexAdapter {
     requireThat(this.config.requiredLibraries.every(id => libraries.some(l => l.key === id && ['movie', 'show'].includes(l.type))), 'PLEX_ACCESS_DENIED', 'Required Movies and TV library grants are missing.', 403);
     const isOwner = account.id === this.config.PLEX_OWNER_ACCOUNT_ID;
     requireThat(!isOwner || resource.owned, 'PLEX_ACCESS_DENIED', 'Configured owner does not own this Plex server.', 403);
-    return { accountId: account.id, role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
+    const name = account.title || account.username;
+    return { accountId: account.id, ...(name ? { name } : {}), role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
   }
   // Plex's cloud catalog (watchlist, Discover shelves, search), read with the viewer's own Plex account token.
   async discover(accountToken: string, path: string, query: Record<string, string | number> = {}, method = 'GET') {

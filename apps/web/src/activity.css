@@ -1,0 +1,21 @@
+/* Admin › Activity: one card per stream, like Tautulli's activity view. */
+.activity-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:16px}
+.activity-card{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.activity-body{position:relative;display:flex;gap:18px;padding:16px}
+.activity-poster{flex:none;display:grid;place-items:center;width:120px;aspect-ratio:2/3;border-radius:6px;background:var(--surface-2);color:var(--dim);overflow:hidden}
+.activity-poster img{width:100%;height:100%;object-fit:cover}
+.activity-poster.logo{aspect-ratio:1}
+.activity-poster.logo img{object-fit:contain;padding:12px}
+.activity-details{flex:1;min-width:0;display:grid;gap:5px;margin:0;padding-right:40px;font-size:13px;align-content:start}
+.activity-details>div{display:grid;grid-template-columns:96px 1fr;gap:12px}
+.activity-details dt{color:var(--dim);text-transform:uppercase;font-size:11px;letter-spacing:.04em;text-align:right;padding-top:2px}
+.activity-details dd{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-stop{position:absolute;top:12px;right:12px;padding:6px}
+.activity-stop:hover{color:var(--danger);border-color:var(--danger)}
+.activity-progress{height:3px;background:var(--surface-3)}
+.activity-progress span{display:block;height:100%;background:var(--accent)}
+.activity-foot{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 16px}
+.activity-title,.activity-who{display:flex;flex-direction:column;gap:3px;min-width:0}
+.activity-who{align-items:flex-end;text-align:right;flex:none}
+.activity-title strong{display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-title small,.activity-who small{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
