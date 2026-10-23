@@ -9,7 +9,21 @@ import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/i
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
 const resourceSchema = z.array(z.object({ clientIdentifier: z.string(), provides: z.string(), owned: z.boolean(), accessToken: z.string().min(1).optional() }));
-const librariesSchema = z.object({ MediaContainer: z.object({ Directory: z.array(z.object({ key: z.string(), title: z.string(), type: z.string() })).default([]) }) });
+const num = z.coerce.number().optional().catch(undefined), str = z.coerce.string().max(500).optional().catch(undefined);
+// Plex's now-playing list. Every field is optional: clients report what they can, and one odd value must not hide every stream.
+const sessionsSchema = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({
+  type: str, title: str, grandparentTitle: str, parentTitle: str, ratingKey: str, grandparentRatingKey: str, parentRatingKey: str,
+  year: num, index: num, parentIndex: num, duration: num, viewOffset: num, live: num,
+  User: z.object({ id: str, title: str }).optional().catch(undefined),
+  Player: z.object({ title: str, product: str, platform: str, state: str, address: str, remotePublicAddress: str, local: z.union([z.boolean(), z.coerce.number()]).optional().catch(undefined), machineIdentifier: str }).optional().catch(undefined),
+  Session: z.object({ id: str, bandwidth: num, location: str }).optional().catch(undefined),
+  Media: z.array(z.object({ videoCodec: str, audioCodec: str, width: num, height: num, container: str, bitrate: num, videoResolution: str,
+    Part: z.array(z.object({ decision: str })).optional().catch(undefined) })).optional().catch(undefined),
+  TranscodeSession: z.object({ videoDecision: str, audioDecision: str, sourceVideoCodec: str, sourceAudioCodec: str, videoCodec: str, audioCodec: str, container: str, sourceContainer: str,
+    width: num, height: num, speed: num, throttled: z.union([z.boolean(), z.coerce.number()]).optional().catch(undefined) }).optional().catch(undefined)
+})).default([]) }) });
+export type PlexSession = z.infer<typeof sessionsSchema>['MediaContainer']['Metadata'][number];
+const librariesSchema =z.object({ MediaContainer: z.object({ Directory: z.array(z.object({ key: z.string(), title: z.string(), type: z.string() })).default([]) }) });
 export const metadataSchema = z.object({
   ratingKey: z.string(), librarySectionID: z.union([z.string(), z.number()]).transform(String),
   title: z.string(), duration: z.number().positive(), type: z.enum(['movie', 'episode']),
@@ -558,6 +572,20 @@ export class PlexAdapter {
     catch { throw new AppError('PLEX_STREAM_FAILED', 'Plex media delivery failed.', 502); }
     if (!response.ok) { await response.body?.cancel(); throw new AppError(response.status === 404 ? 'SESSION_NOT_FOUND' : 'PLEX_STREAM_FAILED', 'Plex media delivery failed.', response.status === 404 ? 404 : 502); }
     return { response, url };
+  }
+  // Everything playing on the Plex server, from any Plex app (owner token only), for Admin › Activity. tk.box's own
+  // streams appear too (its transcodes and timeline reports), so they are left out here; tk.box tracks them itself.
+  async sessions(grant: PlexGrant) {
+    const data = sessionsSchema.parse(await this.json(new URL('/status/sessions', this.config.PLEX_URL), grant.serverToken));
+    return data.MediaContainer.Metadata.filter(m => m.Player?.machineIdentifier !== this.clientId);
+  }
+  async terminateSession(grant: PlexGrant, sessionId: string, reason: string) {
+    const url = new URL('/status/sessions/terminate', this.config.PLEX_URL);
+    url.searchParams.set('sessionId', sessionId); url.searchParams.set('reason', reason);
+    const r = await this.transport(url, { headers: this.headers(grant.serverToken), redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => undefined);
+    await r?.body?.cancel();
+    // Plex only lets Plex Pass servers end a stream.
+    requireThat(r?.ok, r?.status === 401 || r?.status === 403 ? 'PLEX_TERMINATE_REFUSED' : 'PLEX_UNAVAILABLE', r?.status === 401 || r?.status === 403 ? 'Plex refused to stop that stream. Stopping other apps’ streams needs Plex Pass.' : 'Plex could not stop that stream.', 502);
   }
   async transcodeControl(grant: PlexGrant, action: 'ping' | 'stop', session: string) {
     const url = new URL(`${transcodeRoot}${action}`, this.config.PLEX_URL); url.searchParams.set('session', session);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Activity,describeClient,isLocalAddress,type StreamOpen} from '../apps/server/src/services/activity.js';
+import {plexRow} from '../apps/server/src/activity-api.js';
 
 const vod=(over:Partial<StreamOpen>={}):StreamOpen=>({id:'a',kind:'vod',hash:'h',accountId:'1',delivery:'transcode',ip:'203.0.113.5',positionMs:60000,durationMs:600000,...over});
 
@@ -52,4 +53,16 @@ test('clients and addresses are described for the activity cards', () => {
   assert.equal(describeClient(undefined),'Unknown device');
   for(const ip of ['192.168.1.20','10.0.0.4','172.20.1.1','127.0.0.1','::1','::ffff:192.168.0.9','fd12::1'])assert.ok(isLocalAddress(ip),ip);
   for(const ip of ['96.241.30.180','172.32.0.1','2001:db8::1'])assert.ok(!isLocalAddress(ip),ip);
+});
+
+test('Plex app sessions are described like Tautulli: direct play, direct stream or transcode, with Plex’s own bandwidth', () => {
+  const base={type:'episode',title:'Pilot',grandparentTitle:'Show',grandparentRatingKey:'9',ratingKey:'10',parentIndex:1,index:1,duration:3600000,viewOffset:60000,
+    User:{id:'5',title:'casey'},Player:{product:'Plex Web',title:'Chrome',state:'paused',address:'192.168.1.4',local:true},Session:{id:'abc',bandwidth:20300,location:'lan'},
+    Media:[{videoCodec:'h264',audioCodec:'eac3',height:1080,videoResolution:'1080'}]};
+  const direct=plexRow(base);
+  assert.deepEqual([direct.id,direct.delivery,direct.video,direct.audio,direct.state,direct.local,direct.rateKbps,direct.media?.posterId],['plex:abc','direct','Direct play (H264 1080p)','Direct play (EAC3)','paused',true,20300,'9']);
+  const stream=plexRow({...base,TranscodeSession:{videoDecision:'copy',audioDecision:'transcode',audioCodec:'mp3',sourceAudioCodec:'eac3'}});
+  assert.deepEqual([stream.delivery,stream.video,stream.audio],['remux','Direct stream (H264 1080p)','Transcode (EAC3 → MP3)']);
+  const transcode=plexRow({...base,Player:{...base.Player,local:false,remotePublicAddress:'96.241.30.180'},Session:{id:'abc',location:'wan'},TranscodeSession:{videoDecision:'transcode',videoCodec:'h264',height:720,sourceVideoCodec:'hevc',speed:2.5}});
+  assert.deepEqual([transcode.delivery,transcode.video,transcode.ip,transcode.local,transcode.speed],['transcode','Transcode (HEVC 1080p → H264 720p)','96.241.30.180',false,2.5]);
 });
