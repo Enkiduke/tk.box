@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useId,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
@@ -80,6 +80,14 @@ function CleanupSchedules({data,changed}:{data:Overview;changed:()=>void}) {
 }
 
 const list=(text:string)=>[...new Set(text.split(',').map(t=>t.trim()).filter(Boolean))];
+type RetentionField='daysAfterWatched'|'daysAfterUnwatched'|'daysAfterAnyWatchExempt'|'daysAfterExemptWatch';
+function RetentionRow({audience,title,anchor,value,onChange}:{audience:string;title:string;anchor:string;value:number;onChange:(days:number)=>void}) {
+  const id=useId();
+  return <div className="cleanup-rule">
+    <div className="cleanup-rule-copy"><label htmlFor={id}><span className="sr-only">{audience}: </span>{title}</label><p id={`${id}-anchor`}>{anchor}</p></div>
+    <div className="cleanup-duration"><span aria-hidden="true">Keep for</span><div><input id={id} type="number" min="0" max="3650" step="1" required value={value} aria-describedby={`${id}-anchor ${id}-unit`} onChange={e=>onChange(Number(e.target.value))}/><span id={`${id}-unit`}>days</span></div></div>
+  </div>;
+}
 function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const {revision:_,...saved}=data.settings,[draft,setDraft]=useState<Settings>(saved),[ids,setIds]=useState(saved.exemptUserIds.join(', ')),[tags,setTags]=useState(saved.exemptArrTags.join(', '));
   const [done,setDone]=useState(false),mutation=useMutation(changed);
@@ -88,56 +96,66 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const movies=data.libraries.filter(l=>l.type==='movie'),shows=data.libraries.filter(l=>l.type==='show'),{connected}=data;
   const toggle=(field:'movieLibraries'|'tvLibraries',key:string,on:boolean)=>set({[field]:on?[...draft[field],key]:draft[field].filter(k=>k!==key)});
   const library=(field:'movieLibraries'|'tvLibraries')=>(l:Library)=><label key={l.key} className="checkbox-label"><input type="checkbox" checked={draft[field].includes(l.key)} onChange={e=>toggle(field,l.key,e.target.checked)}/>{l.title}</label>;
-  const dayField=(field:'daysAfterWatched'|'daysAfterUnwatched'|'daysAfterAnyWatchExempt'|'daysAfterExemptWatch',label:string,hint:string)=><label>{label}
-    <span className="setting-line"><input type="number" min="0" max="3650" required value={draft[field]} onChange={e=>set({[field]:Number(e.target.value)})}/>days</span><small>{hint}</small></label>;
+  const rule=(field:RetentionField,audience:string,title:string,anchor:string)=><RetentionRow audience={audience} title={title} anchor={anchor} value={draft[field]} onChange={days=>set({[field]:days})}/>;
   const needs=(on:boolean,name:string)=>on?undefined:<>Connect {name} in {connections} first.</>;
   const save=()=>void mutation.run(async()=>{
     const userIds=list(ids.replace(/\s+/g,',')).map(Number);
-    if(userIds.some(id=>!Number.isSafeInteger(id)||id<=0))throw new Error('Exempt users must be Plex user IDs (whole numbers), separated by commas.');
+    if(userIds.some(id=>!Number.isSafeInteger(id)||id<=0))throw new Error('Users with longer retention must be Plex user IDs (positive whole numbers), separated by commas.');
     await api('/admin/cleanup/settings','PUT',{expectedRevision:data.settings.revision,...draft,exemptUserIds:userIds,exemptArrTags:list(tags)});setDone(true);
   });
-  return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
-    <Card title="Libraries">
+  return <form className="form-stack cleanup-settings" onSubmit={e=>{e.preventDefault();save();}}>
+    <Card title="Run mode" className={draft.dryRun?'':'danger-zone'}>
+      <Switch label="Preview only" description="When on, manual and scheduled runs only report what would happen. Plex, files and collections stay unchanged." checked={draft.dryRun} onChange={v=>set({dryRun:v})}/>
+      <p className={`cleanup-note${draft.dryRun?'':' cleanup-delete-note'}`}>{draft.dryRun?'No files will be deleted with this setting.':'Runs will delete due titles and their files. The Preview button in Runs always changes nothing.'} Changes take effect after saving.</p>
+    </Card>
+    <Card title="Libraries to clean up" description="Only available Seerr requests in these Plex libraries are checked.">
       {data.libraries.length?<div className="form-columns">
         <fieldset className="form-stack"><legend>Movies</legend>{movies.length?movies.map(library('movieLibraries')):<small className="muted">No movie libraries.</small>}</fieldset>
         <fieldset className="form-stack"><legend>TV</legend>{shows.length?shows.map(library('tvLibraries')):<small className="muted">No TV libraries.</small>}</fieldset>
       </div>:<Empty title="No libraries">Your Plex account shows no movie or TV libraries.</Empty>}
     </Card>
-    <Card title="How long titles stay" description="Shared titles stay until the last request is due.">
-      <div className="form-columns">
-        {dayField('daysAfterWatched','Watched by the requester','After anyone last watched it.')}
-        {dayField('daysAfterUnwatched','Not watched by the requester','After it was added.')}
-        {dayField('daysAfterExemptWatch','Requested by an exempt user, who watched it','After an exempt user last watched it.')}
-        {dayField('daysAfterAnyWatchExempt','Requested by an exempt user, who hasn’t','After anyone last watched it, or after it was added.')}
+    <Card title="Retention rules" description="Each request gets a deadline. A shared title stays until every requester’s deadline has passed.">
+      <div className="cleanup-rule-group">
+        <div className="cleanup-group-head"><h4>Standard retention</h4><p>Applies to requests from everyone except the users listed below.</p></div>
+        {rule('daysAfterWatched','Standard retention','Requester has watched','Count from the most recent watch by anyone. Each new watch restarts this timer.')}
+        {rule('daysAfterUnwatched','Standard retention','Requester has not watched','Count from when the title was added. Other people watching does not restart this timer.')}
       </div>
-    </Card>
-    <Card title="Protected">
-      <div className="form-columns">
-        <label>Exempt users<input value={ids} placeholder="e.g. 1234567, 7654321" onChange={e=>{setIds(e.target.value);setDone(false);}}/><small>Plex user IDs, comma-separated (Tautulli › Users)</small></label>
-        <label>Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);setDone(false);}}/><small>Never deleted</small></label>
+      <div className="cleanup-rule-group">
+        <div className="cleanup-group-head"><h4>Longer retention for selected users <span className="badge">Optional</span></h4><p>Replaces the standard rules for their requests. These titles can still be deleted when their time is up.</p></div>
+        <label className="cleanup-user-ids">Plex user IDs<input value={ids} placeholder="e.g. 1234567, 7654321" onChange={e=>{setIds(e.target.value);setDone(false);}} aria-describedby="cleanup-users-hint"/><small id="cleanup-users-hint">Find IDs in Tautulli › Users. Separate them with commas. Leave blank to use standard retention for everyone.</small></label>
+        {rule('daysAfterExemptWatch','Selected-user retention','Any selected user has watched','Count from the most recent watch by any user listed above. Watches by other users do not restart this timer.')}
+        {rule('daysAfterAnyWatchExempt','Selected-user retention','No selected user has watched','Count from the most recent watch by anyone, or from when the title was added if nobody has watched.')}
       </div>
-      <Switch label="Keep titles in a collection" description="Any Plex collection except Leaving Soon." checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
+      <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play recorded in Tautulli counts, including a partial play. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
     </Card>
-    <Card title="TV seasons">
-      <Switch label="Season by season" description="Needs Delete from Sonarr." checked={draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,enabled:v}})}/>
-      <Switch label="Keep the latest season" checked={draft.seasons.protectLatest} disabled={!draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,protectLatest:v}})}/>
-      <Switch label="Keep specials" description="Season 0." checked={draft.seasons.protectSpecials} disabled={!draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,protectSpecials:v}})}/>
+    <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
+      <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);setDone(false);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>
+      <Switch label="Keep titles in Plex collections" description={`Any collection protects a title except “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
     </Card>
-    <Card title="Deleting" description="Plex must allow media deletion.">
-      <Switch label="Preview only" description="Runs only report what would be deleted." checked={draft.dryRun} onChange={v=>set({dryRun:v})}/>
+    <Card title="TV seasons" description="Use the same retention timers for individual seasons or for the whole show.">
+      <Switch label="Clean up individual seasons" description="Requires Sonarr and Delete from Sonarr below. When off, the whole show is evaluated together." checked={draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,enabled:v}})}/>
+      {draft.seasons.enabled&&<div className="cleanup-season-options">
+        <Switch label="Keep the latest season" description="Protects the highest numbered season currently in Plex." checked={draft.seasons.protectLatest} onChange={v=>set({seasons:{...draft.seasons,protectLatest:v}})}/>
+        <Switch label="Keep specials" description="Protects season 0 during individual-season cleanup." checked={draft.seasons.protectSpecials} onChange={v=>set({seasons:{...draft.seasons,protectSpecials:v}})}/>
+        <details className="cleanup-help"><summary>Season timers and single-season shows</summary><p>Season watches are checked separately. For timers based on when content was added, the newest episode’s added date is used.</p><p>A show with only season 1, with or without specials, is evaluated as a whole show. The two season protections above do not apply to that whole-show deletion. A lone later season keeps its season protections.</p></details>
+      </div>}
+    </Card>
+    <Card title="Also remove from connected apps" description="A run that deletes always removes due content from Plex with its files. These options control the other apps. Plex must allow media deletion.">
       <Switch label="Delete from Radarr" description={needs(connected.radarr,'Radarr')??'Removes the movie and its files.'} checked={draft.deleteFromRadarr} onChange={v=>set({deleteFromRadarr:v})}/>
-      <Switch label="Delete from Sonarr" description={needs(connected.sonarr,'Sonarr')??'Removes the show or season files.'} checked={draft.deleteFromSonarr} onChange={v=>set({deleteFromSonarr:v})}/>
-      <Switch label="Remove from Seerr" description="Clears the request." checked={draft.deleteFromSeerr} onChange={v=>set({deleteFromSeerr:v})}/>
+      <Switch label="Delete from Sonarr" description={needs(connected.sonarr,'Sonarr')??'Removes whole shows, or unmonitors episodes and removes their files when cleaning up individual seasons.'} checked={draft.deleteFromSonarr} onChange={v=>set({deleteFromSonarr:v})}/>
+      <Switch label="Remove from Seerr" description="Clears the media record after a whole title is deleted. Individual-season cleanup keeps the show’s requests." checked={draft.deleteFromSeerr} onChange={v=>set({deleteFromSeerr:v})}/>
     </Card>
-    <Card title="Leaving Soon collection" description="Titles due soon, at the top of each library.">
-      <Switch label="Keep a Leaving Soon collection" checked={draft.leavingSoon.enabled} onChange={v=>set({leavingSoon:{...draft.leavingSoon,enabled:v}})}/>
+    <Card title="Leaving Soon collection" description="Show whole titles approaching their deadline in a Plex collection. This does not add extra time before deletion.">
+      <Switch label="Maintain a Leaving Soon collection" description="Updated only during runs with Preview only off. Individual seasons appear in Status, but are not added to the collection." checked={draft.leavingSoon.enabled} onChange={v=>set({leavingSoon:{...draft.leavingSoon,enabled:v}})}/>
+      {draft.leavingSoon.enabled&&<>
       <div className="form-columns">
-        <label>Name<input required maxLength={60} value={draft.leavingSoon.name} disabled={!draft.leavingSoon.enabled} onChange={e=>set({leavingSoon:{...draft.leavingSoon,name:e.target.value}})}/></label>
-        <label>Due within<span className="setting-line"><input type="number" min="1" max="365" required value={draft.leavingSoon.days} disabled={!draft.leavingSoon.enabled} onChange={e=>set({leavingSoon:{...draft.leavingSoon,days:Number(e.target.value)}})}/>days</span></label>
+        <label>Collection name<input required maxLength={60} value={draft.leavingSoon.name} onChange={e=>set({leavingSoon:{...draft.leavingSoon,name:e.target.value}})}/></label>
+        <label>Add titles due within<span className="cleanup-days-input"><input type="number" min="1" max="365" step="1" required value={draft.leavingSoon.days} onChange={e=>set({leavingSoon:{...draft.leavingSoon,days:Number(e.target.value)}})}/>days</span></label>
       </div>
-      <Switch label="Use the Leaving Soon poster" checked={draft.leavingSoon.poster} disabled={!draft.leavingSoon.enabled} onChange={v=>set({leavingSoon:{...draft.leavingSoon,poster:v}})}/>
+      <Switch label="Use the Leaving Soon poster" checked={draft.leavingSoon.poster} onChange={v=>set({leavingSoon:{...draft.leavingSoon,poster:v}})}/>
+      </>}
     </Card>
-        {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save clean up settings</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save clean up settings'}</button>{done?<span className="success" role="status">Saved.</span>:<span className="muted small">Save settings, then run a preview in Runs to review the results.</span>}</div>
   </form>;
 }
