@@ -104,6 +104,11 @@ export class LiveTv {
   close() { clearInterval(this.timer); for (const relay of [...this.relays.values()]) this.destroy(relay); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   get count() { return this.relays.size; }
   isLive(channelId: string) { return !!this.relays.get(channelId)?.live; }
+  // Administrator activity: how a viewer's channel is being delivered right now.
+  watching(id: string) {
+    const viewer = this.viewers.get(id), relay = viewer && this.relays.get(viewer.channelId);
+    return relay && { delivery: (relay.encode ? 'transcode' : 'remux') as LiveDelivery, source: relay.source ?? {}, restarts: relay.restarts };
+  }
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
 
   private async prepare(relay: Relay) {

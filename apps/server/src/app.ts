@@ -51,6 +51,8 @@ import { registerArtwork } from './artwork-api.js';
 import { CleanupStore } from './persistence/cleanup-store.js';
 import { CleanupEngine, type CleanupServices } from './services/cleanup-engine.js';
 import { registerCleanup } from './cleanup-api.js';
+import { Activity } from './services/activity.js';
+import { registerActivity } from './activity-api.js';
 
 export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box') {
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
@@ -73,6 +75,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   ];
   const streams = new Set<{id: string; hash: string; abort: AbortController}>();
   const stopStreams = (matches: (s: {id: string; hash: string}) => boolean) => {for (const s of streams) if (matches(s)) s.abort.abort();};
+  // Admin › Activity: every stream being watched, reported by the routes below that start, deliver and stop them.
+  const activity = new Activity(), client = (req: {ip: string; headers: {'user-agent'?: string}}) => ({ip: req.ip, userAgent: req.headers['user-agent']?.slice(0, 400)});
   app.addHook('onRequest', async (req, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
@@ -165,17 +169,22 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     return reply.type('text/vtt; charset=utf-8').send(await subtitles.webvtt(grant, item, req.params.stream));
   });
   app.post('/api/v1/live/sessions', {config: {rateLimit: {max: 30, timeWindow: 60000}}}, async req => {
-    const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash, grant} = await auth(req);
-    return custom.exists(input.channelId) ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId);
+    const input = z.object({channelId: z.string().uuid()}).strict().parse(req.body), {hash, grant} = await auth(req), own = custom.exists(input.channelId);
+    const started = await (own ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId));
+    activity.open({id: started.id, kind: own ? 'custom' : 'live', hash, accountId: grant.accountId, user: grant.name, delivery: started.delivery, ...client(req),
+      channelId: input.channelId, channel: {name: started.channel.name, number: started.channel.number}, source: started.source});
+    return started;
   });
   // Playlists reauthorize fully, like VOD; segments use the local session check.
   app.get<{Params: {id: string; file: string}}>('/api/v1/live/sessions/:id/:file', {config: {rateLimit: {max: 1200, timeWindow: 60000}}}, async (req, reply) => {
     const service = customTv.has(req.params.id) ? customTv : undefined;
+    activity.touch(req.params.id);
     if (req.params.file === 'index.m3u8') { const {hash, grant} = await auth(req); return reply.type('application/vnd.apple.mpegurl').send(await (service ? service.playlist(req.params.id, hash, grant) : live.playlist(req.params.id, hash))); }
     const segment = await (service ?? live).segment(req.params.id, identity.session(req.cookies[sessionCookie]), req.params.file);
+    activity.touch(req.params.id, segment.size);
     return reply.type('video/mp2t').header('content-length', String(segment.size)).send(segment.body);
   });
-  app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); return {status: 'stopped'}; });
+  app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); if (activity.get(req.params.id)?.hash === hash) activity.close(req.params.id); return {status: 'stopped'}; });
   registerCatalog(app,plex,auth);
   // Open pages hear when artwork or cleanup jobs change the library, and reload what they show.
   const events = new ClientEvents();
@@ -219,7 +228,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.post('/api/v1/auth/logout', async (req, reply) => {
     const token = req.cookies[sessionCookie];
-    if (token) {const {digest} = await import('./security/vault.js'); const hash = digest(token); stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); live.stopWhere(v => v.hash === hash); customTv.stopWhere(v => v.hash === hash);}
+    if (token) {const {digest} = await import('./security/vault.js'); const hash = digest(token); stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); live.stopWhere(v => v.hash === hash); customTv.stopWhere(v => v.hash === hash); activity.closeWhere(s => s.hash === hash);}
     identity.logout(token); reply.clearCookie(sessionCookie, cookieOpts); return {status: 'signed_out'};
   });
   app.get('/api/v1/me', async req => { const {grant} = await auth(req); return {accountId: grant.accountId, role: grant.role,libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type))}; });
@@ -247,10 +256,14 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     const playing = route.kind === 'direct' ? fileDefault : target;
     const details = {tracks: mediaTracks(item, playing?.id), markers: mediaMarkers(item), source: {videoCodec: media.videoCodec, audioCodec: playing?.codec ?? media.audioCodec, width: media.width, height: media.height, container: media.container, bitrateKbps: media.bitrate},
       quality: input.quality, qualityOptions: qualityOptions(sourceVideo, input.capabilities, false, !otherTrack)};
-    if (route.kind === 'direct') return {...playback.createVod(hash, input.ratingKey, startOffsetMs), ...details};
+    const watching = (created: {id: string; delivery: 'direct' | 'remux' | 'transcode'}) => activity.open({id: created.id, kind: 'vod', hash, accountId: grant.accountId, user: grant.name, delivery: created.delivery, ...client(req),
+      mediaId: item.ratingKey, positionMs: startOffsetMs, durationMs: item.duration, quality: input.quality, source: details.source,
+      ...(route.kind === 'cpu' ? {target: {maxHeight: route.maxHeight, maxBitrateKbps: route.maxBitrateKbps}} : {})});
+    if (route.kind === 'direct') { const created = playback.createVod(hash, input.ratingKey, startOffsetMs); watching(created); return {...created, ...details}; }
     if (requested && requested.id !== plexSelected?.id) await plex.selectAudioStream(grant, item, requested.id);
     const created = playback.createVod(hash, input.ratingKey, startOffsetMs, route.kind === 'remux' ? 'remux' : 'transcode');
     try {await transcodes.start(created.id, hash, grant, item, route, requested || otherTrack ? {id: target!.id, codec: target!.codec} : undefined);} catch (e) {playback.stop(created.id, hash); throw e;}
+    watching(created);
     return {...created, ...details};
   });
   // Plex transcoder HLS proxy. Playlists reauthorize fully; segments use the
@@ -261,8 +274,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     playback.owned(req.params.id, hash);
     const abort = new AbortController(); reply.raw.once('close', () => abort.abort());
     const result = await transcodes.fetch(req.params.id, hash, rel, req.url.split('?')[1] ?? '', abort.signal);
-    if (result.kind === 'playlist') return reply.type('application/vnd.apple.mpegurl').send(result.body);
+    if (result.kind === 'playlist') { activity.touch(req.params.id, result.body.length); return reply.type('application/vnd.apple.mpegurl').send(result.body); }
     const {response} = result;
+    activity.touch(req.params.id, Number(response.headers.get('content-length')) || 0);
     reply.code(response.status);
     for (const h of ['content-type', 'content-length']) if (response.headers.has(h)) reply.header(h, response.headers.get(h)!);
     return reply.send(response.body ? Readable.fromWeb(response.body as import('node:stream/web').ReadableStream) : null);
@@ -272,6 +286,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     requireThat(session.mode === 'plex_vod', 'INVALID_MODE', 'This endpoint only serves on-demand media.', 403);
     if (req.headers.range) requireThat(/^bytes=\d*-\d*$/.test(req.headers.range), 'INVALID_RANGE', 'Only a single byte range is supported.');
     const item = await plex.metadata(grant, session.rating_key), running = {id: session.id, hash, abort: new AbortController()};
+    activity.touch(session.id);
     requireThat([...streams].filter(s => s.hash === hash).length < 20, 'STREAM_LIMIT', 'Too many open media requests.', 429);
     streams.add(running);
     const timer = setInterval(() => {void auth(req).then(a => plex.metadata(a.grant, session.rating_key)).then(() => playback.owned(session.id, hash)).catch(() => running.abort.abort());}, 15000); timer.unref();
@@ -307,9 +322,16 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   });
   app.patch<{Params: {id: string}}>('/api/v1/playback/sessions/:id/progress', async req => {
     const input = z.object({timeMs: z.number().int().nonnegative(), state: z.enum(['playing', 'paused', 'stopped'])}).strict().parse(req.body);
-    const {hash, grant} = await auth(req); await playback.progress(req.params.id, hash, grant, input.timeMs, input.state); transcodes.touch(req.params.id, hash, grant); return {status: 'synchronized'};
+    const {hash, grant} = await auth(req); await playback.progress(req.params.id, hash, grant, input.timeMs, input.state); activity.progress(req.params.id, hash, input.timeMs, input.state); transcodes.touch(req.params.id, hash, grant); return {status: 'synchronized'};
   });
-  app.delete<{Params: {id: string}}>('/api/v1/playback/sessions/:id', async req => { const {hash} = await auth(req); playback.stop(req.params.id, hash); if (transcodes.has(req.params.id, hash)) transcodes.stop(req.params.id); stopStreams(s => s.id === req.params.id && s.hash === hash); return {status: 'stopped'}; });
+  app.delete<{Params: {id: string}}>('/api/v1/playback/sessions/:id', async req => { const {hash} = await auth(req); playback.stop(req.params.id, hash); if (transcodes.has(req.params.id, hash)) transcodes.stop(req.params.id); stopStreams(s => s.id === req.params.id && s.hash === hash); activity.close(req.params.id); return {status: 'stopped'}; });
+  // Ending a stream from Admin › Activity stops its delivery the way the viewer's own Stop would.
+  registerActivity(app, activity, plex, admin, {live, customTv, iptv, transcodes}, s => {
+    if (s.kind !== 'vod') { live.stop(s.id, s.hash); customTv.stop(s.id, s.hash); return; }
+    try {playback.stop(s.id, s.hash);} catch {/* already ended */}
+    if (transcodes.has(s.id, s.hash)) transcodes.stop(s.id);
+    stopStreams(x => x.id === s.id && x.hash === s.hash);
+  });
   app.get('/api/v1/admin/settings/playback', async req => { await admin(req); return {...settings.get(), activeVideoEncoders: budget.count, customBuffer: customTv.usage()}; });
   app.patch('/api/v1/admin/settings/playback', async req => {
     const {grant} = await admin(req), input = playbackSettings.extend({expectedRevision: z.number().int().nonnegative()}).strict().parse(req.body);
