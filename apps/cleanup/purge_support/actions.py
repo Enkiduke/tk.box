@@ -4,7 +4,7 @@ import logging
 
 from .api import ApiError, positive_id, season_targets
 from .plex import season_added_at
-from .policy import days_remaining, leaving_soon, rule_for_requests
+from .policy import days_remaining, held_until, hold_key, leaving_soon, rule_for_requests
 from .reporting import add_entry, add_status, library_name
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def delete_whole_item(item, media_type, arr_item, media_ids, settings, arr, seer
                 report.failed += 1
 
 
-def process_seasons(show, requests, series, settings, sonarr, history, now, report):
+def process_seasons(show, requests, series, settings, sonarr, history, now, report, tmdb_id):
     """Keep season policy after cleanup leaves only a later season."""
     seasons = show.seasons()  # Failure must never fall back to deleting the show.
     if not seasons or any(isinstance(season.index, bool) or not isinstance(season.index, int)
@@ -62,7 +62,7 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
             report.protected += 1
             logger.info("Keeping protected season '%s - %s'", show.title, season.title)
             add_status(report, season, "season", "protected", title=f"{show.title} - {season.title}", library=library_name(show),
-                       reason="Specials" if season.index == 0 else "Latest season")
+                       reason="Specials" if season.index == 0 else "Latest season", key=hold_key("tv", tmdb_id, season.index))
         else:
             eligible.append(season)
     if not eligible:
@@ -74,11 +74,14 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
     rescan_needed = False
     for season in eligible:
         label = f"{show.title} - {season.title}"
+        hold = hold_key("tv", tmdb_id, season.index)
         try:
             added_at = season_added_at(season)
             watch = history.watch_status(season, "season", requestor_ids)
             rule = rule_for_requests(requests, watch, settings, season_added_at=added_at)
-            if now >= rule.deletion_date:
+            held = held_until(rule, settings, hold)
+            due_at = held or rule.deletion_date
+            if now >= due_at:
                 season_targets(season.index, episodes)
                 logger.warning("DELETE Candidate: '%s'. %s: %s", label, rule.name, rule.reason)
                 add_entry(report.delete_summary, season, f"{label} [{rule.name}]")
@@ -91,21 +94,24 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
                     season.delete()
                     report.deleted += 1
                     logger.warning("Deleted season '%s' from Sonarr and Plex", label)
-                add_status(report, season, "season", "due" if settings.dry_run else "deleted", title=label, rule=rule, library=library_name(show))
+                add_status(report, season, "season", "due" if settings.dry_run else "deleted", title=label, rule=rule,
+                           library=library_name(show), key=hold)
             else:
-                remaining = days_remaining(rule.deletion_date, now)
-                leaving = leaving_soon(rule.deletion_date, now, settings.leaving_soon_days)
+                remaining = days_remaining(due_at, now)
+                leaving = leaving_soon(due_at, now, settings.leaving_soon_days)
                 if leaving:
                     add_entry(report.season_summary, season, f"{label} in {remaining} days [{rule.name}]")
-                add_status(report, season, "season", "leaving" if leaving else "kept", title=label, rule=rule, library=library_name(show))
+                add_status(report, season, "season", "leaving" if leaving else "kept", title=label, rule=rule,
+                           library=library_name(show), key=hold, held=held)
                 if settings.dry_run:
                     logger.info("DRY RUN Foresight: '%s' in %s days (%s: %s)", label, remaining, rule.name, rule.reason)
                 else:
-                    logger.info("Keeping season '%s' until %s (%s)", label, rule.deletion_date.isoformat(), rule.name)
+                    logger.info("Keeping season '%s' until %s (%s)", label, due_at.isoformat(), rule.name)
                 report.kept += 1
         except Exception as exc:
             logger.exception("Skipping season '%s' after failed evaluation or deletion", label)
-            add_status(report, season, "season", "error", title=label, reason=f"Skipped after an error: {exc}", library=library_name(show))
+            add_status(report, season, "season", "error", title=label, reason=f"Skipped after an error: {exc}",
+                       library=library_name(show), key=hold)
             report.failed += 1
             report.evaluation_complete = False
     if rescan_needed:

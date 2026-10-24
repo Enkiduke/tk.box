@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {CleanupStore} from '../apps/server/src/persistence/cleanup-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {cleanupConfig,cleanupMissing,type CleanupServices} from '../apps/server/src/services/cleanup-engine.js';
+import {cleanupConfig,cleanupMissing,holdUntil,withHolds,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
 
 const store=()=>new CleanupStore(openDatabase(':memory:'),new Vault(randomBytes(32)));
 const services:CleanupServices={seerr:{url:'http://seerr:5055',apiKey:'seerr-key'},tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
@@ -38,4 +38,28 @@ test('clean up keys are sealed and a saved key survives a save without one',()=>
   assert.deepEqual(view,{revision:2,tautulliUrl:'http://tautulli:8181',sonarrUrl:'http://sonarr:8989',tautulliKeySet:true,sonarrKeySet:false});
   assert.equal(s.connections().tautulliKey,'abc123');
   assert.throws(()=>s.updateConnections('admin',1,{tautulliUrl:'',sonarrUrl:''}),/changed/);
+});
+
+test('a hold keeps a title longer and the status shows it until the next run',()=>{
+  const s=store(),{revision:_,...settings}=s.settings(),DAY=86400000,now=Date.parse('2026-10-01T00:00:00Z');
+  const title:CleanupTitle={title:'Dune',year:2021,kind:'movie',library:'Movies',status:'due',rule:'Rule 2',reason:'',deletion_date:'2026-09-30T00:00:00Z',held_until:null,key:'movie:438631',rating_key:'1'};
+  const view={updated:'2026-10-01T00:00:00Z',dryRun:true,complete:true,items:[title,{...title,key:'movie:1',status:'protected' as const,deletion_date:null}]};
+  // Start over gives the rule's whole period from today; extend adds to today when the date has passed.
+  assert.equal(holdUntil(title,settings,{action:'reset'},now),now+60*DAY);
+  assert.equal(holdUntil(title,settings,{action:'extend',days:3},now),now+3*DAY);
+  assert.equal(holdUntil({...title,held_until:'2026-10-20T00:00:00Z'},settings,{action:'extend',days:3},now),Date.parse('2026-10-23T00:00:00Z'));
+  s.setHold('admin','movie:438631',now+3*DAY,now);
+  const held=withHolds(view,s.holds(now),7,now).items;
+  assert.equal(held[0]!.status,'leaving');
+  assert.equal(held[0]!.held_until,new Date(now+3*DAY).toISOString());
+  assert.equal(held[1]!.holdable,false);
+  assert.equal(withHolds(view,s.holds(now),2,now).items[0]!.status,'kept');
+  // A hold the run already used leaves its status alone; removing it puts the rule's date back.
+  const ran={...view,items:[{...title,status:'leaving' as const,held_until:new Date(now+3*DAY).toISOString()}]};
+  assert.equal(withHolds(ran,s.holds(now),7,now).items[0]!.status,'leaving');
+  assert.equal(withHolds(ran,{},7,now).items[0]!.status,'due');
+  // Past holds lapse, and the script gets the rest.
+  assert.deepEqual(s.holds(now+4*DAY),{});
+  assert.deepEqual(cleanupConfig(settings,services,{plexUrl:'',poster:''},s.holds(now)).holds,{'movie:438631':new Date(now+3*DAY).toISOString()});
+  assert.throws(()=>s.setHold('admin','movie:1;drop',now),/can be held/);
 });

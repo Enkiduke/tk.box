@@ -43,8 +43,9 @@ def add_entry(summary, item, entry):
     summary.setdefault(library_name(item), []).append(entry)
 
 
-def add_status(report, item, kind, status, *, title=None, rule=None, reason="", library=None):
-    """`status` is due, leaving, kept, protected, not_found or error; `kind` is movie, show or season."""
+def add_status(report, item, kind, status, *, title=None, rule=None, reason="", library=None, key=None, held=None):
+    """`status` is due, leaving, kept, protected, not_found or error; `kind` is movie, show or season. `key` is the
+    title's hold key and `held` the date a hold keeps it until; `deletion_date` stays the rule's own date."""
     year = getattr(item, "year", None) if item is not None and kind != "season" else None
     report.items.append({
         "title": title or getattr(item, "title", None) or "Unknown Title",
@@ -55,6 +56,10 @@ def add_status(report, item, kind, status, *, title=None, rule=None, reason="", 
         "rule": rule.name if rule else None,
         "reason": rule.reason if rule else reason,
         "deletion_date": rule.deletion_date.isoformat() if rule else None,
+        "held_until": held.isoformat() if held else None,
+        "key": key,
+        # The Plex item, for its poster.
+        "rating_key": str(item.ratingKey) if item is not None and getattr(item, "ratingKey", None) else None,
     })
 
 

@@ -10,7 +10,8 @@ Deletes requested movies and shows once the people who asked for them have watch
 - **Preview only** is on until an administrator turns it off. **Preview** always runs with `--dry-run`.
 - **Schedule:** once a day at a server-local time (or up to two hours late). Like Artwork's schedules, it reads Plex with the Plex admin token (Admin › Connections) and waits while there is no working one.
 - **Leaving Soon:** the collection's poster is `apps/cleanup/leaving-soon.png`.
-- **Status:** each run is given `--status DATA_DIR/cleanup/status.json`; when it finishes, the script writes every movie, show and season it looked at there (status, library, deletion date and the rule behind it). The Status tab lists that file, with filters and sorting, so it is as current as the last preview or clean up.
+- **Status:** each run is given `--status DATA_DIR/cleanup/status.json`; when it finishes, the script writes every movie, show and season it looked at there (status, library, deletion date and the rule behind it). The Status tab shows that file as posters grouped by status (soonest gone first), so it is as current as the last preview or clean up. Each entry carries its Plex `rating_key` for the poster and a hold key (`movie:<tmdb>`, `tv:<tmdb>` or `tv:<tmdb>:<season>`).
+- **Holds:** from a title in the Status tab an administrator can *start over* (the rule's full period from today) or *extend* it by some days. Holds are kept in `cleanup_config` (`state:holds`), passed to the script as `holds` in its config, and only ever move a date later; the rule's own date wins once it is later still, and a hold lapses after its date. The Status tab shows a changed hold straight away; the script acts on it at the next run.
 - **Jobs** keep their last 2000 lines of output. A restart marks unfinished jobs as canceled.
 
 ## Setup

@@ -67,6 +67,17 @@ def rule_for_requests(requests, watch, settings, season_added_at=None):
     return max(rules, key=lambda rule: rule.deletion_date)
 
 
+def hold_key(media_type, tmdb_id, season=None):
+    """How tk.box names a title's hold: movie:<tmdb>, tv:<tmdb> or tv:<tmdb>:<season>."""
+    return f"{'movie' if media_type == 'movie' else 'tv'}:{tmdb_id}" + ("" if season is None else f":{season}")
+
+
+def held_until(rule, settings, key):
+    """The date an administrator's hold keeps the title until, when it is later than the rule's own date."""
+    until = settings.holds.get(key)
+    return until if until is not None and until > rule.deletion_date else None
+
+
 def days_remaining(deletion_date, now):
     return max(0, ceil((deletion_date - now).total_seconds() / 86400))
 
