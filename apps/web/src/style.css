@@ -5,7 +5,8 @@
   --nav-h:68px;--gutter:clamp(16px,4vw,56px);--radius:8px;--ease:cubic-bezier(.2,.7,.2,1);
   color:var(--text);background:var(--bg)}
 *{box-sizing:border-box}
-html{scrollbar-color:#3a3a44 transparent}
+/* The gutter stays when a dialog locks scrolling, so the page behind doesn't shift sideways. */
+html{scrollbar-color:#3a3a44 transparent;scrollbar-gutter:stable}
 html.modal-open{overflow:hidden}
 body{margin:0;background:var(--bg);min-height:100vh}
 a{color:inherit;text-decoration:none}
@@ -327,9 +328,15 @@ main{min-height:100vh}
 
 /* Dialogs and details */
 dialog{color:var(--text);background:var(--surface);border:1px solid var(--line-strong);border-radius:14px;width:min(720px,calc(100% - 32px));max-height:calc(100vh - 64px);padding:0;margin:32px auto;box-shadow:0 30px 90px rgba(0,0,0,.7);overflow:auto;overscroll-behavior:contain}
-dialog[open]{animation:dialog-in .28s var(--ease)}
-@keyframes dialog-in{from{opacity:0;transform:translateY(16px) scale(.98)}to{opacity:1;transform:none}}
-dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
+dialog[open]{animation:dialog-in .22s var(--ease)}
+dialog[open]::backdrop{animation:backdrop-in .22s var(--ease)}
+dialog.closing{animation:dialog-out .16s ease-in forwards;pointer-events:none}
+dialog.closing::backdrop{animation:backdrop-out .16s ease-in forwards}
+@keyframes dialog-in{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes dialog-out{to{opacity:0;transform:translateY(8px) scale(.985)}}
+@keyframes backdrop-in{from{opacity:0}}
+@keyframes backdrop-out{to{opacity:0}}
+dialog::backdrop{background:rgba(0,0,0,.76)}
 .modal-content{padding:32px;position:relative}
 .modal-content>h2{margin-right:36px}
 .modal-close{position:absolute;right:14px;top:14px;z-index:5;background:rgba(12,12,16,.6);backdrop-filter:blur(6px)}

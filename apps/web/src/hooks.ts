@@ -51,6 +51,11 @@ export function fetchCached<T>(path:string):Promise<T> {
   }
   return pending as Promise<T>;
 }
+// A title some cached list already holds, so its details can draw at once while the full record loads.
+export function cachedListItem<T extends {id:string}>(id:string):T|undefined {
+  for(const {data} of cache.values()){const items=(data as {items?:unknown}|undefined)?.items;if(!Array.isArray(items))continue;const hit=items.find(item=>(item as T|undefined)?.id===id);if(hit)return hit as T;}
+  return undefined;
+}
 type Result<T>={path?:string;data?:T;error?:ApiClientError;loading:boolean};
 const cached=<T,>(path:string|undefined):Result<T>|undefined=>{const hit=path?cache.get(path):undefined;return hit&&{path,data:hit.data as T,loading:false};};
 

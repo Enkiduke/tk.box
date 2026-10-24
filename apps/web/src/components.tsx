@@ -285,8 +285,18 @@ export function Pagination({page,onChange}:{page:CatalogPage;onChange:(offset:nu
   if(!page.offset&&!page.hasMore)return null;
   return <div className="pagination"><span>{page.total!==undefined?`${page.total.toLocaleString()} titles`:''}{page.items.length?` · ${page.offset+1}–${page.offset+page.items.length}`:''}</span><div><button disabled={!page.offset} onClick={()=>onChange(Math.max(0,page.offset-page.limit))}>Previous</button><button disabled={!page.hasMore} onClick={()=>onChange(page.offset+page.limit)}>Next</button></div></div>;
 }
-export function Modal({title,onClose,children,variant}:{title:string;onClose:()=>void;children:ReactNode;variant?:'media'|'wide'}) {
+const MODAL_CLOSE_MS=160;
+// scrollKey: content that changes in place (one title's details to another's) starts at the top again.
+export function Modal({title,onClose,children,variant,scrollKey}:{title:string;onClose:()=>void;children:ReactNode;variant?:'media'|'wide';scrollKey?:string}) {
   const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
   useEffect(()=>{const dialog=ref.current!;dialog.showModal();document.documentElement.classList.add('modal-open');return()=>{dialog.close();document.documentElement.classList.remove('modal-open');};},[]);
-  return <dialog ref={ref} className={variant==='media'?'media-dialog':variant==='wide'?'wide-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===ref.current)close.current();}}><div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={onClose}><Icon name="close"/></button>{children}</div></dialog>;
+  useEffect(()=>{ref.current!.scrollTop=0;},[scrollKey]);
+  // Fades out before the owner unmounts it. An owner that refuses (busy) gets the dialog back once the fade is over.
+  const dismiss=()=>{
+    const dialog=ref.current!;if(dialog.classList.contains('closing'))return;
+    if(matchMedia('(prefers-reduced-motion:reduce)').matches){close.current();return;}
+    dialog.classList.add('closing');
+    setTimeout(()=>{close.current();setTimeout(()=>{if(dialog.isConnected)dialog.classList.remove('closing');},250);},MODAL_CLOSE_MS);
+  };
+  return <dialog ref={ref} className={variant==='media'?'media-dialog':variant==='wide'?'wide-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();dismiss();}} onClick={e=>{if(e.target===ref.current)dismiss();}}><div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={dismiss}><Icon name="close"/></button>{children}</div></dialog>;
 }
