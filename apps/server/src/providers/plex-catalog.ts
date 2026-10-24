@@ -15,8 +15,13 @@ export const catalogNode=z.object({
   Rating:z.array(z.object({image:z.string().max(200),value:z.coerce.number(),type:z.string().max(20).optional()})).max(20).optional().catch(undefined),
   ratingImage:z.string().max(200).optional().catch(undefined),audienceRating:z.number().optional().catch(undefined),audienceRatingImage:z.string().max(200).optional().catch(undefined),
   tagline:z.string().max(500).optional().catch(undefined),originallyAvailableAt:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().catch(undefined),studio:z.string().max(200).optional().catch(undefined),
-  Director:z.array(z.object({tag:z.string().max(200)})).max(50).optional().catch(undefined),Role:z.array(z.object({tag:z.string().max(200)})).max(500).optional().catch(undefined)
+  Director:z.array(z.object({tag:z.string().max(200)})).max(50).optional().catch(undefined),Role:z.array(z.object({tag:z.string().max(200)})).max(500).optional().catch(undefined),
+  Guid:z.array(z.object({id:z.string().max(200)})).max(20).optional().catch(undefined)
 });
+// A movie's or show's TMDB id from its agent guids (tmdb://603). An episode's or season's would be its own, not the show's.
+const tmdbId=(node:CatalogNode)=>{if(node.type!=='movie'&&node.type!=='show')return undefined;const id=node.Guid?.map(g=>/^tmdb:\/\/(\d{1,10})$/.exec(g.id)?.[1]).find(Boolean);return id?Number(id):undefined;};
+// The item's own IMDb title (tt…); an episode has one of its own.
+const imdbId=(node:CatalogNode)=>node.Guid?.map(g=>/^imdb:\/\/(tt\d{1,12})$/.exec(g.id)?.[1]).find(Boolean);
 export const catalogContainer=z.object({MediaContainer:z.object({Metadata:z.array(catalogNode).default([]),librarySectionID:identifier.optional(),offset:z.coerce.number().int().nonnegative().optional(),totalSize:z.coerce.number().int().nonnegative().optional()})});
 export type CatalogNode=z.infer<typeof catalogNode>;
 export const artworkPath=(value:string|undefined)=>value&&/^\/library\/metadata\/\d+\/(?:thumb|art)\/\d+$/.test(value)?value:undefined;
@@ -67,7 +72,7 @@ export function catalogDto(node:CatalogNode,libraryId:string):CatalogItem {
     showTitle:node.grandparentTitle,seasonNumber:node.type==='season'?node.index:node.parentIndex,episodeNumber:node.type==='episode'?node.index:undefined,
     episodeCount:node.leafCount,watchedEpisodeCount:node.viewedLeafCount,contentRating:node.contentRating,rating:node.rating,genres:node.Genre?.map(g=>g.tag)??[],addedAt:node.addedAt,
     ratings:externalRatings(node),logoUrl:logo?versioned(`/api/v1/catalog/items/${node.ratingKey}/artwork?kind=logo`,logo):undefined,tagline:node.tagline||undefined,airDate:node.originallyAvailableAt,
-    studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined};
+    studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined,tmdbId:tmdbId(node),imdbId:imdbId(node)};
 }
 // Plex lists recently added TV one episode at a time. Like Plex's own home hub, episodes of a
 // season that arrived together (each within a day of the next) collapse into one season card.

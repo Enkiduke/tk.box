@@ -37,6 +37,8 @@ export type CatalogItem = {
   genres: string[]; addedAt?: number;
   // Detail fields Plex sends on a single item (lists usually omit them).
   ratings?: ExternalRating[]; logoUrl?: string; tagline?: string; airDate?: string; studio?: string; directors?: string[]; cast?: string[];
+  // A movie's or show's TMDB id, which lets its cast and crew link to the right people, and the item's own IMDb id.
+  tmdbId?: number; imdbId?: string;
 };
 // A third-party score from the item's Plex agent, on Plex's 0–10 scale. `fresh` is Rotten Tomatoes' fresh/upright state.
 export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
