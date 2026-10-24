@@ -1,7 +1,8 @@
 import {useEffect,useMemo,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
-import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
+import {holdEntries} from './cleanup-holds.js';
 import {date,useMutation} from './settings-ui.js';
 
 // Clean Up › Status: every title the last finished run looked at, as posters grouped by what happens to it and when.
@@ -94,9 +95,11 @@ export function CleanupStatus({rules,busy}:{rules:RuleDays;busy:boolean}) {
   </div>;
 }
 
+// Leaving soon titles can be kept longer straight from a right-click.
 function TitleCard({item,now,onOpen}:{item:Title;now:number;onOpen:()=>void}) {
-  const {tone}=groupOf(item.status);
-  return <button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} aria-label={`${item.title}, ${countdown(item,now)}`}>
+  const {tone}=groupOf(item.status),menu=useMenu(item.title,()=>[holdEntries({key:item.key!,title:item.title,held_until:item.held_until}),[{label:'Details',icon:'info',run:onOpen}]]);
+  const leaving=item.status==='leaving'&&item.holdable&&!!item.key;
+  return <><button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} onContextMenu={leaving?menu.onContextMenu:undefined} aria-label={`${item.title}, ${countdown(item,now)}`}>
     <span className="cleanup-art">
       <Artwork src={poster(item)} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       <span className={`cleanup-when ${tone}`}>{countdown(item,now)}</span>
@@ -104,7 +107,7 @@ function TitleCard({item,now,onOpen}:{item:Title;now:number;onOpen:()=>void}) {
     </span>
     <span className="poster-title"><span className="card-plain">{item.title}</span></span>
     <span className="poster-meta"><span className="card-plain">{[meta(item),item.library].filter(Boolean).join(' · ')}</span></span>
-  </button>;
+  </button>{menu.menu}</>;
 }
 
 function TitleDetail({item,rules,busy,dryRun,now,onClose}:{item:Title;rules:RuleDays;busy:boolean;dryRun:boolean;now:number;onClose:()=>void}) {
