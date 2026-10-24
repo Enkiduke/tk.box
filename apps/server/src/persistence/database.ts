@@ -176,6 +176,11 @@ export function openDatabase(path: string) {
       db.exec('ALTER TABLE sports_events ADD COLUMN logos TEXT');
       db.prepare('INSERT INTO migrations VALUES(19)').run();
     }
+    // Streams reach public addresses only, unless an administrator allows a source's local-network streams.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=20').get()) {
+      db.exec('ALTER TABLE iptv_sources ADD COLUMN allow_private_streams INTEGER NOT NULL DEFAULT 0');
+      db.prepare('INSERT INTO migrations VALUES(20)').run();
+    }
   })();
   return db;
 }

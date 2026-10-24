@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { rename, rm } from 'node:fs/promises';
+import { ffmpegEnv, protocols } from '../streaming/stream-guard.js';
 
 // One-connection channel check. A single FFmpeg run opens the stream exactly like the live
 // relay does, decodes a short sample and reports, from its own log:
@@ -16,7 +17,8 @@ export type ProbeResult = {
   frames: number; mediaSeconds: number; frozen: boolean; silent: boolean;
   fingerprint?: string; informative: boolean; thumbnail: boolean;
 };
-export type ProbeOptions = { ffmpeg?: string; signal?: AbortSignal; sampleSeconds?: number; thumbnailPath?: string };
+// proxy: the stream guard FFmpeg reads the stream through (public addresses only); none for local-network sources.
+export type ProbeOptions = { ffmpeg?: string; signal?: AbortSignal; sampleSeconds?: number; thumbnailPath?: string; proxy?: string };
 export type Prober = (url: string, options: ProbeOptions) => Promise<ProbeResult>;
 
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -114,8 +116,8 @@ export function hamming(a: string, b: string) {
 }
 export const SIMILAR = 6;
 
-export function args(url: string, sample: number, video: boolean, thumbnail?: string) {
-  const out = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-protocol_whitelist', 'http,https,tcp,tls,crypto', '-user_agent', userAgent,
+export function args(url: string, sample: number, video: boolean, thumbnail?: string, proxy?: string) {
+  const out = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-protocol_whitelist', protocols(proxy), '-user_agent', userAgent,
     '-rw_timeout', '10000000', '-threads', '1', '-t', String(sample), '-i', url,
     // Detectors run on a tiny copy: freeze comparison is cheaper and compression noise is smoothed away.
     '-map', '0:v:0?', '-map', '0:a:0?', '-vf', `setpts=PTS-STARTPTS,scale=160:-2,freezedetect=n=-50dB:d=${sample - 2}`,
@@ -126,10 +128,10 @@ export function args(url: string, sample: number, video: boolean, thumbnail?: st
   if (thumbnail) out.push('-map', '0:v:0', '-vf', `${pick},scale=320:-2`, '-frames:v', '1', '-q:v', '7', '-f', 'image2', '-update', '1', '-y', thumbnail.replaceAll('\\', '/'));
   return out;
 }
-function run(executable: string, argv: string[], timeoutMs: number, signal?: AbortSignal) {
+function run(executable: string, argv: string[], timeoutMs: number, signal?: AbortSignal, proxy?: string) {
   return new Promise<{ stderr: string; stdout: Buffer; exited: 'ok' | 'failed' | 'timeout' | 'cancelled' | 'unavailable' }>(done => {
     let stderr = '', exited: 'timeout' | 'cancelled' | undefined;const stdout: Buffer[] = [];
-    const child = spawn(executable, argv, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(executable, argv, { shell: false, windowsHide: true, env: ffmpegEnv(proxy), stdio: ['ignore', 'pipe', 'pipe'] });
     const stop = (why: 'timeout' | 'cancelled') => { exited ??= why; child.kill('SIGKILL'); };
     const timer = setTimeout(() => stop('timeout'), timeoutMs), abort = () => stop('cancelled');
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
@@ -141,13 +143,13 @@ function run(executable: string, argv: string[], timeoutMs: number, signal?: Abo
     child.on('close', code => finish(code === 0 ? 'ok' : 'failed'));
   });
 }
-export const probeStream: Prober = async (url, { ffmpeg = 'ffmpeg', signal, sampleSeconds = 7, thumbnailPath }) => {
+export const probeStream: Prober = async (url, { ffmpeg = 'ffmpeg', signal, sampleSeconds = 7, thumbnailPath, proxy }) => {
   const started = performance.now(), sample = Math.max(5, Math.min(20, sampleSeconds)), timeout = (sample + 20) * 1000;
   const temp = thumbnailPath && `${thumbnailPath}.part.jpg`;
-  let result = await run(ffmpeg, args(url, sample, true, temp), timeout, signal), analysis = parseAnalysis(result.stderr);
+  let result = await run(ffmpeg, args(url, sample, true, temp, proxy), timeout, signal, proxy), analysis = parseAnalysis(result.stderr);
   // Audio-only inputs (radio) cannot feed the picture outputs; repeat with the detectors alone.
   if (result.exited === 'failed' && analysis.noVideoOutput && analysis.hasAudio && !analysis.hasVideo) {
-    result = await run(ffmpeg, args(url, sample, false), timeout, signal); analysis = parseAnalysis(result.stderr);
+    result = await run(ffmpeg, args(url, sample, false, undefined, proxy), timeout, signal, proxy); analysis = parseAnalysis(result.stderr);
   }
   const elapsedMs = Math.round(performance.now() - started), base = { elapsedMs, video: analysis.video, audio: analysis.audio, frames: analysis.frames, mediaSeconds: fixed(analysis.mediaSeconds), informative: false, thumbnail: false };
   if (result.exited === 'unavailable' || result.exited === 'cancelled') {
