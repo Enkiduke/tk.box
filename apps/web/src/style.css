@@ -273,7 +273,7 @@ main{min-height:100vh}
 .browse-search .icon-button{padding:3px}
 .browse-search svg{width:17px;height:17px}
 .browse-popup{position:relative;flex-shrink:0}
-.browse-popup>summary{list-style:none;display:flex;align-items:center;gap:7px;height:40px;padding:0 14px;color:#d6d6dc;font-size:13.5px;font-weight:550;border:1px solid var(--line);border-radius:20px;cursor:pointer;user-select:none;transition:background .15s,border-color .15s}
+.browse-popup>summary{list-style:none;display:flex;margin:0;align-items:center;gap:7px;height:40px;padding:0 14px;color:#d6d6dc;font-size:13.5px;font-weight:550;border:1px solid var(--line);border-radius:20px;cursor:pointer;user-select:none;transition:background .15s,border-color .15s}
 .browse-popup>summary::-webkit-details-marker{display:none}
 .browse-popup>summary:hover,.browse-popup[open]>summary{background:var(--surface-2);border-color:var(--line-strong)}
 .browse-popup>summary>svg{width:17px;height:17px}
@@ -285,7 +285,7 @@ main{min-height:100vh}
 .browse-menu .button-row>button{flex:1}
 .filter-pair{display:grid;grid-template-columns:96px 1fr;gap:12px}
 .sort-menu{width:220px}
-.browse-layout{flex-shrink:0;color:var(--muted)}
+.browse-layout{flex-shrink:0;width:40px;height:40px;padding:0;color:var(--muted)}
 .browse-layout:hover{color:var(--text)}
 .browse-count{font-size:12px;color:var(--dim);min-width:28px;text-align:right;font-variant-numeric:tabular-nums}
 .active-filters{display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 18px}
