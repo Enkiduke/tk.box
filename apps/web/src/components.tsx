@@ -294,7 +294,6 @@ export function Modal({title,onClose,children,variant,scrollKey}:{title:string;o
   // Fades out before the owner unmounts it. An owner that refuses (busy) gets the dialog back once the fade is over.
   const dismiss=()=>{
     const dialog=ref.current!;if(dialog.classList.contains('closing'))return;
-    if(matchMedia('(prefers-reduced-motion:reduce)').matches){close.current();return;}
     dialog.classList.add('closing');
     setTimeout(()=>{close.current();setTimeout(()=>{if(dialog.isConnected)dialog.classList.remove('closing');},250);},MODAL_CLOSE_MS);
   };
