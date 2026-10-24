@@ -116,6 +116,9 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   });
   app.post('/api/v1/admin/artwork/title/select',async request=>ask(request,'select',z.object({id:rel,kind,name:fileName}).strict().parse(request.body)));
   app.post('/api/v1/admin/artwork/title/no-logo',async request=>ask(request,'no_logo',z.object({id:rel,on:z.boolean()}).strict().parse(request.body)));
+  // A collection's generated background: use it as the poster, or draw it again in another colour (null: its default).
+  app.post('/api/v1/admin/artwork/title/generated',async request=>ask(request,'generated',z.object({id:rel}).strict().parse(request.body)));
+  app.post('/api/v1/admin/artwork/title/background-color',async request=>ask(request,'background_color',z.object({id:rel,color:z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable()}).strict().parse(request.body)));
   app.post('/api/v1/admin/artwork/title/import',async request=>{
     const input=z.object({id:rel,kind,url:link.optional(),plex:plexPath.optional(),use:z.boolean(),crop:crop.optional()}).strict().parse(request.body);
     requireThat(!!input.url!==!!input.plex,'VALIDATION_FAILED','Give a picture’s address or its Plex path.');

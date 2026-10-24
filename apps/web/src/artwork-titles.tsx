@@ -15,7 +15,9 @@ type Pending={title:string};
 type TitlesView={titles:Title[];upload:boolean;pending:Record<string,Pending>};
 type File={name:string;thumb:string;full:string;kb:number;kept:boolean;size?:string;hash?:string;source?:string|null};
 type Section={id:string;label:string|null;pv:string;rendered:File|null;poster:File|null;logo:File|null;posters:File[];logos:File[]};
-type Detail={id:string;title:string;year?:number;key?:string;tv:boolean;no_logo:boolean;sections:Section[]};
+// generated: a streaming, chart, custom or curated collection's drawn background, kept as one file however often it's recoloured.
+type Generated={color:string;default:string;name:string;hash:string;thumb:string;full:string};
+type Detail={id:string;title:string;year?:number;key?:string;tv:boolean;no_logo:boolean;generated?:Generated|null;sections:Section[]};
 type Live={known:false}|{known:true;poster?:string|null;logo?:string|null};
 type RemoteItem={provider:string;url:string|null;plex:string|null;view:string;thumb:string;language?:string|null;text?:boolean|null;width:number;height:number};
 type Remote={items:RemoteItem[];notes:string[];target:[number,number]|null};
@@ -79,7 +81,7 @@ type Candidate={type:'file';f:File;cur?:boolean;x?:RemoteItem}|{type:'remote';x:
 function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const detail=useApi<Detail>(`/admin/artwork/title?id=${encodeURIComponent(id)}`),state=useApi<{upload:boolean;pending:Record<string,Pending>}>('/admin/artwork/state');
   const [scope,setScope]=useState(0),[tab,setTab]=useState<Kind>('poster'),[source,setSource]=useState<'all'|'posters'|'backdrops'>('all'),[text,setText]=useState<'all'|'textless'|'text'>('all');
-  const [busy,setBusy]=useState<string>(),[message,setMessage]=useState(''),[error,setError]=useState(''),[crop,setCrop]=useState<{x:RemoteItem;target:[number,number]}>(),[zoom,setZoom]=useState<{src:string;label:string}>(),[adding,setAdding]=useState(false);
+  const [busy,setBusy]=useState<string>(),[message,setMessage]=useState(''),[error,setError]=useState(''),[crop,setCrop]=useState<{x:RemoteItem;target:[number,number]}>(),[zoom,setZoom]=useState<{src:string;label:string}>(),[adding,setAdding]=useState(false),[tint,setTint]=useState<{x:number;y:number}>();
   const d=detail.data,section=d?.sections[Math.min(scope,d.sections.length-1)];
   const live=useApi<Live>(section?`/admin/artwork/title/live?id=${encodeURIComponent(section.id)}`:undefined);
   const seriesLive=useApi<Live>(d&&scope>0?`/admin/artwork/title/live?id=${encodeURIComponent(d.sections[0]!.id)}`:undefined);
@@ -104,7 +106,9 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const staged=(kind:Kind,which:Section,info?:Live)=>!info||!info.known?changed:kind in info&&(which[kind]?.hash??null)!==info[kind];
   const next=staged('poster',section,live.data)||staged('logo',d.sections[0]!,scope>0?seriesLive.data:live.data);
   const liveHash=live.data?.known?live.data[tab]:undefined;
-  const files:File[]=[...(section[tab]?[section[tab]!]:[]),...section[`${tab}s` as 'posters'|'logos']];
+  const g=tab==='poster'&&scope===0?d.generated:undefined;
+  // The generated background has its own tile, so its copy in use as the poster isn't listed again.
+  const files:File[]=[...(section[tab]?[section[tab]!]:[]),...section[`${tab}s` as 'posters'|'logos']].filter(f=>!g||f.hash!==g.hash);
   const rows=(remote.data?.items??[]).filter(x=>tab!=='poster'||text==='all'||(x.text!==null&&x.text===(text==='text')));
   const sourceOf=(x:RemoteItem)=>x.plex??x.url??'';
   // A file downloaded from an online picture is shown in that picture's place; the rest of the saved files come first.
@@ -136,6 +140,16 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
         <span className="artwork-tile-tools"><button className="icon-button" aria-label="View larger" onClick={()=>setZoom({src:f&&!x?f.full:x!.view,label:x?x.provider:f!.name})}><Icon name="expand" size={14}/></button>
           {f&&!(c.type==='file'&&c.cur)&&<button className="icon-button" aria-label={`Delete ${f.name}`} disabled={!!busy} onClick={()=>void act(`f:${f.name}`,()=>api('/admin/artwork/title/remove','POST',{id:target().id,kind:tab,name:f.name}),'Deleted.')}><Icon name="close" size={14}/></button>}</span></figcaption>
     </figure>;};
+  const generatedTag=g&&(section.poster?.hash===g.hash?staged('poster',section,live.data)?['Selected','ok']:[liveHash===g.hash?'Live':'In use','live']:liveHash===g.hash?['Live','live']:undefined);
+  const recolor=(color:string|null)=>{setTint(undefined);void act('generated',()=>api('/admin/artwork/title/background-color','POST',{id:d.id,color}),color?'Background recoloured. It’s the selected poster now.':'Background back to its default colour. It’s the selected poster now.');};
+  const generatedTile=g&&<figure key="generated" className={`artwork-tile poster${generatedTag?.[1]==='ok'?' selected':generatedTag?.[1]==='live'?' live':''}`}
+    onContextMenu={e=>{e.preventDefault();if(!busy)setTint({x:e.clientX,y:e.clientY});}}>
+    <button className="artwork-tile-pick" disabled={!!busy} aria-label={section.poster?.hash===g.hash?'View the generated background larger':'Use the generated background'} title="Right-click to change its colour"
+      onClick={()=>{if(section.poster?.hash===g.hash)setZoom({src:g.full,label:'Generated background'});else void act('generated',()=>api('/admin/artwork/title/generated','POST',{id:d.id}),'Poster updated.');}}>
+      <img src={g.thumb} alt="" loading="lazy" decoding="async"/>{generatedTag&&<span className={`badge ${generatedTag[1]}`}>{generatedTag[0]}</span>}{busy==='generated'&&<span className="artwork-tile-wait"><span className="spinner"/></span>}</button>
+    <figcaption><span>Generated</span><span>{g.color.toUpperCase()}{g.color!==g.default?' · custom':''}</span>
+      <span className="artwork-tile-tools"><button className="icon-button" aria-label="Change its colour" disabled={!!busy} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setTint({x:r.left,y:r.bottom+4});}}><Icon name="more" size={14}/></button></span></figcaption>
+  </figure>;
   const drop=(e:DragEvent)=>{const file=Array.from(e.dataTransfer.files).find(f=>f.type.startsWith('image/'));if(file){e.preventDefault();void upload$(file);}};
   const remoteState=source==='backdrops'?backdrops:remote;
   return <section className="artwork-editor" onDragOver={e=>{if(Array.from(e.dataTransfer.items).some(i=>i.kind==='file'))e.preventDefault();}} onDrop={drop}>
@@ -164,6 +178,7 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
         <p className="muted small">{source==='backdrops'?'Pick a wide image and crop a poster out of it.':`Click a ${tab} to try it and compare Current with Preview. Drop or paste your own image anywhere here.`}</p>
         {source!=='backdrops'&&<div className={`artwork-gallery ${tab}s`} aria-busy={!!busy}>
           <button className="artwork-add" disabled={!!busy} onClick={()=>setAdding(true)}><b>+</b><span>Add your own</span><small>Upload, link or drop</small></button>
+          {generatedTile}
           {tab==='poster'&&(backdrops.loading||wide.length>0)&&<button className="artwork-add" onClick={()=>setSource('backdrops')}><Icon name="grid" size={26}/><span>Crop from a backdrop</span><small>{backdrops.loading?'Looking…':`${wide.length} to choose from`}</small></button>}
           {tab==='logo'&&scope===0&&<button className={`artwork-add${d.no_logo?' selected':''}`} aria-pressed={d.no_logo} disabled={!!busy} onClick={()=>void act('nologo',()=>api('/admin/artwork/title/no-logo','POST',{id:d.id,on:!d.no_logo}),d.no_logo?'Logos are back on for this title.':'This title’s artwork will be made without a logo.')}><b>⊘</b><span>No logo</span><small>{d.no_logo?'Selected':'Artwork without a logo'}</small></button>}
           {shown.map(tile)}
@@ -178,7 +193,26 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
     {adding&&<AddOwn kind={tab} onClose={()=>setAdding(false)} file={file=>{setAdding(false);void upload$(file);}} link={url=>{setAdding(false);void act('add',()=>api('/admin/artwork/title/import','POST',{...target(),url,use:true}),`Added. It’s the selected ${tab} now.`);}}/>}
     {crop&&<Crop item={crop.x} target={crop.target} onClose={()=>setCrop(undefined)} use={box=>{const x=crop.x;setCrop(undefined);void act(`r:${sourceOf(x)}`,()=>api('/admin/artwork/title/import','POST',{id:section.id,kind:'poster',...(x.plex?{plex:x.plex}:{url:x.url}),use:true,crop:box}),'Cropped. It’s the selected poster now.');}}/>}
     {zoom&&<Modal title={zoom.label} onClose={()=>setZoom(undefined)}><img className="artwork-zoom" src={zoom.src} alt=""/></Modal>}
+    {tint&&g&&<BackgroundColor at={tint} color={g.color} fallback={g.default} onUse={recolor} onClose={()=>setTint(undefined)}/>}
   </section>;
+}
+// Right-click on the Generated tile: draw the background again in another colour, or its default. It replaces the one
+// before rather than adding a tile, and becomes the poster. Rendered in the top layer, like the library's menus.
+function BackgroundColor({at,color,fallback,onUse,onClose}:{at:{x:number;y:number};color:string;fallback:string;onUse:(color:string|null)=>void;onClose:()=>void}) {
+  const ref=useRef<HTMLDivElement>(null),[value,setValue]=useState(color);
+  useEffect(()=>{
+    const pop=ref.current!;pop.showPopover();
+    const {width,height}=pop.getBoundingClientRect(),margin=8;
+    pop.style.left=`${Math.min(Math.max(margin,at.x),innerWidth-width-margin)}px`;pop.style.top=`${Math.min(Math.max(margin,at.y),innerHeight-height-margin)}px`;
+    pop.querySelector<HTMLInputElement>('input')?.focus({preventScroll:true});
+  },[]);
+  return <div ref={ref} popover="auto" className="artwork-color-pop" role="dialog" aria-label="Background colour" onContextMenu={e=>e.preventDefault()}
+    onToggle={e=>{if((e.nativeEvent as ToggleEvent).newState==='closed')onClose();}}>
+    <strong>Background colour</strong>
+    <div className="setting-line"><input type="color" aria-label="Colour" value={value} onChange={e=>setValue(e.target.value)}/><code>{value.toUpperCase()}</code></div>
+    <div className="button-row"><button className="primary" disabled={value===color} onClick={()=>onUse(value)}>Use colour</button>
+      <button disabled={color===fallback} title={`Default: ${fallback.toUpperCase()}`} onClick={()=>onUse(null)}>Reset to default</button></div>
+  </div>;
 }
 function AddOwn({kind,onClose,file,link}:{kind:Kind;onClose:()=>void;file:(file:Blob)=>void;link:(url:string)=>void}) {
   const [url,setUrl]=useState(''),input=useRef<HTMLInputElement>(null);

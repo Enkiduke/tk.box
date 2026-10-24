@@ -1662,6 +1662,43 @@ class CleanupTests(unittest.TestCase):
 
 
 class ArtworkFileTests(unittest.TestCase):
+    def test_a_collections_generated_background_is_one_file_however_often_it_is_recoloured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            config = base / "config.json"
+            config.write_text(json.dumps(configured()), encoding="utf-8")
+            worker = sp.Worker(config)
+            item, style = {"type": "collection", "title": "Halloween Picks", "custom": True}, sp.Style()
+            worker.base_item = lambda title, season: (dict(item), style)
+            title = base / "assets" / "collections" / "Halloween Picks {plex-5}"
+            title.mkdir(parents=True)
+            (title / ".overlayrr.json").write_text(json.dumps({"type": "collection", "title": "Halloween Picks", "rating_key": "5"}), encoding="utf-8")
+            sp.ArtworkFiles.save_image(title, "poster", sp.generated_background(item, style))  # What a run drew
+            rel = "collections/" + title.name
+            names = lambda: sorted(path.name for path in title.iterdir() if path.suffix == ".png")
+
+            generated = worker.detail(rel)["generated"]
+            self.assertEqual((generated["color"], generated["default"]), ("#9b430c", "#9b430c"))  # Halloween's
+            self.assertEqual(generated["hash"], worker.detail(rel)["sections"][0]["poster"]["hash"])  # Recognized as the poster in use
+            worker.background_color(rel, "#123456")
+            worker.background_color(rel, "#654321")
+            self.assertEqual(names(), ["generated.png", "poster.png"])  # Recoloured twice, nothing set aside
+            self.assertEqual(sp.ArtworkFiles.metadata(title)["background_color"], "#654321")
+            self.assertEqual(sp.file_digest(title / "poster.png"), sp.file_digest(title / "generated.png"))
+
+            Image.new("RGB", (20, 30), "red").save(title / "poster-0badc0de.png")
+            worker.select(rel, "poster", "poster-0badc0de.png")
+            self.assertEqual(names(), ["generated.png", "poster.png"])  # The generated one isn't kept a second time
+            worker.use_generated(rel)
+            self.assertEqual(len(names()), 3)  # A real poster is kept, as poster-<hash>
+
+            worker.discard(rel)  # Back to what was there before any change: the default colour, as the poster
+            self.assertNotIn("background_color", sp.ArtworkFiles.metadata(title))
+            self.assertEqual(sp.file_digest(title / "poster.png"), sp.file_digest(title / "generated.png"))
+            with Image.open(title / "poster.png") as poster:
+                for got, want in zip(poster.convert("RGB").getpixel((500, 750)), (0x9b, 0x43, 0x0c)):
+                    self.assertLessEqual(abs(got - want), 2)  # The glow's center, give or take the dither
+
     def test_original_downloaded_bytes_are_saved_without_recompression(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
