@@ -5,6 +5,7 @@ the Plex token are never in that file: they arrive in the environment for that r
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
@@ -40,6 +41,18 @@ def text_list(config, name):
     if not isinstance(value, list) or not all(isinstance(part, str) for part in value):
         raise ConfigError(f"{name} must be a list of text")
     return tuple(dict.fromkeys(part.strip() for part in value if part.strip()))
+
+
+def holds(config):
+    value = config.get("holds", {})
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) and isinstance(until, str) for key, until in value.items()):
+        raise ConfigError("holds must map hold keys to ISO 8601 dates")
+    try:
+        parsed = {key: datetime.fromisoformat(until.replace("Z", "+00:00")) for key, until in value.items()}
+    except ValueError:
+        raise ConfigError("holds must map hold keys to ISO 8601 dates") from None
+    return {key: (until if until.tzinfo else until.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+            for key, until in parsed.items()}
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,8 @@ class Settings:
     leaving_soon_poster: Path | None = None
     leaving_soon_days: int = 7
     http_timeout_seconds: int = 30
+    # Titles an administrator chose to keep longer (Clean Up > Status): hold key to the date kept until.
+    holds: Mapping[str, datetime] = field(default_factory=dict)
 
     @property
     def timeout(self):
@@ -139,6 +154,7 @@ class Settings:
             leaving_soon_poster=Path(poster) if poster else None,
             leaving_soon_days=integer(config, "leaving_soon_days", default=7),
             http_timeout_seconds=integer(config, "http_timeout_seconds", default=30, minimum=1),
+            holds=holds(config),
         )
         settings.validate()
         return settings

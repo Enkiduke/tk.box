@@ -36,6 +36,8 @@ const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun:
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
   seasons: { enabled: true, protectLatest: true, protectSpecials: true }, leavingSoon: { enabled: false, name: 'Leaving Soon', days: 7, poster: true },
   schedule: { enabled: false, time: '03:30' } };
+export const holdKey = z.string().regex(/^(?:movie|tv):\d{1,10}(?::\d{1,4})?$/);
+export type CleanupHold = { until: number; by: string; at: number };
 export type CleanupJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 const job = (r: Record<string, unknown>) => ({ id: r.id as number, label: r.label as string, args: JSON.parse(r.args as string) as string[], script: 'cleanup' as const, actor: r.actor as string,
   status: r.status as CleanupJobStatus, createdAt: r.created_at as number, startedAt: r.started_at as number | null, finishedAt: r.finished_at as number | null, exitCode: r.exit_code as number | null });
@@ -86,6 +88,22 @@ export class CleanupStore {
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_connections_changed', now,
         JSON.stringify({ tautulliUrl: valid.tautulliUrl, sonarrUrl: valid.sonarrUrl, tautulliKeySet: !!tautulliKey, sonarrKeySet: !!sonarrKey }));
       return this.connectionsView();
+    })();
+  }
+  // Clean Up › Status: titles an administrator chose to keep longer, by hold key (movie:<tmdb>, tv:<tmdb> or
+  // tv:<tmdb>:<season>). A hold only ever moves a title's date later; the rule's own date wins once it is later still.
+  holds(now = Date.now()) {
+    const all = this.state<Record<string, CleanupHold>>('holds') ?? {};
+    return Object.fromEntries(Object.entries(all).filter(([, hold]) => hold.until > now));
+  }
+  setHold(actor: string, key: string, until: number | null, now = Date.now()) {
+    if (!holdKey.safeParse(key).success) throw new AppError('VALIDATION_ERROR', 'Not a title that can be held.', 400);
+    return this.db.transaction(() => {
+      const holds = this.holds(now);
+      if (until === null) delete holds[key]; else holds[key] = { until, by: actor, at: now };
+      this.setState('holds', holds);
+      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, until === null ? 'cleanup_hold_cleared' : 'cleanup_hold_set', now, JSON.stringify({ key, until }));
+      return holds;
     })();
   }
   state<T>(name: string) { return this.row<T>(`state:${name}`)?.value; }

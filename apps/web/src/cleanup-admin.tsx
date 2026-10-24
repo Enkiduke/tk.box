@@ -30,7 +30,7 @@ export function CleanupAdmin() {
     <EngineStatus engine={data.engine} recheck={()=>void api<Overview>('/admin/cleanup?recheck=1').then(overview.reload,overview.reload)}/>
     {data.missing.length>0&&<div className="notice"><span>Before clean up can run:<ul>{data.missing.map(m=><li key={m}>{m}</li>)}</ul></span></div>}
     <div className="subtabs" role="tablist" aria-label="Clean Up">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
-    <div role="tabpanel">{tab==='settings'?<CleanupSettings data={data} changed={overview.reload}/>:tab==='status'?<CleanupStatus/>:tab==='schedules'?<CleanupSchedules data={data} changed={overview.reload}/>:<Runs data={data} changed={overview.reload}/>}</div>
+    <div role="tabpanel">{tab==='settings'?<CleanupSettings data={data} changed={overview.reload}/>:tab==='status'?<CleanupStatus rules={data.settings} busy={data.busy}/>:tab==='schedules'?<CleanupSchedules data={data} changed={overview.reload}/>:<Runs data={data} changed={overview.reload}/>}</div>
   </>;
 }
 function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {

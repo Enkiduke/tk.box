@@ -22,7 +22,8 @@ from purge_support.api import ApiError, ArrClient, HttpClient, SeerrClient, posi
 from purge_support.config import ConfigError, Settings
 from purge_support.history import TautulliClient
 from purge_support.plex import find_plex_item, matching_arr_tags, protected_collections, update_plex_collection
-from purge_support.policy import MissingAddedAtError, days_remaining, leaving_soon, parse_added_at, rule_for_requests
+from purge_support.policy import (MissingAddedAtError, days_remaining, held_until, hold_key, leaving_soon, parse_added_at,
+                                  rule_for_requests)
 from purge_support.reporting import RunReport, add_entry, add_status, log_report, write_status
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         details = media
     title, year = media_title_and_year(media_type, details)
     context["title"] = title
+    hold = hold_key(media_type, tmdb_id)
     libraries = settings.movie_libraries if media_type == "movie" else settings.tv_libraries
     if not libraries:
         report.kept += 1
@@ -127,7 +129,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         report.not_found += 1
         report.evaluation_complete = False
         add_status(report, None, "movie" if media_type == "movie" else "show", "not_found", title=title,
-                   reason="Not found in the chosen Plex libraries")
+                   reason="Not found in the chosen Plex libraries", key=hold)
         return
     item_key = (str(item.librarySectionID), str(item.ratingKey))
     if item_key in processed_keys:
@@ -146,40 +148,44 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         if matches:
             logger.info("Keeping '%s': protected by Arr tags %s", item.title, ", ".join(matches))
             report.protected += 1
-            add_status(report, item, kind, "protected", reason=f"Tagged {', '.join(matches)}")
+            add_status(report, item, kind, "protected", reason=f"Tagged {', '.join(matches)}", key=hold)
             return
     if settings.exempt_if_in_collection:
         collections = protected_collections(item, settings.leaving_soon_name)
         if collections:
             logger.info("Keeping '%s': protected by collections %s", item.title, ", ".join(collections))
             report.protected += 1
-            add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}")
+            add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}", key=hold)
             return
     if media_type == "tv" and settings.enable_season_retention:
-        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report):
+        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id):
             return
 
     requests_group = resolve_added_dates(requests_group, item, history)
     watch = history.watch_status(item, media_type, {request.requestor_id for request in requests_group})
     rule = rule_for_requests(requests_group, watch, settings)
-    if now >= rule.deletion_date:
+    held = held_until(rule, settings, hold)
+    due_at = held or rule.deletion_date
+    if held:
+        logger.info("Keeping '%s' until at least %s: held by an administrator", item.title, held.isoformat())
+    if now >= due_at:
         logger.warning("DELETE Candidate: '%s'. %s: %s", item.title, rule.name, rule.reason)
         add_entry(report.delete_summary, item, f"{item.title} [{rule.name}]")
         delete_whole_item(item, media_type, arr_item, [request.media.get("id") for request in requests_group],
                           settings, arr, seerr, report)
-        add_status(report, item, kind, "due" if settings.dry_run else "deleted", rule=rule)
+        add_status(report, item, kind, "due" if settings.dry_run else "deleted", rule=rule, key=hold)
     else:
         report.kept += 1
-        remaining = days_remaining(rule.deletion_date, now)
-        leaving = leaving_soon(rule.deletion_date, now, settings.leaving_soon_days)
+        remaining = days_remaining(due_at, now)
+        leaving = leaving_soon(due_at, now, settings.leaving_soon_days)
         if leaving:
             report.leaving_items.append(item)
             add_entry(report.leaving_summary, item, f"{item.title} in {remaining} days [{rule.name}]")
-        add_status(report, item, kind, "leaving" if leaving else "kept", rule=rule)
+        add_status(report, item, kind, "leaving" if leaving else "kept", rule=rule, key=hold, held=held)
         if settings.dry_run:
             logger.info("DRY RUN Foresight: '%s' in %s days (%s: %s)", item.title, remaining, rule.name, rule.reason)
         else:
-            logger.info("Keeping '%s' until %s (%s)", item.title, rule.deletion_date.isoformat(), rule.name)
+            logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
 def run(settings, plex, seerr, radarr, sonarr, history, now=None):
@@ -210,7 +216,7 @@ def run(settings, plex, seerr, radarr, sonarr, history, now=None):
         # A failed title is listed as kept, with what went wrong.
         def failed(reason):
             add_status(report, context.get("item"), "movie" if key[0] == "movie" else "show", "error",
-                       title=context.get("title") or f"TMDB {key[1]}", reason=reason)
+                       title=context.get("title") or f"TMDB {key[1]}", reason=reason, key=hold_key(*key))
         try:
             process_request_group(key, raw_requests, settings=settings, plex=plex, seerr=seerr,
                                   radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,

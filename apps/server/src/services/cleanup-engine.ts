@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
-import type { CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
+import type { CleanupHold, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { lastDue } from './artwork-schedule.js';
 import { WAITING } from './plex-background.js';
@@ -15,15 +15,45 @@ import { WAITING } from './plex-background.js';
 // admin token, like Artwork's, and waits while there is no working one.
 type Paths = { python: string; script: string; poster: string; dataDir: string; plexUrl: string };
 export type CleanupServices = { seerr?: { url: string; apiKey?: string }; radarr: { url: string; key?: string }; tautulli: { url: string; key?: string }; sonarr: { url: string; key?: string } };
-// Each title the last finished run looked at (Clean Up › Status); the script writes it with --status.
+// Each title the last finished run looked at (Clean Up › Status); the script writes it with --status. `deletion_date` is
+// the rule's own date and `held_until` a later one an administrator's hold keeps it until. `key` names its hold and
+// `rating_key` its Plex item, for the poster.
 export type CleanupTitle = { title: string; year: number | null; kind: 'movie' | 'show' | 'season'; library: string; status: 'due' | 'deleted' | 'leaving' | 'kept' | 'protected' | 'not_found' | 'error';
-  rule: string | null; reason: string; deletion_date: string | null };
+  rule: string | null; reason: string; deletion_date: string | null; held_until?: string | null; key?: string | null; rating_key?: string | null; holdable?: boolean };
 export type CleanupTitles = { updated: string | null; dryRun: boolean; complete: boolean; items: CleanupTitle[] };
 type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
-const MAX_LINES = 5000, SAVED_LINES = 2000, LATE_MS = 2 * 3600000;
+const MAX_LINES = 5000, SAVED_LINES = 2000, LATE_MS = 2 * 3600000, DAY = 86400000;
+// Only titles still waiting on a date can be held; the rest are gone, protected or were never checked.
+const waiting = new Set<CleanupTitle['status']>(['due', 'leaving', 'kept']);
+const ruleDays: Record<string, keyof CleanupSettings> = { 'Rule 1': 'daysAfterWatched', 'Rule 2': 'daysAfterUnwatched', 'Rule 3': 'daysAfterAnyWatchExempt', 'Rule 4': 'daysAfterExemptWatch' };
+
+// The last run's titles with today's holds: a title whose hold changed since that run is shown as the next run will
+// see it. The others are left as that run found them.
+export function withHolds(view: CleanupTitles, holds: Record<string, CleanupHold>, leavingDays: number, now = Date.now()): CleanupTitles {
+  return { ...view, items: view.items.map(item => {
+    const holdable = !!item.key && !!item.deletion_date && waiting.has(item.status);
+    if (!holdable) return { ...item, holdable };
+    const natural = Date.parse(item.deletion_date!), until = holds[item.key!]?.until, held = until !== undefined && until > natural ? until : null;
+    const before = item.held_until ? Date.parse(item.held_until) : null;
+    if (held === before) return { ...item, holdable };
+    const at = held ?? natural;
+    return { ...item, holdable, held_until: held === null ? null : new Date(held).toISOString(), status: at <= now ? 'due' : at <= now + leavingDays * DAY ? 'leaving' : 'kept' };
+  }) };
+}
+// Reset starts the title's rule over from today; extend adds days to whichever date it leaves on now (or today, if
+// that has passed). Returns the date to hold it until.
+export function holdUntil(item: CleanupTitle, settings: CleanupSettings, action: { action: 'reset' } | { action: 'extend'; days: number }, now = Date.now()) {
+  if (action.action === 'extend') {
+    const leaves = Date.parse(item.held_until ?? item.deletion_date!);
+    return Math.max(leaves, now) + action.days * DAY;
+  }
+  const setting = item.rule ? ruleDays[item.rule] : undefined;
+  if (!setting) throw new AppError('CLEANUP_NO_RULE', 'This title has no retention rule to start over.', 409);
+  return now + (settings[setting] as number) * DAY;
+}
 
 // The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>) {
+export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}) {
   return {
     plex: { url: paths.plexUrl }, seerr: { url: services.seerr?.url ?? '' }, tautulli: { url: services.tautulli.url }, radarr: { url: services.radarr.url }, sonarr: { url: services.sonarr.url },
     movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
@@ -33,7 +63,8 @@ export function cleanupConfig(settings: CleanupSettings, services: CleanupServic
     exempt_user_ids: settings.exemptUserIds, exempt_arr_tags: settings.exemptArrTags, exempt_if_in_collection: settings.exemptIfInCollection,
     enable_season_retention: settings.seasons.enabled, protect_latest_season: settings.seasons.protectLatest, protect_specials_season: settings.seasons.protectSpecials,
     create_leaving_soon_collection: settings.leavingSoon.enabled, leaving_soon_name: settings.leavingSoon.name, leaving_soon_days: settings.leavingSoon.days,
-    leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30
+    leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
+    holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()]))
   };
 }
 // What has to be set before a run can start, in the words the page shows. The script checks all of it again.
@@ -107,7 +138,15 @@ export class CleanupEngine {
     const from = Math.max(since - live.dropped, 0);
     return { ...job, output: undefined, lines: live.lines.slice(from), next: live.dropped + live.lines.length };
   }
-  titles(): CleanupTitles {
+  titles(): CleanupTitles { return withHolds(this.lastRun(), this.store.holds(), this.store.settings().leavingSoon.days); }
+  // Holds take effect at the next run; a run already going keeps the holds it started with.
+  hold(actor: string, key: string, action: { action: 'reset' } | { action: 'extend'; days: number } | { action: 'clear' }) {
+    const item = this.titles().items.find(i => i.key === key);
+    if (!item?.holdable) throw new AppError('CLEANUP_NOT_HOLDABLE', 'Only titles waiting to leave can be kept longer. Run a preview to refresh the list.', 409);
+    this.store.setHold(actor, key, action.action === 'clear' ? null : holdUntil(item, this.store.settings(), action));
+    return this.titles();
+  }
+  private lastRun(): CleanupTitles {
     try {
       const file = JSON.parse(readFileSync(join(this.workDir, 'status.json'), 'utf8')) as { updated?: unknown; dry_run?: unknown; complete?: unknown; items?: unknown };
       return { updated: typeof file.updated === 'string' ? file.updated : null, dryRun: file.dry_run !== false, complete: file.complete !== false, items: Array.isArray(file.items) ? file.items as CleanupTitle[] : [] };
@@ -161,7 +200,7 @@ export class CleanupEngine {
   private writeConfig(settings: CleanupSettings, services: CleanupServices) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds()), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }
