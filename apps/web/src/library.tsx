@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
-import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
+import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,cachedListItem} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,People,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveEventsNow,LiveNow,shuffled,type WatchChannel} from './live.js';
@@ -228,8 +228,16 @@ function SeasonEpisodes({season,onUpNext,...play}:{season:CatalogItem;onOpen:(id
   return <section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2>{list.length>1&&<SeasonPicker seasons={list} current={list.find(s=>s.id===season.id)??season} onPick={s=>play.onOpen(s.id)}/>}</div>
     <Episodes seasonId={season.id} onUpNext={onUpNext} {...play}/></section>;
 }
-export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;onClose:()=>void;onOpen:(id:string)=>void;error?:string;admin?:boolean}&PlayProps) {
-  const item=useApi<CatalogItem>(`/catalog/items/${id}`),media=useWithOverride(item.data),actions=useMediaMenu(media??{id,libraryId:'',type:'movie',title:'',summary:'',viewOffsetMs:0,watched:false,genres:[]},'detail',onOpen,onPlay,'secondary large icon-only'),[upNext,setUpNext]=useState<CatalogItem>();
+type DetailProps={id:string;onOpen:(id:string)=>void;error?:string;admin?:boolean}&PlayProps;
+// One dialog stays open while it moves from title to title (show, season, episode); only its contents change.
+export function Details({onClose,...props}:{onClose:()=>void}&DetailProps) {
+  const item=useApi<CatalogItem>(`/catalog/items/${props.id}`);
+  return <Modal title={item.data?.title??'Media details'} onClose={onClose} variant="media" scrollKey={props.id}><DetailBody key={props.id} {...props}/></Modal>;
+}
+function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
+  // A title from a list on screen draws at once; the full record fills in cast, ratings and the rest.
+  const [seed]=useState(()=>cachedListItem<CatalogItem>(id));
+  const item=useApi<CatalogItem>(`/catalog/items/${id}`),media=useWithOverride(item.data??(item.error?undefined:seed)),actions=useMediaMenu(media??{id,libraryId:'',type:'movie',title:'',summary:'',viewOffsetMs:0,watched:false,genres:[]},'detail',onOpen,onPlay,'secondary large icon-only'),[upNext,setUpNext]=useState<CatalogItem>();
   const target=media&&playable(media)?media:upNext,[failedLogo,setFailedLogo]=useState<string>();
   // An episode leads with its own still, uncovered, since the still often carries the episode's title card.
   const still=media?.type==='episode'?media.posterUrl:undefined,art=still??media?.backdropUrl??media?.posterUrl;
@@ -257,7 +265,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
       {actions.trigger}{actions.menu}
     </div>
   </div>;
-  return <Modal title={media?.title??'Media details'} onClose={onClose} variant="media">
+  return <>
     {item.loading&&!media?<div className="detail-loading"><Loading/></div>:item.error?<div className="detail-body"><ErrorNotice message={item.error.message} retry={item.reload}/></div>:media&&<>
       <div className={`detail-hero${art?'':' no-art'}${still?' still':''}`}>
         {art&&<FadeImage src={art} alt="" decoding="async" fetchPriority="high" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
@@ -275,5 +283,5 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
       {media.type==='season'&&<SeasonEpisodes key={media.id} season={media} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/>}
       {media.type==='episode'&&media.parentId&&<section className="detail-episodes"><div className="episodes-heading"><h2>{media.seasonNumber!==undefined?`Season ${media.seasonNumber}`:'More episodes'}</h2></div><Episodes seasonId={media.parentId} current={media.id} onUpNext={()=>{}} onPlay={onPlay} onOpen={onOpen} busy={busy}/></section>}
     </>}
-  </Modal>;
+  </>;
 }
