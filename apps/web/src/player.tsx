@@ -256,13 +256,15 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
     {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
     {(view.waiting||liveSwitching||tuning||loading)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':tuning?'Tuning channel':loading?'Starting':'Buffering'}/>}
-    {docked?<div className="mini-controls">
-      <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
-      <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
-      <button className="icon-button" onClick={onRestore} aria-label="Expand player"><Icon name="expand" size={18}/></button>
-      <button className="icon-button" onClick={onStop} aria-label="Stop playback"><Icon name="close" size={18}/></button>
-      {known&&<span className="mini-progress"><span style={{width:`${view.time/view.duration*100}%`}}/></span>}
-    </div>:<>
+    {docked?<>
+      <div className="mini-controls">
+        <button className="icon-button" onClick={toggle} aria-label={view.playing?'Pause':'Play'}><Icon name={view.playing?'pause':'play'} size={18}/></button>
+        <button className="mini-title" onClick={onRestore}><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</button>
+        <button className="icon-button" onClick={onRestore} aria-label="Expand player"><Icon name="expand" size={18}/></button>
+        {known&&<span className="mini-progress"><span style={{width:`${view.time/view.duration*100}%`}}/></span>}
+      </div>
+      <button className="icon-button mini-close" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={16}/></button>
+    </>:<>
       <div className="player-top">
         <button className="player-round" onClick={onBack} aria-label="Back to browsing" title="Keep playing in a mini player"><Icon name="back" size={22}/></button>
         <div className="player-heading"><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</div>

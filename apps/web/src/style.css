@@ -530,6 +530,9 @@ dialog::backdrop{background:rgba(0,0,0,.76)}
 .player.docked video{cursor:pointer}
 .mini-controls{position:absolute;inset:auto 0 0;display:flex;align-items:center;gap:2px;padding:28px 6px 8px;background:linear-gradient(0deg,rgba(0,0,0,.9),transparent);opacity:0;transition:opacity .2s}
 .player.docked:hover .mini-controls,.player.docked:focus-within .mini-controls,.player.docked:not(.idle) .mini-controls{opacity:1}
+.mini-close{position:absolute;top:6px;right:6px;padding:5px;border-radius:50%;background:rgba(0,0,0,.6);opacity:0;transition:opacity .2s}
+.mini-close:hover{background:rgba(0,0,0,.8)}
+.player.docked:hover .mini-close,.player.docked:focus-within .mini-close,.player.docked:not(.idle) .mini-close{opacity:1}
 .mini-title{flex:1;flex-direction:column;align-items:flex-start;gap:0;min-width:0;padding:2px 6px;border:0;background:none;text-align:left}
 .mini-title:hover{background:none}
 .mini-title strong{font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
@@ -673,7 +676,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .page{padding-bottom:40px}
   .player.docked{bottom:calc(72px + env(safe-area-inset-bottom));right:10px;width:calc(100vw - 20px);aspect-ratio:auto;height:64px;border-radius:10px}
   .player.docked video{position:absolute;left:0;top:0;width:114px;height:64px}
-  .player.docked .mini-controls{opacity:1;inset:0 0 0 114px;padding:0 4px;background:var(--surface-2)}
+  .player.docked .mini-controls{opacity:1;inset:0 0 0 114px;padding:0 40px 0 4px;background:var(--surface-2)}
+  .player.docked .mini-close{opacity:1;top:14px;right:4px;background:none}
   .player-top{padding:14px 14px 50px}
   .player-bottom{padding:80px 10px 10px}
   .player-bar{gap:0}
