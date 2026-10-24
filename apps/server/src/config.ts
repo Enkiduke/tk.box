@@ -16,6 +16,8 @@ const schema = z.object({
   PLEX_OWNER_ACCOUNT_ID: optionalText(z.string().regex(/^\d+$/)),
   PLEX_REQUIRED_LIBRARY_IDS: z.string().default(''),
   TRUSTED_PROXY_CIDRS: z.string().default(''),
+  // How long a viewer's passed Plex access check is reused before plex.tv is asked again (0 asks on every request).
+  PLEX_RECHECK_SECONDS: z.coerce.number().int().min(0).max(600).default(60),
   FFMPEG_PATH: z.string().default('ffmpeg'), FFPROBE_PATH: z.string().default('ffprobe'),
   // The Python that runs the artwork engine (apps/artwork); a virtual environment with its requirements.txt.
   PYTHON_PATH: z.string().default('python3'),

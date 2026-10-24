@@ -71,9 +71,11 @@ function OnDeckRows({libraries,onOpen,onPlay}:BrowseProps&PlayProps) {
   const paused=(item:CatalogItem)=>(overrides.get(item.id)?.viewOffsetMs??item.viewOffsetMs)>0;
   const resume=list.filter(paused),next=list.filter(item=>!paused(item));
   if(data.loading&&!list.length)return <RowSkeleton title="Continue watching" wide/>;
+  // The first row's visible cards load ahead of everything lazy below the fold.
+  const first=(i:number,row:'resume'|'next')=>i<6&&(row==='resume'||!resume.length);
   return <>
-    {resume.length>0&&<Row title="Continue watching" className="row-wide">{resume.map(item=><WideCard key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
-    {next.length>0&&<Row title="Recommended For You" className="row-wide">{next.map(item=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay}/>)}</Row>}
+    {resume.length>0&&<Row title="Continue watching" className="row-wide">{resume.map((item,i)=><WideCard key={item.id} item={item} onOpen={onOpen} onPlay={onPlay} priority={first(i,'resume')}/>)}</Row>}
+    {next.length>0&&<Row title="Recommended For You" className="row-wide">{next.map((item,i)=><WideCard key={item.id} item={item} context="upnext" onOpen={onOpen} onPlay={onPlay} priority={first(i,'next')}/>)}</Row>}
   </>;
 }
 // With a seed the titles come in a stable shuffled order, cut to a row's worth.
@@ -231,7 +233,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
   const heading=media&&<div className="detail-heading">
     {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
     {media.type==='episode'&&<p className="detail-eyebrow">{media.seasonNumber!==undefined&&media.parentId?<button className="text-button" onClick={()=>onOpen(media.parentId!)}>Season {media.seasonNumber}</button>:null}{media.episodeNumber!==undefined&&<span>Episode {media.episodeNumber}</span>}</p>}
-    <h1 className="detail-title">{media.logoUrl&&failedLogo!==media.logoUrl?<img className="detail-logo" src={media.logoUrl} alt={media.title} decoding="async" onError={()=>setFailedLogo(media.logoUrl)}/>:media.title}</h1>
+    <h1 className="detail-title">{media.logoUrl&&failedLogo!==media.logoUrl?<img className="detail-logo" src={media.logoUrl} alt={media.title} decoding="async" fetchPriority="high" onError={()=>setFailedLogo(media.logoUrl)}/>:media.title}</h1>
     {(facts(media).length>0||media.ratings||media.watched)&&<div className="detail-facts">
       {facts(media).length>0&&<p className="detail-meta">{facts(media).map((fact,i)=><span key={i}>{fact}</span>)}{media.watched&&<span className="badge">Watched</span>}</p>}
       {media.ratings&&<Ratings ratings={media.ratings}/>}
@@ -248,7 +250,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
   return <Modal title={media?.title??'Media details'} onClose={onClose} variant="media">
     {item.loading&&!media?<div className="detail-loading"><Loading/></div>:item.error?<div className="detail-body"><ErrorNotice message={item.error.message} retry={item.reload}/></div>:media&&<>
       <div className={`detail-hero${art?'':' no-art'}${still?' still':''}`}>
-        {art&&<FadeImage src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
+        {art&&<FadeImage src={art} alt="" decoding="async" fetchPriority="high" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
         {!still&&<div className="detail-hero-content">{heading}</div>}
       </div>
       {still&&<div className="detail-head">{heading}</div>}

@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, requireThat } from '../errors.js';
-import {catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
+import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
@@ -98,9 +98,16 @@ export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: 
 // `name` is the Plex account's display name, for Admin › Activity.
 export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
 
+// Cache keys name a viewer's server token by digest, never the token itself.
+const tokenScope=(grant:PlexGrant)=>createHash('sha256').update(grant.serverToken).digest('hex');
 export class PlexAdapter {
-  private images=new ArtworkCache();
+  // Artwork paths end in when the art last changed, so one path at one size is always the same picture,
+  // whoever asked for it: viewers share these bytes once their own metadata read has authorized the path.
+  private images=new ArtworkCache(256*1024*1024,5000,24*3600000);
   private imageRequests=new Map<string,Promise<{bytes:Buffer;type:string}>>();
+  // Metadata reads behind artwork and collections, per viewer token, reused briefly so a grid of posters asks Plex once per
+  // title. Library scope is still checked against the grant on every use.
+  private nodes=new Map<string,{until:number;read:Promise<unknown>}>();
   constructor(private config: Config, private clientId: string, private transport: typeof fetch = fetch) {}
   private headers(token?: string) {
     return { Accept: 'application/json', 'X-Plex-Product': 'tk.box', 'X-Plex-Version': '0.0.1',
@@ -225,6 +232,15 @@ export class PlexAdapter {
     const library=grant.libraries.find(l=>l.key===id&&['movie','show'].includes(l.type));
     requireThat(library,'PLEX_ACCESS_DENIED','Library is not accessible to this account.',403);return library;
   }
+  private remembered<T>(key:string,read:()=>Promise<T>,ttl=60000,now=Date.now()):Promise<T> {
+    const hit=this.nodes.get(key);if(hit&&hit.until>now)return hit.read as Promise<T>;
+    const pending=read();this.nodes.delete(key);this.nodes.set(key,{until:now+ttl,read:pending});
+    pending.catch(()=>{if(this.nodes.get(key)?.read===pending)this.nodes.delete(key);});
+    while(this.nodes.size>5000)this.nodes.delete(this.nodes.keys().next().value!);
+    return pending;
+  }
+  // Drops remembered metadata (after artwork or cleanup jobs change the library).
+  forgetMetadata() {this.nodes.clear();}
   private async catalogNode(grant:PlexGrant,id:string) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex media identifier.');
     const container=catalogContainer.parse(await this.json(new URL(`/library/metadata/${id}`,this.config.PLEX_URL),grant.serverToken)).MediaContainer;
@@ -263,7 +279,12 @@ export class PlexAdapter {
   }
   // Like Plex's Categories: each genre's tile shows the backdrop of a random title from it, a different title per
   // genre where the library has one, so tiles don't repeat the same art. Plex does the shuffling, so it costs nothing extra.
+  // Kept ten minutes per viewer, so the tiles stay put while browsing and Plex isn't asked once per genre each visit.
   async catalogGenreArt(grant:PlexGrant,libraryId:string) {
+    this.library(grant,libraryId);
+    return this.remembered(`genre-art:${tokenScope(grant)}:${libraryId}`,()=>this.readGenreArt(grant,libraryId),600000);
+  }
+  private async readGenreArt(grant:PlexGrant,libraryId:string) {
     const library=this.library(grant,libraryId),{genres}=await this.catalogGenres(grant,libraryId);
     const section=z.union([z.string(),z.number()]).transform(String).optional();
     const page=z.object({MediaContainer:z.object({librarySectionID:section,Metadata:z.array(z.object({ratingKey:z.string().regex(/^\d+$/).max(20),art:z.string().max(500).optional(),librarySectionID:section})).max(8).default([])})});
@@ -382,8 +403,12 @@ export class PlexAdapter {
     url.searchParams.set('contentDirectoryID',keys.join(','));url.searchParams.set('pinnedContentDirectoryID',keys.join(','));url.searchParams.set('count','1');
     // Each collection is read back like any other, which checks its library is the viewer's; one that fails is left off.
     const ids=promotedCollectionIds(promotedHubs.parse(await this.json(url,grant.serverToken))).slice(0,20);
-    const found=await Promise.all(ids.map(id=>this.collectionNode(grant,id).then(({node,section})=>({id,title:node.title,libraryId:section}),()=>undefined)));
+    const found=await Promise.all(ids.map(id=>this.rememberedCollection(grant,id).then(({node,section})=>({id,title:node.title,libraryId:section}),()=>undefined)));
     return {collections:found.filter(c=>c!==undefined)};
+  }
+  private async rememberedCollection(grant:PlexGrant,id:string) {
+    const {node,section}=await this.remembered(`collection:${tokenScope(grant)}:${id}`,()=>this.collectionNode(grant,id));
+    this.library(grant,section);return {node,section};
   }
   private async collectionNode(grant:PlexGrant,id:string) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex collection identifier.');
@@ -403,10 +428,12 @@ export class PlexAdapter {
     const items=container.Metadata.map(child=>{requireThat((child.librarySectionID??container.librarySectionID??section)===section,'PLEX_ACCESS_DENIED','Plex returned media outside the collection’s library.',403);return catalogDto(child,section);});
     return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
   }
-  async collectionArtwork(grant:PlexGrant,id:string) {
-    const {node}=await this.collectionNode(grant,id),path=collectionArtwork(node);
+  async collectionArtwork(grant:PlexGrant,id:string,version?:string,scale:1|2=1) {
+    let {node}=await this.rememberedCollection(grant,id);
+    if(version&&!collectionArtwork(node)?.endsWith(`/${version}`)){this.nodes.delete(`collection:${tokenScope(grant)}:${id}`);({node}=await this.rememberedCollection(grant,id));}
+    const path=collectionArtwork(node);
     requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
-    return this.cachedArtwork(grant,path,'poster');
+    return this.cachedArtwork(grant,path,'poster',scale);
   }
   // A movie, episode, season, whole show, collection or category as the playable items a custom channel would air,
   // with the media details needed to judge channel playback. Read with the administrator's grant. Shows and seasons
@@ -474,20 +501,28 @@ export class PlexAdapter {
     return {collections:container.Metadata.filter(c=>c.type==='collection'&&(c.librarySectionID??container.librarySectionID??libraryId)===libraryId)
       .map(c=>({id:`collection:${c.ratingKey}`,title:c.title,count:c.childCount,kind:c.subtype==='show'?'show' as const:'movie' as const}))};
   }
-  async artwork(grant:PlexGrant,id:string,kind:ArtworkKind) {
-    const {node}=await this.catalogNode(grant,id),path=kind==='logo'?logoPath(node):artworkPath(kind==='backdrop'||kind==='tile'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
-    requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
-    return this.cachedArtwork(grant,path,kind);
+  // `version` is the `v` the page asked for: remembered metadata naming other art is read again, so a new address
+  // (which browsers keep for good) never gets the old picture.
+  async artwork(grant:PlexGrant,id:string,kind:ArtworkKind,version?:string,scale:1|2=1) {
+    const pick=(node:CatalogNode)=>kind==='logo'?logoPath(node):artworkPath(kind==='backdrop'||kind==='tile'?node.art:node.thumb??node.parentThumb??node.grandparentThumb);
+    const key=`item:${tokenScope(grant)}:${id}`,read=()=>this.remembered(key,()=>this.catalogNode(grant,id));
+    let {node,section}=await read();
+    if(version&&!pick(node)?.endsWith(`/${version}`)){this.nodes.delete(key);({node,section}=await read());}
+    this.library(grant,section);
+    const path=pick(node);requireThat(path,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
+    return this.cachedArtwork(grant,path,kind,scale);
   }
-  private cachedArtwork(grant:PlexGrant,path:string,kind:ArtworkKind) {
-    const cacheKey=createHash('sha256').update(JSON.stringify([grant.accountId,grant.serverToken,path,kind])).digest('hex');
+  // `scale` 2 is a double-size poster for high-density screens (other kinds are already large).
+  private cachedArtwork(grant:PlexGrant,path:string,kind:ArtworkKind,scale:1|2=1) {
+    if(kind!=='poster')scale=1;
+    const cacheKey=JSON.stringify([path,kind,scale]);
     const cached=this.images.get(cacheKey);if(cached)return cached;
     let pending=this.imageRequests.get(cacheKey);
-    if(!pending){pending=this.loadArtwork(path,kind,grant.serverToken).then(image=>{this.images.set(cacheKey,image);return image;}).finally(()=>this.imageRequests.delete(cacheKey));this.imageRequests.set(cacheKey,pending);}
+    if(!pending){pending=this.loadArtwork(path,kind,grant.serverToken,scale).then(image=>{this.images.set(cacheKey,image);return image;}).finally(()=>this.imageRequests.delete(cacheKey));this.imageRequests.set(cacheKey,pending);}
     return pending;
   }
-  private async loadArtwork(path:string,kind:ArtworkKind,serverToken:string) {
-    const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360,540]:kind==='logo'?[800,400]:kind==='tile'?[800,450]:[1280,720];
+  private async loadArtwork(path:string,kind:ArtworkKind,serverToken:string,scale:1|2) {
+    const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360*scale,540*scale]:kind==='logo'?[800,400]:kind==='tile'?[800,450]:[1280,720];
     url.searchParams.set('url',path);url.searchParams.set('width',String(width));url.searchParams.set('height',String(height));url.searchParams.set('minSize','1');url.searchParams.set('upscale','0');
     // Logos are transparent; PNG keeps the transparency a JPEG transcode would fill in.
     if(kind==='logo')url.searchParams.set('format','png');

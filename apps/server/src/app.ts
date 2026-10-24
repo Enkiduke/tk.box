@@ -1,6 +1,7 @@
 import Fastify, { LogController } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
+import compress from '@fastify/compress';
 import { existsSync, createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { Readable } from 'node:stream';
@@ -56,13 +57,16 @@ import { registerActivity } from './activity-api.js';
 
 export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box') {
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
-  const identity = new IdentityService(db, vault, plex), playback = new PlaybackService(db, plex), settings = new SettingsStore(db);
+  const identity = new IdentityService(db, vault, plex, config.PLEX_RECHECK_SECONDS * 1000), playback = new PlaybackService(db, plex), settings = new SettingsStore(db);
   const budget = new EncoderBudget(() => settings.get().maxConcurrentCpuVideoTranscodes);
   const transcodes = new VodTranscodes(plex, budget, async a => {
     const {grant} = await identity.authenticateHash(a.hash); await plex.metadata(grant, a.ratingKey); playback.owned(a.id, a.hash); return grant;
   });
   const localMedia = new LocalMedia(config.localMedia), subtitles = new SubtitleService(plex, config.FFMPEG_PATH, config.CACHE_DIR, localMedia);
   await app.register(cookie); await app.register(rateLimit, {max: 120, timeWindow: 60000});
+  // JSON, scripts, styles and playlists go out brotli/gzip-compressed; images, video and byte ranges never are, and
+  // request bodies are never decompressed. Registered before any route, since it attaches to each route as it is added.
+  await app.register(compress, {encodings: ['br', 'gzip'], globalDecompression: false});
   // Cookie scope does not include the port. Development harnesses on another
   // loopback port must use their own namespace to preserve real app sessions.
   const sessionCookie = config.secureCookies ? `__Host-${cookieNamespace}` : `${cookieNamespace}_local`, linkCookie = `${cookieNamespace}_link`;
@@ -101,6 +105,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     const e = error instanceof AppError ? error : error instanceof ZodError ? new AppError('VALIDATION_FAILED', 'Request contains invalid or missing values.') : [400,413,415,429].includes(status ?? 0) ? new AppError(status === 429 ? 'RATE_LIMITED' : 'INVALID_REQUEST', status === 429 ? 'Request rate limit reached.' : 'Request could not be accepted.', status) : new AppError('INTERNAL_ERROR', 'Request could not be completed.', 500);
     // Deliberately exclude raw request URLs, upstream data, exception messages and token headers.
     app.log.warn({code: e.code, requestId: req.id}, 'request rejected');
+    // Plex refused something: the viewer's next request checks their access with Plex again.
+    if (e.code === 'PLEX_ACCESS_DENIED') identity.forget(req.cookies[sessionCookie]);
     reply.code(e.status).send({code: e.code, message: e.message, retryable: e.retryable});
   });
   const auth = (req: {cookies: Record<string, string | undefined>}) => identity.authenticate(req.cookies[sessionCookie]);
@@ -198,7 +204,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
   const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message));
   registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin);
-  artwork.finished = () => events.publish('library');
+  artwork.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   app.addHook('onReady', async () => { artworkSchedule.start(); });
   app.addHook('onClose', async () => { artworkSchedule.close(); artworkWorker.close(); artwork.close(); });
   // Clean Up: the purge script runs as a separate Python process too. Seerr is Explore's connection, Radarr is Collections'.
@@ -210,7 +216,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, plexUrl: config.PLEX_URL},
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
-  cleanup.finished = () => events.publish('library');
+  cleanup.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   app.addHook('onReady', async () => { cleanup.start(); });
   app.addHook('onClose', async () => { cleanup.close(); });
   app.get('/health', async () => ({status: 'ok'}));
