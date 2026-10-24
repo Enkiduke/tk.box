@@ -94,6 +94,9 @@ let artworkEditor:((ratingKey:string)=>void)|undefined;
 export const setArtworkEditor=(open?:(ratingKey:string)=>void)=>{artworkEditor=open;};
 export const editArtwork=(ratingKey:string)=>artworkEditor?.(ratingKey);
 export const artworkEntry=(ratingKey?:string):MenuEntry[]=>artworkEditor&&ratingKey?[{label:'Edit artwork',icon:'image',run:()=>editArtwork(ratingKey)}]:[];
+// Admins keep a Leaving Soon title longer from its menu; main.tsx registers the lookup (cleanup-holds.ts).
+let holdMenu:((ratingKey:string)=>MenuEntry[])|undefined;
+export const setHoldMenu=(entries?:(ratingKey:string)=>MenuEntry[])=>{holdMenu=entries;};
 // Artwork is kept per movie, show or collection; seasons and episodes edit their show's.
 export const artworkKey=(item:CatalogItem)=>item.type==='episode'?item.showId:item.type==='season'?item.showId??item.parentId:item.id;
 function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>void,onPlay?:PlayFn):MenuEntry[][] {
@@ -107,7 +110,7 @@ function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>voi
   if(show)go.push({label:'Go to show',icon:'shows',run:()=>onOpen(show)});
   if(item.type==='episode'&&item.parentId)go.push({label:'Go to season',icon:'list',run:()=>onOpen(item.parentId!)});
   if(context!=='detail')go.push({label:'More info',icon:'info',run:()=>onOpen(item.id)});
-  return [play,state,go,context==='detail'?[]:artworkEntry(artworkKey(item))].filter(group=>group.length);
+  return [play,state,go,item.type==='episode'?[]:holdMenu?.(item.id)??[],context==='detail'?[]:artworkEntry(artworkKey(item))].filter(group=>group.length);
 }
 // Rendered in the top layer (Popover API), so scrolling rows and dialogs never clip it.
 function MediaMenu({title,groups,at,onClose}:{title:string;groups:MenuEntry[][];at:MenuPosition;onClose:(restoreFocus:boolean)=>void}) {

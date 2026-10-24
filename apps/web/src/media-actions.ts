@@ -19,7 +19,7 @@ export function useWithOverride<T extends CatalogItem|undefined>(item:T):T {
   return useMemo(()=>item&&value?{...item,...value}:item,[item,value]);
 }
 export const useNotice=()=>useSyncExternalStore(subscribe,()=>notice);
-function announce(text:string,error=false) {
+export function announce(text:string,error=false) {
   clearTimeout(noticeTimer);notice={id:++noticeId,text,error};emit();
   noticeTimer=window.setTimeout(()=>{notice=undefined;emit();},error?6000:3500);
 }
