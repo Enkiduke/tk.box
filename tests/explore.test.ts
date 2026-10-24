@@ -8,7 +8,7 @@ import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {ExploreCache} from '../apps/server/src/explore-api.js';
+import {ExploreCache,exploreFilter,interleave,lacking,passes} from '../apps/server/src/explore-api.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);
@@ -153,4 +153,30 @@ test('Explore reads are kept per viewer until they expire or are forgotten, and 
   cache.forget();assert.equal(await cache.get('b','row',1000,read,1100),5);
   await assert.rejects(cache.get('a','bad',1000,async()=>{throw new Error('down');},1200));
   assert.equal(await cache.get('a','bad',1000,read,1300),6);
+});
+test('Explore filters read languages, a year range and a minimum score, and leave out titles that lack what a filter needs',()=>{
+  const f=exploreFilter({lang:'en, JA,xx1,en',from:1990,to:2005,min:7});
+  assert.deepEqual(f,{languages:['en','ja'],from:1990,to:2005,min:7});
+  assert.deepEqual(exploreFilter({min:0}),{languages:[]});
+  const item={key:'movie:tmdb:1',source:'plex' as const,kind:'movie' as const,title:'A',ids:{tmdb:1}};
+  assert.equal(passes({...item,language:'ja',year:1999,rating:7},f),true);
+  assert.equal(passes({...item,language:'fr',year:1999,rating:7},f),false);
+  assert.equal(passes({...item,language:'en',year:2006,rating:9},f),false);
+  assert.equal(passes({...item,language:'en',year:1990,rating:6.9},f),false);
+  // Unknown language, year or score: looked up first, then left out.
+  assert.equal(lacking({...item,year:1999,rating:7},f),true);
+  assert.equal(passes({...item,year:1999,rating:7},f),false);
+  assert.equal(passes(item,exploreFilter({from:2000})),false);
+  assert.equal(passes(item,exploreFilter({})),true);
+});
+test('Explore search interleaves sources best first and lists a title once with what each source adds',()=>{
+  const t=(key:string,source:'plex'|'seerr'|'trakt',extra={})=>({key,source,kind:'movie' as const,title:key,ids:{},...extra});
+  const merged=interleave([
+    [t('a','plex',{ids:{plex:'p1'},posterUrl:undefined}),t('b','plex')],
+    [t('c','seerr'),t('a','seerr',{ids:{tmdb:1},posterUrl:'/x.jpg',status:'available',language:'en'}),t('d','seerr')],
+    [t('e','trakt')]]);
+  assert.deepEqual(merged.map(i=>i.key),['a','c','e','b','d']);
+  const a=merged[0]!;
+  assert.equal(a.source,'plex');assert.equal(a.posterUrl,'/x.jpg');assert.equal(a.status,'available');assert.equal(a.language,'en');
+  assert.deepEqual(a.ids,{tmdb:1,plex:'p1'});
 });

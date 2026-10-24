@@ -51,11 +51,15 @@ export type ExploreStatus = 'available' | 'partial' | 'requested';
 export type ExploreItem = {
   key: string; source: ExploreSource; kind: 'movie' | 'show'; title: string; year?: number; summary?: string;
   posterUrl?: string; backdropUrl?: string; rating?: number; durationMs?: number; episodeCount?: number;
+  // Original language (ISO 639-1, TMDB's codes). Plex Discover does not send it.
+  language?: string;
   // `plex` is the Plex Discover rating key (not this server's), `plexGuid` the plex:// guid both share.
   ids: { tmdb?: number; imdb?: string; tvdb?: number; trakt?: number; plex?: string; plexGuid?: string };
   status?: ExploreStatus;
 };
 export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number };
+// Search across every catalog source; `failed` names sources that could not be searched.
+export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
 export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean };
 export type ExploreSeason = { number: number; name: string; episodeCount?: number; airDate?: string; status?: ExploreStatus };
 export type ExploreSources = {

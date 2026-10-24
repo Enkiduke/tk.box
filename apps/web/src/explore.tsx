@@ -1,5 +1,5 @@
-import {memo,useEffect,useState,type ReactNode} from 'react';
-import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
+import {memo,useEffect,useRef,useState,type ReactNode} from 'react';
+import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,People,Row,RowSkeleton} from './components.js';
@@ -7,13 +7,36 @@ import {Ratings} from './library.js';
 import {RequestDialog} from './request-dialog.js';
 import './explore.css';
 
-// Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves), Seerr and Trakt.
+// Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves), Seerr and Trakt, on one page:
+// every source's rows in turn, one search across them all, and filters that narrow both.
 // A title's dialog opens this server's copy when there is one, requests it through Seerr, or watchlists it on Plex.
 const names:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr',trakt:'Trakt'};
 const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',requested:'Requested'};
-const rowPath=(source:ExploreSource,row:string,page=1)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}`;
+const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
+const listed=(parts:string[])=>new Intl.ListFormat(undefined,{type:'conjunction'}).format(parts);
+
+// Filters: original languages, a release year range and a minimum score, kept in this browser.
+type Filters={languages:string[];from:string;to:string;min:string};
+const noFilters:Filters={languages:[],from:'',to:'',min:''},FILTERS_KEY='tk.box.explore.filters';
+// TMDB's codes; `cn` is its code for Cantonese.
+const languageCodes=['en','es','fr','de','it','pt','ja','ko','zh','cn','hi','ta','te','ml','ru','sv','da','no','fi','nl','pl','tr','th','ar','he','id','tl'];
+const minScores=['5','6','7','8'];
+const languageName=(code:string)=>code==='cn'?'Cantonese':displayName('language',code);
+const yearText=(value:unknown)=>typeof value==='string'&&/^\d{4}$/.test(value)&&Number(value)>=1870&&Number(value)<=2100?value:'';
+function cleanFilters(value:Partial<Record<keyof Filters,unknown>>):Filters {
+  const languages=Array.isArray(value.languages)?value.languages.filter((l):l is string=>typeof l==='string'&&languageCodes.includes(l)):[];
+  let from=yearText(value.from),to=yearText(value.to);if(from&&to&&from>to)[from,to]=[to,from];
+  return {languages,from,to,min:typeof value.min==='string'&&minScores.includes(value.min)?value.min:''};
+}
+const loadFilters=():Filters=>{try{return cleanFilters(JSON.parse(localStorage.getItem(FILTERS_KEY)??'{}'));}catch{return noFilters;}};
+const saveFilters=(f:Filters)=>{try{localStorage.setItem(FILTERS_KEY,JSON.stringify(f));}catch{/* storage unavailable; applies until reload */}};
+function filterQuery(f:Filters) {
+  const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);
+  const text=q.toString();return text?`&${text}`:'';
+}
+const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f.to}`):f.from?`${f.from} or later`:`${f.to} or earlier`;
 
 const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;onSelect:(item:ExploreItem)=>void}) {
   return <div className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
@@ -26,60 +49,103 @@ const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;on
   </div>;
 });
 const Cards=({items,onSelect}:{items:ExploreItem[];onSelect:(item:ExploreItem)=>void})=><div className="poster-grid">{items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</div>;
+const SourceTag=({source}:{source:ExploreSource})=><span className="explore-source">{names[source]}</span>;
 
-function ExploreRow({source,row,onSelect}:{source:ExploreSource;row:ExploreRowInfo;onSelect:(item:ExploreItem)=>void}) {
-  const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<ExplorePage>(near?rowPath(source,row.id):undefined),page=data.data;
-  const heading=<span className="explore-row-title"><Icon name={row.icon} size={20}/>{row.title}{page?.total!==undefined&&page.total>0&&<span className="explore-count">{results(page.total)}</span>}</span>;
+function ExploreRow({source,row,fq,onSelect}:{source:ExploreSource;row:ExploreRowInfo;fq:string;onSelect:(item:ExploreItem)=>void}) {
+  const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<ExplorePage>(near?rowPath(source,row.id,1,fq):undefined),page=data.data;
+  const heading=<span className="explore-row-title"><Icon name={row.icon} size={20}/>{row.title}<SourceTag source={source}/>{page?.total!==undefined&&page.total>0&&<span className="explore-count">{results(page.total)}</span>}</span>;
   return <div ref={ref} className="lazy-row">{!page?(data.error?<section className="row"><div className="row-heading"><h2>{heading}</h2></div><div className="explore-row-error"><ErrorNotice message={data.error.message} retry={data.reload}/></div></section>:<RowSkeleton title={row.title}/>)
     :page.items.length?<Row title={heading} href={link('explore',{source,row:row.id})}>{page.items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</Row>:null}</div>;
 }
-function ExploreRows({source,onSelect}:{source:ExploreSource;onSelect:(item:ExploreItem)=>void}) {
+// One source's rows. A source that fails says so in place and leaves the others.
+function SourceRows({source,fq,onSelect}:{source:ExploreSource;fq:string;onSelect:(item:ExploreItem)=>void}) {
   const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`);
-  if(rows.error)return <ErrorNotice message={rows.error.message} retry={rows.reload}/>;
-  if(!rows.data)return <div className="explore-rows"><RowSkeleton title="Loading"/></div>;
-  return <div className="explore-rows">{rows.data.rows.map(row=><ExploreRow key={row.id} source={source} row={row} onSelect={onSelect}/>)}</div>;
+  if(rows.error)return <div className="explore-row-error"><ErrorNotice message={`${names[source]}: ${rows.error.message}`} retry={rows.reload}/></div>;
+  if(!rows.data)return <RowSkeleton title="Loading"/>;
+  return <>{rows.data.rows.map(row=><ExploreRow key={row.id} source={source} row={row} fq={fq} onSelect={onSelect}/>)}</>;
 }
 // "See all": every page of one row.
-function ExploreGrid({source,row,onSelect}:{source:ExploreSource;row:string;onSelect:(item:ExploreItem)=>void}) {
+function ExploreGrid({source,row,fq,onSelect}:{source:ExploreSource;row:string;fq:string;onSelect:(item:ExploreItem)=>void}) {
   const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`),info=rows.data?.rows.find(r=>r.id===row);
-  const list=useInfinitePages<ExplorePage>(index=>rowPath(source,row,index+1),1,`${source}/${row}`),first=list.pages[0];
+  const list=useInfinitePages<ExplorePage>(index=>rowPath(source,row,index+1,fq),1,`${source}/${row}${fq}`),first=list.pages[0];
   const items=list.pages.flatMap(p=>p?.items??[]),unique=items.filter((item,i)=>items.findIndex(other=>other.key===item.key)===i);
   return <section className="explore-grid">
-    <div className="explore-grid-head"><a className="crumb" href={link('explore',{source})}><Icon name="back" size={14}/>{names[source]}</a><h1>{info?.title??''}{first?.total!==undefined&&<span className="explore-count">{results(first.total)}</span>}</h1></div>
-    {!first&&list.loading?<Loading cards/>:!first?<ErrorNotice message="This row could not be loaded." retry={()=>invalidate(`/explore/${source}/rows/`)}/>:unique.length?<Cards items={unique} onSelect={onSelect}/>:<Empty title="Nothing here yet"/>}
+    <div className="explore-grid-head"><a className="crumb" href={link('explore')}><Icon name="back" size={14}/>Explore</a><h1>{info?.title??''}<SourceTag source={source}/>{first?.total!==undefined&&<span className="explore-count">{results(first.total)}</span>}</h1></div>
+    {!first&&list.loading?<Loading cards/>:!first?<ErrorNotice message="This row could not be loaded." retry={()=>invalidate(`/explore/${source}/rows/`)}/>:unique.length?<Cards items={unique} onSelect={onSelect}/>:list.more?null:<Empty title={fq?'Nothing here matches your filters':'Nothing here yet'}/>}
     {list.more&&<div ref={list.sentinel} className="explore-more">{list.loading&&<Loading/>}</div>}
   </section>;
 }
-function ExploreSearch({source,q,onSelect}:{source:ExploreSource;q:string;onSelect:(item:ExploreItem)=>void}) {
-  const data=useApi<{items:ExploreItem[]}>(`/explore/${source}/search?q=${encodeURIComponent(q)}`);
+function ExploreSearch({q,fq,onSelect}:{q:string;fq:string;onSelect:(item:ExploreItem)=>void}) {
+  const data=useApi<ExploreSearchResult>(`/explore/search?q=${encodeURIComponent(q)}${fq}`),failed=data.data?.failed??[];
   return <section className="explore-grid">
-    <div className="explore-grid-head"><h1>Results from {names[source]}{data.data&&<span className="explore-count">{results(data.data.items.length)}</span>}</h1></div>
-    {data.loading&&!data.data?<Loading cards/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data?.items.length?<Cards items={data.data.items} onSelect={onSelect}/>:<Empty title={`Nothing on ${names[source]} matches “${q}”`}/>}
+    <div className="explore-grid-head"><h1>Results{data.data&&<span className="explore-count">{results(data.data.items.length)}</span>}</h1></div>
+    {failed.length>0&&<p className="explore-note muted">{listed(failed.map(s=>names[s]))} could not be searched just now.</p>}
+    {data.loading&&!data.data?<Loading cards/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data?.items.length?<Cards items={data.data.items} onSelect={onSelect}/>:<Empty title={fq?`Nothing matches “${q}” with your filters`:`Nothing matches “${q}”`}/>}
   </section>;
+}
+
+function FilterMenu({filters,onChange}:{filters:Filters;onChange:(next:Filters)=>void}) {
+  const popup=useRef<HTMLDetailsElement>(null),[draft,setDraft]=useState(filters);
+  const close=()=>{if(popup.current?.open){popup.current.open=false;popup.current.querySelector('summary')?.focus();}};
+  useEffect(()=>{
+    const outside=(event:PointerEvent)=>{if(popup.current&&!popup.current.contains(event.target as Node))popup.current.open=false;};
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')close();};
+    document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
+    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
+  },[]);
+  const count=Number(filters.languages.length>0)+Number(!!(filters.from||filters.to))+Number(!!filters.min);
+  const toggle=(code:string,on:boolean)=>setDraft(d=>({...d,languages:on?[...d.languages,code]:d.languages.filter(l=>l!==code)}));
+  return <details ref={popup} className="browse-popup" onToggle={e=>{if(e.currentTarget.open)setDraft(filters);}}>
+    <summary role="button" aria-label="Filter Explore"><Icon name="filter"/><span>Filters</span>{count>0&&<b>{count}</b>}</summary>
+    <form className="browse-menu filter-menu explore-filter-menu" onSubmit={e=>{e.preventDefault();onChange(cleanFilters(draft));close();}}>
+      <fieldset className="explore-languages"><legend>Language</legend>
+        <div>{languageCodes.map(code=><label key={code}><input type="checkbox" checked={draft.languages.includes(code)} onChange={e=>toggle(code,e.target.checked)}/>{languageName(code)}</label>)}</div>
+      </fieldset>
+      <div className="explore-years"><label>Released from<input aria-label="Released from year" type="number" min="1870" max="2100" placeholder="Any" value={draft.from} onChange={e=>setDraft(d=>({...d,from:e.target.value}))}/></label>
+        <label>to<input aria-label="Released to year" type="number" min="1870" max="2100" placeholder="Any" value={draft.to} onChange={e=>setDraft(d=>({...d,to:e.target.value}))}/></label></div>
+      <label>Rating<select aria-label="Minimum rating" value={draft.min} onChange={e=>setDraft(d=>({...d,min:e.target.value}))}><option value="">Any rating</option>{minScores.map(n=><option key={n} value={n}>{n}+ ★</option>)}</select></label>
+      <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(noFilters);close();}}>Reset</button></div>
+    </form>
+  </details>;
+}
+function ActiveFilters({filters,onChange}:{filters:Filters;onChange:(next:Filters)=>void}) {
+  if(!filters.languages.length&&!filters.from&&!filters.to&&!filters.min)return null;
+  return <div className="active-filters">
+    {filters.languages.length>0&&<button onClick={()=>onChange({...filters,languages:[]})}>{listed(filters.languages.map(languageName))} ×</button>}
+    {(filters.from||filters.to)&&<button onClick={()=>onChange({...filters,from:'',to:''})}>{yearLabel(filters)} ×</button>}
+    {filters.min&&<button onClick={()=>onChange({...filters,min:''})}>{filters.min}+ ★ ×</button>}
+    <button onClick={()=>onChange(noFilters)}>Clear</button>
+  </div>;
 }
 
 export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:boolean;onOpen:(id:string)=>void}) {
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data;
   const available=data?(['plex','seerr','trakt'] as const).filter(s=>s==='plex'?data.plex:data[s].configured):[];
-  const wanted=params.get('source') as ExploreSource|null,source=wanted&&available.includes(wanted)?wanted:available[0];
+  const wanted=params.get('source') as ExploreSource|null,source=wanted&&available.includes(wanted)?wanted:undefined;
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
+  const [filters,setFilters]=useState(loadFilters),fq=filterQuery(filters);
   const [selected,setSelected]=useState<ExploreItem>();
-  useEffect(()=>{setText(query);},[source]);
+  const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
   // Typing searches in place; the address keeps the query so Back returns to it.
-  useEffect(()=>{if(source&&q!==query)replaceRoute(link('explore',{source,q}));},[q]);
-  const choose=(next:ExploreSource)=>{setText('');window.location.hash=link('explore',{source:next});};
+  useEffect(()=>{if(q!==query)replaceRoute(link('explore',{q}));},[q]);
   if(sources.error)return <div className="page"><ErrorNotice message={sources.error.message} retry={sources.reload}/></div>;
-  if(!data||!source)return <div className="page"><Loading/></div>;
+  if(!data)return <div className="page"><Loading/></div>;
+  const searchLabel=`Search ${listed(available.map(s=>names[s]))}`;
   return <div className="page explore-page">
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
-      <nav className="browse-tabs" aria-label="Catalog source">{available.map(s=><button key={s} type="button" aria-current={source===s?'page':undefined} onClick={()=>choose(s)}>{names[s]}</button>)}</nav>
-      <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{source,q:text.trim()}));}}><Icon name="search"/><input aria-label={`Search ${names[source]}`} placeholder={`Search ${names[source]}`} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore',{source}));}}><Icon name="close"/></button>}</form>
+      <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
+      <FilterMenu filters={filters} onChange={changeFilters}/>
       <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
+    <ActiveFilters filters={filters} onChange={changeFilters}/>
     {/* Plex and Trakt titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
-    {admin&&source!=='seerr'&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#settings">Settings › Explore</a> to show Available and Requested on these titles.</p>}
-    {source==='trakt'&&!data.trakt.linked&&<p className="explore-note muted">Connect your Trakt account in <a href="#settings">Settings › Explore</a> to see your Trakt watchlist and recommendations.</p>}
-    {query?<ExploreSearch key={`${source}-${query}`} source={source} q={query} onSelect={setSelected}/>:row?<ExploreGrid key={`${source}-${row}`} source={source} row={row} onSelect={setSelected}/>:<ExploreRows key={source} source={source} onSelect={setSelected}/>}
+    {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#settings">Settings › Explore</a> to show Available and Requested on Plex and Trakt titles.</p>}
+    {data.trakt.configured&&!data.trakt.linked&&!query&&!row&&<p className="explore-note muted">Connect your Trakt account in <a href="#settings">Settings › Explore</a> to see your Trakt watchlist and recommendations.</p>}
+    {/* Plex Discover doesn't say a title's language; Seerr is where it is looked up. */}
+    {filters.languages.length>0&&!data.seerr.configured&&<p className="explore-note muted">Plex titles don’t list their language, so they are hidden while a language filter is on.</p>}
+    {query?<ExploreSearch key={`${query}${fq}`} q={query} fq={fq} onSelect={setSelected}/>
+      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} onSelect={setSelected}/>
+      :<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} fq={fq} onSelect={setSelected}/>)}</div>}
     {selected&&<ExploreDialog item={selected} seerrOn={data.seerr.configured} onClose={()=>setSelected(undefined)} onOpen={id=>{setSelected(undefined);onOpen(id);}}/>}
   </div>;
 }
