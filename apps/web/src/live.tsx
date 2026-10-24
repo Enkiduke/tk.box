@@ -85,14 +85,14 @@ export function LiveEventsNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start]);
   if(data.error)return <ErrorNotice message="Live events could not be loaded." retry={data.reload}/>;
   if(!data.data?.channels.length)return null;
-  return <LiveRow title="Live events now" href={link('live',{filter:'all'})} channels={data.data.channels} now={now} onWatch={onWatch} busy={busy}/>;
+  return <LiveRow title="Live events now" href={link('live',{filter:'all'})} channels={data.data.channels} now={now} onWatch={onWatch} busy={busy} events/>;
 }
 // Laid out like the poster rows at half height: a 4:3 frame (the logo stands in for art) with a banner like the poster
-// overlays, then title and meta below.
-function LiveRow({title,href,channels,now,onWatch,busy}:{title:string;href:string;channels:Station[];now:number;onWatch:WatchChannel;busy:boolean}) {
+// overlays, then title and meta below. Channels show what's next only in a program's last half hour; events never do.
+function LiveRow({title,href,channels,now,onWatch,busy,events}:{title:string;href:string;channels:Station[];now:number;onWatch:WatchChannel;busy:boolean;events?:boolean}) {
   const settings=useHomeSettings();
   return <Row title={title} href={href} drift={settings.liveScroll?liveSpeedPx[settings.liveSpeed]:0}>{channels.map(c=>{
-    const current=airingNow(c,now),next=c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
+    const current=airingNow(c,now),next=events||current&&current.end-now>=1800000?undefined:c.programs.find(p=>p.program&&p.program.start>now)?.program,tune=()=>onWatch(tuneTarget(c),current?.title);
     return <div className="poster-card" key={c.id}>
       <div className="card-frame"><button className="poster-art live-art" disabled={busy} onClick={tune} aria-label={`Watch ${c.name}${current?`, ${current.title}`:''}`}>
         <ChannelLogo channel={c} size={88}/><span className="live-badge">LIVE</span>
