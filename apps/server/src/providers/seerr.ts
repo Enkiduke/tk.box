@@ -101,7 +101,7 @@ export class Seerr {
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
     return url;
   }
-  private current() { const connection = this.connection(); requireThat(connection, 'SEERR_NOT_CONFIGURED', 'Seerr is not set up. An administrator can add it in Settings › Explore.', 409); return connection; }
+  private current() { const connection = this.connection(); requireThat(connection, 'SEERR_NOT_CONFIGURED', 'Seerr is not set up. An administrator can add it in Admin › Connections.', 409); return connection; }
   // Unauthenticated: proves the address is an initialized Seerr. Cached briefly, since every row reads it.
   async publicSettings(base = this.current().url, fresh = false, now = Date.now()) {
     const cached = this.settings.get(base); if (cached && cached.until > now && !fresh) return cached.value;
@@ -166,7 +166,7 @@ export class Seerr {
     const { url, apiKey } = this.current();
     if (!apiKey) return this.call(accountId, plexToken, 'GET', path, query);
     const response = await remoteJson(this.url(url, path, query), { headers: { 'X-Api-Key': apiKey } }, 'Seerr', this.transport);
-    if (response.status === 401 || response.status === 403) throw new AppError('SEERR_KEY_REJECTED', 'Seerr no longer accepts the API key. An administrator can update it in Settings › Explore.', 502);
+    if (response.status === 401 || response.status === 403) throw new AppError('SEERR_KEY_REJECTED', 'Seerr no longer accepts the API key. An administrator can update it in Admin › Connections.', 502);
     return this.check(response);
   }
   // Every title Seerr tracks, read in pages with the API key and kept for a few minutes. Undefined without a key.

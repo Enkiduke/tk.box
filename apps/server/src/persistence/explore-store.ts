@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ExploreLayout } from '../../../../packages/contracts/src/index.js';
 import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
@@ -18,12 +19,26 @@ export const exploreSettingsInput = z.object({
   traktClientSecret: z.string().trim().max(100).regex(/^[\w-]*$/).optional()
 }).strict();
 export type ExploreSettingsInput = z.infer<typeof exploreSettingsInput>;
+const exploreSource = z.enum(['plex', 'seerr', 'trakt']);
+export const exploreLayoutInput = z.object({
+  order: z.array(exploreSource).max(3).refine(list => new Set(list).size === list.length, 'List each source once'),
+  hidden: z.array(exploreSource).max(3),
+  hiddenRows: z.array(z.string().max(820).regex(/^(plex|seerr|trakt):\S+$/)).max(300)
+}).strict();
+export const defaultExploreLayout: ExploreLayout = { order: ['plex', 'seerr', 'trakt'], hidden: [], hiddenRows: [] };
+// A saved order missing a source (or none saved) lists the missing ones last, in the default order.
+export function exploreLayout(value: Partial<ExploreLayout> | undefined): ExploreLayout {
+  const parsed = exploreLayoutInput.safeParse({ ...defaultExploreLayout, ...value });
+  const layout = parsed.success ? parsed.data : defaultExploreLayout;
+  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)] };
+}
 type Stored = { seerrUrl: string; seerrKey?: string; traktClientId: string; traktSecret?: string };
 export type TraktTokens = { access: string; refresh: string; expires: number };
 
 export class ExploreStore {
   constructor(private db: Db, private vault: Vault) {
     db.exec(`CREATE TABLE IF NOT EXISTS explore_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS explore_layout(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS explore_trakt_links(account_id TEXT PRIMARY KEY REFERENCES users(account_id), encrypted_tokens TEXT NOT NULL, username TEXT, updated_at INTEGER NOT NULL);`);
   }
   private stored() {
@@ -52,6 +67,21 @@ export class ExploreStore {
       // Another Trakt app cannot use the old app's tokens.
       if (next.traktClientId !== value.traktClientId) this.db.prepare('DELETE FROM explore_trakt_links').run();
       return this.view();
+    })();
+  }
+  // How Explore is laid out, apart from the connections so the two are saved separately.
+  layout(): ExploreLayout & { revision: number } {
+    const row = this.db.prepare('SELECT revision,value FROM explore_layout WHERE id=1').get() as { revision: number; value: string } | undefined;
+    return { revision: row?.revision ?? 0, ...exploreLayout(row ? JSON.parse(row.value) as Partial<ExploreLayout> : undefined) };
+  }
+  updateLayout(actor: string, expectedRevision: number, input: ExploreLayout, now = Date.now()) {
+    const next = exploreLayout(exploreLayoutInput.parse(input));
+    return this.db.transaction(() => {
+      const { revision } = this.layout();
+      if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
+      this.db.prepare('INSERT INTO explore_layout VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(next));
+      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'explore_layout_changed', now, JSON.stringify(next));
+      return this.layout();
     })();
   }
   traktLink(accountId: string) {

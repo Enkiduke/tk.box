@@ -120,7 +120,8 @@ function ActiveFilters({filters,onChange}:{filters:Filters;onChange:(next:Filter
 
 export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:boolean;onOpen:(id:string)=>void}) {
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data;
-  const available=data?(['plex','seerr','trakt'] as const).filter(s=>s==='plex'?data.plex:data[s].configured):[];
+  // Sources in the administrator's order, leaving out those switched off or not set up.
+  const available=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[];
   const wanted=params.get('source') as ExploreSource|null,source=wanted&&available.includes(wanted)?wanted:undefined;
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
   const [filters,setFilters]=useState(loadFilters),fq=filterQuery(filters);
@@ -130,6 +131,7 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   useEffect(()=>{if(q!==query)replaceRoute(link('explore',{q}));},[q]);
   if(sources.error)return <div className="page"><ErrorNotice message={sources.error.message} retry={sources.reload}/></div>;
   if(!data)return <div className="page"><Loading/></div>;
+  if(!available.length)return <div className="page"><Empty title="Nothing to explore">{admin?<>Every source is switched off in <a href="#admin?section=explore">Admin › Explore</a>.</>:'Explore has no sources right now.'}</Empty></div>;
   const searchLabel=`Search ${listed(available.map(s=>names[s]))}`;
   return <div className="page explore-page">
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
@@ -139,7 +141,7 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
     </div>
     <ActiveFilters filters={filters} onChange={changeFilters}/>
     {/* Plex and Trakt titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
-    {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#settings">Settings › Explore</a> to show Available and Requested on Plex and Trakt titles.</p>}
+    {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#admin?section=connections">Admin › Connections</a> to show Available and Requested on Plex and Trakt titles.</p>}
     {data.trakt.configured&&!data.trakt.linked&&!query&&!row&&<p className="explore-note muted">Connect your Trakt account in <a href="#settings">Settings › Explore</a> to see your Trakt watchlist and recommendations.</p>}
     {/* Plex Discover doesn't say a title's language; Seerr is where it is looked up. */}
     {filters.languages.length>0&&!data.seerr.configured&&<p className="explore-note muted">Plex titles don’t list their language, so they are hidden while a language filter is on.</p>}
