@@ -9,6 +9,8 @@
 .explore-count{margin-left:10px;font-size:13px;font-weight:500;color:var(--muted)}
 .explore-row-error{padding:0 var(--gutter)}
 .explore-badge{position:absolute;top:6px;left:6px;z-index:1;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 7px;border-radius:4px;background:rgba(12,12,16,.82);backdrop-filter:blur(4px);font-size:11px;font-weight:700;color:#e6e6ea}
+/* Movie or TV, bottom right; the status badge keeps the top left. */
+.explore-kind{position:absolute;right:6px;bottom:6px;z-index:1;padding:2px 7px;border-radius:4px;background:rgba(12,12,16,.82);backdrop-filter:blur(4px);font-size:11px;font-weight:700;color:#e6e6ea;pointer-events:none}
 .explore-badge.available{color:#7fd8a0}
 .explore-badge.partial{color:#b8e07a}
 .explore-badge.requested{color:var(--accent)}

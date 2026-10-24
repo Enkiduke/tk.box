@@ -40,9 +40,10 @@ const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f
 
 const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;onSelect:(item:ExploreItem)=>void}) {
   return <div className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
-    <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
+    <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}, ${item.kind==='show'?'TV':'Movie'}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
       <Artwork src={item.posterUrl} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       {item.status&&<span className={`explore-badge ${item.status}`}>{statusNames[item.status]}</span>}
+      <span className="explore-kind" aria-hidden="true">{item.kind==='show'?'TV':'Movie'}</span>
     </button></div>
     <span className="poster-title"><span className="card-plain">{item.title}</span></span>
     <span className="poster-meta"><span className="card-plain">{cardMeta(item)}</span></span>
