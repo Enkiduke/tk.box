@@ -24,14 +24,6 @@
 /* Artwork */
 .artwork-steps{margin:0;padding-left:20px;line-height:1.7}
 .artwork-steps code{font-size:12.5px}
-.artwork-jobs{display:grid;grid-template-columns:260px minmax(0,1fr);gap:16px;align-items:start}
-.artwork-job-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
-.artwork-job-list button{width:100%;justify-content:space-between;text-align:left;border-color:transparent;background:transparent}
-.artwork-job-list button[aria-current=true]{background:var(--surface-2);border-color:var(--line)}
-.artwork-job-list small{display:block;color:var(--muted);font-weight:400}
-.artwork-console{margin:0;min-height:260px;max-height:520px;overflow:auto;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b0b0e;font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
-.artwork-run{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
-.artwork-run .settings-card{margin:0}
 .code-input{width:100%;min-height:360px;padding:12px 14px;border:1px solid var(--line-strong);border-radius:8px;background:#0b0b0e;font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;tab-size:2}
 .artwork-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .artwork-toolbar .subtabs{margin:0}
@@ -215,3 +207,18 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .cleanup-extend input{width:70px}
 .cleanup-hold .notice,.cleanup-hold .cleanup-note{margin:0 14px 12px}
 .cleanup-detail-body>.cleanup-note{margin-top:20px}
+
+/* Console: a tab docked at the bottom left of every Admin section, and the drawer it opens. */
+.admin-console-tab{position:fixed;left:24px;bottom:0;z-index:40;padding:6px 16px;font-size:13px;border-bottom:0;border-radius:10px 10px 0 0;background:var(--surface-2);box-shadow:0 -4px 14px rgba(0,0,0,.3)}
+.admin-console-tab .status-dot{width:8px;height:8px}
+.status-dot.pulse{animation:console-pulse .9s ease-in-out infinite alternate}
+@keyframes console-pulse{from{opacity:1}to{opacity:.35}}
+.admin-console{position:fixed;left:0;right:0;bottom:0;z-index:40;height:40vh;min-height:220px;display:flex;flex-direction:column;background:var(--surface);border-top:1px solid var(--line-strong);box-shadow:0 -10px 30px rgba(0,0,0,.45)}
+.admin-console-bar,.admin-console-status{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--line)}
+.admin-console-bar select{max-width:min(640px,60vw);padding:5px 10px;font-size:13px}
+.admin-console-status{padding:6px 16px}
+.admin-console-status button{padding:4px 12px;font-size:12.5px}
+.admin-console-body{padding:16px}
+.admin-console-output{flex:1;margin:0;overflow:auto;padding:12px 16px;background:#0b0b0e;font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.admin-console-open .settings.admin{padding-bottom:calc(40vh + 24px)}
+@media(prefers-reduced-motion:reduce){.status-dot.pulse{animation:none}}

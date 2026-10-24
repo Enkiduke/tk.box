@@ -64,7 +64,7 @@ export function CleanupStatus({rules,busy}:{rules:RuleDays;busy:boolean}) {
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   const data=view.data!;
-  if(!data.updated)return <Empty title="No status yet">Run a preview in the Runs tab. Every requested title it looks at is shown here.</Empty>;
+  if(!data.updated)return <Empty title="No status yet">Run a preview (top right). Every requested title it looks at is shown here.</Empty>;
   const inGroup=(g:Group)=>matching.filter(({item})=>g.statuses.includes(item.status));
   // Soonest first; titles without a date go last, by name.
   const sorted=(list:typeof matching)=>[...list].sort((a,b)=>{
