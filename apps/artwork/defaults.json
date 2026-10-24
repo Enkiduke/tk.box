@@ -324,18 +324,18 @@
       "position_y": 0.66
     },
     "tk-custom": {
-      "logo_mode": "none",
-      "text_overlay_enabled": true,
-      "custom_text": "{title_lines}",
-      "text_transform": "uppercase",
       "font_file": "resources/fonts/Poppins/Poppins-Regular.ttf",
-      "font_size": 300,
-      "text_color": "#FFFFFF",
-      "position_x": 0.5,
-      "position_y": 0.5,
-      "text_line_spacing": 0.25,
-      "text_stroke_width": 10,
-      "text_shadow_strength": 1
+      "uniform_logo_max_w": 1600,
+      "uniform_logo_max_h": 2200,
+      "uniform_logo_offset_x": 0.5,
+      "uniform_logo_offset_y": 0.5,
+      "uniform_logo_trim": true,
+      "uniform_logo_shadow_enabled": true,
+      "uniform_logo_shadow_opacity": 100,
+      "uniform_logo_shadow_angle": 0,
+      "uniform_logo_shadow_distance": 0,
+      "uniform_logo_shadow_size": 24,
+      "uniform_logo_shadow_spread": 50
     }
   }
 }

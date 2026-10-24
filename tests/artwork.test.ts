@@ -115,3 +115,15 @@ test('a database seeded with the earlier layouts gets the tk-* set, and settings
   new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));
   assert.ok(!store.layoutNames().includes('tk-charts'));
 });
+test('a saved tk-custom that draws the title as text draws a logo instead, keeping its other settings, once',()=>{
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));
+  db.prepare('INSERT INTO artwork_state VALUES(?,?)').run('layouts:seed','2');
+  db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)').run('tk-custom',2,JSON.stringify({logo_mode:'none',text_overlay_enabled:true,custom_text:'{title_lines}',font_size:300,text_color:'#FFFFFF',position_y:0.5,width:1000}));
+  const store=new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));
+  const {revision,value}=store.layout('tk-custom');
+  assert.equal(revision,3);assert.equal(value.width,1000);assert.equal(value.uniform_logo_trim,true);
+  for(const key of ['logo_mode','text_overlay_enabled','custom_text','font_size','text_color','position_y'])assert.ok(!(key in value),key);
+  db.prepare('UPDATE artwork_layouts SET value=? WHERE name=?').run(JSON.stringify({logo_mode:'none',custom_text:'{title_lines}'}),'tk-custom');
+  new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));
+  assert.equal(store.layout('tk-custom').value.logo_mode,'none');  // Set back by hand later: left alone
+});
