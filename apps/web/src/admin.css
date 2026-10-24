@@ -175,7 +175,7 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .cleanup-group-title h3{margin:0;font-size:15px;font-weight:650}
 .cleanup-group-title .count{padding:1px 7px;border-radius:10px;background:var(--surface-3);color:var(--muted);font-size:11px;font-weight:600}
 .cleanup-group-title p{flex-basis:100%;margin:0;color:var(--muted);font-size:12px}
-.cleanup-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:20px 14px}
+.cleanup-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px}
 .cleanup-card{display:flex;flex-direction:column;min-width:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left}
 .cleanup-card:hover,.cleanup-card:active{background:none;transform:none}
 .cleanup-art{position:relative;display:block;width:100%;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;background:var(--surface-2);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
@@ -203,8 +203,6 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .cleanup-hold-row strong{font-size:13px}
 .cleanup-hold-row small{color:var(--muted);font-size:12px}
 .cleanup-hold-row button{display:inline-flex;align-items:center;gap:6px}
-.cleanup-extend{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
-.cleanup-extend input{width:70px}
 .cleanup-hold .notice,.cleanup-hold .cleanup-note{margin:0 14px 12px}
 .cleanup-detail-body>.cleanup-note{margin-top:20px}
 

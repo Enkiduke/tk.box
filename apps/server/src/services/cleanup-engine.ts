@@ -19,7 +19,7 @@ export type CleanupServices = { seerr?: { url: string; apiKey?: string }; radarr
 // the rule's own date and `held_until` a later one an administrator's hold keeps it until. `key` names its hold and
 // `rating_key` its Plex item, for the poster.
 export type CleanupTitle = { title: string; year: number | null; kind: 'movie' | 'show' | 'season'; library: string; status: 'due' | 'deleted' | 'leaving' | 'kept' | 'protected' | 'not_found' | 'error';
-  rule: string | null; reason: string; deletion_date: string | null; held_until?: string | null; key?: string | null; rating_key?: string | null; holdable?: boolean };
+  rule: string | null; reason: string; deletion_date: string | null; held_until?: string | null; key?: string | null; rating_key?: string | null; show_rating_key?: string | null; holdable?: boolean };
 export type CleanupTitles = { updated: string | null; dryRun: boolean; complete: boolean; items: CleanupTitle[] };
 type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
 const MAX_LINES = 5000, SAVED_LINES = 2000, LATE_MS = 2 * 3600000, DAY = 86400000;
@@ -40,13 +40,8 @@ export function withHolds(view: CleanupTitles, holds: Record<string, CleanupHold
     return { ...item, holdable, held_until: held === null ? null : new Date(held).toISOString(), status: at <= now ? 'due' : at <= now + leavingDays * DAY ? 'leaving' : 'kept' };
   }) };
 }
-// Reset starts the title's rule over from today; extend adds days to whichever date it leaves on now (or today, if
-// that has passed). Returns the date to hold it until.
-export function holdUntil(item: CleanupTitle, settings: CleanupSettings, action: { action: 'reset' } | { action: 'extend'; days: number }, now = Date.now()) {
-  if (action.action === 'extend') {
-    const leaves = Date.parse(item.held_until ?? item.deletion_date!);
-    return Math.max(leaves, now) + action.days * DAY;
-  }
+// Start over: the title's rule over again from today. Returns the date to hold it until.
+export function holdUntil(item: CleanupTitle, settings: CleanupSettings, now = Date.now()) {
   const setting = item.rule ? ruleDays[item.rule] : undefined;
   if (!setting) throw new AppError('CLEANUP_NO_RULE', 'This title has no retention rule to start over.', 409);
   return now + (settings[setting] as number) * DAY;
@@ -140,10 +135,10 @@ export class CleanupEngine {
   }
   titles(): CleanupTitles { return withHolds(this.lastRun(), this.store.holds(), this.store.settings().leavingSoon.days); }
   // Holds take effect at the next run; a run already going keeps the holds it started with.
-  hold(actor: string, key: string, action: { action: 'reset' } | { action: 'extend'; days: number } | { action: 'clear' }) {
+  hold(actor: string, key: string, action: { action: 'reset' } | { action: 'clear' }) {
     const item = this.titles().items.find(i => i.key === key);
-    if (!item?.holdable) throw new AppError('CLEANUP_NOT_HOLDABLE', 'Only titles waiting to leave can be kept longer. Run a preview to refresh the list.', 409);
-    this.store.setHold(actor, key, action.action === 'clear' ? null : holdUntil(item, this.store.settings(), action));
+    if (!item?.holdable) throw new AppError('CLEANUP_NOT_HOLDABLE', 'Only titles waiting to leave can be started over. Run a preview to refresh the list.', 409);
+    this.store.setHold(actor, key, action.action === 'clear' ? null : holdUntil(item, this.store.settings()));
     return this.titles();
   }
   private lastRun(): CleanupTitles {

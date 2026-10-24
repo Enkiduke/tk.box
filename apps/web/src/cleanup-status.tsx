@@ -2,7 +2,7 @@ import {useEffect,useMemo,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
-import {holdEntries} from './cleanup-holds.js';
+import {holdEntries,loadLeaving} from './cleanup-holds.js';
 import {date,useMutation} from './settings-ui.js';
 
 // Clean Up › Status: every title the last finished run looked at, as posters grouped by what happens to it and when.
@@ -95,27 +95,24 @@ export function CleanupStatus({rules,busy}:{rules:RuleDays;busy:boolean}) {
   </div>;
 }
 
-// Leaving soon titles can be kept longer straight from a right-click.
+// Just the poster and its overlays; the name shows on hover. Leaving soon titles start over from a right-click.
 function TitleCard({item,now,onOpen}:{item:Title;now:number;onOpen:()=>void}) {
-  const {tone}=groupOf(item.status),menu=useMenu(item.title,()=>[holdEntries({key:item.key!,title:item.title,held_until:item.held_until}),[{label:'Details',icon:'info',run:onOpen}]]);
+  const {tone}=groupOf(item.status),menu=useMenu(item.title,()=>[holdEntries({key:item.key!,title:item.title}),[{label:'Details',icon:'info',run:onOpen}]]);
   const leaving=item.status==='leaving'&&item.holdable&&!!item.key;
-  return <><button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} onContextMenu={leaving?menu.onContextMenu:undefined} aria-label={`${item.title}, ${countdown(item,now)}`}>
+  return <><button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} onContextMenu={leaving?menu.onContextMenu:undefined} title={[item.title,meta(item),item.library].filter(Boolean).join(' · ')} aria-label={`${item.title}, ${countdown(item,now)}`}>
     <span className="cleanup-art">
       <Artwork src={poster(item)} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       <span className={`cleanup-when ${tone}`}>{countdown(item,now)}</span>
       {item.held_until&&<span className="cleanup-held" title={`Held until ${day(item.held_until)}`}><Icon name="clock" size={13}/></span>}
     </span>
-    <span className="poster-title"><span className="card-plain">{item.title}</span></span>
-    <span className="poster-meta"><span className="card-plain">{[meta(item),item.library].filter(Boolean).join(' · ')}</span></span>
   </button>{menu.menu}</>;
 }
 
 function TitleDetail({item,rules,busy,dryRun,now,onClose}:{item:Title;rules:RuleDays;busy:boolean;dryRun:boolean;now:number;onClose:()=>void}) {
-  const g=groupOf(item.status),[days,setDays]=useState(30);
-  const mutation=useMutation(()=>invalidate('/admin/cleanup/titles'));
-  const hold=(body:{action:'reset'}|{action:'extend';days:number}|{action:'clear'})=>void mutation.run(()=>api('/admin/cleanup/holds','POST',{key:item.key,...body}));
+  const g=groupOf(item.status);
+  const mutation=useMutation(()=>{invalidate('/admin/cleanup/titles');void loadLeaving();});
+  const hold=(body:{action:'reset'}|{action:'clear'})=>void mutation.run(()=>api('/admin/cleanup/holds','POST',{key:item.key,...body}));
   const at=leaves(item),reset=item.rule&&ruleDays[item.rule]?rules[ruleDays[item.rule]!]:undefined;
-  const base=Math.max(at?Date.parse(at):now,now),after=(n:number)=>day(new Date(base+n*DAY).toISOString());
   return <Modal title={item.title} onClose={onClose}>
     <div className="cleanup-detail">
       <div className="cleanup-detail-art"><Artwork src={poster(item)} fallback={<Icon name={item.kind==='movie'?'movies':'shows'}/>}/></div>
@@ -130,26 +127,18 @@ function TitleDetail({item,rules,busy,dryRun,now,onClose}:{item:Title;rules:Rule
           <dt>Why</dt><dd>{item.reason||'—'}</dd>
         </dl>
         {item.holdable?<div className="cleanup-hold">
-          <h3>Keep it longer</h3>
+          <h3>Start over</h3>
           {reset!==undefined&&<div className="cleanup-hold-row">
-            <div><strong>Start over</strong><small>{reset} days from today ({item.rule}’s period), until {day(new Date(now+reset*DAY).toISOString())}.</small></div>
+            <div><strong>Start the clock over</strong><small>{reset} days from today ({item.rule}’s period), until {day(new Date(now+reset*DAY).toISOString())}.</small></div>
             <button disabled={mutation.busy} onClick={()=>hold({action:'reset'})}><Icon name="restart" size={16}/>Start over</button>
           </div>}
-          <div className="cleanup-hold-row">
-            <div><strong>Extend</strong><small>Add days to {at&&Date.parse(at)>now?'the date it leaves':'today'}.</small></div>
-            <div className="cleanup-extend">
-              {[7,14,30].map(n=><button key={n} disabled={mutation.busy} title={`Until ${after(n)}`} onClick={()=>hold({action:'extend',days:n})}>+{n} days</button>)}
-              <span className="cleanup-days-input"><input type="number" min={1} max={3650} value={days} aria-label="Days to add" onChange={e=>setDays(Math.max(1,Math.min(3650,Math.round(Number(e.target.value)||1))))}/>
-                <button disabled={mutation.busy} title={`Until ${after(days)}`} onClick={()=>hold({action:'extend',days})}>Add</button></span>
-            </div>
-          </div>
           {item.held_until&&<div className="cleanup-hold-row">
             <div><strong>Remove the hold</strong><small>Go back to the rule’s date{item.deletion_date?`, ${day(item.deletion_date)}`:''}.</small></div>
             <button disabled={mutation.busy} onClick={()=>hold({action:'clear'})}><Icon name="close" size={16}/>Remove</button>
           </div>}
           {mutation.error&&<div className="notice error" role="alert"><span>{mutation.error}</span></div>}
           <p className="cleanup-note">The next {dryRun?'preview or ':''}clean up uses the new date{busy?'; the run going now keeps the dates it started with':''}. A hold only ever keeps a title longer than its rule would.</p>
-        </div>:item.status==='deleted'?null:<p className="cleanup-note">{item.status==='protected'?'Protected titles are never deleted, so there is nothing to extend.':item.status==='error'||item.status==='not_found'?'The run couldn’t tell when this title is due, so it is kept.':'Run a preview to be able to keep this title longer.'}</p>}
+        </div>:item.status==='deleted'?null:<p className="cleanup-note">{item.status==='protected'?'Protected titles are never deleted, so there is nothing to start over.':item.status==='error'||item.status==='not_found'?'The run couldn’t tell when this title is due, so it is kept.':'Run a preview to be able to start this title over.'}</p>}
       </div>
     </div>
   </Modal>;

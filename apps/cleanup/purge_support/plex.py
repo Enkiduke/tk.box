@@ -105,8 +105,11 @@ def season_added_at(season):
     return max(plex_datetime(getattr(episode, "addedAt", None)) for episode in episodes)
 
 
-def update_plex_collection(plex, library_keys, name, candidates, poster=None, *, remove_stale=True):
-    """Add confirmed candidates; reconcile removals only after complete evaluation."""
+def update_plex_collection(plex, library_keys, name, candidates, poster=None, *, remove_stale=True, settled=frozenset()):
+    """Add confirmed candidates. After a complete evaluation remove every other member; after an incomplete one, only
+    members in `settled` (rating keys the run confirmed as not leaving)."""
+    def removable(key):
+        return remove_stale or key in settled
     by_library = {}
     for item in candidates:
         by_library.setdefault(positive_id(item.librarySectionID), {})[str(item.ratingKey)] = item
@@ -129,6 +132,10 @@ def update_plex_collection(plex, library_keys, name, candidates, poster=None, *,
                 if remove_stale:
                     for existing in collections:
                         existing.delete()
+                elif collection is not None:
+                    stale = [item for item in collection.items() if removable(str(item.ratingKey))]
+                    if stale:
+                        collection.removeItems(stale)
                 continue
             if collection is None:
                 library.createCollection(name, items=list(wanted.values()))
@@ -136,10 +143,10 @@ def update_plex_collection(plex, library_keys, name, candidates, poster=None, *,
             else:
                 current = {str(item.ratingKey): item for item in collection.items()}
                 missing = [item for key, item in wanted.items() if key not in current]
-                stale = [item for key, item in current.items() if key not in wanted]
+                stale = [item for key, item in current.items() if key not in wanted and removable(key)]
                 if missing:
                     collection.addItems(missing)
-                if remove_stale and stale:
+                if stale:
                     collection.removeItems(stale)
             if remove_stale:
                 for duplicate in collections[1:]:

@@ -148,6 +148,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         if matches:
             logger.info("Keeping '%s': protected by Arr tags %s", item.title, ", ".join(matches))
             report.protected += 1
+            report.settled.add(str(item.ratingKey))
             add_status(report, item, kind, "protected", reason=f"Tagged {', '.join(matches)}", key=hold)
             return
     if settings.exempt_if_in_collection:
@@ -155,10 +156,13 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         if collections:
             logger.info("Keeping '%s': protected by collections %s", item.title, ", ".join(collections))
             report.protected += 1
+            report.settled.add(str(item.ratingKey))
             add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}", key=hold)
             return
     if media_type == "tv" and settings.enable_season_retention:
         if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id):
+            # Season by season, the show itself never belongs in the collection.
+            report.settled.add(str(item.ratingKey))
             return
 
     requests_group = resolve_added_dates(requests_group, item, history)
@@ -181,6 +185,8 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
         if leaving:
             report.leaving_items.append(item)
             add_entry(report.leaving_summary, item, f"{item.title} in {remaining} days [{rule.name}]")
+        else:
+            report.settled.add(str(item.ratingKey))
         add_status(report, item, kind, "leaving" if leaving else "kept", rule=rule, key=hold, held=held)
         if settings.dry_run:
             logger.info("DRY RUN Foresight: '%s' in %s days (%s: %s)", item.title, remaining, rule.name, rule.reason)
@@ -234,11 +240,11 @@ def run(settings, plex, seerr, radarr, sonarr, history, now=None):
             failed(f"Skipped after an error: {exc}")
     if settings.create_leaving_soon_collection and not settings.dry_run:
         if not report.evaluation_complete:
-            logger.warning("Leaving Soon evaluation was incomplete: adding confirmed candidates and preserving "
-                           "existing members; stale entries will be removed after a complete run")
+            logger.warning("Leaving Soon evaluation was incomplete: adding confirmed candidates and removing members "
+                           "confirmed as not leaving; members that couldn't be checked stay until a complete run")
         if not update_plex_collection(plex, library_keys, settings.leaving_soon_name,
                                       report.leaving_items, settings.leaving_soon_poster,
-                                      remove_stale=report.evaluation_complete):
+                                      remove_stale=report.evaluation_complete, settled=report.settled):
             report.failed += 1
     elif settings.create_leaving_soon_collection:
         logger.info("DRY RUN: Leaving Soon collection was not modified (%s candidates)", len(report.leaving_items))

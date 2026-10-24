@@ -44,10 +44,9 @@ test('a hold keeps a title longer and the status shows it until the next run',()
   const s=store(),{revision:_,...settings}=s.settings(),DAY=86400000,now=Date.parse('2026-10-01T00:00:00Z');
   const title:CleanupTitle={title:'Dune',year:2021,kind:'movie',library:'Movies',status:'due',rule:'Rule 2',reason:'',deletion_date:'2026-09-30T00:00:00Z',held_until:null,key:'movie:438631',rating_key:'1'};
   const view={updated:'2026-10-01T00:00:00Z',dryRun:true,complete:true,items:[title,{...title,key:'movie:1',status:'protected' as const,deletion_date:null}]};
-  // Start over gives the rule's whole period from today; extend adds to today when the date has passed.
-  assert.equal(holdUntil(title,settings,{action:'reset'},now),now+60*DAY);
-  assert.equal(holdUntil(title,settings,{action:'extend',days:3},now),now+3*DAY);
-  assert.equal(holdUntil({...title,held_until:'2026-10-20T00:00:00Z'},settings,{action:'extend',days:3},now),Date.parse('2026-10-23T00:00:00Z'));
+  // Start over gives the rule's whole period from today.
+  assert.equal(holdUntil(title,settings,now),now+60*DAY);
+  assert.throws(()=>holdUntil({...title,rule:null},settings,now),/no retention rule/);
   s.setHold('admin','movie:438631',now+3*DAY,now);
   const held=withHolds(view,s.holds(now),7,now).items;
   assert.equal(held[0]!.status,'leaving');
