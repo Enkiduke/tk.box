@@ -21,7 +21,7 @@ A self-hosted media app for your Plex library and IPTV channels. One web UI for 
 
 ## Explore
 
-Browse discovery shelves beyond your Plex library, search each source, and open title details to watch a local copy, add it to your Plex watchlist or request it through Seerr. Availability badges show which titles are available, partly available or already requested.
+Browse every source's discovery shelves on one page, search them all at once, narrow shelves and results by language, release year and rating, and open title details to watch a local copy, add it to your Plex watchlist or request it through Seerr. Availability badges show which titles are available, partly available or already requested.
 
 Plex Discover is available with Plex sign-in. Add optional Seerr and Trakt connections in **Settings → Explore**. A Seerr API key enables availability badges on Plex and Trakt titles; viewers request through their own Plex-linked Seerr accounts. Connect your own Trakt account for your watchlist and recommendations.
 

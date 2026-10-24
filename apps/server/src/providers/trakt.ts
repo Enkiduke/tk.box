@@ -7,7 +7,7 @@ import { imagePath } from './explore-images.js';
 // Trakt: public trending and popular lists need only the administrator's Trakt app; a viewer's watchlist and
 // recommendations need that viewer to link their Trakt account (device code sign-in).
 type Ids = { trakt?: number; slug?: string; imdb?: string; tmdb?: number; tvdb?: number };
-type Media = { title?: string; year?: number; ids?: Ids; overview?: string; runtime?: number; rating?: number; aired_episodes?: number;
+type Media = { title?: string; year?: number; ids?: Ids; overview?: string; runtime?: number; rating?: number; aired_episodes?: number; language?: string;
   images?: { poster?: string[]; fanart?: string[] } };
 type Entry = { type?: string; movie?: Media; show?: Media };
 const API = 'https://api.trakt.tv', OOB = 'urn:ietf:wg:oauth:2.0:oob', LIMIT = 20;
@@ -19,6 +19,7 @@ export function traktItem(media: Media | undefined, kind: 'movie' | 'show'): Exp
     ...(media.year ? { year: media.year } : {}), ...(media.overview ? { summary: media.overview } : {}),
     posterUrl: image(media.images?.poster), backdropUrl: image(media.images?.fanart), ...(media.rating ? { rating: media.rating } : {}),
     ...(media.runtime ? { durationMs: media.runtime * 60000 } : {}), ...(kind === 'show' && media.aired_episodes ? { episodeCount: media.aired_episodes } : {}),
+    ...(media.language ? { language: media.language } : {}),
     ids: { ...(ids.tmdb ? { tmdb: ids.tmdb } : {}), ...(ids.imdb ? { imdb: ids.imdb } : {}), ...(ids.tvdb ? { tvdb: ids.tvdb } : {}), ...(ids.trakt ? { trakt: ids.trakt } : {}) } };
 }
 // Lists of `{movie}`/`{show}` wrappers (trending, watchlist, search) or bare media (popular, recommendations).

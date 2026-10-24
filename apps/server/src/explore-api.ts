@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import type {ExploreDetails,ExploreItem,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import type {ExploreDetails,ExploreItem,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
@@ -13,7 +13,10 @@ import {requireThat} from './errors.js';
 type Viewer={hash:string;grant:PlexGrant};
 const source=z.enum(['plex','seerr','trakt']);
 const kind=z.enum(['movie','show']);
-const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1)}).strict();
+// Explore's filters, sent with every row page and search: original languages, a release year range and a minimum score.
+const filterQuery={lang:z.string().max(200).optional(),from:z.coerce.number().int().min(1870).max(2100).optional(),to:z.coerce.number().int().min(1870).max(2100).optional(),
+  min:z.coerce.number().min(0).max(10).optional()};
+const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1),...filterQuery}).strict();
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
 
@@ -35,9 +38,47 @@ ${key}`,hit=this.entries.get(id);if(hit&&hit.until>now)return hit.value as Promi
 `))this.entries.delete(id);}
 }
 
+export type ExploreFilter={languages:string[];from?:number;to?:number;min?:number};
+export function exploreFilter(input:{lang?:string;from?:number;to?:number;min?:number}):ExploreFilter {
+  const languages=[...new Set((input.lang??'').split(',').map(l=>l.trim().toLowerCase()).filter(l=>/^[a-z]{2,3}$/.test(l)))].slice(0,30);
+  return {languages,...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{})};
+}
+export const filtering=(f:ExploreFilter)=>f.languages.length>0||f.from!==undefined||f.to!==undefined||f.min!==undefined;
+// What a filter needs that the title does not say. Such titles are looked up; still unknown, they are left out.
+export const lacking=(item:ExploreItem,f:ExploreFilter)=>(f.languages.length>0&&!item.language)||((f.from!==undefined||f.to!==undefined)&&!item.year)||(f.min!==undefined&&item.rating===undefined);
+export function passes(item:ExploreItem,f:ExploreFilter) {
+  if(f.languages.length&&(!item.language||!f.languages.includes(item.language)))return false;
+  if(f.from!==undefined||f.to!==undefined){if(!item.year||f.from!==undefined&&item.year<f.from||f.to!==undefined&&item.year>f.to)return false;}
+  return f.min===undefined||item.rating!==undefined&&item.rating>=f.min;
+}
+// One list from several sources' lists, each source's best first: their first titles, then their second, and so on.
+// A title several sources know is listed once, where it first appears, with what the others add.
+export function interleave(lists:ExploreItem[][]) {
+  const merged=new Map<string,ExploreItem>();
+  for(let i=0;lists.some(list=>i<list.length);i++)for(const list of lists){
+    const item=list[i];if(!item)continue;
+    const found=merged.get(item.key);if(!found){merged.set(item.key,item);continue;}
+    const next:Record<string,unknown>={...found};
+    for(const [key,value] of Object.entries(item))if(next[key]===undefined&&value!==undefined)next[key]=value;
+    merged.set(item.key,{...next,ids:{...item.ids,...found.ids}} as ExploreItem);
+  }
+  return [...merged.values()];
+}
+// Lookups run a few at a time across every viewer, so a filtered page doesn't flood Seerr.
+function limiter(slots:number) {
+  let active=0;const waiting:(()=>void)[]=[];
+  return async<T>(run:()=>Promise<T>)=>{
+    if(active<slots)active++;else await new Promise<void>(resolve=>waiting.push(resolve));
+    try{return await run();}finally{const next=waiting.shift();if(next)next();else active--;}
+  };
+}
+// A filtered row page reads this many of the source's pages, so filters that leave few titles still fill a row.
+const FILTER_SPAN=3;
+const sourceNames=['plex','seerr','trakt'] as const satisfies readonly ExploreSource[];
+
 // Explore: rows, search and details from Plex Discover, Seerr and Trakt, plus Seerr requests and the Plex watchlist.
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string) {
-  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr()),trakt=new Trakt(store),images=new ExploreImages(),cache=new ExploreCache();
+  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr()),trakt=new Trakt(store),images=new ExploreImages(),cache=new ExploreCache(),lookups=limiter(6);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=await auth(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
@@ -54,15 +95,30 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     return {rows:trakt.rows(account).map(({id,title,icon,...rest})=>({id,title,icon,...('personal' in rest?{personal:true}:{})}))};
   });
   app.get('/api/v1/explore/:source/rows/:row',async request=>{
-    const params=z.object({source,row:z.string().max(800)}).parse(request.params),{page:at}=page.parse(request.query),{account,token}=await viewer(request);
+    const params=z.object({source,row:z.string().max(800)}).parse(request.params),{page:at,...query}=page.parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
     // Seerr's labels are applied after the cache, so they follow requests as they are made.
-    const key=`row:${params.source}:${params.row}:${at}`;
-    return params.source==='plex'?labelled(await cache.get(account,key,PAGE_MS,()=>discover.row(token,params.row,at))):params.source==='seerr'?cache.get(account,key,PAGE_MS,()=>seerr.row(account,token,params.row,at)):labelled(await cache.get(account,key,PAGE_MS,()=>trakt.row(account,params.row,at)));
+    const read=async(n:number):Promise<ExplorePage>=>{
+      const key=`row:${params.source}:${params.row}:${n}`;
+      return params.source==='plex'?labelled(await cache.get(account,key,PAGE_MS,()=>discover.row(token,params.row,n))):params.source==='seerr'?cache.get(account,key,PAGE_MS,()=>seerr.row(account,token,params.row,n)):labelled(await cache.get(account,key,PAGE_MS,()=>trakt.row(account,params.row,n)));
+    };
+    if(!filtering(filter))return read(at);
+    // Filtered page n covers the source's pages (n-1)*span+1 to n*span; the first says whether the rest exist.
+    const firstPage=(at-1)*FILTER_SPAN+1,head=await read(firstPage),pages=[head];
+    if(head.hasMore)for(const next of await Promise.all(Array.from({length:FILTER_SPAN-1},(_,i)=>read(firstPage+i+1).catch(()=>undefined)))){
+      if(!next||!pages.at(-1)!.hasMore)break;pages.push(next);
+    }
+    return {items:await filtered(interleave([pages.flatMap(p=>p.items)]),filter,account,token),page:at,hasMore:pages.length===FILTER_SPAN&&pages.at(-1)!.hasMore} satisfies ExplorePage;
   });
-  app.get('/api/v1/explore/:source/search',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
-    const {source:from}=z.object({source}).parse(request.params),{q}=z.object({q:z.string().trim().min(1).max(120)}).strict().parse(request.query),{account,token}=await viewer(request);
-    const key=`search:${from}:${q.toLowerCase()}`;
-    return {items:from==='plex'?(await labelled({items:await cache.get(account,key,SEARCH_MS,()=>discover.search(token,q))})).items:from==='seerr'?await cache.get(account,key,SEARCH_MS,()=>seerr.search(account,token,q)):(await labelled({items:await cache.get(account,key,SEARCH_MS,()=>trakt.search(q))})).items};
+  // One search across every source that is set up, best matches from each first. A source that fails leaves the others.
+  app.get('/api/v1/explore/search',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
+    const {q,...query}=z.object({q:z.string().trim().min(1).max(120),...filterQuery}).strict().parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
+    const key=`search:${q.toLowerCase()}`,from=sourceNames.filter(s=>s==='plex'||(s==='seerr'?seerr.configured():trakt.configured()));
+    const results=await Promise.allSettled(from.map(async s=>s==='plex'?(await labelled({items:await cache.get(account,`plex:${key}`,SEARCH_MS,()=>discover.search(token,q))})).items
+      :s==='seerr'?await cache.get(account,`seerr:${key}`,SEARCH_MS,()=>seerr.search(account,token,q)):(await labelled({items:await cache.get(account,`trakt:${key}`,SEARCH_MS,()=>trakt.search(q))})).items));
+    const failed=from.filter((_,i)=>results[i]!.status==='rejected');
+    requireThat(failed.length<from.length,'EXPLORE_UNAVAILABLE','Search is unavailable right now. Try again in a moment.',502);
+    const items=interleave(results.map(r=>r.status==='fulfilled'?r.value:[]));
+    return {items:filtering(filter)?await filtered(items,filter,account,token):items,failed} satisfies ExploreSearchResult;
   });
   // Signs the viewer in to Seerr (with their Plex account) when they go to request, and says what they may request.
   app.get('/api/v1/explore/seerr/account',async request=>{const {account,token}=await viewer(request);return seerr.account(account,token);});
@@ -122,6 +178,17 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const saved=store.update(grant.accountId,expectedRevision,value);cache.forget();return saved;
   });
 
+  // Titles that pass the filter. Language, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
+  // known; these are public facts, so they are kept a day for every viewer.
+  async function filtered(items:ExploreItem[],filter:ExploreFilter,account:string,token:string) {
+    const filled=await Promise.all(items.map(async item=>{
+      if(!lacking(item,filter)||!item.ids.tmdb||!seerr.configured())return item;
+      const tmdb=item.ids.tmdb,facts=await cache.get('',`facts:${item.kind}:${tmdb}`,PERSON_MS,()=>lookups(()=>seerr.details(account,token,item.kind,tmdb))
+        .then(info=>{const found=seerrItem(info,item.kind==='show'?'tv':'movie');return {language:found?.language,year:found?.year,rating:found?.rating};})).catch(()=>undefined);
+      return facts?{...item,language:item.language??facts.language,year:item.year??facts.year,rating:item.rating??facts.rating}:item;
+    }));
+    return filled.filter(item=>passes(item,filter));
+  }
   // Seerr's labels on Plex and Trakt titles, when the API key lets the server read Seerr's media list.
   async function labelled<T extends {items:ExploreItem[]}>(page:T):Promise<T> {
     const index=await seerr.statuses().catch(()=>undefined);if(!index)return page;

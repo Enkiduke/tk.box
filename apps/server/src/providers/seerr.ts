@@ -9,11 +9,11 @@ type Info = { status?: number; status4k?: number; tvdbId?: number; ratingKey?: s
   seasons?: { seasonNumber: number; status?: number; status4k?: number }[];
   requests?: { status?: number; is4k?: boolean; seasons?: { seasonNumber: number }[] }[] };
 type Media = { id: number; mediaType?: string; title?: string; name?: string; originalTitle?: string; originalName?: string; overview?: string;
-  posterPath?: string | null; backdropPath?: string | null; releaseDate?: string; firstAirDate?: string; voteAverage?: number; mediaInfo?: Info };
+  posterPath?: string | null; backdropPath?: string | null; releaseDate?: string; firstAirDate?: string; voteAverage?: number; originalLanguage?: string; mediaInfo?: Info };
 type Details = Media & { runtime?: number; episodeRunTime?: number[]; genres?: { name: string }[]; tagline?: string; numberOfEpisodes?: number;
   networks?: { name: string }[]; externalIds?: { imdbId?: string; tvdbId?: number }; imdbId?: string;
   seasons?: { seasonNumber: number; name?: string; episodeCount?: number; airDate?: string | null }[];
-  status?: string; originalLanguage?: string; productionCountries?: { iso_3166_1?: string; name?: string }[]; originCountry?: string[];
+  status?: string; productionCountries?: { iso_3166_1?: string; name?: string }[]; originCountry?: string[];
   productionCompanies?: { name?: string }[];
   watchProviders?: { iso_3166_1?: string; flatrate?: { name?: string; logoPath?: string | null }[] }[]; credits?: { cast?: { id?: number; name?: string }[]; crew?: { id?: number; name?: string }[] };
   releases?: { results?: { iso_3166_1?: string; release_dates?: { certification?: string }[] }[] }; contentRatings?: { results?: { iso_3166_1?: string; rating?: string }[] } };
@@ -60,7 +60,7 @@ export function seerrItem(m: Media, type?: 'movie' | 'tv'): ExploreItem | undefi
   const kind = mediaType === 'tv' ? 'show' : 'movie', released = year(m.releaseDate || m.firstAirDate), status = seerrStatus(m.mediaInfo);
   return { key: `${kind}:tmdb:${m.id}`, source: 'seerr', kind, title, ...(released ? { year: released } : {}), ...(m.overview ? { summary: m.overview } : {}),
     posterUrl: tmdbImage(m.posterPath, 'w342'), backdropUrl: tmdbImage(m.backdropPath, 'w1280'), ...(m.voteAverage ? { rating: m.voteAverage } : {}),
-    ids: { tmdb: m.id, ...(m.mediaInfo?.tvdbId ? { tvdb: m.mediaInfo.tvdbId } : {}) }, ...(status ? { status } : {}) };
+    ...(m.originalLanguage ? { language: m.originalLanguage } : {}), ids: { tmdb: m.id, ...(m.mediaInfo?.tvdbId ? { tvdb: m.mediaInfo.tvdbId } : {}) }, ...(status ? { status } : {}) };
 }
 type Tracked = { mediaType?: string; tmdbId?: number; status?: number; status4k?: number };
 // Seerr's media list as a status for each title, keyed like Explore items (`movie:tmdb:603`). A title with no standard
