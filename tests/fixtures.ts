@@ -11,6 +11,8 @@ export function fakePlex(options: {accountId?: number; authorized?: boolean; mis
     if (u.pathname === '/api/v2/pins') data = {id: 5, code: 'fixture-code', expiresIn: 600};
     else if (u.pathname === '/api/v2/pins/5') data = {id: 5, code: 'fixture-code', expiresIn: 600, authToken: 'fixture-account-token'};
     else if (u.pathname === '/api/v2/user') data = {id: accountId};
+    else if (u.pathname === '/api/v2/friends') data = [{id: 2, title: 'Viewer', username: 'viewer'}];
+    else if (u.pathname === '/api/v2/home/users') data = {users: [{id: 1, title: 'Owner'}, {id: 3, title: 'Kid', home: true}]};
     else if (u.pathname === '/api/v2/resources') data = options.authorized === false ? [] : [{clientIdentifier: 'machine', provides: 'server', owned: accountId === 1, accessToken: 'fixture-viewer-server-token'}];
     else if (u.pathname === '/identity') data = {MediaContainer: {machineIdentifier: 'machine'}};
     else if (u.pathname === '/library/sections') data = {MediaContainer: {Directory: [{key: '10', title: 'Movies', type: 'movie'}, ...(options.missingLibrary ? [] : [{key: '20', title: 'TV', type: 'show'}])]}};

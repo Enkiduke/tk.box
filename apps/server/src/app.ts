@@ -36,6 +36,7 @@ import { ProviderConnections } from './streaming/provider-connections.js';
 import { StreamGuard } from './streaming/stream-guard.js';
 import { SportsStore } from './persistence/sports-store.js';
 import { ServiceKeys, serviceKeysInput } from './persistence/service-keys.js';
+import { AdminStore, plexAccountId } from './persistence/admin-store.js';
 import { PlexBackground } from './services/plex-background.js';
 import { SportsSchedule } from './services/sports-schedule.js';
 import { DEFAULT_ESPN, DEFAULT_TSDB } from './providers/sports-feeds.js';
@@ -111,7 +112,18 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     reply.code(e.status).send({code: e.code, message: e.message, retryable: e.retryable});
   });
   const auth = (req: {cookies: Record<string, string | undefined>}) => identity.authenticate(req.cookies[sessionCookie]);
-  const admin = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(a.grant.role === 'admin', 'FORBIDDEN', 'Administrator access required.', 403); return a; };
+  // Admins are the Plex server owner and the Plex accounts the owner made admins (Admin › Admins). Plex lets only the
+  // owner's token change the server, so the others act on Plex with the owner's saved Plex admin token (Admin ›
+  // Connections), as themselves in tk.box's audit; without one saved they keep their own.
+  const admins = new AdminStore(db);
+  const admin = async (req: {cookies: Record<string, string | undefined>}) => {
+    const a = await auth(req);
+    if (a.grant.role === 'admin') return a;
+    requireThat(admins.has(a.grant.accountId), 'FORBIDDEN', 'Administrator access required.', 403);
+    const {name: _, ...owner} = await background.grant() ?? a.grant;
+    return {...a, grant: {...owner, accountId: a.grant.accountId, ...(a.grant.name ? {name: a.grant.name} : {}), role: 'admin' as const}};
+  };
+  const ownerOnly = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(a.grant.role === 'admin', 'FORBIDDEN', 'Only the Plex server owner can do that.', 403); return a; };
   const iptv = new IptvStore(db,vault);
   const refresh = new SourceRefresh(iptv), custom = new CustomChannelStore(db);
   registerIptv(app,iptv,refresh,auth,admin,undefined,undefined,custom,async (req,id,kind) => plex.artwork((await auth(req)).grant,id,kind));
@@ -240,7 +252,16 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     if (token) {const {digest} = await import('./security/vault.js'); const hash = digest(token); stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); live.stopWhere(v => v.hash === hash); customTv.stopWhere(v => v.hash === hash); activity.closeWhere(s => s.hash === hash);}
     identity.logout(token); reply.clearCookie(sessionCookie, cookieOpts); return {status: 'signed_out'};
   });
-  app.get('/api/v1/me', async req => { const {grant} = await auth(req); return {accountId: grant.accountId, role: grant.role,libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type))}; });
+  app.get('/api/v1/me', async req => { const {grant} = await auth(req), owner = grant.role === 'admin'; return {accountId: grant.accountId, role: owner || admins.has(grant.accountId) ? 'admin' : 'viewer', owner,libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type))}; });
+  // Admin › Admins: the owner picks other admins from their Plex friends and Plex Home.
+  app.get('/api/v1/admin/admins', async req => {
+    const {hash, grant} = await ownerOnly(req);
+    return {admins: admins.list(), users: await plex.plexUsers(identity.accountToken(hash)), ownerTokenSaved: !!(await background.grant()), ownerId: grant.accountId};
+  });
+  app.post('/api/v1/admin/admins', async req => {
+    const {grant} = await ownerOnly(req), body = z.object({accountId: plexAccountId, name: z.string().max(200), admin: z.boolean()}).strict().parse(req.body);
+    return {admins: body.admin ? admins.add(grant.accountId, body.accountId, body.name, grant.accountId) : admins.remove(grant.accountId, body.accountId)};
+  });
   app.get('/api/v1/libraries', async req => ({libraries: (await auth(req)).grant.libraries}));
   app.get<{Params: {id: string}}>('/api/v1/media/:id', async req => {
     const {grant} = await auth(req), item = await plex.metadata(grant, req.params.id);

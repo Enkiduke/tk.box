@@ -220,3 +220,11 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .admin-console-output{flex:1;margin:0;overflow:auto;padding:12px 16px;background:#0b0b0e;font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .admin-console-open .settings.admin{padding-bottom:calc(40vh + 24px)}
 @media(prefers-reduced-motion:reduce){.status-dot.pulse{animation:none}}
+
+/* Admins */
+.admins-search{width:100%;max-width:360px;margin:4px 0 12px}
+.admins-list{list-style:none;margin:0;padding:0}
+.admins-list li{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--line)}
+.admins-list li:first-child{border-top:0}
+.admins-list .switch-row{flex:1;min-width:0;margin:0}
+.admins-avatar{display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:50%;background:var(--surface-3);color:var(--muted);font-size:12px;font-weight:650}

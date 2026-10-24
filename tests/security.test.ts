@@ -138,3 +138,31 @@ test('rebranding preserves existing Plex links and sessions with secure and prev
     } finally {await app.close(); db.close();}
   }
 });
+
+test('the server owner makes Plex users admins; they get Admin but not the admin list', async () => {
+  const db = openDatabase(':memory:'), vault = new Vault(randomBytes(32)), f = fakePlex(), plex = new PlexAdapter(config(), 'admins', f.transport);
+  const app = await buildApp(config(), db, vault, plex, false), id = new IdentityService(db, vault, plex), origin = 'http://127.0.0.1:3000';
+  // The fake Plex answers for one account at a time, so each request first says whose it is.
+  const session = async (accountId: number) => { f.options.accountId = accountId; const s = await id.finish((await id.start()).binding); assert.ok(s); return {accountId, headers: {origin, cookie: `tk.box_local=${s.cookie}`}}; };
+  const call = async (as: {accountId: number; headers: Record<string, string>}, url: string, payload?: object) => {
+    f.options.accountId = as.accountId; return app.inject({method: payload ? 'POST' : 'GET', url, headers: as.headers, ...(payload ? {payload} : {})});
+  };
+  try {
+    const viewer = await session(2), owner = await session(1), me = async (as: typeof viewer) => (await call(as, '/api/v1/me')).json();
+    assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 403);
+    assert.deepEqual([(await me(owner)).role, (await me(owner)).owner], ['admin', true]);
+    const list = await call(owner, '/api/v1/admin/admins');
+    assert.equal(list.statusCode, 200);
+    // Plex friends and Plex Home together.
+    assert.deepEqual(list.json().users.map((u: {accountId: string}) => u.accountId).sort(), ['1', '2', '3']);
+    assert.equal((await call(owner, '/api/v1/admin/admins', {accountId: '1', name: 'Owner', admin: true})).statusCode, 400);
+    assert.equal((await call(owner, '/api/v1/admin/admins', {accountId: '2', name: 'Viewer', admin: true})).json().admins.length, 1);
+    assert.deepEqual([(await me(viewer)).role, (await me(viewer)).owner], ['admin', false]);
+    assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 200);
+    assert.equal((await call(viewer, '/api/v1/admin/admins')).statusCode, 403);
+    assert.equal((await call(viewer, '/api/v1/admin/admins', {accountId: '3', name: 'Kid', admin: true})).statusCode, 403);
+    await call(owner, '/api/v1/admin/admins', {accountId: '2', name: 'Viewer', admin: false});
+    assert.equal((await me(viewer)).role, 'viewer');
+    assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 403);
+  } finally {await app.close(); db.close();}
+});

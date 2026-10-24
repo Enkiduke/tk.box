@@ -23,7 +23,8 @@ export const playbackSettings = z.object({
   pauseRetentionMinutes: z.number().int().min(5).max(120)
 }).strict();
 export type PlaybackSettings = z.infer<typeof playbackSettings>;
-export type Principal = { accountId: string; role: 'admin' | 'viewer' };
+// `owner` is the Plex server owner, the one admin who can make others admins.
+export type Principal = { accountId: string; role: 'admin' | 'viewer'; owner?: boolean };
 export type ApiError = { code: string; message: string; retryable: boolean };
 
 export type Library = {key: string; title: string; type: 'movie' | 'show'};
