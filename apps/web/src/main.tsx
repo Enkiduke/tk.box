@@ -15,6 +15,15 @@ const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})))
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
 const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
+// A deploy replaces the hashed bundles, so a tab opened before it asks for files that are gone. Reload once to pick up
+// the new build; the timestamp stops a loop if the file is still missing after the reload.
+window.addEventListener('vite:preloadError',event=>{
+  let last=0;
+  try{last=Number(sessionStorage.getItem('tkbox-reloaded-at'))||0;sessionStorage.setItem('tkbox-reloaded-at',String(Date.now()));}catch{}
+  if(Date.now()-last<10_000)return;
+  event.preventDefault();
+  window.location.reload();
+});
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
 import './style.css';
 
