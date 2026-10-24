@@ -731,6 +731,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .hero-slide.is-active{transition-duration:2s!important}
   .hero-content{animation-duration:1.2s!important}
   .hero-dots button{transition-duration:.8s!important}
+  /* Dialogs keep a plain fade, without the movement, so opening and closing don't snap. */
+  dialog[open],dialog[open]::backdrop{animation-name:backdrop-in;animation-duration:.22s!important}
+  dialog.closing,dialog.closing::backdrop{animation-name:backdrop-out;animation-duration:.16s!important}
   /* Loading indicators keep moving: they are how people know the app is still working. */
   .spinner{animation-duration:.9s!important;animation-iteration-count:infinite!important}
   .skeleton{animation-duration:1.6s!important;animation-iteration-count:infinite!important}
