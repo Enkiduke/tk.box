@@ -17,9 +17,27 @@ const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1)}).s
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
 
+// Explore reads from Plex Discover, Seerr and Trakt, kept briefly per viewer so moving around Explore doesn't wait on
+// three outside services again. A viewer's own change (watchlist, request, Trakt link, Refresh) drops their copies,
+// and a settings change drops everyone's. Failed reads are not kept.
+const ROWS_MS=15*60000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000;
+export class ExploreCache {
+  private entries=new Map<string,{until:number;value:Promise<unknown>}>();
+  get<T>(account:string,key:string,ttl:number,read:()=>Promise<T>,now=Date.now()):Promise<T> {
+    const id=`${account}
+${key}`,hit=this.entries.get(id);if(hit&&hit.until>now)return hit.value as Promise<T>;
+    const value=read();this.entries.delete(id);this.entries.set(id,{until:now+ttl,value});
+    value.catch(()=>{if(this.entries.get(id)?.value===value)this.entries.delete(id);});
+    while(this.entries.size>2000)this.entries.delete(this.entries.keys().next().value!);
+    return value;
+  }
+  forget(account?:string) {if(account===undefined){this.entries.clear();return;}for(const id of [...this.entries.keys()])if(id.startsWith(`${account}
+`))this.entries.delete(id);}
+}
+
 // Explore: rows, search and details from Plex Discover, Seerr and Trakt, plus Seerr requests and the Plex watchlist.
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string) {
-  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr()),trakt=new Trakt(store),images=new ExploreImages();
+  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr()),trakt=new Trakt(store),images=new ExploreImages(),cache=new ExploreCache();
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=await auth(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
@@ -30,18 +48,21 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   });
   app.get('/api/v1/explore/:source/rows',async request=>{
     const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request);
-    if(from==='plex')return {rows:await discover.rows(token)};
+    if(from==='plex')return {rows:await cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token))};
     if(from==='seerr'){requireThat(seerr.configured(),'SEERR_NOT_CONFIGURED','Seerr is not set up.',409);return {rows:seerrRows.map(({id,title,icon})=>({id,title,icon}))};}
     requireThat(trakt.configured(),'TRAKT_NOT_CONFIGURED','Trakt is not set up.',409);
     return {rows:trakt.rows(account).map(({id,title,icon,...rest})=>({id,title,icon,...('personal' in rest?{personal:true}:{})}))};
   });
   app.get('/api/v1/explore/:source/rows/:row',async request=>{
     const params=z.object({source,row:z.string().max(800)}).parse(request.params),{page:at}=page.parse(request.query),{account,token}=await viewer(request);
-    return params.source==='plex'?labelled(await discover.row(token,params.row,at)):params.source==='seerr'?seerr.row(account,token,params.row,at):labelled(await trakt.row(account,params.row,at));
+    // Seerr's labels are applied after the cache, so they follow requests as they are made.
+    const key=`row:${params.source}:${params.row}:${at}`;
+    return params.source==='plex'?labelled(await cache.get(account,key,PAGE_MS,()=>discover.row(token,params.row,at))):params.source==='seerr'?cache.get(account,key,PAGE_MS,()=>seerr.row(account,token,params.row,at)):labelled(await cache.get(account,key,PAGE_MS,()=>trakt.row(account,params.row,at)));
   });
   app.get('/api/v1/explore/:source/search',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
     const {source:from}=z.object({source}).parse(request.params),{q}=z.object({q:z.string().trim().min(1).max(120)}).strict().parse(request.query),{account,token}=await viewer(request);
-    return {items:from==='plex'?(await labelled({items:await discover.search(token,q)})).items:from==='seerr'?await seerr.search(account,token,q):(await labelled({items:await trakt.search(q)})).items};
+    const key=`search:${from}:${q.toLowerCase()}`;
+    return {items:from==='plex'?(await labelled({items:await cache.get(account,key,SEARCH_MS,()=>discover.search(token,q))})).items:from==='seerr'?await cache.get(account,key,SEARCH_MS,()=>seerr.search(account,token,q)):(await labelled({items:await cache.get(account,key,SEARCH_MS,()=>trakt.search(q))})).items};
   });
   // Signs the viewer in to Seerr (with their Plex account) when they go to request, and says what they may request.
   app.get('/api/v1/explore/seerr/account',async request=>{const {account,token}=await viewer(request);return seerr.account(account,token);});
@@ -52,18 +73,18 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.get('/api/v1/explore/seerr/users',async request=>{const {account,token}=await viewer(request);return {users:await seerr.users(account,token)};});
   app.get('/api/v1/explore/details',async request=>{
     const input=ids.extend({kind,title:z.string().max(300).default(''),year:z.coerce.number().int().optional()}).strict().parse(request.query),{grant,account,token}=await viewer(request);
-    return details(input,grant,account,token);
+    return cache.get(account,`details:${JSON.stringify(input)}`,DETAILS_MS,()=>details(input,grant,account,token));
   });
   app.post('/api/v1/explore/request',{config:{rateLimit:{max:20,timeWindow:60000}}},async request=>{
     const input=z.object({kind,tmdb:z.number().int().positive(),seasons:z.array(z.number().int().positive()).max(100).optional(),is4k:z.boolean().default(false),
       serverId:z.number().int().nonnegative().optional(),profileId:z.number().int().nonnegative().optional(),rootFolder:z.string().min(1).max(500).optional(),
       languageProfileId:z.number().int().nonnegative().optional(),tags:z.array(z.number().int().nonnegative()).max(50).optional(),userId:z.number().int().positive().optional()}).strict().parse(request.body),{account,token}=await viewer(request);
     const {kind:media,tmdb,seasons,is4k,...extras}=input;
-    await seerr.request(account,token,media,tmdb,seasons,is4k,extras);return {status:'requested'};
+    await seerr.request(account,token,media,tmdb,seasons,is4k,extras);cache.forget();return {status:'requested'};
   });
   app.put('/api/v1/explore/watchlist',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
-    const input=z.object({plex:z.string().regex(/^[\w-]{1,64}$/),add:z.boolean()}).strict().parse(request.body),{token}=await viewer(request);
-    await discover.setWatchlisted(token,input.plex,input.add);return {watchlisted:input.add};
+    const input=z.object({plex:z.string().regex(/^[\w-]{1,64}$/),add:z.boolean()}).strict().parse(request.body),{account,token}=await viewer(request);
+    await discover.setWatchlisted(token,input.plex,input.add);cache.forget(account);return {watchlisted:input.add};
   });
   app.get('/api/v1/explore/image',{config:{rateLimit:{max:1200,timeWindow:60000}}},async(request,reply)=>{
     const {u}=z.object({u:z.string().max(2000)}).strict().parse(request.query);await auth(request);
@@ -71,8 +92,10 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     return reply.type(image.type).header('Cache-Control','private, max-age=86400').send(image.bytes);
   });
   app.post('/api/v1/explore/trakt/link',{config:{rateLimit:{max:10,timeWindow:60000}}},async request=>{const {account}=await viewer(request);return trakt.startLink(account);});
-  app.post('/api/v1/explore/trakt/link/poll',async request=>{const {account}=await viewer(request);return trakt.pollLink(account);});
-  app.delete('/api/v1/explore/trakt/link',async request=>{const {account}=await viewer(request);await trakt.unlink(account);return {status:'unlinked'};});
+  app.post('/api/v1/explore/trakt/link/poll',async request=>{const {account}=await viewer(request);const result=await trakt.pollLink(account);cache.forget(account);return result;});
+  app.delete('/api/v1/explore/trakt/link',async request=>{const {account}=await viewer(request);await trakt.unlink(account);cache.forget(account);return {status:'unlinked'};});
+  // Explore's Refresh button: the viewer's next reads go back to the services.
+  app.post('/api/v1/explore/refresh',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);return {status:'refreshed'};});
   app.get('/api/v1/admin/explore/settings',async request=>{await admin(request);return store.view();});
   app.put('/api/v1/admin/explore/settings',async request=>{
     const {grant}=await admin(request),{expectedRevision,...value}=exploreSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
@@ -81,7 +104,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
       await seerr.publicSettings(value.seerrUrl,true);
       const key=value.seerrApiKey??store.seerrKey();if(key)await seerr.checkKey(value.seerrUrl,key);
     }
-    return store.update(grant.accountId,expectedRevision,value);
+    const saved=store.update(grant.accountId,expectedRevision,value);cache.forget();return saved;
   });
 
   // Seerr's labels on Plex and Trakt titles, when the API key lets the server read Seerr's media list.
@@ -92,13 +115,15 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   // One title's details from every source that knows it, its copy on this server, its watchlist state and what can be requested.
   async function details(input:z.infer<typeof ids>&{kind:'movie'|'show';title:string;year?:number},grant:PlexGrant,account:string,token:string):Promise<ExploreDetails> {
     const known:ExploreItem['ids']={...(input.tmdb?{tmdb:input.tmdb}:{}),...(input.imdb?{imdb:input.imdb}:{}),...(input.tvdb?{tvdb:input.tvdb}:{}),...(input.plex?{plex:input.plex}:{})};
+    // Seerr's reads and the watchlist state start as soon as their IDs are known: at once when the page sent them,
+    // otherwise once Plex Discover has matched the title.
+    const fromSeerr=(tmdb:number|undefined)=>seerr.configured()&&tmdb?[seerr.details(account,token,input.kind,tmdb).catch(()=>undefined),seerr.publicSettings().catch(()=>undefined),seerr.ratings(account,token,input.kind,tmdb)] as const:undefined;
+    const fromWatchlist=(plexId:string|undefined)=>plexId?discover.watchlisted(token,plexId).catch(()=>undefined):undefined;
+    const early=fromSeerr(known.tmdb),earlyWatchlist=fromWatchlist(known.plex);
     const meta:DiscoverMetadata|undefined=await (input.plex?discover.metadata(token,input.plex):discover.match(token,input.kind,known)).catch(()=>undefined);
     const merged={...(meta?discoverIds(meta):{}),...known};
-    const settings=seerr.configured()&&merged.tmdb?seerr.publicSettings().catch(()=>undefined):Promise.resolve(undefined);
-    const [info,watchlisted,publicSettings,rt]=await Promise.all([
-      seerr.configured()&&merged.tmdb?seerr.details(account,token,input.kind,merged.tmdb).catch(()=>undefined):Promise.resolve(undefined),
-      merged.plex?discover.watchlisted(token,merged.plex).catch(()=>undefined):Promise.resolve(undefined),settings,
-      seerr.configured()&&merged.tmdb?seerr.ratings(account,token,input.kind,merged.tmdb):Promise.resolve(undefined)]);
+    const seerrReads=early??fromSeerr(merged.tmdb);
+    const [info,watchlisted,publicSettings,rt]=await Promise.all([seerrReads?.[0],earlyWatchlist??fromWatchlist(merged.plex),seerrReads?.[1],seerrReads?.[2]]);
     const allowed=publicSettings&&{movie:!!publicSettings.movie4kEnabled,show:!!publicSettings.series4kEnabled};
     if(info?.externalIds?.imdbId&&!merged.imdb)merged.imdb=info.externalIds.imdbId;
     if(info?.imdbId&&!merged.imdb)merged.imdb=info.imdbId;

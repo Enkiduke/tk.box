@@ -66,10 +66,10 @@ test('artwork derives a constrained Plex path, rejects external/SVG/oversized re
   const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
   const image=await plex.artwork(grant,'42','poster');assert.equal(image.type,'image/png');assert.equal(image.bytes.length,4);
   const request=f.requests.find(r=>r.path==='/photo/:/transcode')!;assert.equal(request.query.get('url'),'/library/metadata/42/thumb/123');assert.equal(request.query.get('width'),'360');assert.equal(request.token,'fixture-viewer-server-token');
-  f.nodes['42']!.thumb='https://attacker.invalid/image?token=secret';const count=f.requests.filter(r=>r.path==='/photo/:/transcode').length;
+  f.nodes['42']!.thumb='https://attacker.invalid/image?token=secret';plex.forgetMetadata();const count=f.requests.filter(r=>r.path==='/photo/:/transcode').length;
   await assert.rejects(plex.artwork(grant,'42','poster'),{code:'ARTWORK_NOT_FOUND'});assert.equal(f.requests.filter(r=>r.path==='/photo/:/transcode').length,count);
-  f.nodes['42']!.thumb='/library/metadata/42/thumb/124';f.setArt('image/svg+xml');await assert.rejects(plex.artwork(grant,'42','poster'),{code:'ARTWORK_NOT_FOUND'});
-  f.nodes['42']!.thumb='/library/metadata/42/thumb/125';f.setArt('image/png',Buffer.alloc(6*1024*1024+1));await assert.rejects(plex.artwork(grant,'42','poster'),{code:'ARTWORK_LIMIT'});
+  f.nodes['42']!.thumb='/library/metadata/42/thumb/124';plex.forgetMetadata();f.setArt('image/svg+xml');await assert.rejects(plex.artwork(grant,'42','poster'),{code:'ARTWORK_NOT_FOUND'});
+  f.nodes['42']!.thumb='/library/metadata/42/thumb/125';plex.forgetMetadata();f.setArt('image/png',Buffer.alloc(6*1024*1024+1));await assert.rejects(plex.artwork(grant,'42','poster'),{code:'ARTWORK_LIMIT'});
 });
 
 test('alphabet offsets and advanced filtering share the exact catalog query and authorized scope',async()=>{
@@ -87,16 +87,31 @@ test('alphabet offsets and advanced filtering share the exact catalog query and 
   await assert.rejects(plex.catalogIndex(grant,'10',{shelf:'recent'}),{code:'INVALID_INDEX'});
 });
 
-test('artwork reuse skips image transcoding but always checks current metadata and viewer scope',async()=>{
+test('artwork reuse shares transcoded bytes across viewers, remembers metadata briefly and still checks viewer scope',async()=>{
   const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
+  const transcodes=()=>f.requests.filter(r=>r.path==='/photo/:/transcode').length,reads=()=>f.requests.filter(r=>r.path==='/library/metadata/42').length;
   await plex.artwork(grant,'42','poster');await plex.artwork(grant,'42','poster');
-  assert.equal(f.requests.filter(r=>r.path==='/photo/:/transcode').length,1);
-  assert.equal(f.requests.filter(r=>r.path==='/library/metadata/42').length,2);
+  assert.equal(transcodes(),1);assert.equal(reads(),1);
   await assert.rejects(plex.artwork({...grant,libraries:[]},'42','poster'),{code:'PLEX_ACCESS_DENIED'});
+  // Another viewer reads the metadata with their own token, then gets the same bytes.
   await plex.artwork({...grant,accountId:'another',serverToken:'another-token'},'42','poster');
-  assert.equal(f.requests.filter(r=>r.path==='/photo/:/transcode').length,2);
-  f.nodes['42']!.thumb='/library/metadata/42/thumb/999';await plex.artwork(grant,'42','poster');
-  assert.equal(f.requests.filter(r=>r.path==='/photo/:/transcode').length,3);
+  assert.equal(reads(),2);assert.equal(transcodes(),1);
+  // Remembered metadata hides new art until the page asks for its version, or the library is forgotten.
+  f.nodes['42']!.thumb='/library/metadata/42/thumb/999';await plex.artwork(grant,'42','poster');assert.equal(transcodes(),1);
+  await plex.artwork(grant,'42','poster','999');assert.equal(reads(),3);assert.equal(transcodes(),2);
+  f.nodes['42']!.thumb='/library/metadata/42/thumb/1000';plex.forgetMetadata();await plex.artwork(grant,'42','poster');assert.equal(transcodes(),3);
+});
+
+test('double-size posters transcode at twice the size and are kept apart; other kinds ignore the scale; genre art is kept',async()=>{
+  const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
+  const transcodes=()=>f.requests.filter(r=>r.path==='/photo/:/transcode');
+  await plex.artwork(grant,'42','poster');await plex.artwork(grant,'42','poster',undefined,2);
+  assert.deepEqual(transcodes().map(r=>r.query.get('width')),['360','720']);assert.equal(transcodes()[1]!.query.get('height'),'1080');
+  await plex.artwork(grant,'42','poster',undefined,2);assert.equal(transcodes().length,2);
+  const genres=()=>f.requests.filter(r=>r.path==='/library/sections/10/genre').length;
+  await plex.catalogGenreArt(grant,'10');await plex.catalogGenreArt(grant,'10');assert.equal(genres(),1);
+  await assert.rejects(plex.catalogGenreArt({...grant,libraries:[]},'10'),{code:'PLEX_ACCESS_DENIED'});
+  plex.forgetMetadata();await plex.catalogGenreArt(grant,'10');assert.equal(genres(),2);
 });
 
 test('artwork cache enforces byte/entry bounds, LRU eviction and expiry',()=>{
@@ -131,7 +146,14 @@ test('catalog HTTP routes protect listings/details/images; VOD resume/beginning 
     const listing=await app.inject({url:'/api/v1/catalog/libraries/10/items',headers});assert.equal(listing.statusCode,200);assert.ok(!listing.body.includes('secret'));
     const art=await app.inject({url:'/api/v1/catalog/items/42/artwork',headers});assert.equal(art.statusCode,200);assert.equal(art.headers['content-type'],'image/png');assert.equal(art.headers['x-secret'],undefined);
     assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork',headers:{...headers,'if-none-match':art.headers.etag}})).statusCode,304);
-    assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?kind=poster&v=123',headers})).statusCode,200);assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?v=x',headers})).statusCode,400);
+    assert.equal(art.headers['cache-control'],'private, no-cache');
+    assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?kind=poster&v=123&scale=2',headers})).statusCode,200);assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?scale=3',headers})).statusCode,400);
+    const pinned=await app.inject({url:'/api/v1/catalog/items/42/artwork?kind=poster&v=123',headers});assert.equal(pinned.statusCode,200);assert.equal(pinned.headers['cache-control'],'private, max-age=31536000, immutable');
+    const packed=await app.inject({url:'/api/v1/catalog/libraries/10/genres',headers:{...headers,'accept-encoding':'br, gzip'}});assert.equal(packed.headers['content-encoding'],undefined);
+    f.setPage({MediaContainer:{Metadata:Array.from({length:40},(_,i)=>({...f.nodes['42'],ratingKey:String(1000+i)})),offset:0,totalSize:40}});
+    const big=await app.inject({url:'/api/v1/catalog/libraries/10/items?limit=60',headers:{...headers,'accept-encoding':'br, gzip'}});f.setPage(undefined);
+    assert.equal(big.headers['content-encoding'],'br');assert.ok(big.rawPayload.length<JSON.stringify(listing.json()).length*40/4);
+    assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?kind=poster&v=123',headers:{...headers,'accept-encoding':'br, gzip'}})).headers['content-encoding'],undefined);assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?v=x',headers})).statusCode,400);
     assert.equal((await app.inject({url:'/api/v1/catalog/items/42/artwork?url=http://arbitrary.invalid',headers})).statusCode,400);
     const payload={mode:'plex_vod',ratingKey:'42',capabilities:{videoCodecs:['h264:8'],audioCodecs:['aac'],containers:['mp4']}};
     const resume=await app.inject({method:'POST',url:'/api/v1/playback/sessions',headers,payload});assert.equal(resume.statusCode,200);assert.equal(resume.json().startOffsetMs,120000);
@@ -150,6 +172,22 @@ test('overlapping authentication checks coalesce without a grant TTL and recheck
     await identity.authenticate(session.cookie);assert.equal(requests,baseline+2);
     held=true;const attempts=Array.from({length:4},()=>identity.authenticate(session.cookie)),settled=Promise.allSettled(attempts);identity.logout(session.cookie);release();
     assert.ok((await settled).every(r=>r.status==='rejected'&&(r.reason as {code:string}).code==='UNAUTHENTICATED'));
+  }finally{db.close();}
+});
+
+test('a passed Plex check is reused for the recheck window, while sign-out and Plex refusals apply at once',async()=>{
+  const f=fakePlex(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));let requests=0;
+  const transport=(async(input:string|URL|Request,init?:RequestInit)=>{if(new URL(String(input)).pathname==='/api/v2/user')requests++;return f.transport(input,init);}) as typeof fetch;
+  const identity=new IdentityService(db,vault,new PlexAdapter(config(),'test',transport),60000);
+  try {
+    const link=await identity.start(1000),session=await identity.finish(link.binding,4000);assert.ok(session);
+    await identity.authenticate(session.cookie,5000);const baseline=requests;
+    await identity.authenticate(session.cookie,30000);assert.equal(requests,baseline);
+    f.options.authorized=false;await identity.authenticate(session.cookie,64000);assert.equal(requests,baseline);
+    await assert.rejects(identity.authenticate(session.cookie,65001),{code:'PLEX_ACCESS_DENIED'});assert.equal(requests,baseline+1);
+    f.options.authorized=true;await identity.authenticate(session.cookie,70000);const again=requests;
+    identity.forget(session.cookie);await identity.authenticate(session.cookie,71000);assert.equal(requests,again+1);
+    identity.logout(session.cookie);await assert.rejects(identity.authenticate(session.cookie,72000),{code:'UNAUTHENTICATED'});
   }finally{db.close();}
 });
 

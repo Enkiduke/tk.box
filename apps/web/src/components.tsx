@@ -53,9 +53,12 @@ function LoadedImage({className='',onLoad,...props}:ImgHTMLAttributes<HTMLImageE
   useLayoutEffect(()=>{if(ref.current?.complete&&ref.current.naturalWidth>0)setLoaded(true);},[]);
   return <img {...props} ref={ref} className={`art-image${loaded?' art-image-loaded':''}${className?` ${className}`:''}`} onLoad={event=>{setLoaded(true);onLoad?.(event);}}/>;
 }
-export const Artwork=({src,alt='',fallback,className}:{src?:string;alt?:string;fallback:ReactNode;className?:string})=>{
-  const [failed,setFailed]=useState(false);
-  return src&&!failed?<FadeImage className={className} src={src} onError={()=>setFailed(true)} loading="lazy" decoding="async" alt={alt}/>:<span className="art-fallback">{fallback}</span>;
+// `hidpi` offers tk.box's double-size poster to high-density screens (cards are at most about 220px wide);
+// `priority` loads above-the-fold art first instead of lazily.
+const doubled=(src:string)=>src.startsWith('/api/v1/catalog/')?`${src}${src.includes('?')?'&':'?'}scale=2`:undefined;
+export const Artwork=({src,alt='',fallback,className,hidpi=false,priority=false}:{src?:string;alt?:string;fallback:ReactNode;className?:string;hidpi?:boolean;priority?:boolean})=>{
+  const [failed,setFailed]=useState(false),large=hidpi&&src?doubled(src):undefined;
+  return src&&!failed?<FadeImage className={className} src={src} {...large?{srcSet:`${src} 360w, ${large} 720w`,sizes:'220px'}:{}} onError={()=>setFailed(true)} loading={priority?'eager':'lazy'} fetchPriority={priority?'high':'auto'} decoding="async" alt={alt}/>:<span className="art-fallback">{fallback}</span>;
 };
 const Progress=({item}:{item:CatalogItem})=>item.viewOffsetMs>0&&item.durationMs?<span className="card-progress"><span style={{width:`${Math.min(100,item.viewOffsetMs/item.durationMs*100)}%`}}/></span>:null;
 // Card text is split into separate links so the show, season and episode each open on their own.
@@ -152,22 +155,23 @@ export function useMenu(title:string,groups:()=>MenuEntry[][],buttonClass='card-
 // The centered play button sits beside (not inside) the art button, so clicking the rest of the art still opens details.
 const PlayOverlay=({item,onPlay}:{item:CatalogItem;onPlay?:PlayFn})=>
   onPlay?<button className="card-play" tabIndex={-1} aria-label={`Play ${item.title}`} onClick={()=>onPlay(item)}><Icon name="play" size={22}/></button>:null;
-export const Poster=memo(function Poster({item:source,onOpen,onPlay}:{item:CatalogItem;onOpen:(id:string)=>void;onPlay?:PlayFn}) {
+// `compact` is the list layout's small thumbnail, which never needs the double-size poster.
+export const Poster=memo(function Poster({item:source,onOpen,onPlay,compact=false}:{item:CatalogItem;onOpen:(id:string)=>void;onPlay?:PlayFn;compact?:boolean}) {
   const item=useWithOverride(source),title=seriesTitle(item),actions=useMediaMenu(item,'card',onOpen,onPlay);
   const detail=item.type==='episode'?`S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} · ${item.title}`:item.type==='season'&&item.showTitle?`${item.title} · ${item.episodeCount??'—'} episodes`:subtitle(item);
   return <div className={`poster-card${actions.open?' menu-open':''}`} onContextMenu={actions.onContextMenu}>
-    <div className="card-frame"><button className="poster-art" onClick={()=>onOpen(item.id)} aria-label={`${title}, ${detail}`}><Artwork src={item.showPosterUrl??item.posterUrl} fallback={<><Icon name={item.type==='movie'?'movies':'shows'}/><span>{title}</span></>}/>{fullyWatched(item)&&<span className="watched-badge" title="Watched"><Icon name="check" size={12}/></span>}<Progress item={item}/></button><PlayOverlay item={item} onPlay={onPlay}/>{actions.trigger}</div>
+    <div className="card-frame"><button className="poster-art" onClick={()=>onOpen(item.id)} aria-label={`${title}, ${detail}`}><Artwork hidpi={!compact} src={item.showPosterUrl??item.posterUrl} fallback={<><Icon name={item.type==='movie'?'movies':'shows'}/><span>{title}</span></>}/>{fullyWatched(item)&&<span className="watched-badge" title="Watched"><Icon name="check" size={12}/></span>}<Progress item={item}/></button><PlayOverlay item={item} onPlay={onPlay}/>{actions.trigger}</div>
     <CardText item={item} onOpen={onOpen} detail={detail} titleClass="poster-title" metaClass="poster-meta"/>
     {actions.menu}
   </div>;
 });
 // Landscape card used by Continue Watching and Recommended: backdrop art, progress and time remaining.
-export const WideCard=memo(function WideCard({item:source,context='continue',onOpen,onPlay}:{item:CatalogItem;context?:'continue'|'upnext';onOpen:(id:string)=>void;onPlay?:PlayFn}) {
+export const WideCard=memo(function WideCard({item:source,context='continue',onOpen,onPlay,priority=false}:{item:CatalogItem;context?:'continue'|'upnext';onOpen:(id:string)=>void;onPlay?:PlayFn;priority?:boolean}) {
   const item=useWithOverride(source),actions=useMediaMenu(item,context,onOpen,onPlay);
   const left=item.durationMs&&item.viewOffsetMs?item.durationMs-item.viewOffsetMs:undefined;
   return <div className={`wide-card${actions.open?' menu-open':''}`} onContextMenu={actions.onContextMenu}>
     <div className="card-frame"><button className="wide-art" onClick={()=>onOpen(item.id)} aria-label={`Open ${item.title}`}>
-      <Artwork src={item.type==='episode'?item.posterUrl??item.backdropUrl:item.backdropUrl??item.posterUrl} fallback={<Icon name={item.type==='movie'?'movies':'shows'}/>}/>
+      <Artwork priority={priority} src={item.type==='episode'?item.posterUrl??item.backdropUrl:item.backdropUrl??item.posterUrl} fallback={<Icon name={item.type==='movie'?'movies':'shows'}/>}/>
       <Progress item={item}/>
     </button><PlayOverlay item={item} onPlay={onPlay}/>{actions.trigger}</div>
     <div className="wide-info"><CardText item={item} onOpen={onOpen} detail={left?`${duration(left)} left`:subtitle(item)} titleClass="wide-title" metaClass="wide-meta"/></div>

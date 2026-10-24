@@ -8,6 +8,7 @@ import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
+import {ExploreCache} from '../apps/server/src/explore-api.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);
@@ -123,4 +124,14 @@ test('Seerr facts and Rotten Tomatoes scores read like the library: flags, strea
   const movie=seerrRatings({imdb:{criticsScore:7.4},rt:{criticsScore:0,url:'https://evil.example/'}},'movie');
   assert.deepEqual(movie,{ratings:[{source:'imdb',score:7.4}]});
   assert.deepEqual(seerrRatings(undefined,'movie'),{ratings:[]});
+});
+
+test('Explore reads are kept per viewer until they expire or are forgotten, and failed reads are not kept',async()=>{
+  const cache=new ExploreCache();let reads=0;const read=async()=>++reads;
+  assert.equal(await cache.get('a','row',1000,read,0),1);assert.equal(await cache.get('a','row',1000,read,500),1);
+  assert.equal(await cache.get('b','row',1000,read,500),2);assert.equal(await cache.get('a','row',1000,read,1000),3);
+  cache.forget('a');assert.equal(await cache.get('a','row',1000,read,1100),4);assert.equal(await cache.get('b','row',1000,read,1100),2);
+  cache.forget();assert.equal(await cache.get('b','row',1000,read,1100),5);
+  await assert.rejects(cache.get('a','bad',1000,async()=>{throw new Error('down');},1200));
+  assert.equal(await cache.get('a','bad',1000,read,1300),6);
 });

@@ -74,7 +74,7 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
       <nav className="browse-tabs" aria-label="Catalog source">{available.map(s=><button key={s} type="button" aria-current={source===s?'page':undefined} onClick={()=>choose(s)}>{names[s]}</button>)}</nav>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{source,q:text.trim()}));}}><Icon name="search"/><input aria-label={`Search ${names[source]}`} placeholder={`Search ${names[source]}`} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore',{source}));}}><Icon name="close"/></button>}</form>
-      <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>invalidate('/explore/')}><Icon name="restart"/></button>
+      <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
     {/* Plex and Trakt titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
     {admin&&source!=='seerr'&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#settings">Settings › Explore</a> to show Available and Requested on these titles.</p>}
@@ -122,7 +122,7 @@ function ExploreDialog({item:start,seerrOn,onClose,onOpen}:{item:ExploreItem;see
   const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{done&&<p className="success explore-done" role="status"><Icon name="check" size={16}/>{done}</p>}</>;
   return <Modal title={item.title} onClose={onClose} variant="media">
     <div className={`detail-hero${art?'':' no-art'}`}>
-      {art&&<FadeImage src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
+      {art&&<FadeImage src={art} alt="" decoding="async" fetchPriority="high" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
       <div className="detail-hero-content explore-hero">
         {item.posterUrl&&<FadeImage className="explore-hero-poster" src={item.posterUrl} alt="" decoding="async"/>}
         <div className="detail-heading">

@@ -1,5 +1,5 @@
 import { loadConfig } from '../apps/server/src/config.js';
-export const config = () => loadConfig({PLEX_MACHINE_ID: 'machine', PLEX_OWNER_ACCOUNT_ID: '1', PLEX_REQUIRED_LIBRARY_IDS: '10,20'});
+export const config = () => loadConfig({PLEX_MACHINE_ID: 'machine', PLEX_OWNER_ACCOUNT_ID: '1', PLEX_REQUIRED_LIBRARY_IDS: '10,20', PLEX_RECHECK_SECONDS: '0'});
 export const metadata = {ratingKey: '42', librarySectionID: 10, title: 'Fixture movie', duration: 600000, type: 'movie', Media: [{container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', width: 1920, height: 1080, Part: [{key: '/library/parts/7/123/file.mp4'}]}]};
 export function fakePlex(options: {accountId?: number; authorized?: boolean; missingLibrary?: boolean; file?: string} = {}) {
   const calls: {path: string; token: string | null; method: string}[] = [];

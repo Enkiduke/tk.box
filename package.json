@@ -30,6 +30,7 @@
     "fixture:live": "tsx scripts/live-fixture.ts"
   },
   "dependencies": {
+    "@fastify/compress": "^9.2.2",
     "@fastify/cookie": "^11.1.3",
     "@fastify/rate-limit": "^10.3.0",
     "better-sqlite3": "^12.11.1",
