@@ -78,7 +78,22 @@ const RETIRED: Record<string, string> = { 'overlayrr-main': 'tk-movies', 'tk-mov
 const SEED_VERSION = 2;
 
 export class ArtworkStore {
-  constructor(private db: Db, private vault: Vault, seedFile?: string) { if (seedFile) this.seed(seedFile); this.moveSchedules(); }
+  constructor(private db: Db, private vault: Vault, seedFile?: string) { if (seedFile) { this.seed(seedFile); this.customLogos(seedFile); } this.moveSchedules(); }
+  // tk-custom drew a custom collection's title as layout text, over any logo picked for it. It draws a logo now, the
+  // title made into one by default, so a saved tk-custom still drawing that text gets the bundled logo settings, once.
+  private customLogos(file: string, now = Date.now()) {
+    if (this.state<boolean>('layouts:custom-logo')) return;
+    const row = this.db.prepare('SELECT revision,value FROM artwork_layouts WHERE name=?').get('tk-custom') as { revision: number; value: string } | undefined;
+    const value = row && JSON.parse(row.value) as Record<string, unknown>;
+    this.db.transaction(() => {
+      if (row && value?.logo_mode === 'none' && value.custom_text === '{title_lines}') {
+        const seed = (JSON.parse(readFileSync(file, 'utf8')) as { layouts: Record<string, Record<string, unknown>> }).layouts['tk-custom'];
+        const kept = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'logo_mode' && !key.startsWith('text_') && !['custom_text', 'font_size', 'letter_spacing', 'position_x', 'position_y'].includes(key)));
+        this.db.prepare('UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify({ ...kept, ...seed }), now, 'tk-custom');
+      }
+      this.setState('layouts:custom-logo', true);
+    })();
+  }
   // Collection schedules were kept with the artwork settings until collections had their own, and new titles joined
   // their custom collections with artwork's newly added check. They move over once, keeping what was set.
   private moveSchedules() {

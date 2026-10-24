@@ -1908,12 +1908,14 @@ class Artwork(Metadata):
                   ("valentine", "#92264c"), ("easter", "#66518c"), ("new year", "#8a5a10"))
         color = next((color for name, color in colors if name in title.casefold()), style.chart_color)
         def title_logo():
-            text = "\n".join(textwrap.wrap(title.upper(), width=20))
+            # The title as a logo, a word per line at poster size, so it is one logo among the ones that can be picked
+            text = "\n".join(title.upper().split())
             path = local_path(style.font_file, self.base) if style.font_file else local_path(style.resource_dir, self.base) / "fonts/Poppins/Poppins-Regular.ttf"
-            font = ImageFont.truetype(str(path), 100) if path.is_file() else ImageFont.load_default(size=100)
-            bounds = ImageDraw.Draw(Image.new("RGBA", (1, 1))).multiline_textbbox((0, 0), text, font=font, spacing=20, align="center")
+            font = ImageFont.truetype(str(path), 300) if path.is_file() else ImageFont.load_default(size=300)
+            options = {"font": font, "spacing": 75, "align": "center", "stroke_width": 10}
+            bounds = ImageDraw.Draw(Image.new("RGBA", (1, 1))).multiline_textbbox((0, 0), text, **options)
             canvas = Image.new("RGBA", (max(1, math.ceil(bounds[2] - bounds[0])) + 4, max(1, math.ceil(bounds[3] - bounds[1])) + 4))
-            ImageDraw.Draw(canvas).multiline_text((2 - bounds[0], 2 - bounds[1]), text, font=font, fill="white", spacing=20, align="center")
+            ImageDraw.Draw(canvas).multiline_text((2 - bounds[0], 2 - bounds[1]), text, fill="white", stroke_fill="black", **options)
             return canvas
         return self.generated_poster(item, style, color, title, None, [], title_logo)
 
