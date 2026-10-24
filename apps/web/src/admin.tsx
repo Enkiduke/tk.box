@@ -6,6 +6,7 @@ import {SectionHead,remember,remembered} from './settings-ui.js';
 import {CustomChannelSettings} from './channels.js';
 import {LiveSportsSettings,ServerPlaybackSettings,SourceSettings} from './admin-settings.js';
 import {ConnectionsSettings} from './admin-connections.js';
+import {ExploreAdmin} from './explore-settings.js';
 import {ArtworkAdmin,CollectionsAdmin} from './artwork-admin.js';
 import {CleanupAdmin} from './cleanup-admin.js';
 import {ActivityAdmin} from './activity-admin.js';
@@ -15,7 +16,7 @@ import './admin.css';
 // It is its own bundle, loaded only when an administrator opens it, so none of it reaches viewers or the player.
 const groups=[
   ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Sports','star']]],
-  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image']]],
+  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore']]],
   ['Server',[['activity','Activity','play'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash']]]
 ] as const;
 type Section=typeof groups[number][1][number][0];
@@ -24,7 +25,7 @@ function PlaybackSection() {
   return <><SectionHead title="Playback"/><ServerPlaybackSettings/></>;
 }
 export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
-  const asked=(s=>s==='explore'||s==='keys'?'connections':s)(params.get('section')??remembered('admin','iptv')),current=(sectionIds.includes(asked)?asked:'iptv') as Section;
+  const asked=(s=>s==='keys'?'connections':s)(params.get('section')??remembered('admin','iptv')),current=(sectionIds.includes(asked)?asked:'iptv') as Section;
   const open=(id:string)=>{remember('admin',id);const next=new URLSearchParams();next.set('section',id);window.location.hash=`admin?${next}`;};
   // The open section is always in the address, so a reload or a shared link lands on it.
   useEffect(()=>{if(params.get('section')!==current)replaceRoute(`#admin?section=${current}`);},[current]);
@@ -35,7 +36,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         {items.map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<ActivityAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='explore'?<ExploreAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<ActivityAdmin/>:<PlaybackSection/>}</div>
     </div>
   </div>;
 }

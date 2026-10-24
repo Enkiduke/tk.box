@@ -49,7 +49,7 @@ export class Trakt {
   private refreshing = new Map<string, Promise<TraktTokens>>();
   constructor(private store: ExploreStore, private transport: typeof fetch = fetch) {}
   configured() { return !!this.store.trakt(); }
-  private app() { const app = this.store.trakt(); requireThat(app, 'TRAKT_NOT_CONFIGURED', 'Trakt is not set up. An administrator can add it in Settings › Explore.', 409); return app; }
+  private app() { const app = this.store.trakt(); requireThat(app, 'TRAKT_NOT_CONFIGURED', 'Trakt is not set up. An administrator can add it in Admin › Connections.', 409); return app; }
   private async send(path: string, query: Record<string, string | number>, access?: string, method = 'GET', body?: unknown) {
     const url = new URL(path, API); for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
     return remoteJson(url, { method, headers: { 'trakt-api-version': '2', 'trakt-api-key': this.app().clientId, ...(access ? { Authorization: `Bearer ${access}` } : {}) }, ...(body !== undefined ? { body } : {}) }, 'Trakt', this.transport);
@@ -101,7 +101,7 @@ export class Trakt {
   }
   // Trakt answers 403 to a client ID it does not know or an app it has not approved.
   private forbidden(status: number) {
-    if (status === 403) throw new AppError('TRAKT_APP_REJECTED', 'Trakt did not accept this server’s Trakt app. An administrator can check the client ID in Settings › Explore.', 502);
+    if (status === 403) throw new AppError('TRAKT_APP_REJECTED', 'Trakt did not accept this server’s Trakt app. An administrator can check the client ID in Admin › Connections.', 502);
   }
   // Device code sign-in: the viewer enters the code at Trakt's address while the page polls.
   async startLink(accountId: string, now = Date.now()) {

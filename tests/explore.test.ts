@@ -5,10 +5,10 @@ import {Seerr,matchPerson,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrSt
 import {traktItems} from '../apps/server/src/providers/trakt.js';
 import {discoverIds,discoverItem} from '../apps/server/src/providers/plex-discover.js';
 import {imagePath} from '../apps/server/src/providers/explore-images.js';
-import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
+import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {ExploreCache,exploreFilter,interleave,lacking,passes} from '../apps/server/src/explore-api.js';
+import {ExploreCache,exploreFilter,interleave,lacking,passes,rowShown,shownSources} from '../apps/server/src/explore-api.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);
@@ -179,4 +179,16 @@ test('Explore search interleaves sources best first and lists a title once with 
   const a=merged[0]!;
   assert.equal(a.source,'plex');assert.equal(a.posterUrl,'/x.jpg');assert.equal(a.status,'available');assert.equal(a.language,'en');
   assert.deepEqual(a.ids,{tmdb:1,plex:'p1'});
+});
+test('Explore layout keeps the administrator order, lists missing sources last and hides sources and single rows',()=>{
+  assert.deepEqual(exploreLayout(undefined),{order:['plex','seerr','trakt'],hidden:[],hiddenRows:[]});
+  assert.deepEqual(exploreLayout({order:['trakt']}).order,['trakt','plex','seerr']);
+  // A damaged saved value falls back to the default.
+  assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['plex','seerr','trakt']);
+  const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
+  const saved=store.updateLayout('1',0,{order:['seerr','plex','trakt'],hidden:['trakt'],hiddenRows:['seerr:upcoming-shows']});
+  assert.equal(saved.revision,1);
+  assert.deepEqual(shownSources(saved),['seerr','plex']);
+  assert.equal(rowShown(saved,'seerr','upcoming-shows'),false);assert.equal(rowShown(saved,'seerr','trending'),true);assert.equal(rowShown(saved,'trakt','trending-movies'),false);
+  assert.throws(()=>store.updateLayout('1',0,{order:['plex','seerr','trakt'],hidden:[],hiddenRows:[]}),/Settings changed/);
 });

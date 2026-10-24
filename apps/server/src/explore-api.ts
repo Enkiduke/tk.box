@@ -1,13 +1,13 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import type {ExploreDetails,ExploreItem,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import type {ExploreDetails,ExploreItem,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
 import {Seerr,seerrFacts,seerrCertificate,seerrItem,seerrRows,seerrSeasons,seerrStatus,type SeerrDetails} from './providers/seerr.js';
-import {Trakt} from './providers/trakt.js';
+import {Trakt,traktRows} from './providers/trakt.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreSettingsInput} from './persistence/explore-store.js';
+import {ExploreStore,exploreLayoutInput,exploreSettingsInput} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
 
 type Viewer={hash:string;grant:PlexGrant};
@@ -74,7 +74,9 @@ function limiter(slots:number) {
 }
 // A filtered row page reads this many of the source's pages, so filters that leave few titles still fill a row.
 const FILTER_SPAN=3;
-const sourceNames=['plex','seerr','trakt'] as const satisfies readonly ExploreSource[];
+// The sources Explore shows, in the administrator's order, and whether one of a source's rows is hidden.
+export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout.hidden.includes(s));
+export const rowShown=(layout:ExploreLayout,from:ExploreSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
 
 // Explore: rows, search and details from Plex Discover, Seerr and Trakt, plus Seerr requests and the Plex watchlist.
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string) {
@@ -83,16 +85,13 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.get('/api/v1/explore/sources',async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
     const {account}=await viewer(request);
-    const result:ExploreSources={plex:true,seerr:{configured:seerr.configured(),statuses:seerr.hasKey()},trakt:{configured:trakt.configured(),linked:false}};
+    const result:ExploreSources={plex:true,order:shownSources(store.layout()),seerr:{configured:seerr.configured(),statuses:seerr.hasKey()},trakt:{configured:trakt.configured(),linked:false}};
     const traktUser=trakt.linked(account);if(traktUser)result.trakt={configured:true,linked:true,user:traktUser};
     return result;
   });
   app.get('/api/v1/explore/:source/rows',async request=>{
-    const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request);
-    if(from==='plex')return {rows:await cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token))};
-    if(from==='seerr'){requireThat(seerr.configured(),'SEERR_NOT_CONFIGURED','Seerr is not set up.',409);return {rows:seerrRows.map(({id,title,icon})=>({id,title,icon}))};}
-    requireThat(trakt.configured(),'TRAKT_NOT_CONFIGURED','Trakt is not set up.',409);
-    return {rows:trakt.rows(account).map(({id,title,icon,...rest})=>({id,title,icon,...('personal' in rest?{personal:true}:{})}))};
+    const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request),layout=store.layout();
+    return {rows:(await sourceRows(from,account,token)).filter(row=>rowShown(layout,from,row.id))};
   });
   app.get('/api/v1/explore/:source/rows/:row',async request=>{
     const params=z.object({source,row:z.string().max(800)}).parse(request.params),{page:at,...query}=page.parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
@@ -112,11 +111,11 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   // One search across every source that is set up, best matches from each first. A source that fails leaves the others.
   app.get('/api/v1/explore/search',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
     const {q,...query}=z.object({q:z.string().trim().min(1).max(120),...filterQuery}).strict().parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
-    const key=`search:${q.toLowerCase()}`,from=sourceNames.filter(s=>s==='plex'||(s==='seerr'?seerr.configured():trakt.configured()));
+    const key=`search:${q.toLowerCase()}`,from=shownSources(store.layout()).filter(s=>s==='plex'||(s==='seerr'?seerr.configured():trakt.configured()));
     const results=await Promise.allSettled(from.map(async s=>s==='plex'?(await labelled({items:await cache.get(account,`plex:${key}`,SEARCH_MS,()=>discover.search(token,q))})).items
       :s==='seerr'?await cache.get(account,`seerr:${key}`,SEARCH_MS,()=>seerr.search(account,token,q)):(await labelled({items:await cache.get(account,`trakt:${key}`,SEARCH_MS,()=>trakt.search(q))})).items));
     const failed=from.filter((_,i)=>results[i]!.status==='rejected');
-    requireThat(failed.length<from.length,'EXPLORE_UNAVAILABLE','Search is unavailable right now. Try again in a moment.',502);
+    requireThat(!from.length||failed.length<from.length,'EXPLORE_UNAVAILABLE','Search is unavailable right now. Try again in a moment.',502);
     const items=interleave(results.map(r=>r.status==='fulfilled'?r.value:[]));
     return {items:filtering(filter)?await filtered(items,filter,account,token):items,failed} satisfies ExploreSearchResult;
   });
@@ -167,6 +166,21 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.delete('/api/v1/explore/trakt/link',async request=>{const {account}=await viewer(request);await trakt.unlink(account);cache.forget(account);return {status:'unlinked'};});
   // Explore's Refresh button: the viewer's next reads go back to the services.
   app.post('/api/v1/explore/refresh',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);return {status:'refreshed'};});
+  // Admin › Explore: the source order and what is hidden, with every row each source has (Plex's as the administrator sees them).
+  app.get('/api/v1/admin/explore/layout',async request=>{
+    const {hash,grant}=await admin(request),account=grant.accountId,token=accountToken(hash);
+    const sources=await Promise.all((['plex','seerr','trakt'] as const).map(async from=>{
+      const configured=from==='plex'||(from==='seerr'?seerr.configured():trakt.configured());
+      const rows=from==='seerr'?seerrRows.map(({id,title,icon})=>({id,title,icon})):from==='trakt'?traktRows.map(({id,title,icon,...rest})=>({id,title,icon,...('personal' in rest?{personal:true}:{})}))
+        :await sourceRows('plex',account,token).catch(()=>undefined);
+      return {source:from,configured,rows:rows??[],...(rows?{}:{error:'Plex Discover could not list its rows.'})};
+    }));
+    return {layout:store.layout(),sources};
+  });
+  app.put('/api/v1/admin/explore/layout',async request=>{
+    const {grant}=await admin(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
+    return store.updateLayout(grant.accountId,expectedRevision,value);
+  });
   app.get('/api/v1/admin/explore/settings',async request=>{await admin(request);return store.view();});
   app.put('/api/v1/admin/explore/settings',async request=>{
     const {grant}=await admin(request),{expectedRevision,...value}=exploreSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
@@ -178,6 +192,12 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const saved=store.update(grant.accountId,expectedRevision,value);cache.forget();return saved;
   });
 
+  async function sourceRows(from:ExploreSource,account:string,token:string) {
+    if(from==='plex')return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));
+    if(from==='seerr'){requireThat(seerr.configured(),'SEERR_NOT_CONFIGURED','Seerr is not set up.',409);return seerrRows.map(({id,title,icon})=>({id,title,icon}));}
+    requireThat(trakt.configured(),'TRAKT_NOT_CONFIGURED','Trakt is not set up.',409);
+    return trakt.rows(account).map(({id,title,icon,...rest})=>({id,title,icon,...('personal' in rest?{personal:true}:{})}));
+  }
   // Titles that pass the filter. Language, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
   // known; these are public facts, so they are kept a day for every viewer.
   async function filtered(items:ExploreItem[],filter:ExploreFilter,account:string,token:string) {

@@ -62,8 +62,12 @@ export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean
 export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
 export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean };
 export type ExploreSeason = { number: number; name: string; episodeCount?: number; airDate?: string; status?: ExploreStatus };
+// Server-wide: the order Explore lists its sources in, sources switched off, and single rows hidden (`source:rowId`).
+export type ExploreLayout = { order: ExploreSource[]; hidden: ExploreSource[]; hiddenRows: string[] };
 export type ExploreSources = {
   plex: boolean;
+  // Sources shown, in the administrator's order (whether or not each is set up).
+  order: ExploreSource[];
   // `statuses`: Plex and Trakt titles carry Seerr's labels (needs the Seerr API key).
   seerr: { configured: boolean; statuses: boolean };
   trakt: { configured: boolean; linked: boolean; user?: string };
