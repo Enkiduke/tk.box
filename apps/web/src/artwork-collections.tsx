@@ -1,7 +1,7 @@
 import {useEffect,useState,type ReactNode} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
-import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,Switch,date as when,remember,remembered,useMutation} from './settings-ui.js';
 import {openConsole,type Job} from './admin-console.js';
 
@@ -152,8 +152,9 @@ function KeptList({kept,franchise,actions,settings}:{kept:View['kept'];franchise
       <div className="setting-line">
         {on.franchise&&on.streaming&&<div className="toggle-group" role="radiogroup" aria-label="Kind">{([['all',`All ${rows.length}`],['franchise',`Franchises ${count('franchise')}`],['streaming',`Streaming ${count('streaming')}`]] as const).map(([k,label])=><button key={k} type="button" role="radio" aria-checked={kind===k} onClick={()=>setKind(k)}>{label}</button>)}</div>}
         <input className="grow" type="search" placeholder="Search collections" aria-label="Search collections" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-      {shown.length?<div className="table-scroll"><table><thead><tr><th>Collection</th><th>Library</th><th>Kind</th><th>Titles</th></tr></thead><tbody>{shown.map(c=><tr key={`${c.library}\0${c.name}`}>
-        <td><strong>{c.name}</strong></td><td>{c.library}</td><td>{c.kind==='franchise'?'Franchise':'Streaming'}</td><td>{c.items}</td></tr>)}</tbody></table></div>
+      {shown.length?<ul className="kept-grid">{shown.map(c=><li key={`${c.library}\0${c.name}`} className="kept-card" title={`${c.name} · ${c.library} · ${c.kind==='franchise'?'Franchise':'Streaming'}`}>
+        <Artwork src={c.rating_key?`/api/v1/catalog/collections/${c.rating_key}/artwork`:undefined} alt={c.name} fallback={<><Icon name="collection"/><span>{c.name}</span></>}/>
+        <span className="kept-count" aria-label={`${c.items} titles`}>{c.items}</span></li>)}</ul>
         :<Empty title="No matches">Try another search.</Empty>}</>
       :<Empty title="None yet">Apply them now, or wait for the next full run.</Empty>}
     <div className="button-row">{actions}</div>
