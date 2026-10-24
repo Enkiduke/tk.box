@@ -1,7 +1,7 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useRef,useState,type ReactNode} from 'react';
 import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link} from './hooks.js';
-import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
+import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,People,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveEventsNow,LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
@@ -148,12 +148,21 @@ function RatingMark({rating}:{rating:ExternalRating}) {
   const icon=rating.fresh===false&&rating.source==='tomatometer'?ratingIcons.tomatometerRotten:rating.fresh===false&&rating.source==='popcornmeter'?ratingIcons.popcornmeterRotten:ratingIcons[rating.source];
   return <img className={`rating-mark ${rating.source}`} src={icon} alt="" aria-hidden="true"/>;
 }
-export function Ratings({ratings}:{ratings:ExternalRating[]}) {
+export type RatingLinks=Partial<Record<'imdb'|'rottentomatoes'|'tmdb',string>>;
+// Each score links to the title on its site when the page is known.
+export function Ratings({ratings,links={}}:{ratings:ExternalRating[];links?:RatingLinks}) {
   return <ul className="ratings">{ratings.map(rating=>{
-    const value=rating.source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`;
-    return <li key={rating.source} title={ratingNames[rating.source]}><RatingMark rating={rating}/><span className="sr-only">{ratingNames[rating.source]}</span>{value}</li>;
+    const value=rating.source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`,href=links[rating.source==='imdb'||rating.source==='tmdb'?rating.source:'rottentomatoes'];
+    const content=<><RatingMark rating={rating}/><span className="sr-only">{ratingNames[rating.source]}</span>{value}</>;
+    return <li key={rating.source} title={ratingNames[rating.source]}>{href?<a className="rating-link" href={href} target="_blank" rel="noreferrer">{content}</a>:content}</li>;
   })}</ul>;
 }
+// A library title's pages on the rating sites. Rotten Tomatoes' address comes from the server, which asks Seerr.
+const ratingLinks=(item:CatalogItem):RatingLinks=>{
+  const kind=item.type==='movie'||item.type==='show'?item.type:undefined;
+  return {...(item.imdbId?{imdb:`https://www.imdb.com/title/${item.imdbId}/`}:{}),...(kind&&item.tmdbId?{tmdb:`https://www.themoviedb.org/${kind==='movie'?'movie':'tv'}/${item.tmdbId}`}:{}),
+    ...(kind?{rottentomatoes:`/api/v1/explore/rottentomatoes?${new URLSearchParams({title:item.title,...(item.tmdbId?{kind,tmdb:String(item.tmdbId)}:{})})}`}:{})};
+};
 // Year (or air date for an episode), content rating and runtime. Plex's own score shows only when no third-party ones came.
 const facts=(item:CatalogItem)=>[item.type==='episode'?airDate(item.airDate)??item.year:item.year,item.contentRating,playable(item)?duration(item.durationMs):undefined,
   !item.ratings&&item.rating!==undefined?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
@@ -225,10 +234,11 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
   // An episode leads with its own still, uncovered, since the still often carries the episode's title card.
   const still=media?.type==='episode'?media.posterUrl:undefined,art=still??media?.backdropUrl??media?.posterUrl;
   const parent=media?.type==='episode'?{id:media.showId??media.parentId,title:media.showTitle??media.parentTitle}:media?.type==='season'?{id:media.parentId,title:media.parentTitle}:undefined;
-  const people=media&&[
-    ['Starring',media.cast?.slice(0,5).join(', ')],[media.directors&&media.directors.length>1?'Directors':'Director',media.directors?.join(', ')],
+  const credits=media&&(media.type==='movie'||media.type==='show')?{kind:media.type,tmdb:media.tmdbId}:{};
+  const people=media&&([
+    ['Starring',!!media.cast?.length&&<People names={media.cast.slice(0,5)} {...credits}/>],[media.directors&&media.directors.length>1?'Directors':'Director',!!media.directors?.length&&<People names={media.directors} {...credits}/>],
     ['Genres',media.genres.join(', ')],['Studio',media.studio]
-  ].filter((row):row is [string,string]=>!!row[1]);
+  ] as [string,ReactNode][]).filter(row=>!!row[1]);
   const progress=media?.episodeCount!==undefined&&media.type!=='episode'?Math.min(1,(media.watchedEpisodeCount??0)/Math.max(1,media.episodeCount)):undefined;
   const heading=media&&<div className="detail-heading">
     {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
@@ -236,7 +246,7 @@ export function Details({id,onClose,onOpen,onPlay,busy,error,admin}:{id:string;o
     <h1 className="detail-title">{media.logoUrl&&failedLogo!==media.logoUrl?<img className="detail-logo" src={media.logoUrl} alt={media.title} decoding="async" fetchPriority="high" onError={()=>setFailedLogo(media.logoUrl)}/>:media.title}</h1>
     {(facts(media).length>0||media.ratings||media.watched)&&<div className="detail-facts">
       {facts(media).length>0&&<p className="detail-meta">{facts(media).map((fact,i)=><span key={i}>{fact}</span>)}{media.watched&&<span className="badge">Watched</span>}</p>}
-      {media.ratings&&<Ratings ratings={media.ratings}/>}
+      {media.ratings&&<Ratings ratings={media.ratings} links={ratingLinks(media)}/>}
     </div>}
     {progress!==undefined&&<p className="detail-progress"><span className="detail-progress-bar"><span style={{width:`${progress*100}%`}}/></span>{media.watchedEpisodeCount??0} of {media.episodeCount} episodes watched</p>}
     {error&&<ErrorNotice message={error}/>}

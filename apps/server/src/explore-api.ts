@@ -20,7 +20,7 @@ const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.st
 // Explore reads from Plex Discover, Seerr and Trakt, kept briefly per viewer so moving around Explore doesn't wait on
 // three outside services again. A viewer's own change (watchlist, request, Trakt link, Refresh) drops their copies,
 // and a settings change drops everyone's. Failed reads are not kept.
-const ROWS_MS=15*60000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000;
+const ROWS_MS=15*60000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000,PERSON_MS=24*3600000;
 export class ExploreCache {
   private entries=new Map<string,{until:number;value:Promise<unknown>}>();
   get<T>(account:string,key:string,ttl:number,read:()=>Promise<T>,now=Date.now()):Promise<T> {
@@ -90,6 +90,21 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const {u}=z.object({u:z.string().max(2000)}).strict().parse(request.query);await auth(request);
     const image=await images.get(u);
     return reply.type(image.type).header('Cache-Control','private, max-age=86400').send(image.bytes);
+  });
+  // A cast or crew name in a details view opens here and is sent on to the person's IMDb page, or to IMDb's search
+  // for the name when Seerr is not set up or does not know them. People don't change, so lookups are shared and kept a day.
+  app.get('/api/v1/explore/person',{config:{rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
+    const input=z.object({name:z.string().trim().min(1).max(200),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query),{account,token}=await viewer(request);
+    const title=input.kind&&input.tmdb?{kind:input.kind,tmdb:input.tmdb}:undefined;
+    const imdb=seerr.configured()?await cache.get('',`person:${input.name.toLowerCase()}:${title?`${title.kind}:${title.tmdb}`:''}`,PERSON_MS,()=>seerr.imdbPerson(account,token,input.name,title)).catch(()=>undefined):undefined;
+    return reply.header('Cache-Control',imdb?'private, max-age=86400':'no-store').redirect(imdb?`https://www.imdb.com/name/${imdb}/`:`https://www.imdb.com/find/?q=${encodeURIComponent(input.name)}&s=nm&exact=true`);
+  });
+  // A library title's Rotten Tomatoes score opens here and is sent on to its page, which only Seerr knows, or to
+  // Rotten Tomatoes' search for the title.
+  app.get('/api/v1/explore/rottentomatoes',{config:{rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
+    const input=z.object({title:z.string().trim().min(1).max(300),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query),{account,token}=await viewer(request);
+    const url=seerr.configured()&&input.kind&&input.tmdb?(await cache.get('',`rt:${input.kind}:${input.tmdb}`,PERSON_MS,()=>seerr.ratings(account,token,input.kind!,input.tmdb!)).catch(()=>undefined))?.url:undefined;
+    return reply.header('Cache-Control',url?'private, max-age=86400':'no-store').redirect(url??`https://www.rottentomatoes.com/search?search=${encodeURIComponent(input.title)}`);
   });
   app.post('/api/v1/explore/trakt/link',{config:{rateLimit:{max:10,timeWindow:60000}}},async request=>{const {account}=await viewer(request);return trakt.startLink(account);});
   app.post('/api/v1/explore/trakt/link/poll',async request=>{const {account}=await viewer(request);const result=await trakt.pollLink(account);cache.forget(account);return result;});

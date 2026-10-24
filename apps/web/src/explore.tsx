@@ -2,7 +2,7 @@ import {memo,useEffect,useState,type ReactNode} from 'react';
 import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
-import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';
+import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,People,Row,RowSkeleton} from './components.js';
 import {Ratings} from './library.js';
 import {RequestDialog} from './request-dialog.js';
 import './explore.css';
@@ -101,7 +101,7 @@ function Facts({item,info}:{item:ExploreItem;info:ExploreDetails}) {
     [item.kind==='movie'?'Released':'Premiered',info.released&&longDate(info.released)],
     [info.countries.length>1?'Countries':'Country',info.countries.length>0&&<span className="explore-countries">{info.countries.map(c=><span key={c.name}>{c.flagUrl&&<img src={c.flagUrl} alt="" className="explore-flag"/>}{c.code?displayName('region',c.code):c.name}</span>)}</span>],
     ['Language',info.language&&displayName('language',info.language)],
-    ['Genres',info.genres.join(', ')],['Starring',info.cast.slice(0,5).join(', ')],
+    ['Genres',info.genres.join(', ')],['Starring',info.cast.length>0&&<People names={info.cast.slice(0,5)} kind={item.kind} tmdb={item.ids.tmdb}/>],
     ['Streaming on',info.providers.length>0&&<span className="explore-providers">{info.providers.map(p=>p.logoUrl?<img key={p.name} src={p.logoUrl} alt={p.name} title={p.name}/>:<span key={p.name}>{p.name}</span>)}</span>]];
   return <aside className="explore-facts">
     <dl className="detail-people">{rows.filter(([,value])=>!!value).map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
@@ -129,7 +129,7 @@ function ExploreDialog({item:start,seerrOn,onClose,onOpen}:{item:ExploreItem;see
           <h1 className="detail-title">{item.title}</h1>
           <div className="detail-facts">
             {facts.length>0&&<p className="detail-meta">{facts.map((fact,i)=><span key={i}>{fact}</span>)}</p>}
-            {info&&info.ratings.length>0&&<Ratings ratings={info.ratings}/>}
+            {info&&info.ratings.length>0&&<Ratings ratings={info.ratings} links={Object.fromEntries(info.links.map(l=>[l.site,l.url]))}/>}
             {(status||seerr?.status4k)&&<p className="explore-badges">{status&&<span className={`badge explore-status ${status}`}>{statusNames[status]}</span>}{seerr?.status4k&&<span className={`badge explore-status ${seerr.status4k}`}>4K · {statusNames[seerr.status4k]}</span>}</p>}
           </div>
           <div className="button-row">

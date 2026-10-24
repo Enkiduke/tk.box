@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {Seerr,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrStatus,statusIndex} from '../apps/server/src/providers/seerr.js';
+import {Seerr,matchPerson,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrStatus,statusIndex} from '../apps/server/src/providers/seerr.js';
 import {traktItems} from '../apps/server/src/providers/trakt.js';
 import {discoverIds,discoverItem} from '../apps/server/src/providers/plex-discover.js';
 import {imagePath} from '../apps/server/src/providers/explore-images.js';
@@ -112,6 +112,25 @@ test('With the API key, browsing reads Seerr without signing anyone in and lists
   assert.equal(calls.filter(c=>c.startsWith('/api/v1/media')).length,2);
   assert.equal(await new Seerr(()=>({url:'http://seerr.test'}),transport).statuses(),undefined);
   assert.equal(statusIndex([{mediaType:'person',tmdbId:1,status:5}]).size,0);
+});
+test('Cast and crew resolve to IMDb people through the title credits first, then an exact-name search',async()=>{
+  assert.equal(matchPerson('Penélope Cruz',[{id:1,name:'Penelope Cruz Jr'},{id:2,name:'penelope cruz'}]),2);
+  assert.equal(matchPerson('',[{id:1,name:''}]),undefined);
+  const paths:string[]=[];
+  const transport=(async(url:URL)=>{
+    const u=new URL(url);paths.push(u.pathname);
+    if(u.pathname==='/api/v1/movie/603')return Response.json({id:603,credits:{cast:[{id:6384,name:'Keanu Reeves'}],crew:[{id:9339,name:'Lilly Wachowski'}]}});
+    if(u.pathname==='/api/v1/search')return Response.json({results:[{id:5,mediaType:'movie',title:'Michael Smith'},{id:77,mediaType:'person',name:'Michael Smith'}]});
+    if(u.pathname.startsWith('/api/v1/person/'))return Response.json({imdbId:{'/api/v1/person/6384':'nm0000206','/api/v1/person/9339':'nm0905152','/api/v1/person/77':'nm1234567'}[u.pathname]??null});
+    return Response.json({},{status:404});
+  }) as typeof fetch;
+  const seerr=new Seerr(()=>({url:'http://seerr.test',apiKey:'k'}),transport);
+  assert.equal(await seerr.imdbPerson('1','t','Lilly Wachowski',{kind:'movie',tmdb:603}),'nm0905152');
+  assert.ok(!paths.includes('/api/v1/search'));
+  // Not in the credits (or no title): TMDB's first person with that name.
+  assert.equal(await seerr.imdbPerson('1','t','Michael Smith',{kind:'movie',tmdb:603}),'nm1234567');
+  assert.equal(await seerr.imdbPerson('1','t','Michael Smith'),'nm1234567');
+  assert.equal(await seerr.imdbPerson('1','t','Nobody'),undefined);
 });
 test('Seerr facts and Rotten Tomatoes scores read like the library: flags, streaming services for the region, 0–10 scores',()=>{
   const facts=seerrFacts({id:1,status:'Ended',firstAirDate:'2015-09-08',originalLanguage:'en',productionCountries:[{iso_3166_1:'US',name:'United States of America'}],

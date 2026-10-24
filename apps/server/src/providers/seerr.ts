@@ -15,7 +15,7 @@ type Details = Media & { runtime?: number; episodeRunTime?: number[]; genres?: {
   seasons?: { seasonNumber: number; name?: string; episodeCount?: number; airDate?: string | null }[];
   status?: string; originalLanguage?: string; productionCountries?: { iso_3166_1?: string; name?: string }[]; originCountry?: string[];
   productionCompanies?: { name?: string }[];
-  watchProviders?: { iso_3166_1?: string; flatrate?: { name?: string; logoPath?: string | null }[] }[]; credits?: { cast?: { name?: string }[] };
+  watchProviders?: { iso_3166_1?: string; flatrate?: { name?: string; logoPath?: string | null }[] }[]; credits?: { cast?: { id?: number; name?: string }[]; crew?: { id?: number; name?: string }[] };
   releases?: { results?: { iso_3166_1?: string; release_dates?: { certification?: string }[] }[] }; contentRatings?: { results?: { iso_3166_1?: string; rating?: string }[] } };
 export type SeerrUser = { id: number; displayName?: string; permissions: number };
 export type SeerrPublic = { initialized: boolean; applicationTitle?: string; region?: string; movie4kEnabled?: boolean; series4kEnabled?: boolean; partialRequestsEnabled?: boolean };
@@ -209,6 +209,19 @@ export class Seerr {
   async ratings(accountId: string, plexToken: string, kind: 'movie' | 'show', tmdb: number) {
     return seerrRatings(await this.read(accountId, plexToken, kind === 'movie' ? `/movie/${tmdb}/ratingscombined` : `/tv/${tmdb}/ratings`).catch(() => undefined), kind);
   }
+  // A cast or crew member's IMDb id (nm…). The title's credits name the right person when its TMDB id is known;
+  // otherwise TMDB's most relevant person with exactly that name.
+  async imdbPerson(accountId: string, plexToken: string, name: string, title?: { kind: 'movie' | 'show'; tmdb: number }) {
+    const credits = title ? await this.details(accountId, plexToken, title.kind, title.tmdb).then(d => [...d.credits?.cast ?? [], ...d.credits?.crew ?? []], () => []) : [];
+    let id = matchPerson(name, credits);
+    if (id === undefined) {
+      const found = (await this.read(accountId, plexToken, '/search', { query: name, page: 1 }) ?? {}) as { results?: { id?: number; name?: string; mediaType?: string }[] };
+      id = matchPerson(name, (found.results ?? []).filter(r => r.mediaType === 'person'));
+    }
+    if (id === undefined) return undefined;
+    const person = (await this.read(accountId, plexToken, `/person/${id}`) ?? {}) as { imdbId?: string | null };
+    return person.imdbId && /^nm\d{1,12}$/.test(person.imdbId) ? person.imdbId : undefined;
+  }
   // The Radarr (movies) or Sonarr (shows) servers for that quality and one server's profiles, folders and tags, as the viewer.
   async options(accountId: string, plexToken: string, kind: 'movie' | 'show', is4k: boolean, serverId?: number): Promise<ExploreSeerrOptions> {
     const service = kind === 'movie' ? 'radarr' : 'sonarr';
@@ -235,6 +248,13 @@ export class Seerr {
   }
 }
 export type SeerrDetails = Details;
+// Names compared without case, accents or punctuation, so Plex's "Penélope Cruz" finds TMDB's "Penelope Cruz".
+const personKey = (name: string) => name.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+// The first candidate with that name, in the order given.
+export function matchPerson(name: string, candidates: { id?: number; name?: string }[]) {
+  const key = personKey(name);
+  return key ? candidates.find(c => Number.isInteger(c.id) && c.name && personKey(c.name) === key)?.id : undefined;
+}
 const date = (value?: string | null) => value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
 // The facts Seerr shows beside a title. Streaming services are those for Seerr's discover region (US when unset).
 export function seerrFacts(details: Details, kind: 'movie' | 'show', region = 'US'): Partial<ExploreDetails> {

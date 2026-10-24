@@ -42,6 +42,12 @@ export function Icon({name,size=20}:{name:string;size?:number}) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]??paths.movies}</svg>;
 }
 export function ErrorNotice({message,retry,dismiss}:{message:string;retry?:()=>void;dismiss?:()=>void}) {return <div className="notice error" role="alert"><span>{message}</span>{retry&&<button onClick={retry}>Try again</button>}{dismiss&&<button className="icon-button" aria-label="Dismiss error" onClick={dismiss}><Icon name="close" size={16}/></button>}</div>;}
+// Cast and crew names, each opening the person's IMDb page. The server looks them up when clicked, in the title's
+// credits when its TMDB id is known.
+export function People({names,kind,tmdb}:{names:string[];kind?:'movie'|'show';tmdb?:number}) {
+  const href=(name:string)=>`/api/v1/explore/person?${new URLSearchParams({name,...(kind&&tmdb?{kind,tmdb:String(tmdb)}:{})})}`;
+  return <>{names.map((name,i)=><span key={name}>{i>0&&', '}<a className="person-link" href={href(name)} target="_blank" rel="noreferrer">{name}</a></span>)}</>;
+}
 export function Empty({title,children}:{title:string;children?:ReactNode}) {return <div className="empty"><h3>{title}</h3>{children&&<p>{children}</p>}</div>;}
 export function Loading({cards=false}:{cards?:boolean}) {return cards?<div className="poster-grid" aria-label="Loading titles" role="status">{Array.from({length:8},(_,i)=><div key={i} className="skeleton poster-skeleton"/>)}</div>:<div className="loading" role="status"><span className="spinner"/><span className="sr-only">Loading…</span></div>;}
 export const subtitle=(item:CatalogItem)=>item.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item.type==='season'?`${item.episodeCount??'—'} episodes`:item.seasonCount?`${item.seasonCount} seasons · ${item.episodeCount??'—'} episodes`:String(item.year??(item.type==='show'?'TV series':'Movie'));
@@ -206,11 +212,22 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
       <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}>{looping?<div className="row-track" ref={track}>
         {/* Identical sets: the view rests in the second and jumps back by one set width, which looks seamless. The drift can
             carry it up to one more set past wherever it rests, so two copies follow. */}
-        <div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div><div className="row-set" inert aria-hidden="true">{children}</div>
+        <RowCopy>{children}</RowCopy><div className="row-set">{children}</div><RowCopy>{children}</RowCopy><RowCopy>{children}</RowCopy>
       </div>:children}</div>
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
+}
+// A copy of an endless row's cards. A row is wider than the screen, so part of what is on screen is often a copy:
+// it stays clickable, but screen readers and the Tab key skip it, even as its cards change what they show.
+function RowCopy({children}:{children:ReactNode}) {
+  const ref=useRef<HTMLDivElement>(null);
+  useLayoutEffect(()=>{
+    const el=ref.current;if(!el)return;
+    const skip=()=>el.querySelectorAll<HTMLElement>('a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])').forEach(f=>f.tabIndex=-1);
+    skip();const watch=new MutationObserver(skip);watch.observe(el,{childList:true,subtree:true});return()=>watch.disconnect();
+  },[]);
+  return <div className="row-set" ref={ref} aria-hidden="true">{children}</div>;
 }
 // Drifts an endless row sideways at `speed` px/s. It holds still while the pointer is over the row, keyboard focus
 // is inside it, or it is off screen; scrolling by hand still works while it is held. It ignores the system's reduced-motion
