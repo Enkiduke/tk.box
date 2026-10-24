@@ -33,6 +33,7 @@ import { ChannelHealth } from './services/channel-health.js';
 import { registerChannelHealth } from './health-api.js';
 import { IptvSettingsStore, iptvSettings } from './persistence/iptv-settings.js';
 import { ProviderConnections } from './streaming/provider-connections.js';
+import { StreamGuard } from './streaming/stream-guard.js';
 import { SportsStore } from './persistence/sports-store.js';
 import { ServiceKeys, serviceKeysInput } from './persistence/service-keys.js';
 import { PlexBackground } from './services/plex-background.js';
@@ -125,6 +126,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // Every viewer and check, on any source, draws from one server-wide connection limit; viewers always come first.
   const iptvConfig = new IptvSettingsStore(db), connections = new ProviderConnections(() => iptvConfig.get().maxConnections);
   live.connections = connections; health.connections = connections;
+  // Provider stream addresses are untrusted: FFmpeg reaches only public addresses unless a source allows its local network.
+  const guard = new StreamGuard(); live.guard = guard; health.guard = guard;
   app.get('/api/v1/admin/iptv/settings', async req => { await admin(req); return {...iptvConfig.get(), connections: connections.usage()}; });
   app.put('/api/v1/admin/iptv/settings', async req => {
     const {grant} = await admin(req), {expectedRevision, ...value} = iptvSettings.extend({expectedRevision: z.number().int().nonnegative()}).strict().parse(req.body);
@@ -363,7 +366,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   };
   if (existsSync(webRoot)) await registerAssets(webRoot,'');
   const reaper = setInterval(() => identity.reap(), 30000); reaper.unref();
-  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); customTv.close(); parts.close(); episodes.close(); health.close(); sports.close();});
+  app.addHook('preClose', async () => {stopStreams(() => true); transcodes.close(); live.close(); customTv.close(); parts.close(); episodes.close(); health.close(); sports.close(); guard.close();});
   app.addHook('onClose', async () => { clearInterval(reaper); });
   return app;
 }

@@ -6,7 +6,7 @@ import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remember,remembered,useDragOrder,useMutation} from './settings-ui.js';
 
-type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
+type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;allowPrivateStreams:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
 type ListingState='listed'|'always'|'hidden'|'missing'|'conflict'|'no_event'|'failing'|'unverified'|'no_guide';
 type Channel={id:string;name:string;tvgId:string;group:string;stack:string|null;stackKey:string;quality:string|null;listing:Listing;state:ListingState;event:boolean;guideExempt:boolean;present:boolean;conflict:boolean;number:number|null;position:number|null;firstSeen:number;lastSeen:number;missingSince:number|null};
@@ -345,14 +345,20 @@ function OverviewPanel({source,guide,summary,total,openChannels,openTab,review}:
 }
 function ConnectionPanel({source,sources,changed,removed}:{source:Source;sources:Source[];changed:()=>void;removed:()=>void}) {
   const [interval,setInterval]=useState(source.intervalHours),[replacement,setReplacement]=useState(''),[insecure,setInsecure]=useState(false),[providerHeaders,setProviderHeaders]=useState(''),[remove,setRemove]=useState(false),[saved,setSaved]=useState('');
-  const mutation=useMutation(changed);
-  useEffect(()=>{setInterval(source.intervalHours);},[source.revision]);
+  const [lan,setLan]=useState(source.allowPrivateStreams),mutation=useMutation(changed);
+  useEffect(()=>{setInterval(source.intervalHours);setLan(source.allowPrivateStreams);},[source.revision]);
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}{saved&&<p className="success" role="status">{saved}</p>}
     <Card title="Refresh">
       <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,intervalHours:interval});setSaved('Refresh interval saved.');});}}>
         <label>Refresh the playlist every (hours)<input type="number" min="1" max="168" required value={interval} disabled={!source.remote} onChange={e=>setInterval(Number(e.target.value))}/>{!source.remote&&<small>Uploaded playlists don’t refresh.</small>}</label>
         <button disabled={mutation.busy||!source.remote}>Save</button>
+      </form>
+    </Card>
+    <Card title="Local network streams" description="Channels play only from internet addresses, so a playlist can’t point tk.box at devices on your network. Allow it for a tuner or server on your own network, such as an HDHomeRun.">
+      <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,intervalHours:source.intervalHours,allowPrivateStreams:lan});setSaved(lan?'Local network streams allowed.':'Local network streams blocked.');});}}>
+        <label className="checkbox-label"><input type="checkbox" checked={lan} onChange={e=>setLan(e.target.checked)}/>Allow streams on my local network</label>
+        <button disabled={mutation.busy||lan===source.allowPrivateStreams}>Save</button>
       </form>
     </Card>
     {source.remote?<Card title="Playlist URL" description="Channels, numbers and favorites are kept.">

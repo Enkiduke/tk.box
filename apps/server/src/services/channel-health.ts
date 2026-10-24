@@ -4,6 +4,7 @@ import type { IptvStore } from '../persistence/iptv-store.js';
 import type { HealthStore } from '../persistence/channel-health-store.js';
 import { ProviderConnections, type ConnectionLease } from '../streaming/provider-connections.js';
 import { probeStream, type Prober } from './stream-probe.js';
+import type { StreamGuard } from '../streaming/stream-guard.js';
 
 // What the live relay layer tells the checker. Connections themselves are shared through
 // ProviderConnections: a check only starts on a free one, and a new viewer cancels checks.
@@ -20,6 +21,8 @@ export class ChannelHealth {
   private dir: string;
   relays: RelayUsage = { live: () => false };
   connections = new ProviderConnections(() => 1);
+  // Checks read streams through the guard (public addresses only) unless their source allows local-network streams.
+  guard?: StreamGuard;
   constructor(private store: IptvStore, private health: HealthStore, cacheDir: string, private ffmpeg = 'ffmpeg',
     private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private options = { maxChecks: 4, sampleSeconds: 7, tickMs: 5000 }, private probe: Prober = probeStream) {
@@ -56,9 +59,9 @@ export class ChannelHealth {
     this.checks.set(channelId, check);
     void (async () => {
       try {
-        const { streamUrl } = this.store.streamFor(channelId);
+        const { streamUrl, allowPrivate } = this.store.streamFor(channelId), proxy = allowPrivate ? undefined : await this.guard?.url();
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
-        const result = await this.probe(streamUrl, { ffmpeg: this.ffmpeg, signal: check.abort.signal, sampleSeconds: this.options.sampleSeconds, thumbnailPath: this.thumbnail(channelId) });
+        const result = await this.probe(streamUrl, { ffmpeg: this.ffmpeg, signal: check.abort.signal, sampleSeconds: this.options.sampleSeconds, thumbnailPath: this.thumbnail(channelId), ...(proxy ? { proxy } : {}) });
         if (this.closed) return;
         const outcome = this.health.record(channelId, result);
         if (result.reason === 'CHECKER_UNAVAILABLE') this.log('channel check could not start FFmpeg', { channelId });
