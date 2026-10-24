@@ -343,8 +343,19 @@ export class PlexAdapter {
     requireThat(container.Metadata.length<=size,'PLEX_PAGINATION_INVALID','Plex did not honor the requested page limit.',502);
     requireThat(container.offset===undefined||container.offset===query.offset,'PLEX_PAGINATION_INVALID','Plex returned an unexpected page.',502);
     const items=container.Metadata.map(node=>{requireThat((node.librarySectionID??container.librarySectionID??libraryId)===libraryId,'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);return catalogDto(node,libraryId);});
-    if(grouped){const cards=groupRecentEpisodes(items);return {items:cards.slice(0,query.limit),offset:0,limit:query.limit,hasMore:cards.length>query.limit||(container.totalSize!==undefined?items.length<container.totalSize:items.length===size)};}
+    if(grouped){const cards=groupRecentEpisodes(items);return {items:await this.withShowSummaries(grant,cards.slice(0,query.limit)),offset:0,limit:query.limit,hasMore:cards.length>query.limit||(container.totalSize!==undefined?items.length<container.totalSize:items.length===size)};}
     return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
+  }
+  // Season and show cards grouped from episodes carry no description, so they take the series' own. A show that
+  // can't be read keeps its card without one.
+  private async withShowSummaries(grant:PlexGrant,cards:CatalogItem[]) {
+    const showOf=(c:CatalogItem)=>!c.summary&&(c.type==='show'?c.id:c.type==='season'?c.showId:undefined);
+    const ids=[...new Set(cards.map(showOf).filter((id):id is string=>!!id))];
+    const summaries=new Map(await Promise.all(ids.map(async id=>{
+      try {return [id,catalogContainer.parse(await this.json(new URL(`/library/metadata/${id}`,this.config.PLEX_URL),grant.serverToken)).MediaContainer.Metadata[0]?.summary??''] as const;}
+      catch {return [id,''] as const;}
+    })));
+    return cards.map(c=>{const id=showOf(c),summary=id?summaries.get(id):undefined;return summary?{...c,summary}:c;});
   }
   // A library's titles added after `sinceMs`, newest first, read page by page until Plex's list gets back to then (at
   // most `max` entries; `complete` says it got there). TV episodes that arrived together group as on the Recent shelf.
