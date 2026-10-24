@@ -396,11 +396,14 @@ class ArtworkFiles:
             item["poster"] = str(poster)
         if logo:
             item["logo"] = str(logo)
+        if metadata.get("background_color"):  # Chosen on the web page for its generated background
+            item["background_color"] = metadata["background_color"]
         stock_hash = metadata.get("stock_poster") if poster else None
         return bool(stock_hash and file_digest(poster) == stock_hash)
 
-    def save_image(self, folder, name, image):
-        existing = self.source(folder, name)
+    @staticmethod
+    def save_image(folder, name, image):
+        existing = ArtworkFiles.source(folder, name)
         if existing or image is None:
             return existing
         suffix = IMAGE_SUFFIXES.get(image.info.get("source_format"))
@@ -435,8 +438,9 @@ class ArtworkFiles:
             if item.get("season") is not None or not self.source(folder, "logo"):
                 self.save_image(show_folder, "logo", logo)
             metadata = {key: item[key] for key in ("type", "title", "year", "tmdb_id", "tvdb_id", "imdb_id", "rating_key", "season", "season_title", "episode", "episode_title") if item.get(key) is not None}
-            if previous.get("no_logo"):  # Set from the web page; a run must not forget it
-                metadata["no_logo"] = True
+            for key in ("no_logo", "background_color", "generated"):  # Set from the web page; a run must not forget them
+                if previous.get(key):
+                    metadata[key] = previous[key]
             source_stock = item.get("_stock_poster", stock)
             if existing_poster and item.get("poster") != str(existing_poster):
                 source_stock = previous.get("stock_poster") == file_digest(poster)
@@ -1827,6 +1831,26 @@ def streaming_background(color, width=1000, height=1500, radius=1.25, strength=0
     return dither_shade(np.broadcast_to(base, (height, width, 3)).copy(), shade).convert("RGBA")
 
 
+HOLIDAY_COLORS = (("halloween", "#9b430c"), ("thanksgiving", "#865025"), ("christmas", "#17633c"),
+                  ("valentine", "#92264c"), ("easter", "#66518c"), ("new year", "#8a5a10"))
+
+
+def default_background_color(item, style):
+    """The color a collection's generated background glows in unless one is chosen for it: the service's, the chart
+    color, or for a custom or curated collection a holiday's when its title names one, else the chart color."""
+    if item.get("service"):
+        return dict(style.streaming_colors).get(item["service"]) or next(color for name, _, _, color in STREAMING if name == item["service"])
+    title = str(item.get("title") or "").casefold()
+    return next((color for name, color in HOLIDAY_COLORS if not item.get("chart") and name in title), style.chart_color)
+
+
+def generated_background(item, style, color=None):
+    """A collection's generated background, in `color`, else the one chosen for it, else its default."""
+    return streaming_background(color or item.get("background_color") or default_background_color(item, style),
+                                radius=style.collection_gradient_radius, strength=style.collection_gradient_strength,
+                                corner=style.collection_gradient_corner)
+
+
 def visible_pixels(image):
     """A logo's visible pixels (alpha over 64) as float32 RGB rows, read from a copy at most 256px on a side."""
     small = image.convert("RGBA")
@@ -1871,13 +1895,12 @@ class Artwork(Metadata):
         super().__init__(http, config, base)
         self.logo_lock, self.logo_locks, self.show_logos = threading.Lock(), {}, {}
 
-    def generated_poster(self, item, style, color, label, bundled, remote, fallback=None):
+    def generated_poster(self, item, style, label, bundled, remote, fallback=None):
         """Poster inputs for a collection Overlayrr draws itself: a logo (a logo file in the collection's folder, else
-        the bundled file under resources/, else the first of `remote` that downloads) over a radial gradient in `color`
+        the bundled file under resources/, else the first of `remote` that downloads) over its generated background
         (unless a poster file is in the folder)."""
         item["_stock_poster"] = False
-        background = self.http.image(item["poster"], self.base) if item.get("poster") else streaming_background(
-            color, radius=style.collection_gradient_radius, strength=style.collection_gradient_strength, corner=style.collection_gradient_corner)
+        background = self.http.image(item["poster"], self.base) if item.get("poster") else generated_background(item, style)
         if item.get("logo"):
             return background, self.http.image(item["logo"], self.base), False
         path = local_path(style.resource_dir, self.base) / bundled if bundled else None
@@ -1894,19 +1917,15 @@ class Artwork(Metadata):
 
     def select_streaming(self, item, style):
         service = item["service"]
-        color = dict(style.streaming_colors).get(service) or next(color for name, _, _, color in STREAMING if name == service)
         # The image set files a few names in lowercase (tubi)
         remote = [f"{STREAMING_LOGOS}{quote(name)}.png" for name in dict.fromkeys((service, service.lower()))]
-        return self.generated_poster(item, style, color, service, f"streaming/{service}.png", remote)
+        return self.generated_poster(item, style, service, f"streaming/{service}.png", remote)
 
     def select_chart(self, item, style):
-        return self.generated_poster(item, style, style.chart_color, item["chart"], "charts/Plex.png", [CHART_LOGOS + "Plex.png"])
+        return self.generated_poster(item, style, item["chart"], "charts/Plex.png", [CHART_LOGOS + "Plex.png"])
 
     def select_custom(self, item, style):
         title = item["title"]
-        colors = (("halloween", "#9b430c"), ("thanksgiving", "#865025"), ("christmas", "#17633c"),
-                  ("valentine", "#92264c"), ("easter", "#66518c"), ("new year", "#8a5a10"))
-        color = next((color for name, color in colors if name in title.casefold()), style.chart_color)
         def title_logo():
             # The title as a logo, a word per line at poster size, so it is one logo among the ones that can be picked
             text = "\n".join(title.upper().split())
@@ -1917,7 +1936,7 @@ class Artwork(Metadata):
             canvas = Image.new("RGBA", (max(1, math.ceil(bounds[2] - bounds[0])) + 4, max(1, math.ceil(bounds[3] - bounds[1])) + 4))
             ImageDraw.Draw(canvas).multiline_text((2 - bounds[0], 2 - bounds[1]), text, fill="white", stroke_fill="black", **options)
             return canvas
-        return self.generated_poster(item, style, color, title, None, [], title_logo)
+        return self.generated_poster(item, style, title, None, [], title_logo)
 
     def resolve_collection(self, item):
         """Plex collections carry no TMDb ID. Use the TMDb collection most of the first members belong to, else an
@@ -3849,8 +3868,15 @@ class Worker:
         meta = web_meta(folder)
         seasons = sorted((path for path in folder.iterdir() if path.is_dir() and re.fullmatch(r"Season \d+", path.name)),
                          key=lambda path: path.name)
+        try:
+            found = self.generated(folder)
+        except (ValueError, KeyError, RuntimeError, OSError) as error:  # Plex unreachable: the rest of the page still works
+            print(f"WARN {folder.name}: generated background: {error}", file=sys.stderr, flush=True)
+            found = None
+        generated = found and {"color": found[0], "default": found[1], "name": found[2].name, "hash": self.short_hash(found[2]),
+                               "thumb": self.url(found[2], f"{rel}/{found[2].name}", 360), "full": self.url(found[2], f"{rel}/{found[2].name}", 1400)}
         return {"id": rel, "title": str(meta.get("title") or folder.name), "year": meta.get("year"),
-                "key": meta.get("rating_key"), "tv": rel.startswith("tv/"), "no_logo": bool(meta.get("no_logo")),
+                "key": meta.get("rating_key"), "tv": rel.startswith("tv/"), "no_logo": bool(meta.get("no_logo")), "generated": generated,
                 "sections": [self.section(folder, rel, None, folder)] + [self.section(path, f"{rel}/{path.name}", path.name, folder) for path in seasons]}
 
     def mark(self, rel, changed, before=None):
@@ -3879,14 +3905,21 @@ class Worker:
 
     def swap(self, folder, kind, chosen):
         """Make `chosen` (or nothing) the folder's poster/logo; the old one stays beside it as poster-<hash>, never
-        deleted. Returns that file's name."""
+        deleted, except a collection's generated background, which is only ever kept as generated.png. Returns the
+        name of the file the old one is kept as."""
         current = ArtworkFiles.source(folder, kind)
+        generated = ArtworkFiles.source(folder, "generated") if kind == "poster" else None
         kept = current and folder / self.kept_name(current, kind)
-        if current and kept.exists():  # The same image is already kept
+        if current and generated and file_digest(current) == file_digest(generated):
+            current.unlink()
+            kept = generated
+        elif current and kept.exists():  # The same image is already kept
             current.unlink()
         elif current:
             current.rename(kept)
-        if chosen:
+        if chosen and chosen == generated:  # Copied, so the generated background stays on offer
+            atomic_write(folder / (kind + chosen.suffix.lower()), chosen.read_bytes())
+        elif chosen:
             chosen.rename(folder / (kind + chosen.suffix.lower()))
         return kept and kept.name
 
@@ -3905,6 +3938,63 @@ class Worker:
         if was:
             self.mark(f"{title.parent.name}/{title.name}", True, (f"{rel}|nologo", True))
         return {"warning": None}
+
+    def generated(self, title, redraw=False):
+        """A collection's generated background, for the collections that get one (streaming, chart, custom and curated):
+        (color, default color, generated.png), drawn again when its color or its layout's glow changed. None for others."""
+        meta = web_meta(title)
+        if title.parent.name != "collections" or not meta:
+            return None
+        item, style = self.base_item(title, None)
+        if not (item.get("service") or item.get("chart") or item.get("custom") or not meta.get("tmdb_id")):
+            return None  # A TMDb franchise: its posters are real ones
+        default = default_background_color(item, style)
+        color = meta.get("background_color") or default
+        key = [color, style.collection_gradient_radius, style.collection_gradient_strength, style.collection_gradient_corner]
+        path = ArtworkFiles.source(title, "generated")
+        if redraw or path is None or meta.get("generated") != key:
+            if path:
+                path.unlink()
+            path = ArtworkFiles.save_image(title, "generated", generated_background(item, style, color))
+            atomic_write(title / ".overlayrr.json", json.dumps({**ArtworkFiles.metadata(title), "generated": key}, indent=2).encode())
+        return color, default, path
+
+    def use_generated(self, rel, kept=None):
+        """The Generated background tile: make the collection's generated background its poster."""
+        title, folder = self.locate(rel)
+        found = self.generated(title) if folder == title else None
+        if found is None:
+            raise ValueError("Only streaming, chart, custom and curated collections have a generated background")
+        kept = self.swap(title, "poster", found[2]) or kept
+        if not web_meta(title).get("rating_key"):
+            return {"warning": "This title has no Plex ID saved yet, so it can't be pushed until the script has run for it once"}
+        self.mark(rel, True, (f"{rel}|poster", kept))
+        return {"warning": None}
+
+    def background_color(self, rel, color):
+        """Right-click > colour on the Generated background tile: draw it again in `color` (#RRGGBB, or None for its
+        default) over the one before, and make it the poster."""
+        title, folder = self.locate(rel)
+        if color is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", str(color)):
+            raise ValueError("Pick a colour as #RRGGBB")
+        found = self.generated(title) if folder == title else None
+        if found is None:
+            raise ValueError("Only streaming, chart, custom and curated collections have a generated background")
+        was = web_meta(title).get("background_color")
+        current, kept = ArtworkFiles.source(title, "poster"), None
+        if current and file_digest(current) == file_digest(found[2]):
+            current.unlink()  # The old colour's poster: replaced, not kept (Discard draws it again from generated.png)
+            kept = found[2].name
+        meta = ArtworkFiles.metadata(title)
+        meta.pop("background_color", None)
+        if color is not None and color.lower() != found[1].lower():
+            meta["background_color"] = color.lower()
+        atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+        self.generated(title, redraw=True)
+        result = self.use_generated(rel, kept)
+        if web_meta(title).get("rating_key"):
+            self.mark(rel, True, (f"{rel}|background", was))
+        return result
 
     def choose_no_logo(self, rel, on):
         """The "No logo" tile: the next push makes this title's poster, and its seasons' and episodes', without a logo, until
@@ -3984,6 +4074,13 @@ class Worker:
         before = entry.get("before")  # Missing for changes made before it was recorded: then any spot may have changed
         if before and f"{rel}|nologo" in before:  # "No logo" first, so what the last push used is looked for the way it was made
             self.write_no_logo(title, bool(before[f"{rel}|nologo"]))
+        if before and f"{rel}|background" in before:  # And the generated background's colour, so the one it puts back is the one pushed
+            meta = ArtworkFiles.metadata(title)
+            meta.pop("background_color", None)
+            if before[f"{rel}|background"]:
+                meta["background_color"] = before[f"{rel}|background"]
+            atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+            self.generated(title, redraw=True)
         found = {}
         for folder, season, where in sections:
             try:
@@ -4178,6 +4275,8 @@ WORKER_METHODS = {
     "plex_image": worker_plex_image,
     "select": lambda w, p: w.select(p.get("id"), p.get("kind"), p.get("name")),
     "no_logo": lambda w, p: w.choose_no_logo(p.get("id"), bool(p.get("on"))),
+    "generated": lambda w, p: w.use_generated(p.get("id")),
+    "background_color": lambda w, p: w.background_color(p.get("id"), p.get("color")),
     "import": worker_import,
     "upload": worker_upload,
     "discard": lambda w, p: w.discard(p.get("id")),
