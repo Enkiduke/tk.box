@@ -26,11 +26,10 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
     return store.updateConnections(grant.accountId,expectedRevision,value);
   });
   app.get('/api/v1/admin/cleanup/titles',async request=>{await admin(request);return engine.titles();});
-  // Keep a title longer: start its rule over from today, add days to its date, or drop the hold.
+  // Start a title's rule over from today, or drop that hold.
   app.post('/api/v1/admin/cleanup/holds',async request=>{
     const {grant}=await admin(request),body=z.discriminatedUnion('action',[
       z.object({key:holdKey,action:z.literal('reset')}).strict(),
-      z.object({key:holdKey,action:z.literal('extend'),days:z.number().int().min(1).max(3650)}).strict(),
       z.object({key:holdKey,action:z.literal('clear')}).strict()]).parse(request.body);
     return engine.hold(grant.accountId,body.key,body);
   });

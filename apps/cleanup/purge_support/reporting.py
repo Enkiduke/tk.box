@@ -22,6 +22,9 @@ class RunReport:
     kept: int = 0
     evaluation_complete: bool = True
     leaving_items: list = field(default_factory=list)
+    # Plex rating keys this run checked and found not leaving soon (kept longer or protected). An incomplete run still
+    # takes these out of the Leaving Soon collection; only titles it couldn't check stay as they were.
+    settled: set = field(default_factory=set)
     delete_summary: dict = field(default_factory=dict)
     leaving_summary: dict = field(default_factory=dict)
     season_summary: dict = field(default_factory=dict)
@@ -60,6 +63,8 @@ def add_status(report, item, kind, status, *, title=None, rule=None, reason="", 
         "key": key,
         # The Plex item, for its poster.
         "rating_key": str(item.ratingKey) if item is not None and getattr(item, "ratingKey", None) else None,
+        # A season's show, so the show's own menu can offer its seasons.
+        "show_rating_key": str(item.parentRatingKey) if kind == "season" and getattr(item, "parentRatingKey", None) else None,
     })
 
 

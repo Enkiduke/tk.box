@@ -97,7 +97,7 @@ export class CleanupStore {
     return Object.fromEntries(Object.entries(all).filter(([, hold]) => hold.until > now));
   }
   setHold(actor: string, key: string, until: number | null, now = Date.now()) {
-    if (!holdKey.safeParse(key).success) throw new AppError('VALIDATION_ERROR', 'Not a title that can be held.', 400);
+    if (!holdKey.safeParse(key).success) throw new AppError('VALIDATION_FAILED', 'Not a title that can be held.', 400);
     return this.db.transaction(() => {
       const holds = this.holds(now);
       if (until === null) delete holds[key]; else holds[key] = { until, by: actor, at: now };
