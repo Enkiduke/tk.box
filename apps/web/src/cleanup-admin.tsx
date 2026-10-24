@@ -4,7 +4,7 @@ import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
 import {ScheduleRow,type ScheduleState} from './artwork-collections.js';
-import {JobHistory,type Job} from './artwork-jobs.js';
+import {openConsole,type Job} from './admin-console.js';
 import {CleanupStatus} from './cleanup-status.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
@@ -16,21 +16,21 @@ type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;delet
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:{enabled:boolean;time:string}};
 type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'seerr'|'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
-const tabs=[['runs','Runs'],['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
+const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections">Admin › Connections</a>;
 
 export function CleanupAdmin() {
-  const overview=useApi<Overview>('/admin/cleanup'),[tab,setTabState]=useState(()=>remembered('cleanupTab','runs'));
+  const overview=useApi<Overview>('/admin/cleanup'),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'status')(remembered('cleanupTab','status')));
   const setTab=(t:string)=>{setTabState(t);remember('cleanupTab',t);};
   const head=<SectionHead title="Clean Up"/>;
   if(overview.loading&&!overview.data)return <>{head}<Loading/></>;
   if(overview.error&&!overview.data)return <>{head}<ErrorNotice message={overview.error.message} retry={overview.reload}/></>;
   const data=overview.data!;
-  return <>{head}
+  return <><RunActions data={data} changed={overview.reload}/>
     <EngineStatus engine={data.engine} recheck={()=>void api<Overview>('/admin/cleanup?recheck=1').then(overview.reload,overview.reload)}/>
     {data.missing.length>0&&<div className="notice"><span>Before clean up can run:<ul>{data.missing.map(m=><li key={m}>{m}</li>)}</ul></span></div>}
     <div className="subtabs" role="tablist" aria-label="Clean Up">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
-    <div role="tabpanel">{tab==='settings'?<CleanupSettings data={data} changed={overview.reload}/>:tab==='status'?<CleanupStatus rules={data.settings} busy={data.busy}/>:tab==='schedules'?<CleanupSchedules data={data} changed={overview.reload}/>:<Runs data={data} changed={overview.reload}/>}</div>
+    <div role="tabpanel">{tab==='settings'?<CleanupSettings data={data} changed={overview.reload}/>:tab==='schedules'?<CleanupSchedules data={data} changed={overview.reload}/>:<CleanupStatus rules={data.settings} busy={data.busy}/>}</div>
   </>;
 }
 function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
@@ -45,24 +45,23 @@ function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
   </Card>;
 }
 
-function Runs({data,changed}:{data:Overview;changed:()=>void}) {
-  const [selected,setSelected]=useState<number>(),[confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
-  const start=(preview:boolean)=>void mutation.run(async()=>{const job=await api<Job>('/admin/cleanup/jobs','POST',{preview});setSelected(job.id);});
+// The section's header: a preview and a real run, whose output opens in the Console.
+function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
+  const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
+  const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
   const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr],['Seerr',data.settings.deleteFromSeerr]] as const).filter(([,on])=>on).map(([name])=>name);
-  return <div className="form-stack">
-    <div className="artwork-run">
-      <Card title="Preview" description="Lists what is due. Changes nothing." actions={<button className="primary" disabled={off} onClick={()=>start(true)}>Preview</button>}/>
-      <Card title="Clean up now" description={real?'Deletes everything that is due.':'Preview only is on, so this only reports.'}
-        actions={<button disabled={off} onClick={()=>real?setConfirm(true):start(false)}>Run</button>}/>
-    </div>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <JobHistory script="cleanup" selected={selected} select={setSelected}/>
+  return <>
+    <SectionHead title="Clean Up">
+      <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
+      <button disabled={off||!real} title={real?'Deletes everything that is due.':'Preview only is on in Settings, so runs only report.'} onClick={()=>setConfirm(true)}><Icon name="trash" size={16}/>Clean up now</button>
+    </SectionHead>
+    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     {confirm&&<Modal title="Delete what is due?" onClose={()=>setConfirm(false)}>
       <p>Every title whose time is up is deleted from Plex with its files{also.length?`, and from ${also.length>1?`${also.slice(0,-1).join(', ')} and ${also.at(-1)}`:also[0]}`:''}. This can’t be undone. Run a preview first to see the list.</p>
       <div className="button-row"><button className="primary" onClick={()=>{setConfirm(false);start(false);}}>Delete</button><button onClick={()=>setConfirm(false)}>Cancel</button></div>
     </Modal>}
-  </div>;
+  </>;
 }
 
 // Its own tab, saved with the rest of the settings as they were last saved.
@@ -106,7 +105,7 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
   return <form className="form-stack cleanup-settings" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Run mode" className={draft.dryRun?'':'danger-zone'}>
       <Switch label="Preview only" description="When on, manual and scheduled runs only report what would happen. Plex, files and collections stay unchanged." checked={draft.dryRun} onChange={v=>set({dryRun:v})}/>
-      <p className={`cleanup-note${draft.dryRun?'':' cleanup-delete-note'}`}>{draft.dryRun?'No files will be deleted with this setting.':'Runs will delete due titles and their files. The Preview button in Runs always changes nothing.'} Changes take effect after saving.</p>
+      <p className={`cleanup-note${draft.dryRun?'':' cleanup-delete-note'}`}>{draft.dryRun?'No files will be deleted with this setting.':'Clean up now and scheduled runs will delete due titles and their files. Preview always changes nothing.'} Changes take effect after saving.</p>
     </Card>
     <Card title="Libraries to clean up" description="Only available Seerr requests in these Plex libraries are checked.">
       {data.libraries.length?<div className="form-columns">
@@ -156,6 +155,6 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </>}
     </Card>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save clean up settings'}</button>{done?<span className="success" role="status">Saved.</span>:<span className="muted small">Save settings, then run a preview in Runs to review the results.</span>}</div>
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save clean up settings'}</button>{done?<span className="success" role="status">Saved.</span>:<span className="muted small">Save settings, then run a preview (top right) to review the results.</span>}</div>
   </form>;
 }

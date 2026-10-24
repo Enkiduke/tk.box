@@ -3,7 +3,7 @@ import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,Switch,date as when,remember,remembered,useMutation} from './settings-ui.js';
-import {JobHistory,type Job} from './artwork-jobs.js';
+import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Collections: Plex collections the engine keeps. Franchise, streaming and chart collections come from
 // TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public list),
@@ -20,7 +20,7 @@ type Daily={enabled:boolean;time:string};type EveryFew={enabled:boolean;minutes:
 type Schedules={custom:Daily;all:Daily;added:EveryFew};
 export type ScheduleState={lastRun?:number;note?:string};
 type View={revision:number;definitions:Definition[]|null;franchise:Franchise;radarr:Radarr;radarrKeySet:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
-const tabs=[['collections','Collections'],['jobs','Jobs'],['schedules','Schedules'],['settings','Settings']] as const;
+const tabs=[['collections','Collections'],['schedules','Schedules'],['settings','Settings']] as const;
 const keyOf=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]/g,'').replace(/collection$/,'');
 const memberText=(m:Member)=>m.tmdb_id?`tmdb:${m.tmdb_id}`:m.rating_key?`plex:${m.rating_key}`:m.imdb_id?`imdb:${m.imdb_id}`:m.year?`${m.title} | ${m.year}`:m.title??'';
 const parseMembers=(text:string):Member[]=>text.split('\n').map(s=>s.trim()).filter(Boolean).map(line=>{
@@ -31,9 +31,9 @@ const parseMembers=(text:string):Member[]=>text.split('\n').map(s=>s.trim()).fil
 
 export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<{definitions:Definition[];franchise:Franchise;radarr:Radarr;schedules:Schedules}>();
-  const [editing,setEditing]=useState<number>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[date,setDate]=useState(''),[tab,setTabState]=useState(()=>remembered('collectionsTab','collections'));
+  const [editing,setEditing]=useState<number>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[date,setDate]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
-  const mutation=useMutation(view.reload),run=useMutation(()=>invalidate('/admin/artwork/jobs?script=collections')),[ran,setRan]=useState(false),[job,setJob]=useState<number>(),[title,setTitle]=useState('');
+  const mutation=useMutation(view.reload),run=useMutation(()=>invalidate('/admin/artwork/jobs')),[one,setOne]=useState(false),[title,setTitle]=useState('');
   const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:JSON.parse(JSON.stringify(d.definitions??d.defaults)) as Definition[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
   useEffect(reset,[view.data?.revision,!!view.data]);
   if(!engineReady)return <Empty title="The artwork engine isn’t set up">Set it up (above) to manage collections.</Empty>;
@@ -45,31 +45,14 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}}),radarr=(patch:Partial<Radarr>)=>change({radarr:{...draft.radarr,...patch}});
   const setDefinition=(index:number,value:Definition|null)=>change({definitions:value?draft.definitions.map((d,i)=>i===index?value:d):draft.definitions.filter((_,i)=>i!==index)});
   const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});setSaved('Saved. Preview the plan to see what would change in Plex.');});
-  // A job queued from the Collections tab says so there; one queued from the Jobs tab opens in its history.
-  const start=(body:object)=>void run.run(async()=>{const queued=await api<Job>('/admin/artwork/collections/run','POST',body);setJob(queued.id);setRan(tab!=='jobs');});
+  // Every run opens in the Console.
+  const start=(body:object)=>void run.run(async()=>{openConsole(await api<Job>('/admin/artwork/collections/run','POST',body));setOne(false);});
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
   const blocked=dirty?'Save your changes first':undefined,needsUpload=!data.upload?'Turn on Send results to Plex in Artwork › Settings first':undefined;
   return <div className="form-stack">
     <div className="subtabs" role="tablist" aria-label="Collections">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
     <div role="tabpanel" className="form-stack">
-      {tab==='jobs'?<>
-        <div className="artwork-run">
-          <Card title="Every collection" description="Franchise, streaming and chart, then custom." actions={<>
-            <button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'franchise',mode:'plan'})}>Preview</button>
-            <button className="primary" disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'franchise',mode:'apply'})}>Apply</button></>}/>
-          <Card title="Custom and seasonal collections" description="Preview as of another day to check seasonal dates.">
-            <div className="button-row"><label className="artwork-inline">as of<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
-              <button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'custom',mode:'plan',...(date?{date}:{})})}>Preview</button>
-              <button className="primary" disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'custom',mode:'apply'})}>Apply</button></div>
-          </Card>
-          <Card title="One title" description={`Adds it to matching custom collections.${data.upload?'':' Preview only while sending is off.'}`}>
-            <form className="button-row" onSubmit={e=>{e.preventDefault();start({kind:'added',mode:data.upload?'apply':'plan',ratingKey:title});}}>
-              <input className="grow" aria-label="Plex ID" inputMode="numeric" pattern="\d{1,10}" required placeholder="Plex ID, e.g. 12345" value={title} onChange={e=>setTitle(e.target.value.trim())}/>
-              <button className="primary" disabled={run.busy||!!blocked} title={blocked}>{data.upload?'Apply':'Preview'}</button></form>
-          </Card>
-        </div>
-        <JobHistory script="collections" selected={job} select={setJob}/>
-      </>:tab==='settings'?<>
+      {tab==='settings'?<>
         <Card title="Franchise, streaming and chart collections" description="Turning one off leaves existing collections in Plex.">
           <Switch label="Franchise collections for movies" description="e.g. The Lord of the Rings" checked={draft.franchise.franchises} onChange={v=>franchise({franchises:v})}/>
           <Switch label="Streaming collections for TV shows" description="e.g. Netflix Shows" checked={draft.franchise.streaming!=='off'} onChange={v=>franchise({streaming:v?'originals':'off'})}/>
@@ -117,11 +100,20 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
           {presets.length>0&&data.definitions!==null&&<div className="button-row"><button onClick={()=>change({definitions:[...draft.definitions,...JSON.parse(JSON.stringify(presets)) as Definition[]]})}>Add the {presets.length} seasonal presets you don’t have</button></div>}
           <div className="button-row"><button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'custom',mode:'plan',...(date?{date}:{})})}>Preview the plan</button>
             <label className="artwork-inline">as of<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
-            <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'custom',mode:'apply'})}>Apply now</button></div>
+            <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'custom',mode:'apply'})}>Apply now</button>
+            <button disabled={!!blocked} title={blocked??'Adds one title to the custom collections it matches.'} onClick={()=>setOne(true)}>One title…</button></div>
         </Card>
       </>}
     </div>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}{run.error&&<ErrorNotice message={run.error}/>}{ran&&tab!=='jobs'&&<p className="success small" role="status">Queued. <button type="button" className="link-button" onClick={()=>{setRan(false);setTab('jobs');}}>Follow it in Jobs</button></p>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}{run.error&&<ErrorNotice message={run.error} dismiss={()=>run.setError('')}/>}
+    {one&&<Modal title="Add one title to custom collections" onClose={()=>setOne(false)}>
+      <h2>One title</h2>
+      <p className="muted small">Adds it to the custom collections it matches.{data.upload?'':' Sending to Plex is off, so this only previews.'}</p>
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();start({kind:'added',mode:data.upload?'apply':'plan',ratingKey:title});}}>
+        <label>Plex ID<input inputMode="numeric" pattern="\d{1,10}" required autoFocus placeholder="e.g. 12345" value={title} onChange={e=>setTitle(e.target.value.trim())}/><small>From the title’s Plex web address.</small></label>
+        <div className="button-row"><button className="primary" disabled={run.busy}>{data.upload?'Apply':'Preview'}</button><button type="button" onClick={()=>setOne(false)}>Cancel</button></div>
+      </form>
+    </Modal>}
     {(dirty||saved)&&<div className="button-row sticky-actions">{dirty&&<><button className="primary" disabled={mutation.busy} onClick={save}>Save collections</button><button onClick={reset}>Discard changes</button></>}{saved&&!dirty&&<span className="success" role="status">{saved}</span>}</div>}
     {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)} save={value=>{setDefinition(editing,value);setEditing(undefined);}}/>}
     {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);setEditing(draft.definitions.length);}}/>}

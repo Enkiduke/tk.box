@@ -10,6 +10,7 @@ import {ExploreAdmin} from './explore-settings.js';
 import {ArtworkAdmin,CollectionsAdmin} from './artwork-admin.js';
 import {CleanupAdmin} from './cleanup-admin.js';
 import {ActivityAdmin} from './activity-admin.js';
+import {AdminConsole} from './admin-console.js';
 import './admin.css';
 
 // The Admin console: server-wide settings and media management tools, apart from each viewer's own Settings.
@@ -38,5 +39,6 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
         :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='explore'?<ExploreAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<ActivityAdmin/>:<PlaybackSection/>}</div>
     </div>
+    <AdminConsole/>
   </div>;
 }

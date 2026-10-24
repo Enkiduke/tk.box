@@ -5,6 +5,7 @@ import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {useMutation} from './settings-ui.js';
 // The editor also opens from the library (Edit artwork), where the Admin page's styles aren't loaded yet.
 import './admin.css';
+import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Artwork › Titles: every title's asset folder, as the engine keeps it. Pick a poster or logo (a saved file, one
 // the providers offer, a crop of a backdrop, or your own), compare the preview with what was last made, then push.
@@ -48,10 +49,10 @@ export function ArtworkTitles({ratingKey,engineReady,upload}:{ratingKey?:string;
     <div className="artwork-toolbar">
       <input type="search" className="grow" placeholder="Find a title" aria-label="Find a title" value={query} onChange={e=>setQuery(e.target.value)}/>
       <div className="toggle-group" role="radiogroup" aria-label="Show">{categories.map(([id,label])=><button key={id} type="button" role="radio" aria-checked={category===id} onClick={()=>setCategory(id)}>{label}{id==='pending'&&pending?` (${pending})`:''}</button>)}</div>
-      <button className="primary" disabled={!pending||push.busy} onClick={()=>void push.run(async()=>{const r=await api<{jobs:unknown[]}>('/admin/artwork/push','POST',{});setPushed(`${r.jobs.length} ${r.jobs.length===1?'job':'jobs'} queued. Follow them in the Jobs tab.`);})}>{verb} {pending||''} changed</button>
+      <button className="primary" disabled={!pending||push.busy} onClick={()=>void push.run(async()=>{const r=await api<{jobs:Job[]}>('/admin/artwork/push','POST',{});setPushed(`${r.jobs.length} ${r.jobs.length===1?'job':'jobs'} queued.`);openConsole(r.jobs[0]);})}>{verb} {pending||''} changed</button>
     </div>
     {pushed&&<p className="success small" role="status">{pushed}</p>}{push.error&&<ErrorNotice message={push.error}/>}
-    {!data.titles.length?<Empty title="No titles yet">Titles appear here once a job has made their artwork. Run “Update changed titles” in the Jobs tab.</Empty>
+    {!data.titles.length?<Empty title="No titles yet">Titles appear here once a job has made their artwork. Run “Update changed titles” (top right).</Empty>
       :!list.length?<Empty title="Nothing matches">Try another search or filter.</Empty>
       :<div className="artwork-title-grid">{list.map(t=><button key={t.id} className="artwork-title" onClick={()=>setOpen(t.id)}>
         <span className="artwork-title-art">{t.thumb?<img src={t.thumb} alt="" loading="lazy" decoding="async"/>:<Icon name="image" size={28}/>}{data.pending[t.id]&&<span className="badge warning">Not {data.upload?'pushed':'rendered'}</span>}</span>
@@ -70,7 +71,7 @@ export function TitleArtwork({ratingKey,onClose}:{ratingKey:string;onClose:()=>v
 function MakeFirst({ratingKey,dismiss}:{ratingKey:string;dismiss:()=>void}) {
   const mutation=useMutation(()=>invalidate('/admin/artwork/jobs')),[queued,setQueued]=useState(false);
   return <div className="notice"><span>{queued?'Queued. When the job is done, open Edit artwork for this title again.':'This title has no artwork folder yet. Make its artwork once, then pick posters and logos here.'}</span>
-    {!queued&&<button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await api('/admin/artwork/jobs','POST',{kind:'item',ratingKey,seasons:true,episodes:false,remake:false});setQueued(true);})}>Make its artwork</button>}
+    {!queued&&<button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{openConsole(await api<Job>('/admin/artwork/jobs','POST',{kind:'item',ratingKey,seasons:true,episodes:false,remake:false}));setQueued(true);})}>Make its artwork</button>}
     <button className="icon-button" aria-label="Dismiss" onClick={dismiss}><Icon name="close" size={16}/></button>{mutation.error&&<span className="danger small">{mutation.error}</span>}</div>;
 }
 
@@ -142,8 +143,8 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
       <div><h2>{named(d.title,d.year)}</h2><p className="muted small">{d.tv?'TV show':d.id.startsWith('collections/')?'Collection':'Movie'}{linked?` · Plex ID ${d.key}`:''} · <span className={`badge ${!linked?'':changed?'warning':'ok'}`}>{!linked?'Not linked to Plex':changed?`Not ${pushedState.upload?'pushed':'rendered'}`:'Up to date'}</span></p></div>
       <div className="button-row">
         {changed&&<button disabled={!!busy} onClick={()=>void act('discard',()=>api('/admin/artwork/title/discard','POST',{id:d.id}),`Changes discarded. Back to what was last ${pushedState.upload?'pushed':'rendered'}.`)}>Discard changes</button>}
-        <button className={changed?'primary':''} disabled={!linked||!!busy} title={!linked?'Make this title’s artwork once (Jobs tab) so it knows its Plex ID':undefined}
-          onClick={()=>void act('push',()=>api('/admin/artwork/push','POST',{ids:[d.id]}),`Queued. Follow it in the Jobs tab; ${pushedState.upload?'Plex':'this page'} shows the result when it’s done.`)}>{changed||!linked?verb:`${verb} again`}</button>
+        <button className={changed?'primary':''} disabled={!linked||!!busy} title={!linked?'Make this title’s artwork once (Update changed titles, or One title in the ⋯ menu) so it knows its Plex ID':undefined}
+          onClick={()=>void act('push',()=>api('/admin/artwork/push','POST',{ids:[d.id]}),`Queued. Follow it in the Console; ${pushedState.upload?'Plex':'this page'} shows the result when it’s done.`)}>{changed||!linked?verb:`${verb} again`}</button>
       </div>
     </div>
     {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{message&&<p className="success small" role="status">{message}</p>}

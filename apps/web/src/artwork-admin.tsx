@@ -1,12 +1,12 @@
 import {useEffect,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
-import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
 import {ArtworkTitles} from './artwork-titles.js';
 import {LayoutAdvanced,LayoutEditor} from './artwork-layouts.js';
 import {ArtworkCollections,ScheduleRow,type ScheduleState} from './artwork-collections.js';
-import {JobHistory,type Job} from './artwork-jobs.js';
+import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Artwork: custom posters, season posters and episode title cards, made by the artwork engine
 // (apps/artwork/overlayrr.py) and sent to Plex, where every Plex app and tk.box picks them up.
@@ -18,25 +18,25 @@ type Settings={revision:number;libraries:string[];upload:boolean;uploadLogo:bool
   missingArt:'stock'|'skip';quality:number;workers:number;language:string;completionLabel:string;defaultLayout:string;layoutByLibrary:Record<string,string>;layoutByType:Partial<Record<LayoutType,string>>;
   schedules:Schedules;keysSet:Record<string,boolean>};
 type Overview={settings:Settings;layouts:string[];libraries:Library[];engine:Engine;queue:{running:number|null;queued:number};schedules:Record<keyof Schedules,ScheduleState>};
-const tabs=[['titles','Titles'],['layouts','Layouts'],['jobs','Jobs'],['schedules','Schedules'],['settings','Settings']] as const;
+const tabs=[['titles','Titles'],['layouts','Layouts'],['schedules','Schedules'],['settings','Settings']] as const;
 
 // `title` is a Plex rating key, from a title's details (Edit artwork).
 export function ArtworkAdmin({params}:{params:URLSearchParams}) {
-  const overview=useApi<Overview>('/admin/artwork'),title=params.get('title')??undefined,[tab,setTabState]=useState(()=>title?'titles':remembered('artworkTab','titles')),[advanced,setAdvanced]=useState(false);
+  const overview=useApi<Overview>('/admin/artwork'),title=params.get('title')??undefined,[tab,setTabState]=useState(()=>title?'titles':(t=>tabs.some(([id])=>id===t)?t:'titles')(remembered('artworkTab','titles'))),[advanced,setAdvanced]=useState(false);
   const setTab=(t:string)=>{setTabState(t);remember('artworkTab',t);};
   useEffect(()=>{if(title)setTabState('titles');},[title]);
   const head=<SectionHead title="Artwork"/>;
   if(overview.loading&&!overview.data)return <>{head}<Loading/></>;
   if(overview.error&&!overview.data)return <>{head}<ErrorNotice message={overview.error.message} retry={overview.reload}/></>;
   const data=overview.data!;
-  return <>{head}
+  return <><RunActions data={data}/>
     <EngineStatus engine={data.engine} recheck={()=>void api<Overview>('/admin/artwork?recheck=1').then(overview.reload,overview.reload)}/>
+    {data.engine.ready&&!data.settings.libraries.length&&<div className="notice"><span>Choose the libraries to make artwork for in the Settings tab first.</span></div>}
     <div className="subtabs" role="tablist" aria-label="Artwork">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
     <div role="tabpanel">
       {tab==='settings'?<ArtworkSettings data={data} changed={overview.reload}/>
         :tab==='schedules'?<ArtworkSchedules data={data} changed={overview.reload}/>
         :tab==='layouts'?(advanced?<LayoutAdvanced names={data.layouts} inUse={name=>used(data.settings,name)} changed={overview.reload} back={()=>setAdvanced(false)}/>:<LayoutEditor engineReady={data.engine.ready} advanced={()=>setAdvanced(true)}/>)
-        :tab==='jobs'?<Jobs data={data}/>
         :<ArtworkTitles ratingKey={title} engineReady={data.engine.ready} upload={data.settings.upload}/>}
     </div>
   </>;
@@ -144,32 +144,32 @@ function SchedulesCard({schedules,states,set}:{schedules:Schedules;states:Overvi
   </Card>;
 }
 
-function Jobs({data}:{data:Overview}) {
-  const [selected,setSelected]=useState<number>(),[item,setItem]=useState({ratingKey:'',seasons:true,episodes:false,remake:false}),[confirm,setConfirm]=useState(false);
+// The section's header: the everyday run, and the rarer ones in its menu. Their output opens in the Console.
+function RunActions({data}:{data:Overview}) {
+  const [item,setItem]=useState({ratingKey:'',seasons:true,episodes:false,remake:false}),[dialog,setDialog]=useState<'all'|'item'>();
   const mutation=useMutation(()=>invalidate('/admin/artwork/jobs'));
-  const start=(body:object)=>void mutation.run(async()=>{const job=await api<Job>('/admin/artwork/jobs','POST',body);setSelected(job.id);});
-  const off=!data.engine.ready||mutation.busy,where=data.settings.upload?'':' Sending to Plex is off.';
-  return <div className="form-stack">
-    {!data.settings.libraries.length&&<div className="notice"><span>Choose the libraries to make artwork for in the Settings tab first.</span></div>}
-    <div className="artwork-run">
-      <Card title="Update changed titles" description={`Only what changed since the last run.${where}`} actions={<button className="primary" disabled={off} onClick={()=>start({kind:'changed'})}>Run</button>}/>
-      <Card title="Rebuild every title" description="Every title, from scratch." actions={<button disabled={off} onClick={()=>setConfirm(true)}>Run</button>}/>
-      <Card title="One title" description="By Plex ID, from its Plex web address.">
-        <form className="form-stack" onSubmit={e=>{e.preventDefault();start({kind:'item',...item});}}>
-          <input aria-label="Plex ID" inputMode="numeric" pattern="\d{1,10}" required placeholder="Plex ID, e.g. 12345" value={item.ratingKey} onChange={e=>setItem(i=>({...i,ratingKey:e.target.value.trim()}))}/>
-          <div className="button-row"><label className="checkbox-label"><input type="checkbox" checked={item.seasons} onChange={e=>setItem(i=>({...i,seasons:e.target.checked}))}/>Seasons</label>
-            <label className="checkbox-label"><input type="checkbox" checked={item.episodes} onChange={e=>setItem(i=>({...i,episodes:e.target.checked}))}/>Episodes</label>
-            <label className="checkbox-label"><input type="checkbox" checked={item.remake} onChange={e=>setItem(i=>({...i,remake:e.target.checked}))}/>Remake</label>
-            <button className="primary" disabled={off}>Run</button></div>
-        </form>
-      </Card>
-      <Card title="Send saved results again" description="Re-upload saved results to Plex." actions={<button disabled={off||!data.settings.upload} title={data.settings.upload?undefined:'Turn on Send results to Plex first'} onClick={()=>start({kind:'refresh'})}>Run</button>}/>
-    </div>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <JobHistory script="artwork" selected={selected} select={setSelected}/>
-    {confirm&&<Modal title="Rebuild every title?" onClose={()=>setConfirm(false)}>
-      <p>Every title in the chosen libraries is made again, even where nothing changed{data.settings.upload?', and sent to Plex':''}. On a large library this takes a long time and many artwork requests.</p>
-      <div className="button-row"><button className="primary" onClick={()=>{setConfirm(false);start({kind:'all'});}}>Rebuild all</button><button onClick={()=>setConfirm(false)}>Cancel</button></div>
+  const start=(body:object)=>void mutation.run(async()=>{openConsole(await api<Job>('/admin/artwork/jobs','POST',body));setDialog(undefined);});
+  const off=!data.engine.ready||!data.settings.libraries.length||mutation.busy,upload=data.settings.upload;
+  const menu=useMenu('artwork runs',()=>[[{label:'Rebuild every title…',icon:'restart',run:()=>setDialog('all')},{label:'One title…',icon:'image',run:()=>setDialog('item')},
+    ...upload?[{label:'Send saved results again',icon:'up',run:()=>start({kind:'refresh'})}]:[]]],'icon-button');
+  return <>
+    <SectionHead title="Artwork">{!off&&menu.trigger}{menu.menu}
+      <button className="primary" disabled={off} title={`Only what changed since the last run.${upload?'':' Sending to Plex is off.'}`} onClick={()=>start({kind:'changed'})}>Update changed titles</button>
+    </SectionHead>
+    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
+    {dialog==='all'&&<Modal title="Rebuild every title?" onClose={()=>setDialog(undefined)}>
+      <p>Every title in the chosen libraries is made again, even where nothing changed{upload?', and sent to Plex':''}. On a large library this takes a long time and many artwork requests.</p>
+      <div className="button-row"><button className="primary" disabled={mutation.busy} onClick={()=>start({kind:'all'})}>Rebuild all</button><button onClick={()=>setDialog(undefined)}>Cancel</button></div>
     </Modal>}
-  </div>;
+    {dialog==='item'&&<Modal title="Make one title’s artwork" onClose={()=>setDialog(undefined)}>
+      <h2>One title</h2>
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();start({kind:'item',...item});}}>
+        <label>Plex ID<input inputMode="numeric" pattern="\d{1,10}" required autoFocus placeholder="e.g. 12345" value={item.ratingKey} onChange={e=>setItem(i=>({...i,ratingKey:e.target.value.trim()}))}/><small>From the title’s Plex web address.</small></label>
+        <div className="button-row"><label className="checkbox-label"><input type="checkbox" checked={item.seasons} onChange={e=>setItem(i=>({...i,seasons:e.target.checked}))}/>Seasons</label>
+          <label className="checkbox-label"><input type="checkbox" checked={item.episodes} onChange={e=>setItem(i=>({...i,episodes:e.target.checked}))}/>Episodes</label>
+          <label className="checkbox-label"><input type="checkbox" checked={item.remake} onChange={e=>setItem(i=>({...i,remake:e.target.checked}))}/>Remake</label></div>
+        <div className="button-row"><button className="primary" disabled={mutation.busy}>Run</button><button type="button" onClick={()=>setDialog(undefined)}>Cancel</button></div>
+      </form>
+    </Modal>}
+  </>;
 }
