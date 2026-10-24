@@ -101,6 +101,8 @@ COLLECTION_UNIVERSES = (
     ("mummy", "Mummy Universe", "https://mdblist.com/lists/k0meta/external/9249/", ("movie",)),
     ("wizard", "Wizarding World", "https://mdblist.com/lists/k0meta/external/23683/", ("movie",)),
     ("xmen", "X-Men Universe", "https://www.imdb.com/list/ls567618635/", ("movie", "tv")))
+IMDB_CHARTS = {"top": "TOP_RATED_MOVIES", "toptv": "TOP_RATED_TV_SHOWS", "moviemeter": "MOST_POPULAR_MOVIES", "tvmeter": "MOST_POPULAR_TV_SHOWS"}
+IMDB_PAGE = "pageInfo { hasNextPage endCursor } edges { title { id titleText { text } releaseYear { year } titleType { canHaveEpisodes } } }"
 
 
 def collection_source(url):
@@ -210,6 +212,26 @@ class CollectionSources:
             cached = web_download(url).decode("utf-8", errors="replace")
             self.http.remember(key, cached)
         return CollectionPage(cached)
+
+    def imdb(self, field, **variables):
+        """IMDb's own GraphQL API: list and chart pages refuse servers, but the API their site loads from answers them."""
+        names = {"id": "ID!", "after": "String"}
+        query = "query%s { %s }" % ("(" + ", ".join(f"${k}: {names[k]}" for k in variables) + ")" if variables else "", field)
+        key = "imdb-graphql:" + json.dumps([query, variables], sort_keys=True)
+        data = self.http.recall(key)
+        if data is None:
+            with self.http.request("POST", "https://api.graphql.imdb.com/", json={"query": query, "variables": variables},
+                                   headers={"content-type": "application/json", "x-imdb-client-name": "imdb-web-next"}) as response:
+                data = response.json()
+            errors = [e.get("extensions", {}).get("code") or e.get("message") for e in data.get("errors") or []]
+            if "RESOURCE_NOT_FOUND" in errors:
+                raise ValueError("That IMDb list doesn't exist")
+            if "FORBIDDEN" in errors:
+                raise ValueError("That IMDb list is private; make it public on IMDb first")
+            if errors or not data.get("data"):
+                raise ValueError("IMDb did not return the list (" + (errors[0] if errors else "empty answer") + ")")
+            data = self.http.remember(key, data["data"])
+        return data
 
     @staticmethod
     def objects(value):
@@ -344,78 +366,85 @@ class CollectionSources:
                     break
             else:
                 raise ValueError("Too many source pages; choose a smaller collection limit")
+        elif provider == "imdb":
+            chart = IMDB_CHARTS.get(path.split("/")[-1]) if path.startswith("/chart/") else None
+            after = None
+            for _ in range(25):
+                if chart:
+                    result = self.imdb("chartTitles(first: 250, chart: {chartType: %s}) { %s }" % (chart, IMDB_PAGE.replace("title {", "node {")))["chartTitles"]
+                else:
+                    found = self.imdb("list(id: $id) { name { originalText } titleListItemSearch(first: 250, after: $after) { %s } }" % IMDB_PAGE,
+                                      id=path.split("/")[-1], after=after)["list"]
+                    name = (found.get("name") or {}).get("originalText") or name
+                    result = found["titleListItemSearch"]
+                for edge in result.get("edges") or []:
+                    title = edge.get("title") or edge.get("node")
+                    if not title or not re.fullmatch(r"tt\d+", str(title.get("id"))):
+                        raise ValueError("An IMDb list item has no readable identifier; refusing partial membership")
+                    add({"title": (title.get("titleText") or {}).get("text", ""), "year": str((title.get("releaseYear") or {}).get("year") or ""), "imdb_id": title["id"]},
+                        "tv" if (title.get("titleType") or {}).get("canHaveEpisodes") else "movie")
+                if len(rows) >= limit or not result["pageInfo"]["hasNextPage"]:
+                    break
+                after = result["pageInfo"]["endCursor"]
+            else:
+                raise ValueError("Too many source pages; choose a smaller collection limit")
         else:
             page = self.page(url)
-            name = page.title.split(" • ")[0].split(" - IMDb")[0].strip() or name
-            if provider == "imdb":
-                # Restrict structured extraction to ranked list data, not recommendations elsewhere on the page.
-                lists = [obj for script in page.scripts for obj in self.objects(script) if "itemListElement" in obj]
-                if not lists:
-                    raise ValueError("IMDb did not return a readable public list (it may be blocked)")
-                for obj in lists:
-                    for item in obj["itemListElement"]:
-                        row = item.get("item", item)
-                        match = re.search(r"tt\d+", str(row.get("url") or row.get("@id") or ""))
-                        if not match:
-                            raise ValueError("An IMDb list item has no readable identifier; refusing partial membership")
-                        add({"title": row.get("name", ""), "imdb_id": match[0]}, row.get("@type", "movie"))
-                if len(rows) < limit and max(int(obj.get("numberOfItems") or 0) for obj in lists) > sum(len(obj["itemListElement"]) for obj in lists):
-                    raise ValueError("IMDb returned only part of this list; lower the source limit to the visible item count")
-            else:
-                links, seen, labels, media_types = [], set(), {}, {}
-                for number in range(1, 11):
-                    candidates = page.posters if provider == "letterboxd" and page.posters else page.links
-                    for link in candidates:
-                        if provider == "flixpatrol" and (not link.get("table") or link.get("media") not in (None, kind)):
-                            continue
-                        target = urljoin(url, link["url"])
-                        parsed = urlparse(target)
-                        pattern = r"/film/[\w-]+/" if provider == "letterboxd" else r"/title/[\w-]+/"
-                        if parsed.hostname == COLLECTION_PROVIDERS[provider][1] and re.fullmatch(pattern, parsed.path) and target not in seen:
-                            seen.add(target)
-                            links.append(target)
-                            labels[target] = link["title"]
-                            media_types[target] = link.get("media")
-                    if len(links) >= limit * (2 if provider == "flixpatrol" else 1):
-                        break
-                    next_link = next((link for link in page.links if link["next"]), None)
-                    if not next_link:
-                        break
-                    target = urljoin(url, next_link["url"])
-                    if urlparse(target).hostname != COLLECTION_PROVIDERS[provider][1] or not urlparse(target).path.startswith(path + "/"):
-                        raise ValueError("Unexpected pagination link from provider")
-                    page = self.page(target)
-                else:
-                    raise ValueError("Too many source pages; choose a smaller collection limit")
-                for target in links:
-                    label = re.fullmatch(r"(.+) \((\d{4})\)", labels.get(target, ""))
-                    if provider == "letterboxd" and label:
-                        add({"title": label[1], "year": label[2]}, "movie")
-                        if len(rows) >= limit:
-                            break
+            name = page.title.split(" • ")[0].strip() or name
+            links, seen, labels, media_types = [], set(), {}, {}
+            for number in range(1, 11):
+                candidates = page.posters if provider == "letterboxd" and page.posters else page.links
+                for link in candidates:
+                    if provider == "flixpatrol" and (not link.get("table") or link.get("media") not in (None, kind)):
                         continue
-                    detail = self.page(target)
-                    found = False
-                    for link in detail.links:
-                        match = re.search(r"themoviedb\.org/(movie|tv)/(\d+)", link["url"])
-                        if match:
-                            add({"title": detail.title.split(" (")[0].split(" • ")[0], "tmdb_id": int(match[2])}, match[1])
-                            found = True
-                            break
-                    if not found:
-                        for script in detail.scripts:
-                            for obj in self.objects(script):
-                                if obj.get("@type") in ("Movie", "TVSeries"):
-                                    add({"title": obj.get("name"), "year": str(obj.get("datePublished") or "")[:4]}, obj["@type"])
-                                    found = True
-                                    break
-                    if not found and provider == "flixpatrol" and media_types[target] == kind and labels[target]:
-                        add({"title": labels[target]}, kind, title_only=True)
-                        found = True
-                    if not found:
-                        raise ValueError("A source title could not be identified; import stopped to avoid partial membership")
+                    target = urljoin(url, link["url"])
+                    parsed = urlparse(target)
+                    pattern = r"/film/[\w-]+/" if provider == "letterboxd" else r"/title/[\w-]+/"
+                    if parsed.hostname == COLLECTION_PROVIDERS[provider][1] and re.fullmatch(pattern, parsed.path) and target not in seen:
+                        seen.add(target)
+                        links.append(target)
+                        labels[target] = link["title"]
+                        media_types[target] = link.get("media")
+                if len(links) >= limit * (2 if provider == "flixpatrol" else 1):
+                    break
+                next_link = next((link for link in page.links if link["next"]), None)
+                if not next_link:
+                    break
+                target = urljoin(url, next_link["url"])
+                if urlparse(target).hostname != COLLECTION_PROVIDERS[provider][1] or not urlparse(target).path.startswith(path + "/"):
+                    raise ValueError("Unexpected pagination link from provider")
+                page = self.page(target)
+            else:
+                raise ValueError("Too many source pages; choose a smaller collection limit")
+            for target in links:
+                label = re.fullmatch(r"(.+) \((\d{4})\)", labels.get(target, ""))
+                if provider == "letterboxd" and label:
+                    add({"title": label[1], "year": label[2]}, "movie")
                     if len(rows) >= limit:
                         break
+                    continue
+                detail = self.page(target)
+                found = False
+                for link in detail.links:
+                    match = re.search(r"themoviedb\.org/(movie|tv)/(\d+)", link["url"])
+                    if match:
+                        add({"title": detail.title.split(" (")[0].split(" • ")[0], "tmdb_id": int(match[2])}, match[1])
+                        found = True
+                        break
+                if not found:
+                    for script in detail.scripts:
+                        for obj in self.objects(script):
+                            if obj.get("@type") in ("Movie", "TVSeries"):
+                                add({"title": obj.get("name"), "year": str(obj.get("datePublished") or "")[:4]}, obj["@type"])
+                                found = True
+                                break
+                if not found and provider == "flixpatrol" and media_types[target] == kind and labels[target]:
+                    add({"title": labels[target]}, kind, title_only=True)
+                    found = True
+                if not found:
+                    raise ValueError("A source title could not be identified; import stopped to avoid partial membership")
+                if len(rows) >= limit:
+                    break
         if not rows:
             raise ValueError("No readable titles of the selected media type were returned; check the list, media type and provider access")
         rows = rows[:limit]

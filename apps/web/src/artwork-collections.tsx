@@ -228,7 +228,7 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
       :rows&&(rows.length?<ul className="artwork-discover-rows">{rows.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
           {r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:50}),type:r.type})}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
         :<Empty title="No collections found">Try another search, or import a list by its address.</Empty>)}
-      <p className="muted small">TMDb and MDBList need keys in Connections. IMDb may refuse imports.</p>
+      <p className="muted small">TMDb and MDBList need keys in Connections. IMDb lists must be public.</p>
     </div>
   </Modal>;
 }
