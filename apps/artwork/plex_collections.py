@@ -7,7 +7,8 @@
 - Custom and seasonal collections defined in tk.box (by hand, from a curated universe or a public list), with Radarr
   fetching a seasonal collection's missing movies and, when asked, removing them again once its season ends.
 - Discover: the public lists and universes the Collections page offers, the TMDb collections a library has only part
-  of, and a preview of what one would hold.
+  of, and a preview of what one would hold. Partly owned and Universes read the Discover index, which the full run
+  builds and newly added movies join (`index build`, `index added`), so they open without asking TMDb or the lists.
 
 It reads the same JSON config tk.box writes for the artwork engine and shares its Plex, TMDb and HTTP code
 (engine_common.py), but none of its imaging: Pillow and NumPy are never loaded here. A collection's poster is the
@@ -21,6 +22,7 @@ import os
 import re
 import secrets
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from html.parser import HTMLParser
@@ -259,29 +261,25 @@ class CollectionSources:
             rows.append({"name": "Popular MDBList collections", "url": None, "description": "Browse community lists ranked by likes (requires MDBLIST_API_KEY)", "type": "movie", "provider": "mdblist"})
         return rows
 
-    def universes(self, query="", kind="movie"):
-        """The universes of one media type, those you have most of first: each one's list is read (from the cache when
-        it can be) and matched with your libraries. One whose list can't be read is still offered, without a count, last."""
+    def universes(self, query="", kind="movie", index=None):
+        """The universes of one media type, those you have most of first, counted from each one's list as the Discover
+        index last read it (see build_index); one not read yet is still offered, without a count, last."""
         if kind not in ("movie", "tv"):
             raise ValueError("Choose movies or TV for universe collections")
         rows = [{"key": key, "name": name, "url": collection_source(url)[1], "type": kind, "provider": collection_source(url)[0],
                  "description": "Curated universe membership from " + COLLECTION_PROVIDERS[collection_source(url)[0]][0]}
                 for key, name, url, kinds in COLLECTION_UNIVERSES if kind in kinds and query.casefold() in name.casefold()]
-        try:
-            items = self.artwork.plex.scan(media_type="movie" if kind == "movie" else "show")
-        except (RuntimeError, ValueError):
+        lists = (index or {}).get("universes", {})
+        if not any(f"{row['key']}:{kind}" in lists for row in rows):
             return rows
+        items = self.artwork.plex.scan(media_type="movie" if kind == "movie" else "show")
         def count(row):
-            try:
-                members = [item["member"] for item in self.fetch(row["url"], kind, 250)["items"]]
-            except (RuntimeError, ValueError):
+            members = lists.get(f"{row['key']}:{kind}", {}).get("members")
+            if members is None:
                 return row
             owned = owned_members(members, items)
-            return {**row, "owned": owned, "total": len(members),
-                    "description": f"You have {owned} of {len(members)}. " + row["description"]}
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            rows = list(pool.map(count, rows))
-        return sorted(rows, key=lambda row: ("owned" not in row, -row.get("owned", 0), row["name"].casefold()))
+            return {**row, "owned": owned, "total": len(members), "description": f"You have {owned} of {len(members)}. " + row["description"]}
+        return sorted(map(count, rows), key=lambda row: ("owned" not in row, -row.get("owned", 0), row["name"].casefold()))
 
     def discover(self, provider, query=""):
         rows = []
@@ -316,7 +314,7 @@ class CollectionSources:
             raise ValueError("Choose a provider to browse")
         return rows
 
-    def fetch(self, url, kind="movie", limit=None):
+    def fetch(self, url, kind="movie", limit=None, resolve=True):
         provider, url = collection_source(url)
         limit = option({}, "collection_source_limit") if limit is None else limit
         if type(limit) is not int or not 1 <= limit <= 250 or kind not in ("movie", "tv"):
@@ -471,7 +469,8 @@ class CollectionSources:
         if not rows:
             raise ValueError("No readable titles of the selected media type were returned; check the list, media type and provider access")
         rows = rows[:limit]
-        if self.artwork.keys.get("tmdb_key"):
+        # Counting what you have needs no TMDb IDs (Plex knows IMDb IDs, titles and years); only adding a list does.
+        if resolve and self.artwork.keys.get("tmdb_key"):
             for row in rows:
                 member = row["member"]
                 if "imdb_id" in member:
@@ -873,47 +872,164 @@ def franchise_name(collection):
     return re.sub(r"\s+Collection$", "", collection.get("name") or "").strip() or str(collection["id"])
 
 
-def partly_owned(artwork, query="", today=None):
-    """The TMDb movie collections each library holds some but not all of the released movies of, found the way
-    franchise collections are (each movie's belongs_to_collection), closest to complete first: ({"name", "url",
-    "description", "type", "provider", "library", "owned", "total"} rows, number of failed TMDb lookups)."""
-    if not artwork.keys.get("tmdb_key"):
-        raise ValueError("Set TMDB_API_KEY to find partly owned collections")
-    today, failed = (today or date.today()).isoformat(), []
-    def lookup(path):
+INDEX_FILE = "discover-index.json"
+# How long the index trusts what it read: a movie's TMDb collection rarely changes; a collection's parts and a
+# universe's list change when a movie is announced or released.
+MOVIE_DAYS, LIST_DAYS = 30, 7
+
+
+def empty_index():
+    return {"version": 1, "built": None, "movies": {}, "collections": {}, "universes": {}}
+
+
+def load_index(artwork):
+    """The Discover index (see build_index), or an empty one if it hasn't been built or can't be read."""
+    with contextlib.suppress(OSError, ValueError):
+        index = json.loads((artwork.base / INDEX_FILE).read_bytes())
+        if isinstance(index, dict) and index.get("version") == 1 and all(isinstance(index.get(k), dict) for k in ("movies", "collections", "universes")):
+            return index
+    return empty_index()
+
+
+def save_index(artwork, index):
+    atomic_write(artwork.base / INDEX_FILE, json.dumps(index).encode())
+
+
+def index_movies(artwork, index, tmdb_ids, force=False, now=None):
+    """Records each movie's TMDb collection ([collection ID or None, when read]) where it is missing, older than
+    MOVIE_DAYS, or `force`d; a failed lookup keeps what was there. Returns the collection IDs of these movies."""
+    now = time.time() if now is None else now
+    movies = index["movies"]
+    stale = [i for i in tmdb_ids if force or str(i) not in movies or now - movies[str(i)][1] > MOVIE_DAYS * 86400]
+    def lookup(movie_id):
         try:
-            return artwork.tmdb(path)
+            return movie_id, (artwork.tmdb(f"/movie/{movie_id}").get("belongs_to_collection") or {}).get("id")
         except (RuntimeError, ValueError):
-            failed.append(path)
-            return {}
+            return movie_id, False
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for movie_id, collection in pool.map(lookup, stale):
+            if collection is not False:
+                movies[str(movie_id)] = [collection, now]
+    return {movies[str(i)][0] for i in tmdb_ids if str(i) in movies and movies[str(i)][0]}
+
+
+def index_collections(artwork, index, collection_ids, force=False, now=None):
+    """Records each TMDb collection's name and parts where missing, older than LIST_DAYS, or `force`d."""
+    now = time.time() if now is None else now
+    collections = index["collections"]
+    stale = [i for i in collection_ids if force or str(i) not in collections or now - collections[str(i)]["read"] > LIST_DAYS * 86400]
+    def lookup(collection_id):
+        try:
+            return collection_id, artwork.tmdb(f"/collection/{collection_id}")
+        except (RuntimeError, ValueError):
+            return collection_id, None
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for collection_id, detail in pool.map(lookup, stale):
+            if detail and detail.get("parts") is not None:
+                collections[str(collection_id)] = {"name": franchise_name({"id": collection_id, **detail}), "read": now, "parts": [
+                    {"id": p["id"], "title": p.get("title") or str(p["id"]), "release_date": p.get("release_date") or ""} for p in detail["parts"] if p.get("id")]}
+
+
+def index_universes(sources, index, force=False, now=None):
+    """Records each universe's list (its members, as the list names them) where missing, older than LIST_DAYS, or
+    `force`d; one that can't be read keeps what was there. Returns how many couldn't be read."""
+    now = time.time() if now is None else now
+    universes = index["universes"]
+    wanted = [(key, url, kind) for key, _, url, kinds in COLLECTION_UNIVERSES for kind in kinds
+              if force or f"{key}:{kind}" not in universes or now - universes[f"{key}:{kind}"]["read"] > LIST_DAYS * 86400]
+    def read(entry):
+        key, url, kind = entry
+        try:
+            return entry, [row["member"] for row in sources.fetch(url, kind, 250, resolve=False)["items"]]
+        except (RuntimeError, ValueError):
+            return entry, None
+    failed = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for (key, _, kind), members in pool.map(read, wanted):
+            if members is None:
+                failed += 1
+            else:
+                universes[f"{key}:{kind}"] = {"read": now, "members": members}
+    return failed
+
+
+def build_index(artwork, force=False, now=None):
+    """The Discover index Partly owned and Universes read, so they open at once: each movie's TMDb collection, those
+    collections' parts and each universe's list, saved in DATA_DIR/artwork/discover-index.json. Only what is missing or
+    stale is asked for again, and movies no longer in Plex (and collections none of them is in) are dropped. What you
+    own is never stored: Discover matches it with Plex when it opens. Returns the number of lookups that failed."""
+    now = time.time() if now is None else now
+    index = load_index(artwork)
     movies = [movie for movie in artwork.plex.scan(media_type="movie") if movie.get("tmdb_id")]
     ids = sorted({movie["tmdb_id"] for movie in movies})
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        franchises = dict(zip(ids, pool.map(lambda movie_id: lookup(f"/movie/{movie_id}").get("belongs_to_collection") or {}, ids)))
-    owned = {}
+    print(f"INDEX {len(ids)} movies", flush=True)
+    present = set(ids)
+    index["movies"] = {key: value for key, value in index["movies"].items() if int(key) in present}
+    collections = index_movies(artwork, index, ids, force, now) if artwork.keys.get("tmdb_key") else set()
+    index["collections"] = {key: value for key, value in index["collections"].items() if int(key) in collections}
+    index_collections(artwork, index, sorted(collections), force, now)
+    failed = index_universes(CollectionSources(artwork), index, force, now)
+    failed += sum(1 for i in ids if str(i) not in index["movies"]) + sum(1 for i in collections if str(i) not in index["collections"])
+    index["built"] = now
+    save_index(artwork, index)
+    print(f"INDEX {len(index['collections'])} TMDb collections and {len(index['universes'])} universe lists saved"
+          + (f"; {failed} lookups failed and are tried again next time" if failed else ""), flush=True)
+    return failed
+
+
+def index_added(artwork, rating_keys, now=None):
+    """Newly added movies join the Discover index straight away: their TMDb collection, and its parts read again.
+    Universes need nothing, as what you own is matched when Discover opens."""
+    index = load_index(artwork)
+    ids = []
+    for rating_key in rating_keys:
+        try:
+            item = artwork.plex.get_item(rating_key)
+        except ValueError:  # An episode, or gone again
+            continue
+        if item.get("type") != "movie":
+            continue
+        artwork.identify(item)
+        if item.get("tmdb_id"):
+            ids.append(item["tmdb_id"])
+    if not ids:
+        print("INDEX No newly added movies with a TMDb ID", flush=True)
+        return 0
+    collections = index_movies(artwork, index, ids, True, now)
+    index_collections(artwork, index, sorted(collections), True, now)
+    save_index(artwork, index)
+    print(f"INDEX {len(ids)} newly added movies, in {len(collections)} TMDb collections", flush=True)
+    return 0
+
+
+def partly_owned(artwork, query="", today=None, index=None):
+    """The TMDb movie collections each library holds some but not all of the released movies of, from the Discover
+    index (see build_index) matched with Plex now, closest to complete first: ({"name", "url", "description", "type",
+    "provider", "library", "owned", "total"} rows, number of movies in Plex the index hasn't read yet)."""
+    index = index or empty_index()
+    today = (today or date.today()).isoformat()
+    movies = [movie for movie in artwork.plex.scan(media_type="movie") if movie.get("tmdb_id")]
+    owned, unread = {}, set()
     for movie in movies:
-        franchise = franchises[movie["tmdb_id"]]
-        if franchise.get("id"):
-            owned.setdefault((movie["library"], franchise["id"]), set()).add(movie["tmdb_id"])
-    collections = sorted({collection_id for _, collection_id in owned})
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        details = dict(zip(collections, pool.map(lambda collection_id: lookup(f"/collection/{collection_id}"), collections)))
+        entry = index["movies"].get(str(movie["tmdb_id"]))
+        if entry is None:
+            unread.add(movie["tmdb_id"])
+        elif entry[0] and str(entry[0]) in index["collections"]:
+            owned.setdefault((movie["library"], entry[0]), set()).add(movie["tmdb_id"])
     rows = []
     for (library, collection_id), have in owned.items():
-        detail = details[collection_id]
+        detail = index["collections"][str(collection_id)]
         # Movies not out yet aren't missing; a part with no date isn't out either.
-        missing = [part for part in detail.get("parts", []) if part.get("id") and part["id"] not in have
-                   and (part.get("release_date") or "9999") <= today]
-        name = franchise_name({"id": collection_id, **detail})
-        if not missing or query.casefold() not in name.casefold():
+        missing = [part for part in detail["parts"] if part["id"] not in have and (part["release_date"] or "9999") <= today]
+        if not missing or query.casefold() not in detail["name"].casefold():
             continue
-        titles = [f"{part.get('title') or part['id']} ({part['release_date'][:4]})" for part in sorted(missing, key=lambda p: p["release_date"])]
+        titles = [f"{part['title']} ({part['release_date'][:4]})" for part in sorted(missing, key=lambda p: p["release_date"])]
         more = f" and {len(titles) - 5} more" if len(titles) > 5 else ""
-        rows.append({"name": name, "url": f"https://www.themoviedb.org/collection/{collection_id}/", "type": "movie", "provider": "tmdb",
+        rows.append({"name": detail["name"], "url": f"https://www.themoviedb.org/collection/{collection_id}/", "type": "movie", "provider": "tmdb",
                      "library": library, "owned": len(have), "total": len(have) + len(missing),
                      "description": f"{len(have)} of {len(have) + len(missing)} in {library}. Missing {', '.join(titles[:5])}{more}"})
     rows.sort(key=lambda row: (row["total"] - row["owned"], -row["owned"], row["name"].casefold(), row["library"]))
-    return rows, len(failed)
+    return rows, len(unread)
 
 
 def wanted_collections(artwork, streaming, region, franchises=True):
@@ -1234,6 +1350,11 @@ def sync_collections(config_path, mode="plan", custom=False, today=None):
         failed = build_collections(artwork, mode == "apply", kept=kept, earlier=earlier, **collection_options(config))
     if mode == "apply":
         record_kept(config_path, kept)
+        if not custom:  # Its TMDb lookups are fresh in the cache now, so the Discover index costs little more
+            try:
+                build_index(artwork)
+            except (RuntimeError, ValueError, OSError) as error:
+                print(f"ERROR Discover index: {error}", file=sys.stderr, flush=True)
     return 1 if failed else 0
 
 
@@ -1284,11 +1405,13 @@ def discover(config_path, data):
                 result["name"] = preset[1]
             return result
         provider, query = data.get("provider", "all"), str(data.get("query") or "")[:200]
-        if mode == "universes":
-            return {"results": sources.universes(query, data.get("type", "movie"))}
-        if mode == "partial":
-            rows, failed = partly_owned(sources.artwork, query)
-            return {"results": rows, "failed": failed}
+        if mode in ("universes", "partial"):  # From the Discover index, matched with Plex now: no lookups while you wait
+            index = load_index(sources.artwork)
+            built = {"built": index["built"]}
+            if mode == "universes":
+                return {"results": sources.universes(query, data.get("type", "movie"), index), "index": built}
+            rows, unread = partly_owned(sources.artwork, query, index=index)
+            return {"results": rows, "index": {**built, "unread": unread}}
         rows = sources.discover(provider, query) if mode == "browse" else sources.recommendations(provider, query)
         return {"results": rows}
     except RuntimeError:
@@ -1306,11 +1429,16 @@ def main():
     custom.add_argument("--date", type=date.fromisoformat, help="With plan: as if today were YYYY-MM-DD")
     commands.add_parser("added", help="Add a newly added title (its Plex rating key) to the custom collections it matches").add_argument("rating_key", type=int)
     commands.add_parser("discover", help="Answer one Discover request: JSON on stdin, JSON on stdout")
+    index = commands.add_parser("index", help="Build the Discover index (build), or add newly added movies to it (added KEY...)")
+    index.add_argument("action", choices=("build", "added"))
+    index.add_argument("rating_keys", nargs="*", type=int)
     commands.add_parser("defaults", help="Print the seasonal presets used until collections are first saved")
     commands.add_parser("check", help="Only validate the config, then exit (tk.box runs this before saving)")
     args = parser.parse_args()
     if getattr(args, "date", None) and args.mode != "plan":
         parser.error("--date is only for plan")
+    if args.command == "index" and (args.action == "added") != bool(args.rating_keys):
+        parser.error("index added needs Plex IDs, and index build takes none")
     if hasattr(os, "nice"):
         with contextlib.suppress(OSError):
             os.nice(10)  # Plex, its transcoder and anyone else on the machine come first
@@ -1325,6 +1453,10 @@ def main():
         if args.command == "discover":
             print(json.dumps(discover(args.config, json.load(sys.stdin)), default=str))
             return 0
+        if args.command == "index":
+            artwork = engine(args.config, read_collections_config(args.config))
+            artwork.plex.require("Building the Discover index")
+            return 1 if (build_index(artwork) if args.action == "build" else index_added(artwork, args.rating_keys)) else 0
         with run_lock(args.config) if args.command == "added" or args.mode == "apply" else contextlib.nullcontext():
             if args.command == "added":
                 return added(args.config, args.rating_key)

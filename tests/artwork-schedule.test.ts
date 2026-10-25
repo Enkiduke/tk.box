@@ -14,7 +14,7 @@ const grant:PlexGrant={accountId:'1',role:'admin',serverToken:'token',libraries:
 const start=Date.UTC(2026,9,1)/1000;
 // A schedule with artwork's newly added check on for library 1, a Plex whose recently added list is `titles`
 // (addedAt in seconds) and an engine that records what it queued.
-async function setup(titles:{id:string;addedAt:number}[]) {
+async function setup(titles:{id:string;addedAt:number}[],streaming=async()=>0) {
   const store=new ArtworkStore(openDatabase(':memory:'),new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'));
   const {revision,...settings}=store.settings();
   await store.update('admin',revision,{...settings,libraries:['1'],schedules:{...settings.schedules,added:{enabled:true,minutes:60}}},async()=>{});
@@ -22,9 +22,11 @@ async function setup(titles:{id:string;addedAt:number}[]) {
     if(plex.fail)throw new Error('down');
     return {items:titles.filter(t=>t.addedAt*1000>since).sort((a,b)=>b.addedAt-a.addedAt).map(t=>({...t,title:t.id})),complete:true};
   }};
-  const engine={pending:(args:string[])=>queued.includes(args[1]!),enqueue:(_:string,__:string,args:string[])=>{queued.push(args[1]!);}};
-  const schedule=new ArtworkSchedule(store,engine as unknown as ArtworkEngine,plex as unknown as PlexAdapter,async()=>grant);
-  return {store,schedule,queued,plex,note:()=>schedule.states().added.note};
+  // Artwork's jobs are recorded by title ID; the collections engine's (the Discover index, the full run) whole.
+  const jobs:string[][]=[],engine={pending:(args:string[])=>queued.includes(args[1]!)||jobs.some(j=>j.join()===args.join()),
+    enqueue:(_:string,__:string,args:string[],___:unknown,options?:{script?:string})=>{if(options?.script==='collections')jobs.push(args);else queued.push(args[1]!);}};
+  const schedule=new ArtworkSchedule(store,engine as unknown as ArtworkEngine,plex as unknown as PlexAdapter,async()=>grant,()=>{},streaming);
+  return {store,schedule,queued,jobs,plex,note:()=>schedule.states().added.note};
 }
 
 test('newly added titles queue oldest first, at most 50 a check, and the rest come next check',async()=>{
@@ -64,6 +66,36 @@ test('the newly added check waits for its minutes unless Plex said something was
   assert.equal(queued.length,0);
   await schedule.tick(new Date((start+3600)*1000));
   assert.deepEqual(queued,['1']);
+});
+test('newly added movies join the Discover index in one job a check',async()=>{
+  const {schedule,jobs}=await setup([{id:'1',addedAt:start+60},{id:'2',addedAt:start+61}]);
+  await schedule.tick(new Date(start*1000),true);
+  assert.deepEqual(jobs,[]);
+  await schedule.tick(new Date((start+120)*1000),true);
+  assert.deepEqual(jobs,[['index','added','1','2']]);
+  await schedule.tick(new Date((start+180)*1000));  // Not 15 minutes yet, and nothing new after
+  await schedule.tick(new Date((start+1200)*1000));
+  assert.equal(jobs.length,1);
+});
+test('the nightly full collections run waits while anyone is streaming, for up to four hours',async()=>{
+  let streams=2;
+  const {store,schedule,jobs}=await setup([],async()=>streams);
+  const {revision,...settings}=store.settings();
+  await store.update('admin',revision,{...settings,upload:true},async()=>{});
+  const at=new Date(start*1000),time=`${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}`;
+  const {revision:collections,radarrKeySet:_,scheduleStates:__,...value}=store.collections() as ReturnType<ArtworkStore['collections']>&{scheduleStates?:unknown};
+  await store.updateCollections('admin',{value:{...value,schedules:{...value.schedules,all:{enabled:true,time}}} as never,expectedRevision:collections},async()=>{});
+  const full=()=>jobs.filter(j=>j[0]==='all');
+  await schedule.tick(new Date((start+60)*1000));
+  assert.deepEqual(full(),[]);assert.match(schedule.collectionStates().all.note!,/^Waiting: 2 streams are playing/);
+  streams=0;await schedule.tick(new Date((start+120)*1000));
+  assert.deepEqual(full(),[['all','apply']]);
+  // The next night it runs at four hours even if people are still watching.
+  jobs.length=0;streams=1;const night=start+86400;
+  await schedule.tick(new Date((night+3*3600)*1000));
+  assert.deepEqual(full(),[]);
+  await schedule.tick(new Date((night+4*3600+60)*1000));
+  assert.deepEqual(full(),[['all','apply']]);
 });
 
 test('Plex notifications name the sections where a title finished processing, or any when a scan ended',()=>{
