@@ -15,7 +15,9 @@ export type ArtworkLibrary = { key: string; title: string; type: string };
 export type ArtworkRun = { token: string; libraries: ArtworkLibrary[] };
 type Paths = { python: string; script: string; collectionsScript: string; dataDir: string; cacheDir: string; plexUrl: string };
 export type EngineScript = 'artwork' | 'collections';
-export type KeptCollections = { updated: string | null; collections: { name: string; library: string; kind: 'franchise' | 'streaming'; items: number; rating_key?: string }[] };
+// What the last applying collections run kept: every franchise and streaming collection that qualifies (off: turned off
+// in tk.box, so not in Plex) and every custom one that's on, with its Plex ID once it's in Plex.
+export type KeptCollections = { updated: string | null; collections: { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom'; items: number; rating_key?: string; off?: boolean }[] };
 type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
 type Inputs = { settings: ArtworkSettings; layouts: Record<string, Record<string, unknown>>; collections?: ArtworkCollections };
 const MAX_LINES = 5000, SAVED_LINES = 2000;
@@ -35,6 +37,7 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     ...(Object.keys(settings.layoutByType).length ? { layout_by_type: settings.layoutByType } : {}),
     layouts,
     ...(collections?.definitions ? { collections: collections.definitions } : {}),
+    ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {}),
     // The key itself arrives in the environment; the engine reads ${RADARR_API_KEY} from there.
     ...(radarr?.url ? { radarr: { url: radarr.url, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
       ...(radarr.qualityProfileId ? { quality_profile_id: radarr.qualityProfileId } : {}) } } : {})
@@ -145,7 +148,7 @@ export class ArtworkEngine {
       if (!this.pending(args)) this.add(actor, `Poster for new collection: ${name}`, args, run, 'artwork');
     }
   }
-  // The franchise and streaming collections the last full apply kept in Plex (the collections engine writes this file).
+  // The collections the last applying run kept (the collections engine writes this file).
   keptCollections(): KeptCollections {
     try {
       const file = JSON.parse(readFileSync(join(this.workDir, 'kept_collections.json'), 'utf8')) as Partial<KeptCollections>;

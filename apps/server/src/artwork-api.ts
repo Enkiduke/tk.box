@@ -190,7 +190,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     const {grant}=await admin(request);return engine.collections(runOf(grant),'discover',input);
   });
   app.post('/api/v1/admin/artwork/collections/run',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{
-    const input=z.object({kind:z.enum(['custom','franchise','added']),mode:z.enum(['plan','apply']),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),ratingKey:z.string().regex(/^\d{1,10}$/).optional()}).strict().parse(request.body),{grant}=await admin(request);
+    const input=z.object({kind:z.enum(['custom','all','added']),mode:z.enum(['plan','apply']),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),ratingKey:z.string().regex(/^\d{1,10}$/).optional()}).strict().parse(request.body),{grant}=await admin(request);
     requireThat(input.mode==='plan'||store.settings().upload,'ARTWORK_UPLOAD_OFF','Applying collections changes Plex. Turn on Send results to Plex in Artwork settings first.',409);
     requireThat(!input.date||(input.kind==='custom'&&input.mode==='plan'),'VALIDATION_FAILED','A simulated date is only for previewing custom collections.');
     // One title joins the custom collections it matches; the engine applies this when results go to Plex, else plans it.

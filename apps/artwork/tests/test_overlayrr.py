@@ -1270,12 +1270,48 @@ class ArtworkTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             config = Path(folder) / "config.json"
-            pc.record_kept(config, kept, {"franchises": True, "streaming": "off"})
-            pc.record_kept(config, kept[:1], {"franchises": True, "streaming": "off"})  # Heat wasn't checked this time
-            self.assertEqual([e["name"] for e in json.loads((Path(folder) / pc.KEPT_FILE).read_text())["collections"]], ["Alien", "Heat"])
-            pc.record_kept(config, [], {"franchises": False, "streaming": "off"})
-            self.assertEqual(json.loads((Path(folder) / pc.KEPT_FILE).read_text())["collections"], [])
+            pc.record_kept(config, kept)
+            self.assertEqual([e["name"] for e in pc.read_kept(config)], ["Alien", "Heat"])
         self.assertEqual(sp.collection_key("Star Trek: Alternate Reality Collection"), sp.collection_key("Star Trek Alternate Reality"))
+
+        # tk.box's settings are what Plex holds: one turned off is deleted (and still listed, off), as is one an earlier
+        # run kept that no longer qualifies; where it shows is set for one that asks.
+        self.http.replies[plex + "/library/sections/1/collections"] = container(
+            '<Directory ratingKey="900" title="Alien" type="collection" subtype="movie"/>',
+            '<Directory ratingKey="960" title="Old Franchise" type="collection" subtype="movie"/>', totalSize=2)
+        self.http.replies[plex + "/hubs/sections/1/manage"] = container()
+        self.config["automatic_collections"] = [{"name": "Alien", "library": "Movies", "kind": "franchise", "enabled": False},
+                                                {"name": "Heat", "library": "Movies", "visibility": {"home": True}}]
+        earlier = [*kept, {"name": "Old Franchise", "library": "Movies", "kind": "franchise", "items": 2, "rating_key": "960"}]
+        calls.clear()
+        kept = []
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(pc.build_collections(self.artwork, True, kept=kept, earlier=earlier), 0)
+        self.assertEqual([c for c in calls if c[0] == "DELETE"], [("DELETE", "/library/collections/900", None), ("DELETE", "/library/collections/960", None)])
+        self.assertEqual(kept[0], {"name": "Alien", "library": "Movies", "kind": "franchise", "items": 2, "off": True})
+        self.assertEqual(len(kept), 2)  # Old Franchise is gone from the list too
+        self.assertIn(("POST", "/hubs/sections/1/manage", {"promotedToOwnHome": 1, "metadataItemId": "950"}), calls)
+        # A failed TMDb lookup is a partial picture: nothing is deleted and the earlier entry stays.
+        self.http.replies[common.TMDB + "/movie/30"] = RuntimeError("TMDb is down")
+        self.config["automatic_collections"] = []
+        calls.clear()
+        kept = []
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            pc.build_collections(self.artwork, True, kept=kept, earlier=earlier)
+        self.assertFalse([c for c in calls if c[0] == "DELETE"])
+        self.assertIn("Old Franchise", [row["name"] for row in kept])
+
+        # Custom collections too: one turned off is deleted by name, and one removed from the list by its recorded ID.
+        self.http.replies[plex + "/library/sections/1/collections"] = container(
+            '<Directory ratingKey="970" title="Halloween" type="collection" subtype="movie"/>',
+            '<Directory ratingKey="980" title="Gone" type="collection" subtype="movie"/>', totalSize=2)
+        self.config["collections"] = [{"name": "Halloween", "library": "Movies", "type": "movie", "enabled": False}]
+        calls.clear()
+        kept = []
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(pc.custom_collections(self.artwork, True, kept=kept, earlier=[{"name": "Gone", "library": "Movies", "kind": "custom", "items": 1, "rating_key": "980"}]), 0)
+        self.assertEqual(calls, [("DELETE", "/library/collections/970", None), ("DELETE", "/library/collections/980", None)])
+        self.assertEqual(kept, [])
 
 
     def test_streaming_collections_group_shows_and_skip_smart_collections(self):
@@ -1433,8 +1469,8 @@ class ArtworkTests(unittest.TestCase):
 
         calls.clear()
         with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True)  # Off unless asked for
-        self.assertEqual(calls, [])
+            pc.build_collections(self.artwork, True)  # Off unless asked for, and turned off they come out of Plex
+        self.assertEqual(calls, [("DELETE", "/library/collections/5", None)])
 
         # A different window changes the existing collection's filter...
         calls.clear()

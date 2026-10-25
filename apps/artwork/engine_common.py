@@ -690,7 +690,7 @@ def read_config(path):
         config = json.load(handle)
     if not isinstance(config, dict):
         raise ValueError("Config must be a JSON object")
-    allowed = {"api", "plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections", "radarr"}
+    allowed = {"api", "plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections", "automatic_collections", "radarr"}
     unknown = set(config) - allowed
     if unknown:
         raise ValueError(f"Unknown config keys: {', '.join(sorted(map(str, unknown)))}")
