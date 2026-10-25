@@ -3539,7 +3539,8 @@ class Worker:
 
     def plex_get(self, path):
         """An image from Plex's own library path, fetched with the server's token."""
-        if not path.startswith("/library/metadata/") or ".." in path or re.search(r"[\s\x00-\x1f]", path):
+        if (not path.startswith(("/library/metadata/", "/library/collections/")) or ".." in path  # Collections: their collage
+                or re.search(r"[\s\x00-\x1f]", path)):
             raise ValueError("Not a Plex image path")
         server = Plex(HTTP(self.cache), read_config(self.config_path))
         try:
