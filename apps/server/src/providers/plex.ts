@@ -271,7 +271,18 @@ export class PlexAdapter {
     requireThat(section,'PLEX_ACCESS_DENIED','Media library could not be verified.',403);this.library(grant,section);
     return {node,section};
   }
-  async catalogItem(grant:PlexGrant,id:string) {const {node,section}=await this.catalogNode(grant,id);return catalogDto(node,section);}
+  async catalogItem(grant:PlexGrant,id:string) {
+    const {node,section}=await this.catalogNode(grant,id),item=catalogDto(node,section);
+    // Plex tags a title with its collections' names only, so they are matched to the library's Collections by name.
+    // The list is kept five minutes per viewer; when it can't be read the title simply shows no collections.
+    const names=new Set(node.Collection?.map(c=>c.tag));
+    if(!names.size||(node.type!=='movie'&&node.type!=='show'))return item;
+    try {
+      const {collections}=await this.remembered(`collections:${tokenScope(grant)}:${section}`,()=>this.catalogCollections(grant,section),300000);
+      const found=collections.filter(c=>names.has(c.title)).slice(0,3).map(({id,title,count,kind,posterUrl})=>({id,title,count,kind,posterUrl}));
+      return found.length?{...item,collections:found}:item;
+    } catch {return item;}
+  }
   // Viewer-requested watch state changes, written with the viewer's own server token so
   // they land in that account's Plex history. Never reachable from a playback session.
   async catalogWatchState(grant:PlexGrant,id:string,action:CatalogAction) {
