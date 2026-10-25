@@ -179,13 +179,13 @@ test('overlapping authentication checks coalesce without a grant TTL and recheck
 test('a passed Plex check is reused for the recheck window, while sign-out and Plex refusals apply at once',async()=>{
   const f=fakePlex(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));let requests=0;
   const transport=(async(input:string|URL|Request,init?:RequestInit)=>{if(new URL(String(input)).pathname==='/api/v2/user')requests++;return f.transport(input,init);}) as typeof fetch;
-  const identity=new IdentityService(db,vault,new PlexAdapter(config(),'test',transport),60000);
+  const identity=new IdentityService(db,vault,new PlexAdapter(config(),'test',transport),60000,[0,0]);
   try {
     const link=await identity.start(1000),session=await identity.finish(link.binding,4000);assert.ok(session);
     await identity.authenticate(session.cookie,5000);const baseline=requests;
     await identity.authenticate(session.cookie,30000);assert.equal(requests,baseline);
     f.options.authorized=false;await identity.authenticate(session.cookie,64000);assert.equal(requests,baseline);
-    await assert.rejects(identity.authenticate(session.cookie,65001),{code:'PLEX_ACCESS_DENIED'});assert.equal(requests,baseline+1);
+    await assert.rejects(identity.authenticate(session.cookie,65001),{code:'PLEX_ACCESS_DENIED'});assert.equal(requests,baseline+3);
     f.options.authorized=true;await identity.authenticate(session.cookie,70000);const again=requests;
     identity.forget(session.cookie);await identity.authenticate(session.cookie,71000);assert.equal(requests,again+1);
     identity.logout(session.cookie);await assert.rejects(identity.authenticate(session.cookie,72000),{code:'UNAUTHENTICATED'});

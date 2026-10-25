@@ -29,7 +29,7 @@ test('Plex identity does not grant access; owner ID determines administrator', a
   for (const options of [{authorized: false}, {missingLibrary: true}]) await assert.rejects(new PlexAdapter(config(), 'test', fakePlex(options).transport).authorize('fixture'), {code: 'PLEX_ACCESS_DENIED'});
 });
 test('PIN binding, encrypted persistence, polling bounds and revoked access fail closed', async () => {
-  const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex);
+  const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex, 0, [0, 0]);
   try {
     const link = await identity.start(10000);
     await assert.rejects(identity.finish('other-browser', 13000), {code: 'AUTH_EXPIRED'});
@@ -49,6 +49,18 @@ test('a session ends only after 7 days unused, and each use renews it', async ()
     identity.session(signed.cookie, 12 * day);
     await identity.authenticate(signed.cookie, 18 * day);
     assert.throws(() => identity.session(signed.cookie, 25 * day + 1), {code: 'UNAUTHENTICATED'});
+  } finally {db.close();}
+});
+test('a Plex check that is refused once is asked again and passes', async () => {
+  const f = fakePlex(); let refusals = 0;
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => new URL(String(input)).pathname === '/api/v2/user' && refusals-- > 0 ? new Response('', {status: 401}) : f.transport(input, init)) as typeof fetch;
+  const db = openDatabase(':memory:'), identity = new IdentityService(db, new Vault(randomBytes(32)), new PlexAdapter(config(), 'test', transport), 0, [0, 0]);
+  try {
+    const signed = await identity.finish((await identity.start(0)).binding, 3000); assert.ok(signed);
+    refusals = 1; await identity.authenticate(signed.cookie, 4000);
+    // Refused on every try: the request fails, but the session stays.
+    refusals = 3; await assert.rejects(identity.authenticate(signed.cookie, 5000), {code: 'PLEX_ACCESS_DENIED'});
+    identity.session(signed.cookie, 6000);
   } finally {db.close();}
 });
 test('immutable stored mode and ownership guard all history writes', async () => {
