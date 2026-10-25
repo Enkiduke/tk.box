@@ -85,6 +85,9 @@ test('artwork collections keep the Radarr key sealed and out of the engine confi
   const {radarrKey,...collections}=store.collectionsConfig();assert.equal(radarrKey,'radarr-secret-1');
   const config=artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},collections);
   assert.equal(config.plex.sync_collections,true);assert.equal(config.plex.franchise_collections,true);assert.equal(config.collections?.length,1);
+  assert.equal('automatic_collections' in config,false);  // Nothing set apart: the engine is given none
+  const automatic=[{name:'Batman',library:'Movies',kind:'franchise' as const,enabled:false}];
+  assert.deepEqual(artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},{...collections,automatic}).automatic_collections,automatic);
   assert.deepEqual(config.radarr,{url:'http://radarr.local:7878',api_key:'${RADARR_API_KEY}',root_folder:'/movies',search:true,quality_profile_id:4});
   assert.ok(!JSON.stringify(config).includes('radarr-secret-1'));
   // Collections saved before the franchise switch existed keep making them.

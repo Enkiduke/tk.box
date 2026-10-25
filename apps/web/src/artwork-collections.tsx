@@ -1,111 +1,123 @@
-import {useEffect,useState,type ReactNode} from 'react';
+import {useEffect,useState} from 'react';
+import type {CatalogPage} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,Switch,date as when,remember,remembered,useMutation} from './settings-ui.js';
 import {openConsole,type Job} from './admin-console.js';
 
-// Admin › Collections: Plex collections the engine keeps. Franchise, streaming and chart collections come from
-// TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public list),
-// and Radarr can fetch a seasonal collection's missing movies. Definitions are kept in the engine's own format.
+// Admin › Collections: every Plex collection the engine keeps, in one grid. Franchise and streaming collections come
+// from TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public
+// list), and Radarr can fetch a seasonal collection's missing movies. What's here is what Plex holds: turning one off,
+// or removing it, takes it out of Plex on the next run. Definitions are kept in the engine's own format.
 type Library={key:string;title:string;type:string};
 type Member={rating_key?:string;tmdb_id?:number;imdb_id?:string;title?:string;year?:number};
+type Visibility={home?:boolean;shared?:boolean;recommended?:boolean};
 type Definition={name:string;library:string;type:'movie'|'tv';enabled?:boolean;schedule?:string;sync?:'sync'|'append';members?:Member[];
-  rules?:{genres?:string[];year_from?:number;year_to?:number;title_contains?:string};visibility?:{home?:boolean;shared?:boolean;recommended?:boolean};
+  rules?:{genres?:string[];year_from?:number;year_to?:number;title_contains?:string};visibility?:Visibility;
   acquire?:boolean;cleanup?:'keep'|'remove-delete';source?:{url:string;limit?:number;refresh?:boolean}};
+// A franchise or streaming collection set apart from how it's made: turned off, or where it shows.
+type Automatic={name:string;library:string;kind:'franchise'|'streaming';enabled?:boolean;visibility?:Visibility};
 type Franchise={sync:boolean;franchises:boolean;minItems:number;mode:'sync'|'append';streaming:'off'|'originals'|'available';region:string;recent:boolean;recentMovieDays:number;recentEpisodeDays:number};
 type Radarr={url:string;rootFolder:string;qualityProfileId:number;search:boolean};
-type Kept={name:string;library:string;kind:'franchise'|'streaming';items:number;rating_key?:string};
+type Kept={name:string;library:string;kind:'franchise'|'streaming'|'custom';items:number;rating_key?:string;off?:boolean};
 type Daily={enabled:boolean;time:string};type EveryFew={enabled:boolean;minutes:number};
 type Schedules={custom:Daily;all:Daily;added:EveryFew};
 export type ScheduleState={lastRun?:number;note?:string};
-type View={revision:number;definitions:Definition[]|null;franchise:Franchise;radarr:Radarr;radarrKeySet:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
-const tabs=[['collections','Collections'],['schedules','Schedules'],['settings','Settings']] as const;
+type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrKeySet:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
+type Draft={definitions:Definition[];automatic:Automatic[];franchise:Franchise;radarr:Radarr;schedules:Schedules};
+const tabs=[['collections','Collections'],['settings','Settings']] as const;
 // New collections start out of every Home screen and recommendation row.
 const hidden={home:false,shared:false,recommended:false};
 const keyOf=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]/g,'').replace(/collection$/,'');
+const idOf=(c:{library:string;name:string})=>`${c.library}\0${keyOf(c.name)}`;
 const memberText=(m:Member)=>m.tmdb_id?`tmdb:${m.tmdb_id}`:m.rating_key?`plex:${m.rating_key}`:m.imdb_id?`imdb:${m.imdb_id}`:m.year?`${m.title} | ${m.year}`:m.title??'';
 const parseMembers=(text:string):Member[]=>text.split('\n').map(s=>s.trim()).filter(Boolean).map(line=>{
   if(/^imdb:tt\d+$/i.test(line))return {imdb_id:line.slice(5).toLowerCase()};
   let match=line.match(/^(tmdb|plex):(\d+)$/i);if(match)return match[1]!.toLowerCase()==='tmdb'?{tmdb_id:Number(match[2])}:{rating_key:match[2]!};
   match=line.match(/^(.*?)\s*\|\s*(\d{4})$/);return match?{title:match[1]!.trim(),year:Number(match[2])}:{title:line};
 });
+// One tile in the grid: a franchise or streaming collection, or a custom or seasonal one (`index` into the definitions).
+type Kind='franchise'|'streaming'|'custom'|'seasonal';
+type Tile={id:string;name:string;library:string;kind:Kind;on:boolean;items?:number;ratingKey?:string;when?:string;index?:number};
+const kinds:[Kind,string][]=[['franchise','Franchise'],['streaming','Streaming'],['custom','Custom'],['seasonal','Seasonal']];
+const kindLabel=(k:Kind)=>kinds.find(([id])=>id===k)![1];
+// 10/01-10/31 as "Oct 1 – Oct 31".
+const season=(schedule:string)=>schedule.split('-').map(part=>{const [m,d]=part.split('/').map(Number);return new Date(2000,m!-1,d).toLocaleDateString(undefined,{month:'short',day:'numeric'});}).join(' – ');
 
 export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
-  const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<{definitions:Definition[];franchise:Franchise;radarr:Radarr;schedules:Schedules}>();
-  const [editing,setEditing]=useState<number>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[date,setDate]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
+  const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<Draft>();
+  const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[date,setDate]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
   const mutation=useMutation(view.reload),run=useMutation(()=>invalidate('/admin/artwork/jobs')),[one,setOne]=useState(false),[title,setTitle]=useState('');
-  const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:JSON.parse(JSON.stringify(d.definitions??d.defaults)) as Definition[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
+  const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:JSON.parse(JSON.stringify(d.definitions??d.defaults)) as Definition[],automatic:d.automatic??[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
   useEffect(reset,[view.data?.revision,!!view.data]);
   if(!engineReady)return <Empty title="The artwork engine isn’t set up">Set it up (above) to manage collections.</Empty>;
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;
   const data=view.data,libraries=data.libraries.filter(l=>['movie','show'].includes(l.type));
-  const change=(next:Partial<typeof draft>)=>{setDraft({...draft,...next});setDirty(true);setSaved('');};
+  const change=(next:Partial<Draft>)=>{setDraft({...draft,...next});setDirty(true);setSaved('');};
   const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}}),radarr=(patch:Partial<Radarr>)=>change({radarr:{...draft.radarr,...patch}});
   const setDefinition=(index:number,value:Definition|null)=>change({definitions:value?draft.definitions.map((d,i)=>i===index?value:d):draft.definitions.filter((_,i)=>i!==index)});
+  // A franchise or streaming collection that's on and has no visibility of its own needs no entry.
+  const setAutomatic=(tile:Tile,patch:Partial<Automatic>)=>{
+    const rest=draft.automatic.filter(a=>idOf(a)!==tile.id),current=draft.automatic.find(a=>idOf(a)===tile.id);
+    const next:Automatic={name:tile.name,library:tile.library,kind:tile.kind as Automatic['kind'],...current,...patch};
+    change({automatic:next.enabled===false||next.visibility?[...rest,next]:rest});
+  };
   const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});setSaved('Saved. Preview the plan to see what would change in Plex.');});
   // Every run opens in the Console.
   const start=(body:object)=>void run.run(async()=>{openConsole(await api<Job>('/admin/artwork/collections/run','POST',body));setOne(false);});
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
   const blocked=dirty?'Save your changes first':undefined,needsUpload=!data.upload?'Turn on Send results to Plex in Artwork › Settings first':undefined;
+  const tiles=collectionTiles(draft,data.kept.collections),open=tiles.find(t=>t.id===opened);
+  const types=draft.franchise.franchises||draft.franchise.streaming!=='off';
   return <div className="form-stack">
     <div className="subtabs" role="tablist" aria-label="Collections">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
     <div role="tabpanel" className="form-stack">
       {tab==='settings'?<>
-        <Card title="Franchise, streaming and chart collections" description="Turning one off leaves existing collections in Plex.">
-          <Switch label="Franchise collections for movies" description="e.g. The Lord of the Rings" checked={draft.franchise.franchises} onChange={v=>franchise({franchises:v})}/>
-          <Switch label="Streaming collections for TV shows" description="e.g. Netflix Shows" checked={draft.franchise.streaming!=='off'} onChange={v=>franchise({streaming:v?'originals':'off'})}/>
+        <Card title="Made for you" description="Turning one off removes its collections from Plex on the next run.">
+          <Switch label="Franchise collections" description="Movies from the same TMDb collection, e.g. The Lord of the Rings" checked={draft.franchise.franchises} onChange={v=>franchise({franchises:v})}/>
+          <Switch label="Streaming collections" description="TV shows by streaming service, e.g. Netflix Shows" checked={draft.franchise.streaming!=='off'} onChange={v=>franchise({streaming:v?'originals':'off'})}/>
           {draft.franchise.streaming!=='off'&&<div className="form-columns">
             <label>Shows it holds<select value={draft.franchise.streaming} onChange={e=>franchise({streaming:e.target.value as Franchise['streaming']})}><option value="originals">Shows that aired on the service</option><option value="available">Shows streaming there now</option></select></label>
             {draft.franchise.streaming==='available'&&<label>Streaming country<input maxLength={2} pattern="[A-Z]{2}" value={draft.franchise.region} onChange={e=>franchise({region:e.target.value.toUpperCase()})}/></label>}
           </div>}
-          {(draft.franchise.franchises||draft.franchise.streaming!=='off')&&<div className="form-columns">
+          {types&&<div className="form-columns">
             <label>Titles a collection needs<input type="number" min="1" max="50" value={draft.franchise.minItems} onChange={e=>franchise({minItems:Number(e.target.value)})}/></label>
             <label>Membership<select value={draft.franchise.mode} onChange={e=>franchise({mode:e.target.value as Franchise['mode']})}><option value="sync">Add and remove to match TMDb</option><option value="append">Only add</option></select></label></div>}
           <Switch label="Newly Released and New Episodes" checked={draft.franchise.recent} onChange={v=>franchise({recent:v})}/>
           {draft.franchise.recent&&<div className="form-columns">
             <label>Newly Released: movies from the last (days)<input type="number" min="1" max="3650" value={draft.franchise.recentMovieDays} onChange={e=>franchise({recentMovieDays:Number(e.target.value)})}/></label>
             <label>New Episodes: aired in the last (days)<input type="number" min="1" max="3650" value={draft.franchise.recentEpisodeDays} onChange={e=>franchise({recentEpisodeDays:Number(e.target.value)})}/></label></div>}
-          <Switch label="Update them with every full artwork run" checked={draft.franchise.sync} onChange={v=>franchise({sync:v})}/>
+        </Card>
+        <Card title="Schedules" description="Server local time.">
+          {!data.upload&&<p className="muted small">Send results to Plex is off, so these are skipped until it’s on.</p>}
+          <div className="artwork-schedules">
+            <ScheduleRow label="Every collection" hint="Franchise, streaming and chart, then custom and seasonal." state={data.scheduleStates.all} value={draft.schedules.all} set={all=>change({schedules:{...draft.schedules,all}})}/>
+            <ScheduleRow label="Custom and seasonal" hint="Syncs custom; shows or hides seasonal." state={data.scheduleStates.custom} value={draft.schedules.custom} set={custom=>change({schedules:{...draft.schedules,custom}})}/>
+            <ScheduleRow label="Newly added titles" hint="As Plex adds them, plus a periodic check." state={data.scheduleStates.added} value={draft.schedules.added} set={added=>change({schedules:{...draft.schedules,added}})}/>
+          </div>
+          <Switch label="Also with every full artwork run" description="Runs every collection before the artwork." checked={draft.franchise.sync} onChange={v=>franchise({sync:v})}/>
         </Card>
         <Card title="Radarr downloads" description="For seasonal collections that download missing movies.">
           {!data.radarr.url&&<p className="muted small">Radarr isn’t connected. Add it in <a href="#admin?section=connections">Admin › Connections</a>.</p>}
           <QualityProfile value={draft.radarr.qualityProfileId} set={qualityProfileId=>radarr({qualityProfileId})}/>
           <Switch label="Search for movies when added" checked={draft.radarr.search} onChange={v=>radarr({search:v})}/>
         </Card>
-      </>:tab==='schedules'?<>
-        <Card title="Schedules" description="Server local time.">
-          {!data.upload&&<p className="muted small">Send results to Plex is off, so these are skipped until it’s on.</p>}
-          <div className="artwork-schedules">
-            <ScheduleRow label="Custom and seasonal collections" hint="Syncs custom; shows or hides seasonal." state={data.scheduleStates.custom} value={draft.schedules.custom} set={custom=>change({schedules:{...draft.schedules,custom}})}/>
-            <ScheduleRow label="Every collection" hint="Franchise, streaming and chart, then custom." state={data.scheduleStates.all} value={draft.schedules.all} set={all=>change({schedules:{...draft.schedules,all}})}/>
-            <ScheduleRow label="Newly added titles" hint="As Plex adds them, plus a periodic check." state={data.scheduleStates.added} value={draft.schedules.added} set={added=>change({schedules:{...draft.schedules,added}})}/>
-          </div>
-        </Card>
-      </>:<>
-        <KeptList kept={data.kept} franchise={data.franchise} actions={<>
-          <button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'franchise',mode:'plan'})}>Preview the plan</button>
-          <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'franchise',mode:'apply'})}>Apply now</button></>} settings={()=>setTab('settings')}/>
-        <Card title="Custom and seasonal collections" description="Picked titles or public lists." actions={<>
+      </>:<Card title="Collections" description={data.kept.updated?`Plex as of ${new Date(`${data.kept.updated}T00:00`).toLocaleDateString()}. Turning one off removes it from Plex on the next run.`:'Turning one off removes it from Plex on the next run.'} actions={<>
           <button onClick={()=>setDiscover(true)}><Icon name="explore" size={16}/>Discover</button>
           <button onClick={()=>{change({definitions:[...draft.definitions,{name:'New collection',library:libraries[0]?.title??'',type:libraries[0]?.type==='show'?'tv':'movie',enabled:false,sync:'append',members:[],visibility:hidden}]});setEditing(draft.definitions.length);}}><Icon name="plus" size={16}/>New</button></>}>
-          {data.definitions===null&&<p className="muted small">Seasonal presets, all off. Pick a library, turn some on, then save.</p>}
-          {draft.definitions.length?<div className="table-scroll"><table><thead><tr><th>Collection</th><th>Library</th><th>When</th><th>On</th><th/></tr></thead><tbody>{draft.definitions.map((d,i)=><tr key={i}>
-            <td><strong>{d.name}</strong><small>{d.source?'From a list':`${d.members?.length??0} picks`}{d.acquire?' · Radarr':''}</small></td>
-            <td>{d.library||<span className="danger">Choose one</span>}<small>{d.type==='tv'?'TV':'Movies'}</small></td><td>{d.schedule||'All year'}</td>
-            <td><input type="checkbox" role="switch" className="switch" aria-label={`${d.name} on`} checked={d.enabled!==false} onChange={e=>setDefinition(i,{...d,enabled:e.target.checked})}/></td>
-            <td><div className="button-row"><button onClick={()=>setEditing(i)}>Edit</button><button className="icon-button" aria-label={`Remove ${d.name}`} onClick={()=>setDefinition(i,null)}><Icon name="close" size={16}/></button></div></td></tr>)}</tbody></table></div>
-            :<Empty title="No custom collections">Add one, or find one with Discover.</Empty>}
-          {presets.length>0&&data.definitions!==null&&<div className="button-row"><button onClick={()=>change({definitions:[...draft.definitions,...JSON.parse(JSON.stringify(presets)) as Definition[]]})}>Add the {presets.length} seasonal presets you don’t have</button></div>}
-          <div className="button-row"><button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'custom',mode:'plan',...(date?{date}:{})})}>Preview the plan</button>
-            <label className="artwork-inline">as of<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
-            <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'custom',mode:'apply'})}>Apply now</button>
-            <button disabled={!!blocked} title={blocked??'Adds one title to the custom collections it matches.'} onClick={()=>setOne(true)}>One title…</button></div>
-        </Card>
-      </>}
+        {data.definitions===null&&<p className="muted small">Seasonal presets, all off. Pick a library, turn some on, then save.</p>}
+        <CollectionGrid tiles={tiles} open={t=>t.index===undefined?setOpened(t.id):setEditing(t.index)}
+          toggle={(t,on)=>t.index===undefined?setAutomatic(t,{enabled:on}):setDefinition(t.index,{...draft.definitions[t.index]!,enabled:on})}/>
+        {presets.length>0&&data.definitions!==null&&<div className="button-row"><button onClick={()=>change({definitions:[...draft.definitions,...JSON.parse(JSON.stringify(presets)) as Definition[]]})}>Add the {presets.length} seasonal presets you don’t have</button></div>}
+        <div className="button-row"><button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start(date?{kind:'custom',mode:'plan',date}:{kind:'all',mode:'plan'})}>Preview the plan</button>
+          <label className="artwork-inline" title="Previews custom and seasonal collections as of that day.">as of<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+          <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'all',mode:'apply'})}>Apply now</button>
+          <button disabled={!!blocked} title={blocked??'Adds one title to the custom collections it matches.'} onClick={()=>setOne(true)}>One title…</button></div>
+      </Card>}
     </div>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}{run.error&&<ErrorNotice message={run.error} dismiss={()=>run.setError('')}/>}
     {one&&<Modal title="Add one title to custom collections" onClose={()=>setOne(false)}>
@@ -117,9 +129,75 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
       </form>
     </Modal>}
     {(dirty||saved)&&<div className="button-row sticky-actions">{dirty&&<><button className="primary" disabled={mutation.busy} onClick={save}>Save collections</button><button onClick={reset}>Discard changes</button></>}{saved&&!dirty&&<span className="success" role="status">{saved}</span>}</div>}
-    {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)} save={value=>{setDefinition(editing,value);setEditing(undefined);}}/>}
+    {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)}
+      save={value=>{setDefinition(editing,value);setEditing(undefined);}} remove={()=>{setDefinition(editing,null);setEditing(undefined);}}/>}
+    {open&&<AutomaticCollection tile={open} setting={draft.automatic.find(a=>idOf(a)===open.id)} onClose={()=>setOpened(undefined)} save={patch=>{setAutomatic(open,patch);setOpened(undefined);}}/>}
     {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);setEditing(draft.definitions.length);}}/>}
   </div>;
+}
+// The grid's tiles: the franchise and streaming collections the last run found (for the kinds that are on), with any
+// turned off since, then the custom and seasonal definitions, matched to what the last run kept for their posters.
+function collectionTiles(draft:Draft,kept:Kept[]):Tile[] {
+  const on={franchise:draft.franchise.franchises,streaming:draft.franchise.streaming!=='off'},settings=new Map(draft.automatic.map(a=>[idOf(a),a]));
+  const auto=new Map<string,Tile>();
+  for(const k of kept)if(k.kind!=='custom'&&on[k.kind])auto.set(idOf(k),{id:idOf(k),name:k.name,library:k.library,kind:k.kind,on:true,items:k.items,ratingKey:k.rating_key});
+  for(const a of draft.automatic)if(on[a.kind]&&!auto.has(idOf(a)))auto.set(idOf(a),{id:idOf(a),name:a.name,library:a.library,kind:a.kind,on:true});
+  for(const t of auto.values())t.on=settings.get(t.id)?.enabled!==false;
+  const custom=new Map(kept.filter(k=>k.kind==='custom').map(k=>[idOf(k),k]));
+  const defined=draft.definitions.map((d,index):Tile=>{const k=custom.get(idOf(d));return {id:`custom:${index}`,name:d.name,library:d.library,kind:d.schedule?'seasonal':'custom',on:d.enabled!==false,
+    items:k?.items??(d.source?undefined:d.members?.length??0),ratingKey:k?.rating_key,when:d.schedule||undefined,index};});
+  return [...auto.values(),...defined].sort((a,b)=>a.name.localeCompare(b.name));
+}
+function CollectionGrid({tiles,open,toggle}:{tiles:Tile[];open:(tile:Tile)=>void;toggle:(tile:Tile,on:boolean)=>void}) {
+  const [kind,setKind]=useState<'all'|Kind>('all'),[query,setQuery]=useState(''),words=query.trim().toLowerCase();
+  const count=(k:Kind)=>tiles.filter(t=>t.kind===k).length,present=kinds.filter(([k])=>count(k)>0);
+  const shown=tiles.filter(t=>(kind==='all'||t.kind===kind)&&(!words||`${t.name} ${t.library}`.toLowerCase().includes(words)));
+  if(!tiles.length)return <Empty title="No collections yet">Add one, find one with Discover, or apply to make the franchise collections.</Empty>;
+  return <>
+    <div className="setting-line">
+      {present.length>1&&<div className="toggle-group" role="radiogroup" aria-label="Kind">{([['all','All'],...present] as ['all'|Kind,string][]).map(([k,label])=><button key={k} type="button" role="radio" aria-checked={kind===k} onClick={()=>setKind(k)}>{label} {k==='all'?tiles.length:count(k)}</button>)}</div>}
+      <input className="grow" type="search" placeholder="Search collections" aria-label="Search collections" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+    {shown.length?<ul className="kept-grid">{shown.map(t=><li key={t.id} className={`kept-card${t.on?'':' off'}`} title={`${t.name} · ${t.library} · ${kindLabel(t.kind)}${t.on?'':' · Off'}`}>
+      <button type="button" className="kept-open" aria-label={`${t.name}, ${kindLabel(t.kind)}`} onClick={()=>open(t)}>
+        <Artwork src={t.ratingKey?`/api/v1/catalog/collections/${t.ratingKey}/artwork`:undefined} alt={t.name} fallback={<><Icon name="collection"/><span>{t.name}</span></>}/></button>
+      {t.items!==undefined&&<span className="kept-count" aria-label={`${t.items} titles`}>{t.items}</span>}
+      {t.when&&<span className="kept-when">{season(t.when)}</span>}
+      <input type="checkbox" role="switch" className="switch kept-switch" aria-label={`${t.name} on`} checked={t.on} onChange={e=>toggle(t,e.target.checked)}/></li>)}</ul>
+      :<Empty title="No matches">Try another search.</Empty>}
+  </>;
+}
+// A franchise or streaming collection: its titles as Plex has them (TMDb decides what's in it), whether it's on, and
+// where it shows.
+function AutomaticCollection({tile,setting,onClose,save}:{tile:Tile;setting?:Automatic;onClose:()=>void;save:(patch:Partial<Automatic>)=>void}) {
+  const [on,setOn]=useState(setting?.enabled!==false),[visibility,setVisibility]=useState(setting?.visibility);
+  const titles=useApi<CatalogPage>(tile.ratingKey?`/catalog/collections/${tile.ratingKey}/items?limit=60`:undefined),items=titles.data?.items??[];
+  const more=(titles.data?.total??items.length)-items.length;
+  return <Modal title={tile.name} onClose={onClose}>
+    <form className="collection-editor" onSubmit={e=>{e.preventDefault();save({enabled:on,visibility});}}>
+      <div className="collection-editor-head">
+        <h2 className="collection-editor-title">{tile.name}</h2>
+        <Switch label={on?'On':'Off'} checked={on} onChange={setOn}/>
+      </div>
+      <p className="muted small">{kindLabel(tile.kind)} collection in {tile.library}. Its titles come from TMDb and follow your library{tile.kind==='streaming'?' and the services’ catalogs':''}.{on?'':' Off, it comes out of Plex on the next run.'}</p>
+      <section className="collection-editor-titles">
+        <div className="collection-editor-section-head"><h3>Titles {tile.items!==undefined&&<span className="count">{tile.items}</span>}</h3></div>
+        {!tile.ratingKey?<p className="collection-editor-empty muted small">{on?'Not in Plex yet. Apply to make it.':'Not in Plex.'}</p>
+          :titles.error?<ErrorNotice message={titles.error.message} retry={titles.reload}/>:!titles.data?<Loading/>
+          :<div className="collection-editor-grid"><ul className="title-grid">{items.map(i=><li key={i.id} className="title-tile" title={i.year?`${i.title} (${i.year})`:i.title}>
+            <span className="title-tile-art"><Artwork src={i.posterUrl} alt="" fallback={<><Icon name={i.type==='movie'?'movies':'shows'}/><span>{i.title}</span></>}/></span>
+            <span className="title-tile-name">{i.title}</span>{i.year?<small>{i.year}</small>:null}</li>)}</ul>
+            {more>0&&<p className="muted small">And {more} more.</p>}</div>}
+      </section>
+      <div className="collection-editor-options">
+        <section className="collection-editor-panel">
+          <h3>Where it shows in Plex</h3>
+          {!visibility&&<p className="muted small">Left as it is in Plex until you change one.</p>}
+          {places.map(([k,label,hint])=><Switch key={k} label={label} description={hint} checked={visibility?.[k]??false} onChange={v=>setVisibility({...hidden,...visibility,[k]:v})}/>)}
+        </section>
+      </div>
+      <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
+    </form>
+  </Modal>;
 }
 // The saved Radarr's quality profiles by name; the engine is given the chosen one's ID, and none means Radarr's first.
 function QualityProfile({value,set}:{value:number;set:(id:number)=>void}) {
@@ -140,27 +218,6 @@ export function ScheduleRow<T extends Daily|EveryFew>({label,hint,state,value,se
       :<label className="artwork-inline">Every<input type="number" min="5" max="1440" required aria-label={`${label}: minutes between checks`} value={value.minutes} disabled={!value.enabled} onChange={e=>set({...value,minutes:Number(e.target.value)})}/>min</label>}</div>
     <input type="checkbox" role="switch" className="switch" aria-label={label} checked={value.enabled} onChange={e=>set({...value,enabled:e.target.checked})}/>
   </div>;
-}
-// The franchise and streaming collections the last full run kept in Plex, for the kinds that are on (as saved).
-function KeptList({kept,franchise,actions,settings}:{kept:View['kept'];franchise:Franchise;actions:ReactNode;settings:()=>void}) {
-  const on={franchise:franchise.franchises,streaming:franchise.streaming!=='off'};
-  const [kind,setKind]=useState<'all'|Kept['kind']>('all'),[query,setQuery]=useState('');
-  const rows=kept.collections.filter(c=>on[c.kind]),words=query.trim().toLowerCase();
-  const shown=rows.filter(c=>(kind==='all'||c.kind===kind)&&(!words||`${c.name} ${c.library}`.toLowerCase().includes(words)));
-  const count=(k:Kept['kind'])=>rows.filter(c=>c.kind===k).length;
-  return <Card title="Franchise and streaming collections" description={kept.updated?`As of ${new Date(`${kept.updated}T00:00`).toLocaleDateString()}`:'Listed after the first full run.'}>
-    {!on.franchise&&!on.streaming?<p className="muted small">Franchise and streaming collections are off. Turn them on in <button type="button" className="link-button" onClick={settings}>Settings</button>.</p>
-    :rows.length?<>
-      <div className="setting-line">
-        {on.franchise&&on.streaming&&<div className="toggle-group" role="radiogroup" aria-label="Kind">{([['all',`All ${rows.length}`],['franchise',`Franchises ${count('franchise')}`],['streaming',`Streaming ${count('streaming')}`]] as const).map(([k,label])=><button key={k} type="button" role="radio" aria-checked={kind===k} onClick={()=>setKind(k)}>{label}</button>)}</div>}
-        <input className="grow" type="search" placeholder="Search collections" aria-label="Search collections" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-      {shown.length?<ul className="kept-grid">{shown.map(c=><li key={`${c.library}\0${c.name}`} className="kept-card" title={`${c.name} · ${c.library} · ${c.kind==='franchise'?'Franchise':'Streaming'}`}>
-        <Artwork src={c.rating_key?`/api/v1/catalog/collections/${c.rating_key}/artwork`:undefined} alt={c.name} fallback={<><Icon name="collection"/><span>{c.name}</span></>}/>
-        <span className="kept-count" aria-label={`${c.items} titles`}>{c.items}</span></li>)}</ul>
-        :<Empty title="No matches">Try another search.</Empty>}</>
-      :<Empty title="None yet">Apply them now, or wait for the next full run.</Empty>}
-    <div className="button-row">{actions}</div>
-  </Card>;
 }
 // A member's poster and name from TMDb, kept for the page's life so reopening a collection doesn't ask again.
 // undefined while it is being looked up; null when TMDb has no match (or isn't set up).
@@ -217,7 +274,7 @@ function TitleSearch({type,members,add}:{type:Definition['type'];members:Member[
   </div>;
 }
 const places=[['home','Your Home','Pinned to your Home screen.'],['shared','Friends’ Home','On the Home screen of people you share with.'],['recommended','Library recommendations','In the library’s Recommended tab.']] as const;
-function EditDefinition({value,libraries,onClose,save}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void}) {
+function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void;remove:()=>void}) {
   const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[paste,setPaste]=useState<string>();
   const set=(patch:Partial<Definition>)=>setD(x=>({...x,...patch}));
   const refreshed=!!d.source&&d.source.refresh!==false,visibility=d.visibility??{};
@@ -268,7 +325,8 @@ function EditDefinition({value,libraries,onClose,save}:{value:Definition;librari
           {d.acquire&&<label>After the season ends<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as 'keep'|'remove-delete'})}><option value="keep">Keep downloaded movies</option><option value="remove-delete">Delete the movies it downloaded</option></select></label>}
         </section>}
       </div>
-      <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
+      <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span>
+        <button type="button" className="danger collection-editor-remove" onClick={remove}>Remove collection</button></div>
     </form>
   </Modal>;
 }

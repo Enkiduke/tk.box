@@ -2,7 +2,8 @@
 """tk.box's collections engine: the Plex collections tk.box keeps, apart from the artwork engine (overlayrr.py).
 
 - Franchise collections from TMDb, "<Service> Shows" streaming collections and the "Newly Released" / "New Episodes"
-  smart collections, made and kept in line with your libraries.
+  smart collections, made and kept in line with your libraries. Each franchise or streaming one can be turned off.
+- tk.box's collections are what Plex holds: one turned off or removed in tk.box is deleted from Plex (its titles stay).
 - Custom and seasonal collections defined in tk.box (by hand, from a curated universe or a public list), with Radarr
   fetching a seasonal collection's missing movies and, when asked, removing them again once its season ends.
 - Discover: the public lists and universes the Collections page offers, and a preview of what one would hold.
@@ -575,6 +576,48 @@ def validate_collections(config):
     return definitions
 
 
+def validate_automatic(config):
+    """{(library, collection key): setting} for the franchise and streaming collections the admin turned off or set
+    where they show; the rest are kept as they are made."""
+    settings = config.get("automatic_collections", [])
+    if not isinstance(settings, list):
+        raise ValueError("automatic_collections must be a list")
+    found = {}
+    for entry in settings:
+        if not isinstance(entry, dict) or set(entry) - {"name", "library", "kind", "enabled", "visibility"}:
+            raise ValueError("Each automatic collection setting supports name, library, kind, enabled and visibility")
+        if not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("name", "library")):
+            raise ValueError("Automatic collection settings need a name and a library")
+        if entry.get("kind", "franchise") not in ("franchise", "streaming") or type(entry.get("enabled", True)) is not bool:
+            raise ValueError("Automatic collection kind must be franchise or streaming, and enabled true or false")
+        visibility = entry.get("visibility", {})
+        if not isinstance(visibility, dict) or set(visibility) - set(VISIBILITY) or any(type(v) is not bool for v in visibility.values()):
+            raise ValueError("visibility accepts home, shared and recommended booleans")
+        found[(entry["library"], collection_key(entry["name"]))] = entry
+    return found
+
+
+VISIBILITY = {"home": "promotedToOwnHome", "shared": "promotedToSharedHome", "recommended": "promotedToRecommended"}
+
+
+def show_in(plex, apply, prefix, section_key, name, library, rating_key, visibility, active=True):
+    """Where a collection shows in Plex: your Home, friends' Homes and the library's recommendations."""
+    params = {VISIBILITY[key]: int(value and active) for key, value in visibility.items()}
+    print(f"{prefix}VISIBILITY {name} [{library}]: " + ", ".join(f"{k}={'on' if v and active else 'off'}" for k, v in visibility.items()), flush=True)
+    if not apply or rating_key is None:
+        return
+    path = f"/hubs/sections/{section_key}/manage"
+    hub = plex.xml(path, {"metadataItemId": rating_key}).find("Hub")
+    if hub is not None:
+        identifier = hub.get("identifier")
+        if not identifier:
+            raise ValueError("Plex returned a hub without an identifier")
+        if any(hub.get(k) != str(v) for k, v in params.items()):
+            plex.send("PUT", path + "/" + quote(identifier, safe=""), params)
+    elif any(params.values()):
+        plex.send("POST", path, {**params, "metadataItemId": rating_key})
+
+
 def collection_members(entry, items):
     selected, missing = set(), []
     for member in entry.get("members", []):
@@ -703,8 +746,13 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
             save()
 
 
-def custom_collections(artwork, apply=False, today=None, added_item=None):
+def custom_collections(artwork, apply=False, today=None, added_item=None, kept=None, earlier=()):
+    """The custom and seasonal collections. tk.box's list is what Plex holds: one turned off comes out of Plex (found by
+    name), and so does one removed from the list (by the Plex ID an earlier run recorded in `earlier`). With `kept` (a
+    list), each one that is on is added to it as {"name", "library", "kind": "custom", "items", "rating_key"}; a removed
+    one that couldn't be deleted stays in it, to be tried again. A newly added title (`added_item`) only ever adds."""
     definitions = json.loads(json.dumps(validate_collections(artwork.config)))
+    kept = [] if kept is None else kept
     if added_item is not None:
         definitions = [entry for entry in definitions if entry.get("enabled", True)
                        and entry["library"] == added_item.get("library") and entry["type"] == added_item["type"]
@@ -717,10 +765,12 @@ def custom_collections(artwork, apply=False, today=None, added_item=None):
             result = sources.fetch(source["url"], entry["type"], source.get("limit"))
             entry["members"] = [row["member"] for row in result["items"]]
     enabled = [entry for entry in definitions if entry.get("enabled", True)]
-    for entry in definitions:
-        if not entry.get("enabled", True):
-            print(f"SKIP {entry['name']} [{entry['library']}]: disabled; enable it and save Collections to include it", flush=True)
-    if not enabled:
+    # Until tk.box saves its collections the engine's seasonal presets stand in, all off; only saved ones come out of Plex.
+    off = [entry for entry in definitions if not entry.get("enabled", True)] if "collections" in artwork.config and added_item is None else []
+    named = {(entry["library"], collection_key(entry["name"])) for entry in definitions}
+    gone = [row for row in earlier if row.get("kind") == "custom" and row.get("rating_key")
+            and (row["library"], collection_key(row["name"])) not in named] if added_item is None else []
+    if not enabled and (added_item is not None or not off and not gone):
         print("No enabled custom collections. Nothing was changed.", flush=True)
         return 0
     plex = artwork.plex
@@ -730,23 +780,31 @@ def custom_collections(artwork, apply=False, today=None, added_item=None):
     for entry in enabled:
         if entry["library"] not in libraries["show" if entry["type"] == "tv" else "movie"]:
             raise ValueError(f"Collection library {entry['library']!r} must name a configured library of its type")
-    items = plex.scan()
+    items = plex.scan() if enabled else []
     radarr_failed = 0
-    if added_item is None:
+    if added_item is None and enabled:
         try:
             seasonal_radarr(artwork, definitions, items, apply, today)
         except (RuntimeError, ValueError, OSError) as error:
             radarr_failed = 1
             print(f"ERROR Radarr: {error}. Plex collection syncing will continue", file=sys.stderr, flush=True)
-    builder = CollectionBuilder(plex, apply, kinds)
+    builder = CollectionBuilder(plex, apply, ("movie", "show"))
+    for entry in off:
+        current = builder.existing.get((entry["library"], collection_key(entry["name"])))
+        if current is not None and not current.get("smart"):
+            builder.remove(current["rating_key"], current["title"], entry["library"], "turned off in tk.box")
+    for row in gone:
+        if not builder.remove(row["rating_key"], row["name"], row["library"], "removed from tk.box's collections"):
+            kept.append(row)
     for entry in enabled:
         name, library = entry["name"], entry["library"]
         active = collection_active(entry.get("schedule"), today)
         current = builder.existing.get((library, collection_key(name)))
+        keys = []
         try:
+            candidates = [item for item in items if item["library"] == library and item["type"] == entry["type"]]
+            keys, missing = collection_members(entry, candidates)
             if active:
-                candidates = [item for item in items if item["library"] == library and item["type"] == entry["type"]]
-                keys, missing = collection_members(entry, candidates)
                 if added_item is not None:
                     keys = [key for key in keys if key == added_item.get("rating_key")]
                     if not keys:
@@ -765,22 +823,11 @@ def custom_collections(artwork, apply=False, today=None, added_item=None):
             else:
                 print(f"{builder.prefix}SEASON {name} [{library}]: outside {entry['schedule']}; keep collection", flush=True)
             if added_item is None and entry.get("visibility"):
-                flags = {"home": "promotedToOwnHome", "shared": "promotedToSharedHome", "recommended": "promotedToRecommended"}
-                params = {flags[key]: int(value and active) for key, value in entry["visibility"].items()}
-                print(f"{builder.prefix}VISIBILITY {name} [{library}]: " + ", ".join(f"{k}={'on' if v and active else 'off'}" for k, v in entry["visibility"].items()), flush=True)
-                if apply and current is not None:
-                    path = f"/hubs/sections/{sections[library]}/manage"
-                    hub = plex.xml(path, {"metadataItemId": current["rating_key"]}).find("Hub")
-                    if hub is not None:
-                        identifier = hub.get("identifier")
-                        if not identifier:
-                            raise ValueError("Plex returned a hub without an identifier")
-                        if any(hub.get(k) != str(v) for k, v in params.items()):
-                            plex.send("PUT", path + "/" + quote(identifier, safe=""), params)
-                    elif any(params.values()):
-                        plex.send("POST", path, {**params, "metadataItemId": current["rating_key"]})
+                show_in(plex, apply, builder.prefix, sections[library], name, library, current and current["rating_key"], entry["visibility"], active)
         except (RuntimeError, ValueError, ET.ParseError) as error:
             builder.failed(name, library, error)
+        if added_item is None:
+            kept.append({"name": name, "library": library, "kind": "custom", "items": len(keys), **({"rating_key": current["rating_key"]} if current else {})})
     builder.summary()
     return builder.failures + radarr_failed
 
@@ -835,7 +882,7 @@ class CollectionBuilder:
     def __init__(self, plex, apply, kinds):
         self.plex, self.apply, self.prefix = plex, apply, "" if apply else "PLAN "
         self.counts, self.failures = dict.fromkeys(("create", "update", "same", "smart", "delete"), 0), 0
-        self.existing, self.by_key, self.kept = {}, {}, []
+        self.existing, self.by_key, self.kept, self.wanted = {}, {}, [], set()
         for kind in kinds:
             for collection in plex.collections(kind):
                 self.existing.setdefault((collection["library"], collection_key(collection["title"])), collection)
@@ -849,17 +896,41 @@ class CollectionBuilder:
         self.failures += 1
         print(f"ERROR collection {name} [{library}]: {error}", file=sys.stderr, flush=True)
 
-    def groups(self, groups, titles, sections, minimum, sync):
-        """Franchise and streaming collections: create the missing ones, add to (and with `sync` trim) the rest."""
-        plex, counts, prefix, listed = self.plex, self.counts, self.prefix, {}
+    def remove(self, rating_key, name, library, why, listed=False):
+        """Deletes one collection from Plex (never its titles). False only if Plex refused; one already gone is fine.
+        `listed`: Plex just listed it, so it's there even if the collections read up front didn't include it."""
+        if rating_key not in self.by_key and not listed:
+            return True
+        self.counts["delete"] += 1
+        print(f"{self.prefix}DELETE {name} [{library}]: {why}", flush=True)
+        try:
+            if self.apply:
+                self.plex.send("DELETE", f"/library/collections/{rating_key}")
+            return True
+        except (RuntimeError, ET.ParseError) as error:
+            self.failed(name, library, error)
+            return False
+
+    def groups(self, groups, titles, sections, minimum, sync, settings=None):
+        """Franchise and streaming collections: create the missing ones, add to (and with `sync` trim) the rest. One the
+        admin turned off (in `settings`, from validate_automatic) comes out of Plex instead, and one with a visibility
+        setting has it applied. Every one that qualifies is noted in `wanted`."""
+        plex, counts, prefix, listed, settings = self.plex, self.counts, self.prefix, {}, settings or {}
         for (library, label), group in sorted(groups.items(), key=lambda pair: (pair[0][0], pair[1]["name"].casefold())):
             want, name = group["keys"], group["name"]
             if len(want) < minimum:
                 continue
             service = str(label).startswith("stream:")  # The streaming services lead the collections list, after the charts
             kept = {"name": name, "library": library, "kind": "streaming" if service else "franchise", "items": len(want)}
+            self.wanted.add((library, collection_key(name)))
+            setting = settings.get((library, collection_key(name)), {})
             try:
                 current = self.existing.get((library, collection_key(name)))
+                if not setting.get("enabled", True):
+                    self.kept.append({**kept, "off": True})
+                    if current is not None and not current.get("smart"):
+                        self.remove(current["rating_key"], current["title"], library, "turned off in tk.box")
+                    continue
                 if service and current is not None:  # Kometa's, smart or not, too: only its sort title changes
                     lead_list(plex, self.apply, sections[library], current["rating_key"], current["title"], library, "!002")
                 if current is not None and current.get("smart"):
@@ -883,12 +954,16 @@ class CollectionBuilder:
                             if service:
                                 lead_list(plex, self.apply, sections[library], created.get("ratingKey"), name, library, "!002")
                             self.kept.append({**kept, "rating_key": created.get("ratingKey")})
+                    if setting.get("visibility"):
+                        show_in(plex, self.apply, prefix, sections[library], name, library, created.get("ratingKey") if self.apply and created is not None else None, setting["visibility"])
                     continue
                 kept = {**kept, "name": current["title"], "rating_key": current["rating_key"]}
                 have = members_of(plex, current["rating_key"])
                 add_keys = [key for key in want if key not in have]
                 remove = [key for key in have if key not in want] if sync else []
                 self.kept.append(kept)
+                if setting.get("visibility"):
+                    show_in(plex, self.apply, prefix, sections[library], current["title"], library, current["rating_key"], setting["visibility"])
                 if not add_keys and not remove:
                     counts["same"] += 1
                     continue
@@ -900,7 +975,7 @@ class CollectionBuilder:
                         plex.send("PUT", f"/library/collections/{current['rating_key']}/items", {"uri": self.root + ",".join(add_keys)})
                     for key in remove:
                         plex.send("DELETE", f"/library/collections/{current['rating_key']}/items/{key}")
-            except (RuntimeError, ET.ParseError) as error:
+            except (RuntimeError, ValueError, ET.ParseError) as error:
                 self.failed(name, library, error)
 
     def charts(self, days):
@@ -953,6 +1028,18 @@ class CollectionBuilder:
                 except (RuntimeError, ET.ParseError) as error:
                     self.failed(name, library, error)
 
+    def drop_charts(self):
+        """With them turned off, the "Newly Released" and "New Episodes" smart collections come out of Plex; a same-named
+        collection that isn't smart is somebody's own and stays."""
+        for kind, name, *_ in CHARTS:
+            for key, library in self.plex.sections(kind):
+                try:
+                    for rating_key, smart in collection_titles(self.plex, key).get(collection_key(name), []):
+                        if smart:
+                            self.remove(rating_key, name, library, "Newly Released and New Episodes are turned off in tk.box", listed=True)
+                except (RuntimeError, ET.ParseError) as error:
+                    self.failed(name, library, error)
+
     def summary(self):
         counts = self.counts
         print(f"{self.prefix}Collections: {counts['create']} to create, {counts['update']} to update, {counts['same']} unchanged"
@@ -961,34 +1048,49 @@ class CollectionBuilder:
               + ("" if self.apply else " Nothing was changed."))
 
 
-def build_collections(artwork, apply, minimum=2, sync=True, franchises=True, streaming="off", region="US", recent=False, days=None, kept=None):
+def build_collections(artwork, apply, minimum=2, sync=True, franchises=True, streaming="off", region="US", recent=False, days=None, kept=None, earlier=()):
     """Collections like Kometa's franchise and streaming defaults, with no Kometa:
     - with `franchises`, one per TMDb movie collection that has at least `minimum` of your movies in a library;
     - with `streaming` ("originals": the show's original network; "available": where it streams in `region`),
       one "<Service> Shows" per streaming service with at least `minimum` of your shows;
     - with `recent`, the "Newly Released" (movies) and "New Episodes" (TV) smart collections, created if missing and
-      their date window (`days`: {"movie": 90, "show": 7} by default) brought in line if it differs.
+      their date window (`days`: {"movie": 90, "show": 7} by default) brought in line if it differs; without it, the
+      smart ones with those names are deleted.
     Existing Plex collections with the same name are adopted and brought in line (added to, and with `sync` trimmed);
-    smart collections can't be edited by hand, so they are skipped. The only thing ever deleted is an extra copy of
-    "Newly Released" or "New Episodes" (smart ones, keeping the oldest), so there is only ever one. Without `apply` it only
-    prints a plan. The franchise and streaming collections it keeps are added to `kept` (a list) as {"name", "library",
-    "kind", "items", "rating_key"}. Returns the number of collections that failed."""
-    if not artwork.keys.get("tmdb_key"):
-        raise ValueError("Building collections requires a TMDb API key")
-    kinds = ("movie", "show") if streaming != "off" or recent else ("movie",)
+    smart collections can't be edited by hand, so they are skipped. tk.box's settings are what Plex holds: one the admin
+    turned off is deleted, and so is one an earlier run kept (in `earlier`, as recorded) that no longer qualifies or
+    whose kind is off, but only when every TMDb lookup worked. Extra copies of "Newly Released" or "New Episodes" (smart
+    ones, keeping the oldest) are deleted too, so there is only ever one. Without `apply` it only prints a plan. Every
+    franchise and streaming collection that qualifies is added to `kept` (a list) as {"name", "library", "kind",
+    "items", "rating_key"} ("off": true, without a Plex ID, for one turned off), then the custom ones. Returns the
+    number of collections that failed."""
+    if (franchises or streaming != "off") and not artwork.keys.get("tmdb_key"):
+        raise ValueError("Franchise and streaming collections need a TMDb API key")
+    kinds = ("movie", "show")
     sections = {title: key for kind in kinds for key, title in artwork.plex.sections(kind)}
     groups, titles, failed = wanted_collections(artwork, streaming, region, franchises)
     if failed:  # A partial picture must never remove anything.
         sync = False
-        print(f"WARN {failed} TMDb lookups failed; collections are only added to this run, never trimmed", file=sys.stderr)
+        print(f"WARN {failed} TMDb lookups failed; collections are only added to this run, never trimmed or deleted", file=sys.stderr)
+    kept = [] if kept is None else kept
     builder = CollectionBuilder(artwork.plex, apply, kinds)
-    builder.groups(groups, titles, sections, minimum, sync)
-    if kept is not None:
-        kept.extend(builder.kept)
+    builder.groups(groups, titles, sections, minimum, sync, validate_automatic(artwork.config))
+    kept.extend(builder.kept)
+    for row in earlier:
+        if row.get("kind") not in ("franchise", "streaming") or (row["library"], collection_key(row["name"])) in builder.wanted:
+            continue
+        if failed or not row.get("rating_key"):
+            if failed:
+                kept.append(row)
+            continue
+        if not builder.remove(row["rating_key"], row["name"], row["library"], f"no longer one of the {row['kind']} collections"):
+            kept.append(row)
     if recent:
         builder.charts(days)
+    else:
+        builder.drop_charts()
     builder.summary()
-    return builder.failures + custom_collections(artwork, apply)
+    return builder.failures + custom_collections(artwork, apply, kept=kept, earlier=earlier)
 
 
 def read_collections_config(path):
@@ -1007,6 +1109,7 @@ def read_collections_config(path):
     if option(plex, "collection_streaming") not in ("off", "originals", "available"):
         raise ValueError("plex.collection_streaming must be off, originals or available")
     validate_collections(config)
+    validate_automatic(config)
     return config
 
 
@@ -1030,31 +1133,33 @@ def sync_collections(config_path, mode="plan", custom=False, today=None):
     if mode == "apply" and not config.get("plex", {}).get("upload"):
         raise ValueError("Applying collections changes Plex, so plex.upload must be true")
     artwork = engine(config_path, config)
+    earlier, kept = read_kept(config_path), []
     if custom:
-        return 1 if custom_collections(artwork, mode == "apply", today) else 0
-    kept = []
-    failed = build_collections(artwork, mode == "apply", kept=kept, **collection_options(config))
+        failed = custom_collections(artwork, mode == "apply", today, kept=kept, earlier=earlier)
+        kept += [row for row in earlier if row.get("kind") != "custom"]
+    else:
+        failed = build_collections(artwork, mode == "apply", kept=kept, earlier=earlier, **collection_options(config))
     if mode == "apply":
-        record_kept(config_path, kept, collection_options(config))
+        record_kept(config_path, kept)
     return 1 if failed else 0
 
 
 KEPT_FILE = "kept_collections.json"
 
 
-def record_kept(config_path, kept, options):
-    """What the last full apply kept, for tk.box's Collections page, written next to the config. One the run couldn't
-    check (a failed lookup or Plex error) keeps its earlier entry while its kind is still made."""
-    path = config_path.resolve().parent / KEPT_FILE
-    kinds = {"franchise"} if options["franchises"] else set()
-    if options["streaming"] != "off":
-        kinds.add("streaming")
-    seen = {(entry["library"], collection_key(entry["name"])) for entry in kept}
+def read_kept(config_path):
+    """The collections the last applying run kept (see record_kept); none if it hasn't run or the file is unreadable."""
     with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
-        earlier = json.loads(path.read_text(encoding="utf-8"))["collections"]
-        kept = kept + [entry for entry in earlier if entry["kind"] in kinds and (entry["library"], collection_key(entry["name"])) not in seen]
+        rows = json.loads((config_path.resolve().parent / KEPT_FILE).read_text(encoding="utf-8"))["collections"]
+        return [row for row in rows if isinstance(row, dict) and isinstance(row.get("name"), str) and isinstance(row.get("library"), str)]
+    return []
+
+
+def record_kept(config_path, kept):
+    """What an applying run kept, written next to the config: for tk.box's Collections page, and so the next run knows
+    which Plex collections are tk.box's to delete once they're removed or no longer qualify."""
     rows = sorted(kept, key=lambda entry: (entry["kind"], entry["library"], entry["name"].casefold()))
-    atomic_write(path, json.dumps({"updated": date.today().isoformat(), "collections": rows}).encode())
+    atomic_write(config_path.resolve().parent / KEPT_FILE, json.dumps({"updated": date.today().isoformat(), "collections": rows}).encode())
 
 
 def added(config_path, rating_key):

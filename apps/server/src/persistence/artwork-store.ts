@@ -49,6 +49,9 @@ const origin = z.string().trim().max(300).refine(value => { if (!value) return t
 export const artworkCollections = z.object({
   // null until first saved: the engine then offers its seasonal presets, all off.
   definitions: z.array(z.record(z.string(), z.unknown())).max(300).nullable(),
+  // The franchise and streaming collections set apart from how they're made: turned off, or where they show in Plex.
+  automatic: z.array(z.object({ name: z.string().trim().min(1).max(200), library: z.string().trim().min(1).max(200), kind: z.enum(['franchise', 'streaming']), enabled: z.boolean().optional(),
+    visibility: z.object({ home: z.boolean(), shared: z.boolean(), recommended: z.boolean() }).partial().strict().optional() }).strict()).max(3000).default([]),
   franchise: z.object({ sync: z.boolean(), franchises: z.boolean(), minItems: z.number().int().min(1).max(50), mode: z.enum(['sync', 'append']), streaming: z.enum(['off', 'originals', 'available']),
     region: z.string().regex(/^[A-Z]{2}$/), recent: z.boolean(), recentMovieDays: z.number().int().min(1).max(3650), recentEpisodeDays: z.number().int().min(1).max(3650) }).strict(),
   radarr: z.object({ url: origin, rootFolder: z.string().trim().max(300), qualityProfileId: z.number().int().min(0).max(100000), search: z.boolean() }).strict(),
@@ -58,7 +61,7 @@ export const artworkCollections = z.object({
 }).strict().refine(value => JSON.stringify(value).length <= 400000, 'Too many collections');
 export type ArtworkCollections = z.infer<typeof artworkCollections>;
 export const artworkCollectionsInput = z.object({ value: artworkCollections, radarrKey: key.optional(), expectedRevision: z.number().int().nonnegative() }).strict();
-const collectionDefaults: ArtworkCollections = { definitions: null,
+const collectionDefaults: ArtworkCollections = { definitions: null, automatic: [],
   franchise: { sync: false, franchises: true, minItems: 2, mode: 'sync', streaming: 'off', region: 'US', recent: false, recentMovieDays: 90, recentEpisodeDays: 7 },
   radarr: { url: '', rootFolder: '', qualityProfileId: 0, search: true },
   schedules: { custom: { enabled: false, time: '04:15' }, all: { enabled: false, time: '04:30' }, added: { enabled: false, minutes: 60 } } };
@@ -167,12 +170,13 @@ export class ArtworkStore {
     // Collections saved before an option existed read it as its default.
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
     value.schedules ??= collectionDefaults.schedules;
+    value.automatic ??= [];
     return { revision: row?.revision ?? 0, value };
   }
   collections() { const { revision, value: { radarrKey, ...value } } = this.storedCollections(); return { revision, ...value, radarrKeySet: !!radarrKey }; }
   // For the engine's config: the Radarr key opened, for the run's environment.
   collectionsConfig() { const { value: { radarrKey, ...value } } = this.storedCollections(); return { ...value, radarrKey: radarrKey ? this.vault.open(radarrKey, 'artwork:radarr-key') : undefined }; }
-  async updateCollections(actor: string, input: z.infer<typeof artworkCollectionsInput>, check: (value: ArtworkCollections & { radarrKey?: string }) => Promise<void>, now = Date.now()) {
+  async updateCollections(actor: string, input: z.input<typeof artworkCollectionsInput>, check: (value: ArtworkCollections & { radarrKey?: string }) => Promise<void>, now = Date.now()) {
     const { value, radarrKey, expectedRevision } = artworkCollectionsInput.parse(input);
     const current = this.collectionsConfig();
     await check({ ...value, radarrKey: radarrKey === undefined ? current.radarrKey : radarrKey || undefined });
