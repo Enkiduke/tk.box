@@ -231,7 +231,7 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .kept-open,.kept-open:hover,.kept-open:active{display:block;width:100%;height:100%;padding:0;border:0;border-radius:0;background:none;transform:none;cursor:pointer}
 .kept-open>*{transition:opacity .2s,filter .2s}
 .kept-card.off .kept-open>*{opacity:.35;filter:grayscale(1)}
-.kept-switch{position:absolute;right:6px;bottom:6px;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.5)}
+.kept-card input[type=checkbox].kept-switch{position:absolute;right:6px;bottom:6px;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.5)}
 .kept-card:focus-within,.kept-card:hover{outline:2px solid var(--line-strong);outline-offset:2px}
 .collection-editor-title{flex:1;min-width:0;margin:0;padding:8px 0;font-size:22px;font-weight:650}
 .collection-editor-remove{margin-left:auto}
