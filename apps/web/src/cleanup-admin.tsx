@@ -117,7 +117,7 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       <div className="cleanup-rule-group">
         <div className="cleanup-group-head"><h4>Standard retention</h4><p>Applies to requests from everyone except the users listed below.</p></div>
         {rule('daysAfterWatched','Standard retention','Requester has watched','Count from the most recent watch by anyone. Each new watch restarts this timer.')}
-        {rule('daysAfterUnwatched','Standard retention','Requester has not watched','Count from when the title was added. Other people watching does not restart this timer.')}
+        {rule('daysAfterUnwatched','Standard retention','Requester has not watched','Count from when the title was added. If someone else watches it, it also stays the "Requester watched" days after their last watch, whichever is later.')}
       </div>
       <div className="cleanup-rule-group">
         <div className="cleanup-group-head"><h4>Longer retention for selected users <span className="badge">Optional</span></h4><p>Replaces the standard rules for their requests. These titles can still be deleted when their time is up.</p></div>

@@ -54,6 +54,13 @@ def retention_rule(added_at: datetime, requestor_id: int, watch: WatchStatus, se
         days, name = settings.days_after_watched, "Rule 1"
         reason = f"Non-exempt requestor watched it, last watch by anyone on {anchor.date()}"
     else:
+        # Anyone else's watch keeps it too, for as long as the requester's own watch would.
+        added_deadline = added_at + timedelta(days=settings.days_after_unwatched)
+        last_any = watch.last_watched_by_anyone
+        if last_any is not None and last_any + timedelta(days=settings.days_after_watched) > added_deadline:
+            reason = (f"Non-exempt requestor has not watched it; last watch by anyone on {last_any.date()}"
+                      f"; retention={settings.days_after_watched} days after that watch")
+            return RetentionRule("Rule 2", last_any + timedelta(days=settings.days_after_watched), reason)
         anchor = added_at
         days, name = settings.days_after_unwatched, "Rule 2"
         reason = f"Non-exempt requestor has not watched it since added on {anchor.date()}"
