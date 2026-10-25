@@ -1439,6 +1439,7 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(rows, [{"name": "Alien", "url": "https://www.themoviedb.org/collection/100/", "type": "movie", "provider": "tmdb",
                                  "library": "Movies", "owned": 2, "total": 3, "description": "2 of 3 in Movies. Missing Alien 3 (1992)"}])
         self.assertEqual(pc.partly_owned(self.artwork, "heat", today=today, index=index)[0], [])
+        self.assertEqual(pc.franchise_counts(self.artwork, index), [{"library": "Movies", "name": "Alien", "items": 2}, {"library": "Movies", "name": "Heat", "items": 1}])
 
         # A movie added since is matched with Plex at once but needs the index to join a collection...
         self.http.replies[plex + "/library/sections/1/all"] = library(video(1, "Alien", 10), video(2, "Aliens", 11), video(3, "Heat", 20), video(5, "Alien 3", 12))

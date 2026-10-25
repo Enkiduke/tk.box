@@ -52,6 +52,12 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const mutation=useMutation(view.reload);
   const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:JSON.parse(JSON.stringify(d.definitions??d.defaults)) as Definition[],automatic:d.automatic??[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
   useEffect(reset,[view.data?.revision,!!view.data]);
+  // Franchise counts from Plex now (through the Discover index), so movies gone since the last full run show at once.
+  const [live,setLive]=useState<Map<string,number>>();
+  useEffect(()=>{if(!view.data)return;let current=true;
+    void api<{results:{library:string;name:string;items:number}[];index:{built:number|null}}>('/admin/artwork/collections/discover','POST',{mode:'franchises'})
+      .then(r=>{if(current&&r.index.built!==null)setLive(new Map(r.results.map(c=>[idOf(c),c.items])));},()=>{});
+    return ()=>{current=false;};},[!!view.data,view.data?.kept.updated]);
   if(!engineReady)return <Empty title="The artwork engine isn’t set up">Set it up (above) to manage collections.</Empty>;
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
@@ -74,7 +80,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'apply'}));invalidate('/admin/artwork/jobs');setSaved('Saved and applying to Plex.');
   });
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
-  const tiles=collectionTiles(draft,data.kept.collections),open=tiles.find(t=>t.id===opened);
+  const tiles=collectionTiles(draft,data.kept.collections,data.kept.updated!==null,live),open=tiles.find(t=>t.id===opened);
   const types=draft.franchise.franchises||draft.franchise.streaming!=='off';
   return <div className="form-stack">
     <div className="subtabs" role="tablist" aria-label="Collections">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
@@ -126,14 +132,21 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);setEditing(draft.definitions.length);}}/>}
   </div>;
 }
-// The grid's tiles: the franchise and streaming collections the last run found (for the kinds that are on), with any
-// turned off since, then the custom and seasonal definitions, matched to what the last run kept for their posters.
-function collectionTiles(draft:Draft,kept:Kept[]):Tile[] {
+// The grid's tiles: the franchise and streaming collections the last run found (for the kinds that are on; off ones
+// too, while they still have the titles), then the custom and seasonal definitions, matched to what the last run kept
+// for their posters. A setting for one the last run no longer found (its titles are gone) stays saved, so it's still
+// off if they come back, but isn't shown; before any run has been recorded, the settings are all there is to show.
+// With `live` counts (Plex now), a franchise collection's count is today's, and one that's off and has fallen below
+// the titles a collection needs is left out, as the next run would.
+function collectionTiles(draft:Draft,kept:Kept[],recorded:boolean,live?:Map<string,number>):Tile[] {
   const on={franchise:draft.franchise.franchises,streaming:draft.franchise.streaming!=='off'},settings=new Map(draft.automatic.map(a=>[idOf(a),a]));
   const auto=new Map<string,Tile>();
   for(const k of kept)if(k.kind!=='custom'&&on[k.kind])auto.set(idOf(k),{id:idOf(k),name:k.name,library:k.library,kind:k.kind,on:true,items:k.items,ratingKey:k.rating_key});
-  for(const a of draft.automatic)if(on[a.kind]&&!auto.has(idOf(a)))auto.set(idOf(a),{id:idOf(a),name:a.name,library:a.library,kind:a.kind,on:true});
-  for(const t of auto.values())t.on=settings.get(t.id)?.enabled!==false;
+  if(!recorded)for(const a of draft.automatic)if(on[a.kind]&&!auto.has(idOf(a)))auto.set(idOf(a),{id:idOf(a),name:a.name,library:a.library,kind:a.kind,on:true});
+  for(const t of auto.values()){
+    t.on=settings.get(t.id)?.enabled!==false;
+    if(live&&t.kind==='franchise'){t.items=live.get(t.id)??0;if(!t.on&&t.items<draft.franchise.minItems)auto.delete(t.id);}
+  }
   const custom=new Map(kept.filter(k=>k.kind==='custom').map(k=>[idOf(k),k]));
   const defined=draft.definitions.map((d,index):Tile=>{const k=custom.get(idOf(d));return {id:`custom:${index}`,name:d.name,library:d.library,kind:d.schedule?'seasonal':'custom',on:d.enabled!==false,
     items:k?.items??(d.source?undefined:d.members?.length??0),ratingKey:k?.rating_key,when:d.schedule||undefined,index};});
