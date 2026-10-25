@@ -73,10 +73,12 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // loopback port must use their own namespace to preserve real app sessions.
   const sessionCookie = config.secureCookies ? `__Host-${cookieNamespace}` : `${cookieNamespace}_local`, linkCookie = `${cookieNamespace}_link`;
   const cookieOpts = { httpOnly: true, secure: config.secureCookies, sameSite: 'lax' as const, path: '/' };
+  // The browser keeps the sign-in cookie as long as it allows (400 days); the server ends the session itself after 7 days unused.
+  const sessionCookieAge = 400 * 24 * 60 * 60;
   // Preserve existing browser sessions and in-progress Plex links during the rebrand.
   const legacyNamespace = cookieNamespace.replace(/^tk\.box(?=_|$)/, 'enki');
   const legacyCookies = legacyNamespace === cookieNamespace ? [] : [
-    {old: config.secureCookies ? `__Host-${legacyNamespace}` : `${legacyNamespace}_local`, current: sessionCookie, maxAge: 43200},
+    {old: config.secureCookies ? `__Host-${legacyNamespace}` : `${legacyNamespace}_local`, current: sessionCookie, maxAge: sessionCookieAge},
     {old: `${legacyNamespace}_link`, current: linkCookie, maxAge: 600}
   ];
   const streams = new Set<{id: string; hash: string; abort: AbortController}>();
@@ -244,7 +246,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     requireThat(req.cookies[linkCookie], 'AUTH_EXPIRED', 'Start Plex sign-in first.', 401);
     const result = await identity.finish(req.cookies[linkCookie]);
     if (!result) return {status: 'pending'};
-    reply.clearCookie(linkCookie, cookieOpts).setCookie(sessionCookie, result.cookie, {...cookieOpts, maxAge: 43200});
+    reply.clearCookie(linkCookie, cookieOpts).setCookie(sessionCookie, result.cookie, {...cookieOpts, maxAge: sessionCookieAge});
     return {status: 'authenticated'};
   });
   app.post('/api/v1/auth/logout', async (req, reply) => {
