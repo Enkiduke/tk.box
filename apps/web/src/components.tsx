@@ -213,42 +213,43 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
     <div className="row-viewport" {...endless.handlers}>
       {(looping||!edges.start)&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
-      <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}>{looping?<div className="row-track" ref={track}>
+      <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}><div className="row-track" ref={track}>
         {/* Identical sets: the view rests in the second and jumps back by one set width, which looks seamless. The drift can
             carry it up to one more set past wherever it rests, so two copies follow. */}
-        <RowCopy>{children}</RowCopy><div className="row-set">{children}</div><RowCopy>{children}</RowCopy><RowCopy>{children}</RowCopy>
-      </div>:children}</div>
+        {looping?<><RowCopy>{children}</RowCopy><div className="row-set">{children}</div><RowCopy>{children}</RowCopy><RowCopy>{children}</RowCopy></>:children}
+      </div></div>
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
 }
 // Animates a row's arrow scroll. The browser's own smooth scroll turns instant whenever Windows animation effects are
-// off, so like the drift it does not follow the reduced-motion preference. Like the drift, it is a transform animation the
-// browser runs on the compositor (on the endless track, or on each card of a plain row), and the distance moves into the
-// scroll position in one step when it ends. A plain row's move ends on a card's start, so its snap has nothing to correct.
+// off, so like the drift it does not follow the reduced-motion preference. Like the drift, it is a transform animation on
+// the track, which is already its own layer, so the browser runs it on the compositor; the distance moves into the scroll
+// position in one step when it ends. Snap is off while the track moves, or the browser would re-snap to the moving cards
+// and the move would count twice. A plain row's move ends on a card's start, so turning snap back on does not nudge it.
 function useGlide(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElement|null}) {
-  const run=useRef<{animations:Animation[];distance:number}|null>(null);
+  const run=useRef<{animation:Animation;distance:number}|null>(null);
   // Moves what the glide has covered so far into the scroll position, in the same frame its transform comes off.
-  const commit=()=>{
+  const commit=(done:boolean)=>{
     const current=run.current,el=ref.current;run.current=null;if(!current)return;
-    const moved=(current.animations[0]?.effect?.getComputedTiming().progress??1)*current.distance;
-    current.animations.forEach(a=>a.cancel());if(el)el.scrollLeft+=moved;
+    const moved=(current.animation.effect?.getComputedTiming().progress??1)*current.distance;
+    current.animation.cancel();if(!el)return;el.scrollLeft+=moved;if(done)el.style.scrollSnapType='';
   };
-  useEffect(()=>()=>run.current?.animations.forEach(a=>a.cancel()),[]);
+  useEffect(()=>()=>run.current?.animation.cancel(),[]);
   return (distance:number,endless:boolean)=>{
-    commit();const el=ref.current;if(!el)return;
+    commit(false);const el=ref.current,tr=track.current;if(!el||!tr)return;
     const from=el.scrollLeft;let to=from+distance;
     if(!endless){
       const max=el.scrollWidth-el.clientWidth,left=el.getBoundingClientRect().left,pad=parseFloat(getComputedStyle(el).scrollPaddingLeft)||0;
-      const starts=Array.from(el.children,c=>from+c.getBoundingClientRect().left-left-pad);
-      to=starts.reduce((best,x)=>Math.abs(x-to)<Math.abs(best-to)?x:best,to);
+      const starts=Array.from(tr.children,c=>from+c.getBoundingClientRect().left-left-pad);
+      to=starts.reduce((best,x)=>Math.abs(x-to)<Math.abs(best-to)?x:best,starts[0]??to);
       to=Math.max(0,Math.min(max,to));
     }
-    const shift=to-from;if(Math.abs(shift)<1)return;
-    const targets=endless?[track.current].filter((t):t is HTMLDivElement=>!!t):Array.from(el.children) as HTMLElement[];
-    const animations=targets.map(t=>t.animate([{transform:'translateX(0)'},{transform:`translateX(${-shift}px)`}],{duration:520,easing:'cubic-bezier(.4,0,.2,1)',fill:'forwards'}));
-    const current={animations,distance:shift};run.current=current;
-    animations[0]?.finished.then(()=>{if(run.current===current)commit();},()=>{});
+    const shift=to-from;if(Math.abs(shift)<1){el.style.scrollSnapType='';return;}
+    el.style.scrollSnapType='none';
+    const animation=tr.animate([{transform:'translateX(0)'},{transform:`translateX(${-shift}px)`}],{duration:520,easing:'cubic-bezier(.4,0,.2,1)',fill:'forwards'});
+    const current={animation,distance:shift};run.current=current;
+    animation.finished.then(()=>{if(run.current===current)commit(true);},()=>{});
   };
 }
 // A copy of an endless row's cards. A row is wider than the screen, so part of what is on screen is often a copy:
