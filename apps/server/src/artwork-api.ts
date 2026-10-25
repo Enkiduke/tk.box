@@ -1,4 +1,5 @@
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
+import {join} from 'node:path';
 import {z} from 'zod';
 import type {PlexGrant} from './providers/plex.js';
 import {ExploreImages} from './providers/explore-images.js';
@@ -6,14 +7,18 @@ import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,layoutName,lay
 import type {ArtworkEngine,ArtworkRun} from './services/artwork-engine.js';
 import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
-import {requireThat} from './errors.js';
+import {ArtworkFiles,imageType} from './services/artwork-files.js';
+import {ArtworkPictures,type PlexJson} from './services/artwork-pictures.js';
+import {AppError,requireThat} from './errors.js';
 import {remoteJson} from './providers/remote-json.js';
 import {TmdbTitles} from './providers/tmdb-titles.js';
 
 // Admin › Artwork: the engine's settings, layouts, titles, collections, schedules and jobs. Every route is
-// administrator-only. Jobs and the worker run as the administrator who asked, with their Plex token, which the engine
-// needs to read libraries and upload posters. Images reach the page only through these routes (it may load images from
-// tk.box alone): the worker's own files and previews, Plex's copies, and the artwork providers' pictures, proxied.
+// administrator-only. Browsing titles, picking their files, the providers' pictures and pushes are tk.box's own work
+// (ArtworkFiles, ArtworkPictures); what needs the renderer (previews, thumbnails, generated backgrounds, which files the
+// last push used) is asked of the engine's worker, which runs as the administrator who asked, with their Plex token. Jobs
+// run the same way. Images reach the page only through these routes (it may load images from tk.box alone): the saved
+// files, previews, Plex's copies and the artwork providers' pictures, proxied.
 type Admin=(request:FastifyRequest)=>Promise<{grant:PlexGrant}>;
 const jobInput=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('changed')}).strict(),
@@ -32,7 +37,7 @@ function jobArgs(input:z.infer<typeof jobInput>):{label:string;args:string[]} {
       args:['--item',input.ratingKey,...(input.seasons?['--with-seasons']:[]),...(input.episodes?['--with-episodes']:[]),...(input.remake?['--remake']:['--changed-only'])]};
   }
 }
-// An asset folder (movies/<title>, tv/<title>[/Season NN]) or a file in one; the worker checks the folder itself.
+// An asset folder (movies/<title>, tv/<title>[/Season NN]) or a file in one; ArtworkFiles checks the folder itself.
 const rel=z.string().min(3).max(400).refine(v=>!v.split('/').some(p=>p===''||p==='.'||p==='..'),'Invalid path');
 const kind=z.enum(['poster','logo']);
 const fileName=z.string().regex(/^[\w .()-]{1,120}$/);
@@ -49,29 +54,52 @@ const providerHosts=(host:string)=>['image.tmdb.org','assets.fanart.tv','artwork
 const images={config:{rateLimit:{max:1200,timeWindow:60000}}};
 const libraries=(grant:PlexGrant)=>grant.libraries.filter(l=>['movie','show'].includes(l.type));
 const runOf=(grant:PlexGrant):ArtworkRun=>({token:grant.serverToken,libraries:grant.libraries});
+type Marks={warning:string|null;marks:[string,string|boolean|null][]};
 
 export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,admin:Admin) {
   const remote=new ExploreImages(fetch,providerHosts,15*1024*1024),titles=new TmdbTitles(()=>store.keys().tmdb);
+  const files=new ArtworkFiles(join(engine.workDir,'assets'),join(engine.paths.cacheDir,'artwork'),join(engine.workDir,'config.json'));
+  const pictures=new ArtworkPictures(()=>store.keys(),()=>store.settings().language||'en');
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=await admin(request);return worker.request<T>(runOf(grant),method,params);};
   const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string},cache='no-store')=>{
     reply.header('Cache-Control',cache);if(image.note)reply.header('X-Artwork-Note',image.note);
     return reply.type(image.type).send(image.bytes);
+  };
+  // Plex's JSON answer for a path on the server, with the administrator's token; a refusal comes back as its status.
+  const plexOf=(grant:PlexGrant):PlexJson=>async(path,params={})=>{
+    const url=new URL(path,engine.paths.plexUrl);for(const [k,v] of Object.entries(params))url.searchParams.set(k,String(v));
+    let response:Response;
+    try{response=await fetch(url,{headers:{Accept:'application/json','X-Plex-Token':grant.serverToken},redirect:'error',signal:AbortSignal.timeout(15000)});}
+    catch{throw new AppError('PLEX_UNAVAILABLE','Plex could not be reached.',502);}
+    if(!response.ok){await response.body?.cancel();return {status:response.status,data:undefined};}
+    return {status:response.status,data:await response.json().catch(()=>undefined)};
+  };
+  // What the worker changed on a title (a generated background used, recoloured): noted like a pick.
+  const noted=async(id:string,result:Marks)=>{await files.mark(result.marks.map(before=>({rel:id,before})));return {warning:result.warning};};
+  // A picture saved into a title's folder: where it came from, and made the one in use when asked.
+  const added=async(input:{id:string;kind:'poster'|'logo';use:boolean},result:{name:string;warning:string|null},source:string)=>{
+    await files.remember(result.name,source);
+    const selected=input.use?await files.select(input.id,input.kind,result.name):{warning:null};
+    return {name:result.name,warning:result.warning??selected.warning};
   };
   // After settings, layouts or collections change, the worker's config is written again.
   const changed=(grant:PlexGrant)=>worker.refresh(runOf(grant));
 
   app.get('/api/v1/admin/artwork',async request=>{
     const {grant}=await admin(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
-    return {settings:store.view(),layouts:store.layoutNames(),libraries:libraries(grant),engine:await engine.status(!!query.recheck),queue:engine.busy(),schedules:schedule.states()};
+    const status=await engine.status(!!query.recheck);
+    // The titles and layouts usually come next; start the worker so their first request doesn't wait for Python to load.
+    if(status.ready)worker.warm(runOf(grant));
+    return {settings:store.view(),layouts:store.layoutNames(),libraries:libraries(grant),engine:status,queue:engine.busy(),schedules:schedule.states()};
   });
   app.put('/api/v1/admin/artwork/settings',async request=>{
     const {grant}=await admin(request),{expectedRevision,...value}=artworkSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
-    const saved=await store.update(grant.accountId,expectedRevision,value,settings=>engine.check({settings},grant.libraries));changed(grant);return saved;
+    const saved=await store.update(grant.accountId,expectedRevision,value,settings=>engine.check({settings},runOf(grant)));changed(grant);return saved;
   });
   app.get<{Params:{name:string}}>('/api/v1/admin/artwork/layouts/:name',async request=>{await admin(request);return store.layout(layoutName.parse(request.params.name));});
   app.put<{Params:{name:string}}>('/api/v1/admin/artwork/layouts/:name',async request=>{
     const {grant}=await admin(request),name=layoutName.parse(request.params.name),input=z.object({expectedRevision:z.number().int().nonnegative(),value:layoutValue}).strict().parse(request.body);
-    const saved=await store.saveLayout(grant.accountId,name,input.expectedRevision,input.value,layouts=>engine.check({layouts},grant.libraries));changed(grant);return saved;
+    const saved=await store.saveLayout(grant.accountId,name,input.expectedRevision,input.value,layouts=>engine.check({layouts},runOf(grant)));changed(grant);return saved;
   });
   app.delete<{Params:{name:string}}>('/api/v1/admin/artwork/layouts/:name',async request=>{const {grant}=await admin(request);store.removeLayout(grant.accountId,layoutName.parse(request.params.name));changed(grant);return {status:'removed'};});
 
@@ -93,51 +121,83 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   });
 
   // Titles: each title's asset folder, its candidates and what the providers offer.
-  app.get('/api/v1/admin/artwork/titles',async request=>{z.object({}).strict().parse(request.query);return ask(request,'titles');});
-  app.get('/api/v1/admin/artwork/titles/find',async request=>{const {ratingKey}=z.object({ratingKey:z.string().regex(/^\d{1,10}$/)}).strict().parse(request.query);return ask(request,'find',{rating_key:ratingKey});});
-  app.get('/api/v1/admin/artwork/title',async request=>{const {id}=z.object({id:rel}).strict().parse(request.query);return ask(request,'detail',{id});});
+  app.get('/api/v1/admin/artwork/titles',async request=>{z.object({}).strict().parse(request.query);await admin(request);return {titles:await files.titles(),...await files.state(store.settings().upload)};});
+  app.get('/api/v1/admin/artwork/titles/find',async request=>{const {ratingKey}=z.object({ratingKey:z.string().regex(/^\d{1,10}$/)}).strict().parse(request.query);await admin(request);return files.find(ratingKey);});
+  app.get('/api/v1/admin/artwork/title',async request=>{const {id}=z.object({id:rel}).strict().parse(request.query);await admin(request);return files.detail(id);});
+  // A streaming, chart, custom or curated collection's generated background (drawn first if needed); null for other titles.
+  app.get('/api/v1/admin/artwork/title/background',async request=>{
+    const {id}=z.object({id:rel}).strict().parse(request.query),{grant}=await admin(request);
+    if(!id.startsWith('collections/'))return {generated:null};
+    // Plex unreachable: the rest of the page still works
+    const {generated}=await worker.request<{generated:{color:string;default:string;name:string;hash:string}|null}>(runOf(grant),'background',{id}).catch(()=>({generated:null}));
+    return {generated:generated&&{...generated,...await files.generatedUrls(id,generated.name)}};
+  });
   app.get('/api/v1/admin/artwork/title/live',async request=>{const {id}=z.object({id:rel}).strict().parse(request.query);return ask(request,'live',{id});});
-  app.get('/api/v1/admin/artwork/title/remote',async request=>{const q=z.object({id:rel,kind:z.enum(['poster','logo','backdrop'])}).strict().parse(request.query);return ask(request,'remote',q);});
-  app.get('/api/v1/admin/artwork/state',async request=>ask(request,'state'));
+  app.get('/api/v1/admin/artwork/title/remote',async request=>{
+    const q=z.object({id:rel,kind:z.enum(['poster','logo','backdrop'])}).strict().parse(request.query),{grant}=await admin(request);
+    const {title,season}=await files.locate(q.id);
+    return pictures.list(await files.meta(title),season,q.kind,plexOf(grant));
+  });
+  // The poster size a backdrop is cropped to: the layout's, which the engine works out for the title.
+  app.get('/api/v1/admin/artwork/title/target',async request=>{const {id}=z.object({id:rel}).strict().parse(request.query);return ask(request,'target',{id});});
+  app.get('/api/v1/admin/artwork/state',async request=>{await admin(request);return files.state(store.settings().upload);});
   app.get('/api/v1/admin/artwork/preview',images,async(request,reply)=>{
     const q=z.object({id:rel,poster:fileName.optional(),logo:fileName.optional(),w:width,kind:kind.optional(),url:link.optional(),plex:plexPath.optional(),v:z.string().max(40).optional()}).strict().parse(request.query);
     const {grant}=await admin(request);return send(reply,await worker.image(runOf(grant),'preview',q));
   });
   app.get('/api/v1/admin/artwork/file',images,async(request,reply)=>{
-    const q=z.object({p:rel,w:width,v:z.string().max(40).optional()}).strict().parse(request.query),{grant}=await admin(request);
-    // The address changes with the file (v), so the browser may keep it.
-    return send(reply,await worker.image(runOf(grant),'file',{p:q.p,w:q.w}),'private, max-age=86400');
+    const q=z.object({p:rel,w:width,v:z.string().max(40).optional()}).strict().parse(request.query),{grant}=await admin(request),w=q.w??400;
+    // The address changes with the file (v), so the browser may keep it. A thumbnail the engine hasn't made yet, it makes.
+    const found=await files.thumbnail(q.p,w);
+    return send(reply,found.bytes?{bytes:found.bytes,type:found.type}:await worker.image(runOf(grant),'thumb',{p:q.p,w,key:found.key}),'private, max-age=86400');
   });
   app.get('/api/v1/admin/artwork/plex-image',images,async(request,reply)=>{
     const {p}=z.object({p:plexPath}).strict().parse(request.query),{grant}=await admin(request);
-    return send(reply,await worker.image(runOf(grant),'plex_image',{p}),'private, max-age=3600');
+    let response:Response;
+    try{response=await fetch(new URL(p,engine.paths.plexUrl),{headers:{'X-Plex-Token':grant.serverToken},redirect:'error',signal:AbortSignal.timeout(20000)});}
+    catch{throw new AppError('PLEX_UNAVAILABLE','Plex could not be reached.',502);}
+    if(!response.ok){await response.body?.cancel();throw new AppError('ARTWORK_NOT_FOUND','Plex doesn’t have that picture.',404);}
+    const bytes=Buffer.from(await response.arrayBuffer()),type=imageType(bytes);
+    requireThat(type,'ARTWORK_NOT_FOUND','Not an image',404);
+    return send(reply,{bytes,type},'private, max-age=3600');
   });
   app.get('/api/v1/admin/artwork/image',images,async(request,reply)=>{
     const {u}=z.object({u:link}).strict().parse(request.query);await admin(request);
     return send(reply,await remote.get(u),'private, max-age=3600');
   });
-  app.post('/api/v1/admin/artwork/title/select',async request=>ask(request,'select',z.object({id:rel,kind,name:fileName}).strict().parse(request.body)));
-  app.post('/api/v1/admin/artwork/title/no-logo',async request=>ask(request,'no_logo',z.object({id:rel,on:z.boolean()}).strict().parse(request.body)));
+  app.post('/api/v1/admin/artwork/title/select',async request=>{const input=z.object({id:rel,kind,name:fileName}).strict().parse(request.body);await admin(request);return files.select(input.id,input.kind,input.name);});
+  app.post('/api/v1/admin/artwork/title/no-logo',async request=>{const input=z.object({id:rel,on:z.boolean()}).strict().parse(request.body);await admin(request);return files.noLogo(input.id,input.on);});
   // A collection's generated background: use it as the poster, or draw it again in another colour (null: its default).
-  app.post('/api/v1/admin/artwork/title/generated',async request=>ask(request,'generated',z.object({id:rel}).strict().parse(request.body)));
-  app.post('/api/v1/admin/artwork/title/background-color',async request=>ask(request,'background_color',z.object({id:rel,color:z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable()}).strict().parse(request.body)));
+  app.post('/api/v1/admin/artwork/title/generated',async request=>{const input=z.object({id:rel}).strict().parse(request.body);return noted(input.id,await ask<Marks>(request,'generated',input));});
+  app.post('/api/v1/admin/artwork/title/background-color',async request=>{
+    const input=z.object({id:rel,color:z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable()}).strict().parse(request.body);
+    return noted(input.id,await ask<Marks>(request,'background_color',input));
+  });
   app.post('/api/v1/admin/artwork/title/import',async request=>{
     const input=z.object({id:rel,kind,url:link.optional(),plex:plexPath.optional(),use:z.boolean(),crop:crop.optional()}).strict().parse(request.body);
     requireThat(!!input.url!==!!input.plex,'VALIDATION_FAILED','Give a picture’s address or its Plex path.');
-    return ask(request,'import',input);
+    const {use:_,...params}=input;
+    // A crop is a picture of your own
+    return added(input,await ask(request,'import',params),input.crop?'own':(input.plex??input.url)!);
   });
   // An image from the administrator's computer, sent as base64 inside JSON like every other request (up to 25 MB).
-  app.post('/api/v1/admin/artwork/title/upload',{bodyLimit:36*1024*1024},async request=>
-    ask(request,'upload',z.object({id:rel,kind,data:z.string().max(35*1024*1024).regex(/^[A-Za-z0-9+/]*={0,2}$/),use:z.boolean()}).strict().parse(request.body)));
-  app.post('/api/v1/admin/artwork/title/discard',async request=>ask(request,'discard',z.object({id:rel}).strict().parse(request.body)));
-  app.post('/api/v1/admin/artwork/title/remove',async request=>ask(request,'remove',z.object({id:rel,kind,name:fileName}).strict().parse(request.body)));
+  app.post('/api/v1/admin/artwork/title/upload',{bodyLimit:36*1024*1024},async request=>{
+    const input=z.object({id:rel,kind,data:z.string().max(35*1024*1024).regex(/^[A-Za-z0-9+/]*={0,2}$/),use:z.boolean()}).strict().parse(request.body);
+    return added(input,await ask(request,'upload',{id:input.id,kind:input.kind,data:input.data}),'own');
+  });
+  app.post('/api/v1/admin/artwork/title/discard',async request=>{
+    const {id}=z.object({id:rel}).strict().parse(request.body),entry=await files.entry(id);
+    requireThat(entry,'VALIDATION_FAILED','Nothing to discard');
+    const result=await ask(request,'discard',{id,entry});await files.mark([{rel:id}],true);return result;
+  });
+  app.post('/api/v1/admin/artwork/title/remove',async request=>{const input=z.object({id:rel,kind,name:fileName}).strict().parse(request.body);await admin(request);await files.remove(input.id,input.kind,input.name);return {};});
   app.post('/api/v1/admin/artwork/title/clear',async request=>{z.object({}).strict().parse(request.body);return ask(request,'clear');});
   // A push makes the chosen titles' artwork again (and sends it to Plex when uploads are on), one job per title.
   app.post('/api/v1/admin/artwork/push',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{
-    const {ids}=z.object({ids:z.array(rel).min(1).max(200).optional()}).strict().parse(request.body),{grant}=await admin(request),run=runOf(grant);
-    const {jobs}=await worker.request<{jobs:{id:string;title:string;args:string[]}[]}>(run,'push',ids?{ids}:{});
-    const verb=store.settings().upload?'Push':'Render';
-    return {jobs:jobs.map(job=>engine.enqueue(grant.accountId,`${verb}: ${job.title}`,job.args,run,{done:()=>{void worker.request(run,'pushed',{id:job.id}).catch(()=>{});}}))};
+    const {ids}=z.object({ids:z.array(rel).min(1).max(200).optional()}).strict().parse(request.body),{grant}=await admin(request),run=runOf(grant),settings=store.settings();
+    const jobs=await files.push(ids,settings.includeEpisodes,plexOf(grant),libraries(grant));
+    const verb=settings.upload?'Push':'Render';
+    return {jobs:jobs.map(job=>engine.enqueue(grant.accountId,`${verb}: ${job.title}`,job.args,run,{done:()=>{void files.mark([{rel:job.id}],true).catch(()=>{});}}))};
   });
 
   // The layout editor: every layout's settings as it edits them, live previews of unsaved changes, and saving them.
@@ -149,7 +209,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   app.post('/api/v1/admin/artwork/template/save',async request=>{
     const input=z.object({layout:layoutName,mode:templateMode,values:templateValues}).strict().parse(request.body),{grant}=await admin(request),run=runOf(grant);
     const {layout}=await worker.request<{layout:Record<string,unknown>}>(run,'template_merge',input);
-    await store.saveLayout(grant.accountId,input.layout,store.layout(input.layout).revision,layoutValue.parse(layout),layouts=>engine.check({layouts},grant.libraries));
+    await store.saveLayout(grant.accountId,input.layout,store.layout(input.layout).revision,layoutValue.parse(layout),layouts=>engine.check({layouts},run));
     changed(grant);return worker.request(run,'template');
   });
 
@@ -157,12 +217,12 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   app.get('/api/v1/admin/artwork/collections',async request=>{
     const {grant}=await admin(request),saved=store.collections();
     // Until definitions are first saved, the engine's seasonal presets (all off) are what it would use.
-    const defaults=await engine.collections<{collections:unknown[]}>(runOf(grant),'defaults').then(d=>d.collections,()=>[]);
+    const defaults=await engine.defaultCollections(runOf(grant)).catch(()=>[]);
     return {...saved,defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload};
   });
   app.put('/api/v1/admin/artwork/collections',{bodyLimit:512*1024},async request=>{
     const {grant}=await admin(request);
-    const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),({radarrKey:_,...collections})=>engine.check({collections},grant.libraries));
+    const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),({radarrKey:_,...collections})=>engine.check({collections},runOf(grant)));
     changed(grant);return saved;
   });
   // The saved Radarr's quality profiles, so downloads can name one (the engine is given its ID).
@@ -187,7 +247,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   app.post('/api/v1/admin/artwork/collections/discover',async request=>{
     const input=z.object({mode:z.enum(['recommendations','browse','universes','preview']),provider:z.enum(['all','tmdb','trakt','mdblist','imdb','letterboxd','flixpatrol']).optional(),
       query:z.string().max(200).optional(),type:z.enum(['movie','tv']).optional(),universe:z.string().max(60).optional(),url:link.optional(),limit:z.number().int().min(1).max(250).optional()}).strict().parse(request.body);
-    const {grant}=await admin(request);return engine.collections(runOf(grant),'discover',input);
+    const {grant}=await admin(request);return engine.discover(runOf(grant),input);
   });
   app.post('/api/v1/admin/artwork/collections/run',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{
     const input=z.object({kind:z.enum(['custom','all','added']),mode:z.enum(['plan','apply']),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),ratingKey:z.string().regex(/^\d{1,10}$/).optional()}).strict().parse(request.body),{grant}=await admin(request);

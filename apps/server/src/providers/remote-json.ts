@@ -3,7 +3,7 @@ import { AppError } from '../errors.js';
 export type RemoteResponse = { status: number; data: unknown; headers: Headers };
 // One JSON request to a catalog service outside Plex (Seerr, Trakt). Any status is returned to the caller;
 // only an unreachable service, a redirect or an oversized body throws. A User-Agent is sent: Trakt's firewall refuses requests without one.
-export async function remoteJson(url: URL, init: { method?: string; headers?: Record<string, string>; body?: unknown }, service: string, transport: typeof fetch = fetch, timeoutMs = 15000): Promise<RemoteResponse> {
+export async function remoteJson(url: URL, init: { method?: string; headers?: Record<string, string>; body?: unknown }, service: string, transport: typeof fetch = fetch, timeoutMs = 15000, maxBytes = 4 * 1024 * 1024): Promise<RemoteResponse> {
   let response: Response;
   try {
     response = await transport(url, { method: init.method ?? 'GET', headers: { Accept: 'application/json', 'User-Agent': 'tk.box/0.0.1', ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
@@ -16,7 +16,7 @@ export async function remoteJson(url: URL, init: { method?: string; headers?: Re
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       size += value.length;
-      if (size > 4 * 1024 * 1024) { await reader.cancel(); throw new AppError('CATALOG_RESPONSE_LIMIT', `${service} sent too much data.`, 502); }
+      if (size > maxBytes) { await reader.cancel(); throw new AppError('CATALOG_RESPONSE_LIMIT', `${service} sent too much data.`, 502); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { AppError } from '../errors.js';
+import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
 
 // Runs the artwork engine (apps/artwork/overlayrr.py) and the collections engine (apps/artwork/plex_collections.py) as
@@ -20,6 +20,8 @@ export type EngineScript = 'artwork' | 'collections';
 export type KeptCollections = { updated: string | null; collections: { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom'; items: number; rating_key?: string; off?: boolean }[] };
 type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
 type Inputs = { settings: ArtworkSettings; layouts: Record<string, Record<string, unknown>>; collections?: ArtworkCollections };
+// The long-lived worker process (artwork-worker.ts), which answers checks and the collections engine's questions too.
+type Worker = { request<T>(run: ArtworkRun, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> };
 const MAX_LINES = 5000, SAVED_LINES = 2000;
 
 // The engine's config for one run. Library titles come from the signed-in administrator's view of Plex, because the
@@ -61,6 +63,8 @@ export class ArtworkEngine {
   private current?: Running & { script: EngineScript; args: string[] };
   private known?: { at: number; ready: boolean; version?: string; error?: string };
   private checking?: Promise<NonNullable<ArtworkEngine['known']>>;
+  private worker?: Worker;
+  private defaults?: Promise<unknown[]>;
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
@@ -69,6 +73,7 @@ export class ArtworkEngine {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
   }
+  useWorker(worker: Worker) { this.worker = worker; }
   secrets(): EngineSecrets { const radarr = this.store.collectionsConfig().radarrKey, trakt = this.traktClientId(); return { ...this.store.keys(), ...(radarr ? { radarr } : {}), ...(trakt ? { traktClientId: trakt } : {}) }; }
   // Whether Python and the engine's packages are installed. Asked again at most once a minute unless forced.
   status(force = false) {
@@ -78,16 +83,15 @@ export class ArtworkEngine {
       .then(known => { this.known = known; return known; }).finally(() => { this.checking = undefined; });
     return this.checking;
   }
-  // Both engines' own validation of what is about to be saved (on top of what is saved now). Until Python is set up only
-  // the database's own checks apply (settings can be saved first); the engines check everything again when a job runs.
-  async check(changes: Partial<Inputs>, libraries: ArtworkLibrary[]) {
-    if (!(await this.status()).ready) return;
-    const file = this.writeConfig(libraries, `check-${randomUUID()}.json`, changes);
-    try {
-      const results = await Promise.all([[this.paths.script, file, '--check'], [this.paths.collectionsScript, file, 'check']].map(args => this.capture(args, 30000)));
-      const failed = results.find(r => r.code !== 0);
-      if (failed) throw new AppError('ARTWORK_CONFIG_INVALID', failed.output.trim().replace(/^ERROR:\s*/m, '').split('\n').at(-1) || 'The artwork engine rejected these settings.', 422);
-    } finally { rmSync(file, { force: true }); }
+  // Both engines' own validation of what is about to be saved (on top of what is saved now), asked of the worker. Until
+  // Python is set up only the database's own checks apply (settings can be saved first); the engines check everything again
+  // when a job runs.
+  async check(changes: Partial<Inputs>, run: ArtworkRun) {
+    if (!this.worker || !(await this.status()).ready) return;
+    const file = this.writeConfig(run.libraries, `check-${randomUUID()}.json`, changes);
+    try { await this.worker.request(run, 'check', { config: file }, 30000); }
+    catch (e) { throw (e as AppError).code === 'ARTWORK_REQUEST_FAILED' ? new AppError('ARTWORK_CONFIG_INVALID', (e as Error).message || 'The artwork engine rejected these settings.', 422) : e; }
+    finally { rmSync(file, { force: true }); }
   }
   // `done` runs once the job succeeds (a push clears its title's "not pushed" mark with it). An artwork run over every
   // title, or one for a newly added title, has the collections engine go first when there is collection work for it, so
@@ -102,14 +106,18 @@ export class ArtworkEngine {
     const same = (job: { script: EngineScript; args: string[] }) => job.script === script && job.args.join('\0') === args.join('\0');
     return (!!this.current && same(this.current)) || this.queue.some(same);
   }
-  // A Discover request or the seasonal presets: a short collections-engine run with this run's credentials, JSON in and out.
-  async collections<T>(run: ArtworkRun, command: 'discover' | 'defaults', input: Record<string, unknown> = {}): Promise<T> {
-    const engine = await this.status();
-    if (!engine.ready) throw new AppError('ARTWORK_ENGINE_UNAVAILABLE', `The artwork engine is not set up: ${engine.error}`, 503);
-    const file = this.writeConfig(run.libraries, 'config.json');
-    const result = await this.capture([this.paths.collectionsScript, file, command], 90000, { env: childEnv(run, this.secrets()), cwd: this.workDir, input: JSON.stringify(input) });
-    if (result.code !== 0) throw new AppError('ARTWORK_REQUEST_FAILED', result.errors.trim().replace(/^ERROR:\s*/m, '').split('\n').at(-1) || 'The collections engine could not answer.', 422);
-    return JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '') as T;
+  // A Discover answer from the collections engine, asked of the worker with this run's credentials.
+  async discover(run: ArtworkRun, input: Record<string, unknown>) {
+    requireThat(this.worker, 'ARTWORK_ENGINE_UNAVAILABLE', 'The artwork engine is not set up.', 503);
+    this.writeConfig(run.libraries, 'config.json');
+    return this.worker.request(run, 'collections', { command: 'discover', input });
+  }
+  // The seasonal presets used until collections are first saved; they ship with the engine, so they're asked for once.
+  defaultCollections(run: ArtworkRun) {
+    if (!this.worker) return Promise.resolve([]);
+    const defaults = this.defaults ??= this.worker.request<{ collections: unknown[] }>(run, 'collections', { command: 'defaults' }).then(d => d.collections);
+    defaults.catch(() => { if (this.defaults === defaults) this.defaults = undefined; });
+    return defaults;
   }
   cancel(id: number) {
     const waiting = this.queue.findIndex(j => j.id === id);
@@ -200,22 +208,15 @@ export class ArtworkEngine {
     renameSync(temporary, file);
     return file;
   }
-  // Short runs: checks, with no credentials, and the collections engine's answers, given `input` on stdin. `output` is
-  // everything the run printed; `stdout` and `errors` keep the two apart, for an answer and its failure.
-  private capture(args: string[], timeoutMs: number, options: { env?: NodeJS.ProcessEnv; cwd?: string; input?: string } = {}) {
-    return new Promise<{ code: number | null; output: string; stdout: string; errors: string }>(resolve => {
-      let output = '', stdout = '', errors = '';
-      const limit = options.input === undefined ? 65536 : 8 * 1024 * 1024;
-      const child = spawn(this.paths.python, args, { cwd: options.cwd ?? this.paths.dataDir, env: options.env ?? childEnv(undefined, {}), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: timeoutMs });
-      const add = (chunk: Buffer, error: boolean) => {
-        const text = chunk.toString('utf8');
-        if (output.length < 65536) output += text;
-        if (error) { if (errors.length < 65536) errors += text; } else if (stdout.length < limit) stdout += text;
-      };
-      child.stdout.on('data', (chunk: Buffer) => add(chunk, false)); child.stderr.on('data', (chunk: Buffer) => add(chunk, true));
-      child.stdin.on('error', () => {}); child.stdin.end(options.input ?? '');
-      child.once('error', e => { const message = (e as NodeJS.ErrnoException).code === 'ENOENT' ? `${this.paths.python} was not found. Set PYTHON_PATH.` : e.message; resolve({ code: null, output: message, stdout: '', errors: message }); });
-      child.once('close', code => resolve({ code, output, stdout, errors }));
+  // A short run with no credentials (whether Python and its packages are installed); `output` is everything it printed.
+  private capture(args: string[], timeoutMs: number) {
+    return new Promise<{ code: number | null; output: string }>(resolve => {
+      let output = '';
+      const child = spawn(this.paths.python, args, { cwd: this.paths.dataDir, env: childEnv(undefined, {}), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: timeoutMs });
+      const add = (chunk: Buffer) => { if (output.length < 65536) output += chunk.toString('utf8'); };
+      child.stdout.on('data', add); child.stderr.on('data', add);
+      child.once('error', e => resolve({ code: null, output: (e as NodeJS.ErrnoException).code === 'ENOENT' ? `${this.paths.python} was not found. Set PYTHON_PATH.` : e.message }));
+      child.once('close', code => resolve({ code, output }));
     });
   }
 }

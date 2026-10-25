@@ -221,6 +221,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const artwork = new ArtworkEngine(artworkStore, {python: config.PYTHON_PATH, script: resolve('apps/artwork/overlayrr.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'), dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, plexUrl: config.PLEX_URL},
     (message, detail) => app.log.info(detail, message), () => exploreStore.view().traktClientId || undefined);
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
+  artwork.useWorker(artworkWorker);
   const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message));
   registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin);
   artwork.finished = () => { plex.forgetMetadata(); events.publish('library'); };

@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, timedelta
 from functools import lru_cache
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 
 # NumPy's math library (OpenBLAS) starts a busy-waiting thread per core at import: seconds of CPU on a big shared
@@ -40,9 +40,9 @@ import numpy as np
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps
 import yaml
 
-from engine_common import (CHARTS, FANART, HTTP as SharedHTTP, IMAGE_BASE, IMAGE_TTL, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE,
+from engine_common import (FANART, HTTP as SharedHTTP, IMAGE_BASE, IMAGE_TTL, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE,
                            SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE, STREAMING, STREAMING_LOGOS, THUMB_TTL, WEB_UPLOAD_LIMIT,
-                           Metadata, Plex, atomic_write, collection_key, custom_collection, is_url, local_path, option,
+                           Metadata, Plex, atomic_write, custom_collection, is_url, local_path, option,
                            plex_item, read_config as read_shared_config, run_lock, select_item, streaming_services,
                            web_download)
 
@@ -3332,8 +3332,9 @@ def card_values(values):
 
 
 class Worker:
-    """--worker: tk.box's Admin › Artwork asks this long-lived process for titles, picks, previews and layout previews as
-    JSON lines on stdin (see serve_worker); renders and uploads still run as separate jobs."""
+    """--worker: tk.box's Admin › Artwork asks this long-lived process for what needs the renderer (previews, layout previews,
+    thumbnails, generated backgrounds, which files the last push used) as JSON lines on stdin (see serve_worker). tk.box
+    itself lists titles, keeps picks and the list of unpushed changes, and asks the providers; renders run as separate jobs."""
 
     def __init__(self, config_path):
         config = read_config(config_path)
@@ -3342,24 +3343,22 @@ class Worker:
         self.cache = local_path(option(config, "cache_dir"), config_path.parent)
         self.lock = threading.RLock()
         self.renderers, self.previews, self.items, self.stamp, self.timer = {}, {}, {}, None, None
+        self.looking = {}  # (title, season) -> the lock of the base_item lookup under way
+        self.clients = (None, None, None)  # (config version, config, Artwork) shared by every request
         self.samples, self.decoded, self.drafts, self.layouts = {}, OrderedDict(), OrderedDict(), (None, None)  # Template view
         self.fetched = OrderedDict()  # Online pictures downloaded to be previewed (bytes, never saved), newest last
         self.library_cache = None  # (when asked, library_kinds' answer)
         self.rendering, self.thumbing = threading.Semaphore(1), threading.Semaphore(2)  # One preview and two thumbnails at a time
-        self.pending_file = self.cache / "web_pending.json"
-        try:
-            self.pending = json.loads(self.pending_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self.pending = {}
-        if not isinstance(self.pending, dict):
-            self.pending = {}
-        self.sources_file = self.cache / "web_sources.json"  # short_hash -> the online picture it was downloaded from
-        try:
-            self.sources = json.loads(self.sources_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self.sources = {}
-        if not isinstance(self.sources, dict):
-            self.sources = {}
+
+    def client(self):
+        """(config, Artwork) shared by every request while the config stays the same, so connections, the TVDB login and
+        answers already fetched are reused."""
+        stamp = self.config_path.stat().st_mtime_ns
+        with self.lock:
+            if self.clients[0] != stamp:
+                config = read_config(self.config_path)
+                self.clients = (stamp, config, Artwork(HTTP(self.cache), config, self.config_path.parent))
+            return self.clients[1], self.clients[2]
 
     def path(self, rel, depths):
         """A folder or file under assets/, only ever <category>/<title>[/Season NN][/file]."""
@@ -3378,27 +3377,6 @@ class Worker:
         return folder.parent if len(Path(rel).parts) == 3 else folder, folder
 
     @staticmethod
-    def url(path, rel, width):
-        return WORKER_ROUTES + "/file?" + urlencode({"p": rel, "w": width, "v": path.stat().st_mtime_ns})
-
-    def titles(self):
-        rows = []
-        for category in WEB_CATEGORIES:
-            if not (self.root / category).is_dir():
-                continue
-            for folder in (self.root / category).iterdir():
-                if not folder.is_dir():
-                    continue
-                meta, rel = web_meta(folder), f"{category}/{folder.name}"
-                named = {path.stem.lower(): path for path in folder.iterdir()
-                         if path.is_file() and path.suffix.lower() in ArtworkFiles.extensions}
-                cover = named.get("rendered") or named.get("poster")
-                rows.append({"id": rel, "cat": category, "title": str(meta.get("title") or folder.name), "year": meta.get("year"),
-                             "first": category == "collections" and collection_key(meta.get("title") or folder.name) in {collection_key(chart[1]) for chart in CHARTS},
-                             "thumb": self.url(cover, f"{rel}/{cover.name}", 300) if cover else None})
-        return sorted(rows, key=lambda row: row["title"].casefold())
-
-    @staticmethod
     def picked(folder, kind, name, candidate=False):
         """A poster or logo file of this folder by name: the one in use or a candidate (poster2, poster-1a2b3c4d);
         with `candidate`, only a candidate."""
@@ -3409,14 +3387,6 @@ class Worker:
                 or (candidate and not match[2])):
             raise ValueError("Not a candidate file" if candidate else "Not a poster or logo file")
         return path
-
-    def version(self, folder, title):
-        """Changes whenever a file the preview depends on does, so the page knows when to ask for a new one."""
-        state = [self.config_path.stat().st_mtime_ns, self.no_logo(title)]
-        for where, kind in ((folder, "poster"), (title, "logo")):
-            path = ArtworkFiles.source(where, kind)
-            state.append(path and (path.name, path.stat().st_mtime_ns, path.stat().st_size))
-        return hashlib.sha1(repr(state).encode()).hexdigest()[:10]
 
     def drop_previews(self):
         """Forget every rendered preview and layout mask; the page asks for this when a title is closed."""
@@ -3496,85 +3466,66 @@ class Worker:
 
     @staticmethod
     def hang_up(client):
-        """Close the worker's pooled connections of an Artwork or Plex made for one request."""
+        """Close the worker's pooled connections of a Plex made for one request."""
         session = getattr(client.http.local, "session", None)
         if session:
             session.close()
 
-    def remote(self, rel, kind):
-        """Every poster, logo or backdrop the providers offer, as links the browser loads itself; nothing is downloaded here."""
-        if kind not in ("poster", "logo", "backdrop"):
-            raise ValueError("Pick posters, logos or backdrops")
+    def target(self, rel):
+        """The size of the poster a push makes for this folder, which a backdrop is cropped to."""
         title, folder = self.locate(rel)
-        # Seasons share their show's logos
-        season = None if folder == title or kind == "logo" else int(re.search(r"\d+", folder.name)[0])
-        item, style = self.base_item(title, season)
-        artwork = Artwork(HTTP(self.cache), read_config(self.config_path), self.config_path.parent)
-        try:
-            found = artwork.found_backdrops(item) if kind == "backdrop" else artwork.found_art(item)
-        finally:
-            self.hang_up(artwork)
-        rows = found[{"poster": "posters", "logo": "logos", "backdrop": "backdrops"}[kind]]
-        if kind == "logo":
-            rows = [row for row in rows if not urlparse(row[1]["url"]).path.lower().endswith(".svg") and artwork.language_rank(row[1]) < 3]
-        # Textless (or language-neutral) first, then the rest; each group by language, then size
-        rows.sort(key=lambda row: (row[1].get("has_text") is not False, artwork.language_rank(row[1]), -int(row[1].get("width") or 0)))
-        items = []
-        for provider, art in rows:
-            url = art["url"]
-            plex = url[len(artwork.plex.url):] if art.get("headers") else None
-            # The page loads images only from tk.box: Plex's own copies need the token, the providers' are proxied
-            if plex:
-                view = thumb = WORKER_ROUTES + "/plex-image?" + urlencode({"p": plex})
-            else:
-                size = "w1280" if kind == "backdrop" else "w780"  # A smaller copy than the original is plenty to look at
-                view = f"https://image.tmdb.org/t/p/{size}" + url[len(IMAGE_BASE):] if url.startswith(IMAGE_BASE) else url
-                thumb = art.get("thumb") or (url.replace("/fanart/", "/preview/") if "assets.fanart.tv" in url else url)
-                view, thumb = (WORKER_ROUTES + "/image?" + urlencode({"u": link}) for link in (view, thumb))
-            items.append({"provider": provider, "url": None if plex else url, "plex": plex, "view": view, "thumb": thumb,
-                          "language": art.get("language"), "text": art.get("has_text"), "width": int(art.get("width") or 0),
-                          "height": int(art.get("height") or 0)})
-        # A backdrop is cropped to this layout's poster shape and size
-        return {"items": items, "notes": found["errors"], "target": [style.width, style.height] if kind == "backdrop" else None}
+        style = self.base_item(title, None if folder == title else int(re.search(r"\d+", folder.name)[0]))[1]
+        return {"target": [style.width, style.height]}
 
     def plex_get(self, path):
         """An image from Plex's own library path, fetched with the server's token."""
         if (not path.startswith(("/library/metadata/", "/library/collections/")) or ".." in path  # Collections: their collage
                 or re.search(r"[\s\x00-\x1f]", path)):
             raise ValueError("Not a Plex image path")
-        server = Plex(HTTP(self.cache), read_config(self.config_path))
+        server = self.client()[1].plex
+        if not server.url:
+            raise ValueError("Plex isn't configured")
         try:
-            if not server.url:
-                raise ValueError("Plex isn't configured")
             data = server.http.get(server.url + path, headers=server.headers)
         except RuntimeError as error:
             raise ValueError(f"Plex: {error}") from None
-        finally:
-            self.hang_up(server)
         if len(data) > WEB_UPLOAD_LIMIT:
             raise ValueError("That file is larger than 40 MB")
         return data
 
     def base_item(self, title, season):
-        """The Plex item and layout a push would use, looked up once while the title stays open."""
+        """The Plex item and layout a push would use, looked up once while the title stays open. The page asks several
+        things about a title at once; the first request looks it up and the others wait for its answer."""
         rel = f"{title.parent.name}/{title.name}"
         with self.lock:
             if (rel, season) in self.items:
                 item, style = self.items[rel, season]
                 return dict(item), self.logo_style(title, style)
-        config = read_config(self.config_path)
-        artwork = Artwork(HTTP(self.cache), config, self.config_path.parent)
-        try:
-            items = prepare_items(artwork, config, selected=[artwork.plex.get_item(self.key(rel))], include_seasons=season is not None)
-            item = next((entry for entry in items if entry.get("season") == season), None)
-            if item is None:
-                raise ValueError("Plex doesn't list that season")
-            style = layout_styles(config)[item["layout_key"]]
-            artwork.badge_facts(item, style)
-        finally:
-            self.hang_up(artwork)
-        with self.lock:
-            self.items[rel, season] = (item, style)
+            gate = self.looking.setdefault((rel, season), threading.Lock())
+        with gate:
+            with self.lock:
+                if (rel, season) in self.items:
+                    item, style = self.items[rel, season]
+                    return dict(item), self.logo_style(title, style)
+            try:
+                config, artwork = self.client()
+                try:
+                    found = artwork.plex.get_item(self.key(rel))
+                except RuntimeError as error:
+                    if "HTTP 404" not in str(error):
+                        raise
+                    found = artwork.plex.get_item(self.relink(title, artwork.plex))
+                items = prepare_items(artwork, config, selected=[found], include_seasons=season is not None)
+                item = next((entry for entry in items if entry.get("season") == season), None)
+                if item is None:
+                    raise ValueError("Plex doesn't list that season")
+                style = layout_styles(config)[item["layout_key"]]
+                artwork.badge_facts(item, style)
+                with self.lock:
+                    self.items[rel, season] = (item, style)
+            finally:
+                with self.lock:
+                    self.looking.pop((rel, season), None)
         return dict(item), self.logo_style(title, style)
 
     @staticmethod
@@ -3762,11 +3713,7 @@ class Worker:
                 return dict(self.samples[title, season])
         try:
             item = self.base_item(title, season)[0]
-            artwork = Artwork(HTTP(self.cache), read_config(self.config_path), self.config_path.parent)
-            try:
-                artwork.badge_facts(item, Style(badges=BADGES))
-            finally:
-                self.hang_up(artwork)
+            self.client()[1].badge_facts(item, Style(badges=BADGES))
         except (ValueError, RuntimeError, KeyError, TypeError, OSError, ET.ParseError):
             meta = web_meta(title)
             item = {"type": {"movies": "movie", "tv": "tv"}.get(title.parent.name, "collection"),
@@ -3836,63 +3783,6 @@ class Worker:
         notes = ["no-still"] * (card and folder == title) + ["no-logo"] * (logo is None and style.logo_mode != "none")
         return buffer.getvalue(), " ".join(notes)
 
-    def section(self, folder, rel, label, title):
-        found = {"id": rel, "label": label, "pv": self.version(folder, title), "rendered": None, "poster": None, "logo": None, "posters": [], "logos": []}
-        order = lambda path: re.sub(r"\d+", lambda number: number[0].zfill(6), path.name.casefold())
-        for path in sorted(folder.iterdir(), key=order):
-            match = WEB_FILE.fullmatch(path.stem)
-            if not path.is_file() or path.suffix.lower() not in ArtworkFiles.extensions or not (match or path.stem.lower() == "rendered"):
-                continue
-            file_rel = f"{rel}/{path.name}"
-            entry = {"name": path.name, "thumb": self.url(path, file_rel, 360), "full": self.url(path, file_rel, 1400),
-                     "kb": path.stat().st_size // 1024, "kept": bool(match and match[2] and match[2].startswith("-"))}
-            try:
-                with Image.open(path) as image:
-                    entry["size"] = f"{image.width}\u00d7{image.height}"
-            except (OSError, SyntaxError, Image.DecompressionBombError):
-                pass
-            if not match:
-                found["rendered"] = entry
-                continue
-            entry["hash"] = self.short_hash(path)  # Names change as picks rename files; the contents don't
-            entry["source"] = self.sources.get(entry["hash"])
-            if match[2]:
-                found[match[1].lower() + "s"].append(entry)
-            else:
-                found[match[1].lower()] = entry
-        return found
-
-    def detail(self, rel):
-        folder = self.path(rel, (2,))
-        if not folder.is_dir():
-            raise ValueError("Folder not found")
-        meta = web_meta(folder)
-        seasons = sorted((path for path in folder.iterdir() if path.is_dir() and re.fullmatch(r"Season \d+", path.name)),
-                         key=lambda path: path.name)
-        try:
-            found = self.generated(folder)
-        except (ValueError, KeyError, RuntimeError, OSError) as error:  # Plex unreachable: the rest of the page still works
-            print(f"WARN {folder.name}: generated background: {error}", file=sys.stderr, flush=True)
-            found = None
-        generated = found and {"color": found[0], "default": found[1], "name": found[2].name, "hash": self.short_hash(found[2]),
-                               "thumb": self.url(found[2], f"{rel}/{found[2].name}", 360), "full": self.url(found[2], f"{rel}/{found[2].name}", 1400)}
-        return {"id": rel, "title": str(meta.get("title") or folder.name), "year": meta.get("year"),
-                "key": meta.get("rating_key"), "tv": rel.startswith("tv/"), "no_logo": bool(meta.get("no_logo")), "generated": generated,
-                "sections": [self.section(folder, rel, None, folder)] + [self.section(path, f"{rel}/{path.name}", path.name, folder) for path in seasons]}
-
-    def mark(self, rel, changed, before=None):
-        """Note a title as changed (or pushed). `before` is (folder|kind, file name or None): the file in use before
-        the first unpushed change there, which Discard puts back; later changes don't replace it."""
-        with self.lock:
-            if changed:
-                entry = self.pending.get(rel) or {"title": web_meta(self.path(rel, (2,))).get("title") or Path(rel).name, "before": {}}
-                if before and "before" in entry:  # Titles changed before this was recorded can't be put back
-                    entry["before"].setdefault(*before)
-                self.pending[rel] = entry
-            else:
-                self.pending.pop(rel, None)
-            atomic_write(self.pending_file, json.dumps(self.pending, indent=2).encode())
-
     @staticmethod
     def short_hash(path):
         """A file's identity for the page and for set-aside names. Hashed fresh: renames can leave the remembered
@@ -3924,22 +3814,6 @@ class Worker:
             chosen.rename(folder / (kind + chosen.suffix.lower()))
         return kept and kept.name
 
-    def select(self, rel, kind, name):
-        """Make a candidate the title's poster/logo; the one it replaces stays beside it as poster-<hash>."""
-        title, folder = self.locate(rel)
-        if kind == "logo" and folder != title:
-            raise ValueError("Seasons use the series logo; change it on the series")
-        kept = self.swap(folder, kind, self.picked(folder, kind, name, candidate=True))
-        was = kind == "logo" and self.no_logo(title)
-        if was:  # Picking a logo means wanting one
-            self.write_no_logo(title, False)
-        if not web_meta(title).get("rating_key"):
-            return {"warning": "This title has no Plex ID saved yet, so it can't be pushed until the script has run for it once"}
-        self.mark(f"{title.parent.name}/{title.name}", True, (f"{rel}|{kind}", kept))
-        if was:
-            self.mark(f"{title.parent.name}/{title.name}", True, (f"{rel}|nologo", True))
-        return {"warning": None}
-
     def generated(self, title, redraw=False):
         """A collection's generated background, for the collections that get one (streaming, chart, custom and curated):
         (color, default color, generated.png), drawn again when its color or its layout's glow changed. None for others."""
@@ -3960,17 +3834,23 @@ class Worker:
             atomic_write(title / ".overlayrr.json", json.dumps({**ArtworkFiles.metadata(title), "generated": key}, indent=2).encode())
         return color, default, path
 
+    def generated_info(self, rel):
+        """The collection's generated background for the page (drawn first if needed), or None for titles that have none."""
+        title = self.path(rel, (2,))
+        found = self.generated(title) if title.is_dir() else None
+        return found and {"color": found[0], "default": found[1], "name": found[2].name, "hash": self.short_hash(found[2])}
+
     def use_generated(self, rel, kept=None):
-        """The Generated background tile: make the collection's generated background its poster."""
+        """The Generated background tile: make the collection's generated background its poster. tk.box notes the change
+        (`marks`: the spot and the file in use there before)."""
         title, folder = self.locate(rel)
         found = self.generated(title) if folder == title else None
         if found is None:
             raise ValueError("Only streaming, chart, custom and curated collections have a generated background")
         kept = self.swap(title, "poster", found[2]) or kept
         if not web_meta(title).get("rating_key"):
-            return {"warning": "This title has no Plex ID saved yet, so it can't be pushed until the script has run for it once"}
-        self.mark(rel, True, (f"{rel}|poster", kept))
-        return {"warning": None}
+            return {"warning": "This title has no Plex ID saved yet, so it can't be pushed until the script has run for it once", "marks": []}
+        return {"warning": None, "marks": [[f"{rel}|poster", kept]]}
 
     def background_color(self, rel, color):
         """Right-click > colour on the Generated background tile: draw it again in `color` (#RRGGBB, or None for its
@@ -3994,23 +3874,8 @@ class Worker:
         self.generated(title, redraw=True)
         result = self.use_generated(rel, kept)
         if web_meta(title).get("rating_key"):
-            self.mark(rel, True, (f"{rel}|background", was))
+            result["marks"].append([f"{rel}|background", was])
         return result
-
-    def choose_no_logo(self, rel, on):
-        """The "No logo" tile: the next push makes this title's poster, and its seasons' and episodes', without a logo, until
-        a logo is picked (or this is switched off)."""
-        title, folder = self.locate(rel)
-        if folder != title:
-            raise ValueError("Seasons use the series logo; change it on the series")
-        was = self.no_logo(title)
-        if was == on:
-            return {"warning": None}
-        self.write_no_logo(title, on)
-        if not web_meta(title).get("rating_key"):
-            return {"warning": "This title has no Plex ID saved yet, so it can't be pushed until the script has run for it once"}
-        self.mark(f"{title.parent.name}/{title.name}", True, (f"{rel}|nologo", was))
-        return {"warning": None}
 
     def last_render(self, title, folder, season):
         """The files the last render of this folder was made from, found by matching its change record (the same one
@@ -4022,14 +3887,11 @@ class Worker:
             recorded = (self.cache / "renders" / hashlib.sha256(str(output).encode()).hexdigest()).read_text()
         except OSError:
             return None
-        config, base = read_config(self.config_path), self.config_path.parent
-        server = Plex(HTTP(self.cache), config)
+        (config, artwork), base = self.client(), self.config_path.parent
         try:
-            server_id = plex_server_id(server, self.cache) if server.url else None
+            server_id = plex_server_id(artwork.plex, self.cache) if artwork.plex.url else None
         except RuntimeError:
             server_id = None
-        finally:
-            self.hang_up(server)
         # The record says whether that run uploaded, so try both, and the older form keyed on plex.url
         variants = [(dict(config, plex=dict(config.get("plex", {}), upload=upload)), server_id if upload else None, legacy)
                     for upload in (True, False) for legacy in (False, True)]
@@ -4061,13 +3923,12 @@ class Worker:
             return {"known": False}
         return {"known": True, **{kind: path and self.short_hash(path) for kind, path in hit.items()}}
 
-    def discard(self, rel):
-        """Go back to the files the last push used, and forget the title's unpushed changes. Each changed spot gets
-        the file its last render was made from; failing that, the file noted before the first change; failing that,
-        nothing (the next run picks one). The files it replaces stay beside them as poster-<hash>."""
-        with self.lock:
-            entry = self.pending.get(rel)
-        if entry is None:
+    def discard(self, rel, entry):
+        """Go back to the files the last push used; `entry` is the title's unpushed changes as tk.box keeps them, which it
+        forgets once this succeeds. Each changed spot gets the file its last render was made from; failing that, the file
+        noted before the first change; failing that, nothing (the next run picks one). The files it replaces stay beside
+        them as poster-<hash>."""
+        if not isinstance(entry, dict):
             raise ValueError("Nothing to discard")
         title = self.path(rel, (2,))
         sections = [(title, None, rel)] + [(path, int(path.name.split()[1]), f"{rel}/{path.name}") for path in sorted(title.iterdir())
@@ -4108,11 +3969,10 @@ class Worker:
                 if chosen == current or (before is not None and before[key] and current and self.kept_name(current, kind) == before[key] and not hit):
                     continue  # Already in use
                 self.swap(folder, kind, chosen)
-        self.mark(rel, False)
         return {"warning": None}
 
-    def add(self, rel, kind, data, use):
-        """Save an uploaded or downloaded image as a candidate (poster-<hash>), optionally making it the one in use."""
+    def add(self, rel, kind, data):
+        """Save an uploaded or downloaded image as a candidate (poster-<hash>); tk.box makes it the one in use when asked."""
         title, folder = self.locate(rel)
         if kind not in ("poster", "logo"):
             raise ValueError("Pick posters or logos")
@@ -4124,20 +3984,7 @@ class Worker:
         if saved is None:
             saved = folder / (stem + suffix)
             atomic_write(saved, data)
-        selected = self.select(rel, kind, saved.name) if use else {}
-        return {"name": saved.name, "warning": warning or selected.get("warning")}
-
-    def remember(self, name, source):
-        """Note where a file (poster-<hash>) came from: the online picture it was downloaded from, so the page shows it in
-        that picture's place, a pasted link, or "own" for an upload or crop."""
-        match = re.fullmatch(r"(?:poster|logo)-([0-9a-f]{8})\.\w+", str(name))
-        if match and source:
-            with self.lock:
-                self.sources[match[1]] = source
-                atomic_write(self.sources_file, json.dumps(self.sources).encode())
-
-    def remove(self, rel, kind, name):
-        self.picked(self.locate(rel)[1], kind, name, candidate=True).unlink()
+        return {"name": saved.name, "warning": warning}
 
     def key(self, rel):
         title = self.locate(rel)[1]
@@ -4146,30 +3993,29 @@ class Worker:
             raise ValueError(f"{title.name} has no Plex ID saved yet; run the script for it once first")
         return str(key)
 
-    def push(self, ids):
-        """The job each title's push runs: tk.box queues them and calls pushed() for each that succeeds."""
-        ids = list(self.pending) if ids is None else ids
-        if not ids:
-            raise ValueError("Nothing to push")
-        plex = read_config(self.config_path).get("plex", {})
-        episodes = bool(plex.get("include_episodes"))
-        # A new logo reaches every season and every episode card. --changed-only skips whatever didn't change,
-        # so shows with title cards (turned on in the settings, or already rendered) always include them.
-        return [{"id": rel, "title": self.pending.get(rel, {}).get("title") or web_meta(self.path(rel, (2,))).get("title") or Path(rel).name,
-                 "args": ["--item", self.key(rel), "--changed-only"] + (["--with-seasons"] if rel.startswith("tv/") else [])
-                 + (["--with-episodes"] if rel.startswith("tv/") and (episodes or any(self.path(rel, (2,)).glob("Season */Episode *"))) else [])}
-                for rel in ids]
+    @staticmethod
+    def relink(title, plex):
+        """The title's Plex ID once Plex has given it a new one (its file was re-added, its library rebuilt): found again by
+        its TMDb, TVDB or IMDb ID in the configured libraries, and saved in its .overlayrr.json."""
+        meta = ArtworkFiles.metadata(title)
+        kind = {"movie": "movie", "tv": "show"}.get(meta.get("type"))
+        ids = [(field, str(meta[field])) for field in ("tmdb_id", "tvdb_id", "imdb_id") if meta.get(field)]
+        if not kind or not ids:
+            raise ValueError(f"Plex no longer has {title.name} under its saved ID, and it has no TMDb, TVDB or IMDb ID to find it by")
+        entries = plex.scan(kind)
+        # TMDb first, then TVDB, then IMDb: the first ID any title in Plex matches decides
+        match = next((entry for field, value in ids for entry in entries if str(entry.get(field) or "") == value), None)
+        if match is None:
+            raise ValueError(f"Plex no longer has {title.name}: neither its saved Plex ID nor its TMDb, TVDB or IMDb ID is in your libraries")
+        meta["rating_key"] = match["rating_key"]
+        atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+        print(f"NOTE {title.name}: its Plex ID is now {match['rating_key']}", file=sys.stderr)
+        return str(match["rating_key"])
 
-    def pushed(self, rel):
-        self.mark(rel, False)
-        return {}
-
-    def state(self):
-        return {"upload": bool(read_config(self.config_path).get("plex", {}).get("upload")), "pending": dict(self.pending)}
-
-    def thumbnail(self, path, width):
-        stat = path.stat()
-        key = hashlib.sha256(f"{path}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode()).hexdigest()
+    def thumbnail(self, path, width, key):
+        """A small copy of a saved file, kept under the name tk.box gave it (`key`), where tk.box finds it next time."""
+        if not re.fullmatch(r"[0-9a-f]{64}", str(key)):
+            raise ValueError("Unknown thumbnail")
         folder = self.cache / "thumbs"
         for suffix, kind in ((".jpg", "image/jpeg"), (".png", "image/png")):
             cached = folder / (key + suffix)
@@ -4198,15 +4044,6 @@ class Worker:
         (layout.setdefault(section, {}) if section else layout).update(card_values(values))
         return layout
 
-    def find(self, rating_key):
-        """The asset folder of a Plex title (movie, show or collection) by its rating key, or None before its first run."""
-        key = str(rating_key)
-        for category in WEB_CATEGORIES:
-            for folder in (self.root / category).iterdir() if (self.root / category).is_dir() else ():
-                if folder.is_dir() and str(web_meta(folder).get("rating_key")) == key:
-                    return {"id": f"{category}/{folder.name}"}
-        return {"id": None}
-
 
 def worker_image(data, kind="image/jpeg", note=""):
     return {"image": base64.b64encode(data).decode("ascii"), "type": kind, **({"note": note} if note else {})}
@@ -4220,17 +4057,7 @@ def worker_file(worker, params):
     path = worker.path(params.get("p"), (3, 4))
     if not path.is_file() or path.suffix.lower() not in ArtworkFiles.extensions:
         raise ValueError("Not an image")
-    return worker_image(*worker.thumbnail(path, worker_width(params, 64, 2000, 400)))
-
-
-def worker_plex_image(worker, params):
-    data = worker.plex_get(str(params.get("p") or ""))
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            kind = Image.MIME.get(image.format) or "application/octet-stream"
-    except (OSError, SyntaxError):
-        raise ValueError("Not an image") from None
-    return worker_image(data, kind)
+    return worker_image(*worker.thumbnail(path, worker_width(params, 64, 2000, 400), params.get("key")))
 
 
 def worker_preview(worker, params):
@@ -4243,18 +4070,14 @@ def worker_import(worker, params):
     image = worker.plex_get(str(params["plex"])) if params.get("plex") else web_download(str(params.get("url") or ""))
     if params.get("crop"):
         image = web_crop(image, params["crop"])
-    added = worker.add(params.get("id"), params.get("kind"), image, bool(params.get("use")))
-    worker.remember(added["name"], "own" if params.get("crop") else params.get("plex") or params.get("url"))  # A crop is a picture of your own
-    return added
+    return worker.add(params.get("id"), params.get("kind"), image)
 
 
 def worker_upload(worker, params):
     data = base64.b64decode(str(params.get("data") or ""), validate=True)
     if len(data) > WEB_UPLOAD_LIMIT:
         raise ValueError("That file is larger than 40 MB")
-    added = worker.add(params.get("id"), params.get("kind"), data, bool(params.get("use")))
-    worker.remember(added["name"], "own")
-    return added
+    return worker.add(params.get("id"), params.get("kind"), data)
 
 
 def worker_template_preview(worker, params):
@@ -4263,38 +4086,53 @@ def worker_template_preview(worker, params):
     return worker_image(image, note=note)
 
 
-WORKER_ROUTES = "/api/v1/admin/artwork"  # Where tk.box serves the images the worker's answers link to
+def worker_check(worker, params):
+    """Both engines' checks of a config tk.box is about to save (a file it wrote beside the worker's own)."""
+    import plex_collections  # Only the collections engine's own checks and answers; it never imports this script
+    path = Path(str(params.get("config") or ""))
+    if path.parent.resolve() != worker.config_path.parent.resolve() or path.suffix != ".json":
+        raise ValueError("Unknown config")
+    read_config(path)
+    plex_collections.read_collections_config(path)
+    return {}
+
+
+def worker_collections(worker, params):
+    """The collections engine's seasonal presets ("defaults") or one Discover answer, from the worker's own config."""
+    import plex_collections
+    if params.get("command") == "defaults":
+        return {"collections": plex_collections.DEFAULTS["collections"]}
+    if params.get("command") == "discover":
+        return plex_collections.discover(worker.config_path, params.get("input") or {})
+    raise ValueError("Unknown request")
+
+
 WORKER_METHODS = {
-    "titles": lambda w, p: {"titles": w.titles(), **w.state()},
-    "state": lambda w, p: w.state(),
-    "detail": lambda w, p: w.detail(p.get("id")),
-    "find": lambda w, p: w.find(p.get("rating_key")),
+    "thumb": worker_file,
     "live": lambda w, p: w.live(p.get("id")),
-    "remote": lambda w, p: w.remote(p.get("id"), p.get("kind")),
+    "target": lambda w, p: w.target(p.get("id")),
     "preview": worker_preview,
-    "file": worker_file,
-    "plex_image": worker_plex_image,
-    "select": lambda w, p: w.select(p.get("id"), p.get("kind"), p.get("name")),
-    "no_logo": lambda w, p: w.choose_no_logo(p.get("id"), bool(p.get("on"))),
+    "background": lambda w, p: {"generated": w.generated_info(p.get("id"))},
     "generated": lambda w, p: w.use_generated(p.get("id")),
     "background_color": lambda w, p: w.background_color(p.get("id"), p.get("color")),
     "import": worker_import,
     "upload": worker_upload,
-    "discard": lambda w, p: w.discard(p.get("id")),
-    "remove": lambda w, p: w.remove(p.get("id"), p.get("kind"), p.get("name")) or {},
-    "push": lambda w, p: {"jobs": w.push(p.get("ids"))},
-    "pushed": lambda w, p: w.pushed(p.get("id")),
+    "discard": lambda w, p: w.discard(p.get("id"), p.get("entry")),
     "clear": lambda w, p: w.drop_previews() or {},
     "template": lambda w, p: w.template(),
     "template_preview": worker_template_preview,
     "template_merge": lambda w, p: {"layout": w.template_merge(p.get("layout"), p.get("mode"), p.get("values") or {})},
+    "check": worker_check,
+    "collections": worker_collections,
 }
+# Answered on their own threads, so they never wait behind a preview, a Plex lookup or a provider that's slow to answer.
+WORKER_QUICK = {"thumb", "clear", "template", "template_merge", "check"}
 
 
 def serve_worker(config_path):
     """--worker: answer tk.box's requests, one JSON object per line on stdin ({"id", "method", "params"}), with one JSON line
-    each on stdout ({"id", "result"} or {"id", "error"}). Images come back base64-encoded. Requests run side by side; the
-    worker's own locks keep renders to one at a time. It exits when tk.box closes stdin."""
+    each on stdout ({"id", "result"} or {"id", "error"}). Images come back base64-encoded. Requests run side by side in two
+    lanes (WORKER_QUICK and the rest); the worker's own locks keep renders to one at a time. It exits when tk.box closes stdin."""
     worker, out, out_lock = Worker(config_path), sys.stdout, threading.Lock()
     sys.stdout = sys.stderr  # Anything the engine prints goes to the log, never between replies
 
@@ -4316,14 +4154,14 @@ def serve_worker(config_path):
 
     out.write(json.dumps({"ready": True}) + "\n")
     out.flush()
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(4) as quick, ThreadPoolExecutor(4) as slow:
         for line in sys.stdin:
             try:
                 request = json.loads(line)
             except ValueError:
                 continue
             if isinstance(request, dict):
-                pool.submit(answer, request)
+                (quick if request.get("method") in WORKER_QUICK else slow).submit(answer, request)
     return 0
 
 

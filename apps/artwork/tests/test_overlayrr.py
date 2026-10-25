@@ -1721,23 +1721,25 @@ class ArtworkFileTests(unittest.TestCase):
             sp.ArtworkFiles.save_image(title, "poster", sp.generated_background(item, style))  # What a run drew
             rel = "collections/" + title.name
             names = lambda: sorted(path.name for path in title.iterdir() if path.suffix == ".png")
+            before = {}  # The title's unpushed changes as tk.box notes them: the first file in use at each spot
+            note = lambda result: [before.setdefault(spot, was) for spot, was in result["marks"]]
 
-            generated = worker.detail(rel)["generated"]
+            generated = worker.generated_info(rel)
             self.assertEqual((generated["color"], generated["default"]), ("#9b430c", "#9b430c"))  # Halloween's
-            self.assertEqual(generated["hash"], worker.detail(rel)["sections"][0]["poster"]["hash"])  # Recognized as the poster in use
-            worker.background_color(rel, "#123456")
-            worker.background_color(rel, "#654321")
+            self.assertEqual(generated["hash"], worker.short_hash(title / "poster.png"))  # Recognized as the poster in use
+            note(worker.background_color(rel, "#123456"))
+            note(worker.background_color(rel, "#654321"))
             self.assertEqual(names(), ["generated.png", "poster.png"])  # Recoloured twice, nothing set aside
             self.assertEqual(sp.ArtworkFiles.metadata(title)["background_color"], "#654321")
             self.assertEqual(sp.file_digest(title / "poster.png"), sp.file_digest(title / "generated.png"))
 
             Image.new("RGB", (20, 30), "red").save(title / "poster-0badc0de.png")
-            worker.select(rel, "poster", "poster-0badc0de.png")
+            worker.swap(title, "poster", title / "poster-0badc0de.png")  # What picking it does
             self.assertEqual(names(), ["generated.png", "poster.png"])  # The generated one isn't kept a second time
-            worker.use_generated(rel)
+            note(worker.use_generated(rel))
             self.assertEqual(len(names()), 3)  # A real poster is kept, as poster-<hash>
 
-            worker.discard(rel)  # Back to what was there before any change: the default colour, as the poster
+            worker.discard(rel, {"title": "Halloween Picks", "before": before})  # Back to what was there before any change: the default colour, as the poster
             self.assertNotIn("background_color", sp.ArtworkFiles.metadata(title))
             self.assertEqual(sp.file_digest(title / "poster.png"), sp.file_digest(title / "generated.png"))
             with Image.open(title / "poster.png") as poster:
