@@ -35,9 +35,10 @@ export function readSportsSettings(db: Db): SportsSettings & { revision: number 
   // Sports added since the order was saved go after the ones the administrator placed.
   return { revision: row?.revision ?? 0, ...value, sportOrder: [...new Set([...value.sportOrder, ...SPORT_ORDER])] };
 }
-// Whether a matched window may be shown under the settings.
+// Whether a matched window may be shown under the settings. A league show such as NFL RedZone has no event of its
+// own but follows its league.
 export const allowed = (s: SportsSettings) => (w: Pick<Window, 'eventId' | 'leagueKey'>) =>
-  w.eventId ? s.leagueMode === 'all' || (!!w.leagueKey && s.leagues.includes(w.leagueKey)) : s.unscheduled;
+  w.eventId || w.leagueKey ? s.leagueMode === 'all' || (!!w.leagueKey && s.leagues.includes(w.leagueKey)) : s.unscheduled;
 // Guide order of an event channel: its sport, then its league within the sport. Leagues not placed come after
 // placed ones, and unscheduled matches after every league.
 export function eventRank(s: SportsSettings) {

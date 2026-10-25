@@ -181,13 +181,29 @@ export function channelWindow(c: ChannelInput, events: SportsEvent[], now: numbe
     if (e) candidates.push(fromEvent(e, 'epg_event'));
     else if (liveListing(listing, p, events)) candidates.push({ eventId: null, title: p.title, league: '', start: p.start, end: p.end, state: null, matchedBy: 'epg' });
   }
-  if (!named) {
+  if (!named && REDZONE.test(norm(c.name))) candidates.push(...redZone(events));
+  else if (!named) {
     const written = nameTime(c.name, now, zone);
     if (written?.at !== undefined && !written.dateOnly && !PLACEHOLDER.test(c.name))
       candidates.push({ eventId: null, title: cleanTitle(c.name), league: '', start: written.at, end: written.at + options.nameHours * HOUR, state: null, matchedBy: 'name_time' });
   }
   const chosen = candidates.filter(w => w.end > now && (options.allow?.(w) ?? true)).sort((a, b) => a.start - b.start || order(a) - order(b))[0];
   return chosen && { ...chosen, sport: sportOf(`${c.name} ${c.group} ${chosen.league} ${chosen.title}`, chosen.sport) };
+}
+// NFL RedZone whips around the Sunday afternoon games, so a channel named for it airs from the first kickoff of
+// a Sunday's 1 PM and 4 PM ET slate until its last game ends; the morning international game and night games are
+// not part of it. One window per Sunday; the current one wins, else the next.
+const REDZONE = / (nfl )?red ?zone /;
+function redZone(events: SportsEvent[]): Window[] {
+  const slates = new Map<string, { start: number; end: number }>();
+  for (const e of events) {
+    if (e.leagueKey !== 'football/nfl' || !e.timeKnown) continue;
+    const et = zonedDate(e.start, 'America/New_York'), hour = (e.start - zonedTime(et.year, et.month, et.day, 0, 0, 'America/New_York')) / HOUR;
+    if (new Date(Date.UTC(et.year, et.month - 1, et.day)).getUTCDay() !== 0 || hour < 12 || hour >= 18) continue;
+    const key = `${et.year}-${et.month}-${et.day}`, slate = slates.get(key);
+    slates.set(key, slate ? { start: Math.min(slate.start, e.start), end: Math.max(slate.end, e.end) } : { start: e.start, end: e.end });
+  }
+  return [...slates.values()].map(s => ({ eventId: null, title: 'NFL RedZone', league: 'NFL', leagueKey: 'football/nfl', start: s.start, end: s.end, state: null, matchedBy: 'event', sport: 'football' }));
 }
 // A listing that names no known event still counts when it is a matchup ("Bayern vs Dortmund") or a league
 // show while that league is playing ("NFL Red Zone" on a Sunday). A team channel's listing ("NBA: Oklahoma City
@@ -230,6 +246,7 @@ export function sportOf(text: string, scheduled?: string): Sport {
 // 2026 16:30" → "Borussia Monchengladbach vs. TSG Hoffenheim". Names without a matchup keep the cleaned title.
 const MATCHUP = /\s(vs\.?|v|versus|at|@)\s/i;
 export function eventChannelName(raw: string) {
+  if (REDZONE.test(norm(raw))) return 'NFL RedZone';
   for (const text of [cleanTitle(raw), raw.replace(new RegExp(WHEN.source, 'gi'), ' ')]) {
     const part = text.split(/\s*\|\s*|:\s+/).map(s => s.trim()).find(s => MATCHUP.test(` ${s} `));
     if (part) return part.replace(/^\d{1,4}\S{0,3}\s+/, '').replace(/\s{2,}/g, ' ').trim();
