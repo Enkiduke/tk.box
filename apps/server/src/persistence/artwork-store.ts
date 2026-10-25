@@ -83,7 +83,31 @@ const RETIRED: Record<string, string> = { 'tk-movies': 'tk-movies', 'tk-tv': 'tk
 const SEED_VERSION = 2;
 
 export class ArtworkStore {
-  constructor(private db: Db, private vault: Vault, seedFile?: string) { if (seedFile) { this.seed(seedFile); this.customLogos(seedFile); } this.moveSchedules(); }
+  constructor(private db: Db, private vault: Vault, seedFile?: string) { if (seedFile) { this.seed(seedFile); this.customLogos(seedFile); } this.splitTemplates(); this.moveSchedules(); }
+  // Season posters and episode cards were a layout's season_options and episode_options. Each becomes a template of its
+  // own that names its show's layout (<layout>-season, <layout>-episode), once; tk-movies' seasons go, as movies have none.
+  private splitTemplates(now = Date.now()) {
+    if (this.state<boolean>('layouts:templates')) return;
+    this.db.transaction(() => {
+      const rows = this.db.prepare('SELECT name,revision,value FROM artwork_layouts ORDER BY name').all() as { name: string; revision: number; value: string }[];
+      const names = new Set(rows.map(r => r.name)), insert = this.db.prepare('INSERT INTO artwork_layouts VALUES(?,1,?,?)');
+      const free = (base: string, role: string) => {
+        for (let n = 1; ; n++) {
+          const suffix = n === 1 ? `-${role}` : `-${role}-${n}`, name = base.slice(0, 40 - suffix.length) + suffix;
+          if (!names.has(name)) { names.add(name); return name; }
+        }
+      };
+      for (const row of rows) {
+        const { season_options: season, episode_options: episode, ...rest } = JSON.parse(row.value) as Record<string, unknown>;
+        if (season === undefined && episode === undefined) continue;
+        for (const [role, options] of [['season', season], ['episode', episode]] as const)
+          if (options && typeof options === 'object' && !(role === 'season' && row.name === 'tk-movies'))
+            insert.run(free(row.name, role), JSON.stringify({ extends: row.name, role, ...options }), now);
+        this.db.prepare('UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify(rest), now, row.name);
+      }
+      this.setState('layouts:templates', true);
+    })();
+  }
   // tk-custom drew a custom collection's title as layout text, over any logo picked for it. It draws a logo now, the
   // title made into one by default, so a saved tk-custom still drawing that text gets the bundled logo settings, once.
   private customLogos(file: string, now = Date.now()) {
@@ -150,8 +174,11 @@ export class ArtworkStore {
   async update(actor: string, expectedRevision: number, input: ArtworkSettingsInput, check: (settings: ArtworkSettings) => Promise<void>, now = Date.now()) {
     const { tmdbKey, tvdbKey, fanartKey, mdblistKey, ...settings } = artworkSettingsInput.parse(input);
     const names = new Set(this.layoutNames());
-    for (const name of [settings.defaultLayout, ...Object.values(settings.layoutByLibrary), ...Object.values(settings.layoutByType)])
+    const templates = new Set(this.layoutList().filter(l => l.base).map(l => l.name));
+    for (const name of [settings.defaultLayout, ...Object.values(settings.layoutByLibrary), ...Object.values(settings.layoutByType)]) {
       if (!names.has(name)) throw new AppError('LAYOUT_NOT_FOUND', `There is no layout named ${name}.`, 422);
+      if (templates.has(name)) throw new AppError('LAYOUT_IS_TEMPLATE', `${name} is a season or episode template; choose its show layout.`, 422);
+    }
     await check(settings);
     return this.db.transaction(() => {
       const { revision, value } = this.stored();
@@ -195,6 +222,11 @@ export class ArtworkStore {
   state<T>(key: string): T | undefined { const row = this.db.prepare('SELECT value FROM artwork_state WHERE key=?').get(key) as { value: string } | undefined; return row && JSON.parse(row.value) as T; }
   setState(key: string, value: unknown) { this.db.prepare('INSERT INTO artwork_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
   layoutNames() { return (this.db.prepare('SELECT name FROM artwork_layouts ORDER BY name').all() as { name: string }[]).map(r => r.name); }
+  // Each layout, and for a season or episode template the layout it extends.
+  layoutList() {
+    return Object.entries(this.layouts()).map(([name, value]) => typeof value.extends === 'string'
+      ? { name, base: value.extends, role: value.role === 'episode' ? 'episode' as const : 'season' as const } : { name });
+  }
   layouts() {
     return Object.fromEntries((this.db.prepare('SELECT name,value FROM artwork_layouts ORDER BY name').all() as { name: string; value: string }[]).map(r => [r.name, JSON.parse(r.value) as Record<string, unknown>]));
   }
@@ -219,6 +251,7 @@ export class ArtworkStore {
   removeLayout(actor: string, name: string, now = Date.now()) {
     const s = this.settings();
     if ([s.defaultLayout, ...Object.values(s.layoutByLibrary), ...Object.values(s.layoutByType)].includes(name)) throw new AppError('LAYOUT_IN_USE', 'Choose another layout where this one is used first.', 409);
+    if (this.layoutList().some(l => l.base === name)) throw new AppError('LAYOUT_IN_USE', 'Delete its season and episode templates first.', 409);
     if (!this.db.prepare('DELETE FROM artwork_layouts WHERE name=?').run(name).changes) throw new AppError('LAYOUT_NOT_FOUND', 'That layout does not exist.', 404);
     this.audit(actor, 'artwork_layout_removed', { name }, now);
   }

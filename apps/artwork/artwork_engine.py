@@ -401,6 +401,27 @@ class ArtworkFiles:
         stock_hash = metadata.get("stock_poster") if poster else None
         return bool(stock_hash and file_digest(poster) == stock_hash)
 
+    def refresh_generated(self, item, style):
+        """A collection whose poster is still its generated background, drawn with other colors or Background settings than
+        its layout's now: draw it again, as generated.png and as the poster, so the poster follows the layout (and its new
+        file makes the render signature change). A poster of the collection's own is left alone."""
+        if item.get("type") != "collection" or item.get("season") is not None or not item.get("poster"):
+            return
+        folder = self.folder(item)
+        generated, poster = (self.source(folder, "generated"), self.source(folder, "poster")) if folder else (None, None)
+        if not (generated and poster and file_digest(poster) == file_digest(generated)):
+            return
+        meta, key = self.metadata(folder), glow_key(item, style)
+        if meta.get("generated") == key:
+            return
+        with self.lock:
+            generated.unlink()
+            poster.unlink()
+            image = generated_background(item, style, key[0])
+            self.save_image(folder, "generated", image)
+            item["poster"] = str(self.save_image(folder, "poster", image))
+            atomic_write(folder / ".artwork.json", json.dumps({**meta, "generated": key}, indent=2).encode())
+
     @staticmethod
     def save_image(folder, name, image):
         existing = ArtworkFiles.source(folder, name)
@@ -423,7 +444,7 @@ class ArtworkFiles:
             folder = self.folder(item, create=True)
             if not (folder / ".artwork.json").exists():
                 metadata = {key: item[key] for key in ("type", "title", "year", "rating_key") if item.get(key) is not None}
-                atomic_write(folder / ".artwork.json", json.dumps(metadata, indent=2).encode())
+                atomic_write(folder / ".artwork.json", json.dumps({**metadata, **collection_meta(item)}, indent=2).encode())
             return folder
 
     def save(self, item, background, logo, stock):
@@ -438,9 +459,16 @@ class ArtworkFiles:
             if item.get("season") is not None or not self.source(folder, "logo"):
                 self.save_image(show_folder, "logo", logo)
             metadata = {key: item[key] for key in ("type", "title", "year", "tmdb_id", "tvdb_id", "imdb_id", "rating_key", "season", "season_title", "episode", "episode_title") if item.get(key) is not None}
+            metadata.update(collection_meta(item))
             for key in ("no_logo", "background_color", "generated"):  # Set from the web page; a run must not forget them
                 if previous.get(key):
                     metadata[key] = previous[key]
+            if item.get("_generated"):  # The poster is a freshly drawn generated background: it is the collection's generated.png too
+                old = self.source(folder, "generated")
+                if old:
+                    old.unlink()
+                self.save_image(folder, "generated", background)
+                metadata["generated"] = item["_generated"]
             source_stock = item.get("_stock_poster", stock)
             if existing_poster and item.get("poster") != str(existing_poster):
                 source_stock = previous.get("stock_poster") == file_digest(poster)
@@ -671,7 +699,7 @@ class Style:
     status_banner_date_format: str = "ddd dd/mm"  # What {date} shows: d, dd, ddd (weekday), dddd, m, mm, mmm, mmmm, yy and yyyy are replaced
     status_banner_simplify_dates: bool = False  # A date up to seven days ahead reads today, tomorrow or the weekday
     status_banners: tuple = ()  # A mapping, category to text, color, backdrop, opacity, days, weight and enabled; see BANNERS
-    # Episode title cards (only used by episode_options; logo bounds are then pixels on a 3200px-wide card).
+    # Episode title cards (only used by episode templates; logo bounds are then pixels on a 3200px-wide card).
     card_gradient: str | None = None  # "radial" (generated from the gradient_* settings) or null
     gradient_center_x: float = 0.68
     gradient_center_y: float = 0.48
@@ -1060,7 +1088,8 @@ def badge_layers(item, style, base):
     """Badges for one item, in draw order. The renderer and render_signature share this plan.
 
     Offsets are Kometa's pixels on a 1000px-wide poster (scaled at draw time). Season
-    posters get none, as in Kometa's show-level overlays.
+    posters get none, as in Kometa's show-level overlays. Each badge's `id` names the layout editor's layer it belongs
+    to; it only labels the preview's boxes and isn't part of the signature.
     """
     if not style.badges or item.get("season") is not None:
         return []
@@ -1069,12 +1098,12 @@ def badge_layers(item, style, base):
     start = margin  # Where the top-left text badges begin: after the streaming logo, when that sits there
 
     def add(folder, name, h="left", v="top", x=None, **extra):
-        layers.append({"file": root / folder / f"{name}.png", "h": h, "v": v, "x": margin if x is None else x, "y": margin, **extra})
+        layers.append({"file": root / folder / f"{name}.png", "h": h, "v": v, "x": margin if x is None else x, "y": margin, "id": folder, **extra})
 
-    def label(kind, text, x=None):
+    def label(kind, text, x=None, id=None):
         size, file, default = ((style.resolution_font_size, style.resolution_font_file, "Poppins-ExtraBold.ttf") if kind == "resolution"
                                else (style.edition_font_size, style.edition_font_file, "Poppins-Regular.ttf"))
-        layers.append({"label": text, "kind": kind, "h": "left", "v": "top", "x": start if x is None else x, "y": margin, "size": size,
+        layers.append({"label": text, "kind": kind, "id": id or kind, "h": "left", "v": "top", "x": start if x is None else x, "y": margin, "size": size,
                        "font": local_path(file, base) if file else root / "fonts" / "Poppins" / default, "color": style.badge_text_color})
 
     def words(kind, key, default):
@@ -1088,7 +1117,7 @@ def badge_layers(item, style, base):
         file = root / "streaming_overlay" / f"{STREAMING_OVERLAY.get(service, service)}.png"
         if file.is_file():
             box, x = (style.streaming_logo_max_w, style.streaming_logo_max_h), margin + style.streaming_logo_offset_x
-            layers.append({"file": file, "h": style.streaming_logo_h, "v": style.streaming_logo_v, "x": x, "y": margin + style.streaming_logo_offset_y, "box": box})
+            layers.append({"file": file, "h": style.streaming_logo_h, "v": style.streaming_logo_v, "x": x, "y": margin + style.streaming_logo_offset_y, "box": box, "id": "streaming"})
             if style.streaming_logo_h == "left" and style.streaming_logo_v == "top":  # The text badges follow it
                 width, height = badge_image(file, 1).size
                 start = x + width * min(box[0] / width, box[1] / height) + style.badge_gap
@@ -1111,18 +1140,18 @@ def badge_layers(item, style, base):
         if key:
             add("codec", key, v="bottom")
     if "status" in style.badges and media.get("status"):
-        label("edition", words("status", media["status"], STATUS_FILES[media["status"]]), x=second)
+        label("edition", words("status", media["status"], STATUS_FILES[media["status"]]), x=second, id="status")
     rating = media.get("audience")
     if "audience_score" in style.badges and rating is not None:
         tier = next(name for floor, (_, name) in zip(style.audience_score_tiers + (0,), AUDIENCE_TIERS) if rating >= floor)
         art = root / "audience_score" / f"audience_score_{tier}.png"
-        layers.append({"h": "right", "v": "bottom", "x": margin, "y": margin, "text": f"{rating:.1f}",
+        layers.append({"h": "right", "v": "bottom", "x": margin, "y": margin, "text": f"{rating:.1f}", "id": "audience_score",
                        "font": local_path(style.audience_score_font_file, base) if style.audience_score_font_file else root / "fonts" / "centurygothic_bold.ttf",
                        **({"file": art} if art.is_file() else {"fill": AUDIENCE_COLORS[tier]})})
     if "status_banner" in style.badges and item.get("type") == "tv" and media.get("banner"):
         layer = banner_layer(media["banner"], style, base)
         if layer["banner"]:
-            layers.append(layer)
+            layers.append({**layer, "id": "banner"})
     return layers
 
 
@@ -1297,8 +1326,23 @@ def rounded_mask(width, height, radius):
     return mask
 
 
+def mark(boxes, name, left, top, right, bottom):
+    """Grow `name`'s box in `boxes` (left, top, right, bottom) to cover another drawn part of it."""
+    box = boxes.get(name)
+    boxes[name] = [round(left), round(top), round(right), round(bottom)] if box is None else [
+        min(box[0], round(left)), min(box[1], round(top)), max(box[2], round(right)), max(box[3], round(bottom))]
+
+
+def glyphs_box(x, baseline, glyphs, font):
+    """The box a line of spaced glyphs takes: from the font's ascent to its descent, and to the end of the last glyph."""
+    ascent, descent = font.getmetrics()
+    right = max((x + offset + font.getlength(char) for char, offset in glyphs), default=x)
+    return x, baseline - ascent, right, baseline + descent
+
+
 class Renderer:
-    """Render a resolved layout, reusing cached masks across the batch."""
+    """Render a resolved layout, reusing cached masks across the batch. After a render, `boxes` holds where each part
+    was drawn, by the layout editor's layer names, in the image's pixels (the layout editor's preview selects by them)."""
 
     def __init__(self, style, base=Path(".")):
         self.style, self.base = style, base
@@ -1312,6 +1356,7 @@ class Renderer:
         self.ramp = None if style.plain_matte else matte_ramp(
             style.height, style.matte_height_ratio, style.fade_height_ratio, style.fade_smoothness, style.matte_opacity)
         self.font = self.grain = None
+        self.boxes = {}
         if style.grain_amount:
             # Made once per layout: with grain_seed every render used the same noise anyway, and without one the
             # posters of a run now share a single random pattern instead of paying ~90 ms each for a new one.
@@ -1385,6 +1430,7 @@ class Renderer:
     def paste_streaming(self, canvas, layer, scale):
         style = self.style
         image, x, y = self.streaming_placement(layer, scale, *canvas.size)
+        mark(self.boxes, "streaming", x, y, x + image.width, y + image.height)
         if style.streaming_logo_shadow_enabled and style.streaming_logo_shadow_opacity:
             logo_shadow(canvas, image, x, y, scale, style.streaming_logo_shadow_opacity, style.streaming_logo_shadow_angle,
                         style.streaming_logo_shadow_distance, style.streaming_logo_shadow_size, style.streaming_logo_shadow_spread, style.streaming_logo_shadow_color)
@@ -1432,10 +1478,13 @@ class Renderer:
                 continue
             if layer.get("banner"):
                 self.banner_text(canvas, layer, shapes[index], scale)
+                mark(self.boxes, "banner", *bars[index])
+                mark(self.boxes, "banner", *glyphs_box(*shapes[index][:4]))
                 continue
             if index in shapes:
-                x, y, glyphs, font, _ = shapes[index]
+                x, y, glyphs, font, right = shapes[index]
                 draw_spaced(draw, x, y, glyphs, font, layer["color"])
+                mark(self.boxes, layer["id"], x, layer["y"] * scale, right, (layer["y"] + BADGE_BOX_HEIGHT) * scale)
                 continue
             if layer.get("box"):
                 self.paste_streaming(canvas, layer, scale)
@@ -1448,6 +1497,7 @@ class Renderer:
                 logo_shadow(canvas, image, x, y, scale, style.badge_art_shadow_opacity, style.badge_art_shadow_angle,
                             style.badge_art_shadow_distance, style.badge_art_shadow_size, style.badge_art_shadow_spread, style.badge_art_shadow_color)
             canvas.paste(image, (x, y), image)
+            mark(self.boxes, layer["id"], x, y, x + image.width, y + image.height)
             if layer.get("text"):
                 font = badge_font(layer["font"], round(style.audience_score_font_size * art))
                 left, top, right, bottom = draw.textbbox((0, 0), layer["text"], font=font)
@@ -1495,6 +1545,7 @@ class Renderer:
     def render(self, background, logo=None, stock=False, item=None):
         style = self.style
         width, height = style.width, style.height
+        self.boxes = {"artwork": [0, 0, width, height]}
         layers = badge_layers(item or {}, style, self.base)
         backdrops = [layer for layer in layers if layer["h"] == "fill"]
         badges = layers[len(backdrops):]
@@ -1508,6 +1559,8 @@ class Renderer:
                      (int(style.poster_shift_x * width), int(style.poster_shift_y * height)))
         if style.matte_height_ratio or style.fade_height_ratio:  # Otherwise the matte mask is all zero
             canvas = Image.composite(self.black, canvas, self.matte) if self.ramp is None else self.paint_matte(canvas)
+            top = self.ramp[0] if self.ramp else height * (1 - style.matte_height_ratio - style.fade_height_ratio)
+            mark(self.boxes, "matte", 0, max(0, top), width, height)
         if self.vignette is not None:
             canvas = Image.composite(self.black if self.vignette_color is None else self.vignette_color, canvas, self.vignette)
         elif self.radial is not None:  # In float and dithered, like the other fades, so a faint vignette can't band
@@ -1538,6 +1591,7 @@ class Renderer:
             if style.uniform_logo_shadow_enabled and style.uniform_logo_shadow_opacity:
                 self.logo_shadow(canvas, logo, x, y)
             canvas.paste(logo, (x, y), logo)
+            mark(self.boxes, "logo", x, y, x + size[0], y + size[1])
         if style.text_overlay_enabled and style.custom_text:
             item = item or {}
             number = item.get("season")
@@ -1567,6 +1621,7 @@ class Renderer:
             self.text_effects(canvas, rows)
             for x, top, line in rows:
                 draw.text((x, top), line, font=self.font, fill=style.text_color)
+                mark(self.boxes, "text", *draw.textbbox((x, top), line, font=self.font))
         self.paste_badges(canvas, badges)
         if style.border_enabled and style.border_px:
             border, radius = max(1, round(style.border_px * width / 2000)), round(style.border_radius * width / 2000)
@@ -1576,6 +1631,8 @@ class Renderer:
                 canvas = framed
             else:
                 canvas = ImageOps.expand(canvas, border=border, fill=style.border_color)
+            self.boxes = {name: [box[0] + border, box[1] + border, box[2] + border, box[3] + border] for name, box in self.boxes.items()}
+            self.boxes["border"] = [0, 0, canvas.width, canvas.height]
         return canvas
 
 
@@ -1743,6 +1800,7 @@ class CardRenderer:
     def render(self, background, logo=None, stock=False, item=None):
         style, scale, item = self.style, self.scale, item or {}
         width, height = style.width, style.height
+        self.boxes = {"gradient": [0, 0, width, height]}  # Where each part was drawn, as Renderer.boxes
         margin = round(CARD_MARGIN * scale)
         canvas = cover(background, width, height)
         if self.shade is not None:
@@ -1768,6 +1826,7 @@ class CardRenderer:
                 logo_shadow(canvas, logo, x, y, scale, style.card_logo_shadow_opacity, style.card_logo_shadow_angle, style.card_logo_shadow_distance,
                             style.card_logo_shadow_size, style.card_logo_shadow_spread, style.card_logo_shadow_color)
             canvas.paste(logo, (x, y), logo)
+            mark(self.boxes, "logo", x, y, x + logo.width, y + logo.height)
         draw = ImageDraw.Draw(canvas)
 
         title = transform_text(str(item.get("episode_title") or ""), style.text_transform)
@@ -1810,8 +1869,10 @@ class CardRenderer:
                         style.stroke_opacity)
         for x, y, glyphs, font in title_rows:
             draw_spaced(draw, x, y, glyphs, font, title_color)
+            mark(self.boxes, "title", *glyphs_box(x, y, glyphs, font))
         for x, y, glyphs, font in entries:
             draw_spaced(draw, x, y, glyphs, font, style.index_color)
+            mark(self.boxes, "numbers", *glyphs_box(x, y, glyphs, font))
         return canvas
 
 
@@ -1842,6 +1903,18 @@ def default_background_color(item, style):
         return dict(style.streaming_colors).get(item["service"]) or next(color for name, _, _, color in STREAMING if name == item["service"])
     title = str(item.get("title") or "").casefold()
     return next((color for name, color in HOLIDAY_COLORS if not item.get("chart") and name in title), style.chart_color)
+
+
+@lru_cache(maxsize=8)
+def glow_background(color, radius, strength, corner):
+    """streaming_background, kept for the layout editor's next previews (it only changes when these do)."""
+    return streaming_background(color, radius=radius, strength=strength, corner=corner)
+
+
+def glow_key(item, style, color=None):
+    """What a collection's generated background is drawn from, as its .artwork.json records it (`generated`)."""
+    return [color or item.get("background_color") or default_background_color(item, style), style.collection_gradient_radius,
+            style.collection_gradient_strength, style.collection_gradient_corner]
 
 
 def generated_background(item, style, color=None):
@@ -1900,7 +1973,10 @@ class Artwork(Metadata):
         the bundled file under resources/, else the first of `remote` that downloads) over its generated background
         (unless a poster file is in the folder)."""
         item["_stock_poster"] = False
-        background = self.http.image(item["poster"], self.base) if item.get("poster") else generated_background(item, style)
+        if item.get("poster"):
+            background = self.http.image(item["poster"], self.base)
+        else:  # Saved beside the poster as generated.png, with what it was drawn from, so a later run can tell when it's out of date
+            background, item["_generated"] = generated_background(item, style), glow_key(item, style)
         if item.get("logo"):
             return background, self.http.image(item["logo"], self.base), False
         path = local_path(style.resource_dir, self.base) / bundled if bundled else None
@@ -2499,51 +2575,92 @@ class Artwork(Metadata):
         return background, logo, stock
 
 
-def layout_styles(config):
-    layouts = config.get("layouts")
+# A season or episode template is a layout of its own that names its show layout: {"extends": "tk-tv", "role": "season"}.
+# It holds only what differs from that layout; everything else (and the logo choice) comes from it.
+LAYOUT_ROLES = ("season", "episode")
+LAYOUT_LINK = ("extends", "role")
+
+
+def layout_tiers(layouts):
+    """{show or movie layout: {"season": its season template's name or None, "episode": ...}}, checking each template names
+    a layout of its own (one level only) and each layout has at most one template per role."""
     if not isinstance(layouts, dict) or not layouts:
         raise ValueError("Define at least one named layout in layouts")
-    allowed = {field.name for field in fields(Style)}
-    styles = {}
     for name, options in layouts.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(options, dict):
             raise ValueError("Each layout needs a nonempty name and a mapping of settings")
-        options = dict(options)
-        season = options.pop("season_options", {})
-        episode = options.pop("episode_options", None)
-        if not isinstance(season, dict) or not (episode is None or isinstance(episode, dict)):
-            raise ValueError(f"layouts.{name}.season_options and episode_options must be mappings")
-        for kind, extra in (("season_options", season), ("episode_options", episode or {})):
-            clash = {"logo_preference", "logo_min_brightness"} & set(extra)
-            if clash:
-                raise ValueError(f"layouts.{name}.{kind}: {', '.join(sorted(clash))} must be set on the layout itself; "
-                                 "seasons and episodes always use their series' logo")
-        unknown = (set(options) | set(season) | set(episode or {})) - allowed
+    tiers = {name: {"season": None, "episode": None} for name, options in layouts.items() if "extends" not in options}
+    for name, options in layouts.items():
+        if "extends" not in options and "role" not in options:
+            continue
+        base, role = options.get("extends"), options.get("role")
+        if role not in LAYOUT_ROLES:
+            raise ValueError(f"layouts.{name}.role must be season or episode")
+        if not isinstance(base, str) or base not in tiers:
+            raise ValueError(f"layouts.{name}.extends must name a layout that isn't itself a season or episode template")
+        if tiers[base][role]:
+            raise ValueError(f"Layout {base} already has a {role} template: {tiers[base][role]}")
+        tiers[base][role] = name
+    return tiers
+
+
+def layout_options(layouts, name):
+    """A layout's settings as it renders: a season or episode template's on top of its show layout's."""
+    options = {key: value for key, value in layouts[name].items() if key not in LAYOUT_LINK}
+    base = layouts[name].get("extends")
+    return {**layouts[base], **options} if base else options
+
+
+def layout_styles(config):
+    layouts = config.get("layouts")
+    tiers = layout_tiers(layouts)
+    allowed = {field.name for field in fields(Style)}
+    for name, options in layouts.items():
+        own = set(options) - set(LAYOUT_LINK)
+        clash = {"logo_preference", "logo_min_brightness"} & own
+        if clash and "extends" in options:
+            raise ValueError(f"layouts.{name}: {', '.join(sorted(clash))} must be set on {options['extends']}; "
+                             "seasons and episodes always use their series' logo")
+        unknown = own - allowed
         if unknown:
             raise ValueError(f"Unknown settings in layout {name}: {', '.join(sorted(map(str, unknown)))}")
-        styles[name, False] = Style(**options)
-        styles[name, True] = Style(**{**options, **season})
-        if episode is not None:
-            styles[name, "episode"] = Style(**{**options, **episode})
+    styles = {}
+    for name, tier in tiers.items():
+        styles[name, False] = Style(**layouts[name])
+        styles[name, True] = Style(**layout_options(layouts, tier["season"])) if tier["season"] else styles[name, False]
+        if tier["episode"]:
+            styles[name, "episode"] = Style(**layout_options(layouts, tier["episode"]))
     default = config.get("default_layout")
-    if default is not None and (not isinstance(default, str) or default not in layouts):
-        raise ValueError("default_layout must name a layout defined in layouts")
+    if default is not None and (not isinstance(default, str) or default not in tiers):
+        raise ValueError("default_layout must name a layout defined in layouts (not a season or episode template)")
     choices = config.get("layout_by_type", {})
     if not isinstance(choices, dict) or set(choices) - {"movie", "tv", "collection", "streaming", "chart", "custom"}:
         raise ValueError("layout_by_type must map movie, tv, collection, streaming, chart and/or custom to a layout name")
-    if any(not isinstance(name, str) or name not in layouts for name in choices.values()):
-        raise ValueError("layout_by_type references an undefined layout")
+    if any(not isinstance(name, str) or name not in tiers for name in choices.values()):
+        raise ValueError("layout_by_type references an undefined layout (or a season or episode template)")
     libraries = config.get("layout_by_library", {})
-    if not isinstance(libraries, dict) or any(not isinstance(name, str) or name not in layouts for name in libraries.values()):
-        raise ValueError("layout_by_library must map Plex library names or IDs to defined layouts")
+    if not isinstance(libraries, dict) or any(not isinstance(name, str) or name not in tiers for name in libraries.values()):
+        raise ValueError("layout_by_library must map Plex library names or IDs to defined layouts (not season or episode templates)")
     return styles
+
+
+def collection_kind(item):
+    """Which of layout_by_type's kinds a collection is: chart, streaming, custom, or collection (a TMDb franchise or a curated one)."""
+    return "chart" if item.get("chart") else "streaming" if item.get("service") else "custom" if item.get("custom") else "collection"
+
+
+def collection_meta(item):
+    """What a collection's .artwork.json records about its kind, so the layout editor can preview each layout on its own kind."""
+    if item.get("type") != "collection":
+        return {}
+    return {"kind": collection_kind(item), **({"service": item["service"]} if item.get("service") else {})}
 
 
 def item_layout(item, config, styles):
     by_library = {str(library): name for library, name in config.get("layout_by_library", {}).items()}
     by_type = config.get("layout_by_type", {})
     fallback = by_library.get(str(item.get("library")), by_type.get(item["type"], config.get("default_layout")))
-    kind = ("chart" if item.get("chart") else "streaming" if item.get("service") else "custom" if item.get("custom") else "collection") if item["type"] == "collection" else None
+    kind = collection_kind(item) if item["type"] == "collection" else None
     if kind == "custom":
         fallback = by_type.get("collection", fallback)
     if kind in by_type:
@@ -2553,7 +2670,7 @@ def item_layout(item, config, styles):
     key = (name, "episode" if episode else item.get("season") is not None)
     if not isinstance(name, str) or key not in styles:
         if episode and (name, False) in styles:
-            raise ValueError(f"Layout {name!r} needs episode_options to render episodes")
+            raise ValueError(f"Layout {name!r} needs an episode template to render episodes")
         raise ValueError(f"Undefined layout for item: {name!r}")
     return key
 
@@ -3048,6 +3165,7 @@ class Batch:
         if self.refetch:
             sources.discard(item, self.inputs)
         saved_stock = sources.apply(item)
+        sources.refresh_generated(item, style)
         if item.get("no_logo"):  # "No logo" on the series: its poster, seasons and episode cards are all made as if the layout drew none
             style = replace(style, logo_mode="none")
         artwork.badge_facts(item, style)
@@ -3318,11 +3436,10 @@ TEMPLATE_FIELDS = ("poster_zoom", "poster_shift_y", "poster_shift_x", "matte_hei
                    "status_banner_backdrop_opacity", "status_banner_border_width", "status_banner_border_color", "status_banner_font_file", "status_banner_font_size",
                    "status_banner_letter_spacing", "status_banner_text_transform", "status_banner_text_opacity", "status_banner_text_align", "status_banner_padding",
                    "status_banner_text_offset_x", "status_banner_text_offset_y", "status_banner_stroke_width", "status_banner_stroke_opacity",
-                   "status_banner_stroke_color", "status_banner_shadow_strength", "status_banner_shadow_blur", "status_banner_shadow_offset_y", "status_banner_shadow_color")
-# The same for its Episode card mode, saved under episode_options: every title card setting, plus the few shared ones the card
-# uses (no card size).
+                   "status_banner_stroke_color", "status_banner_shadow_strength", "status_banner_shadow_blur", "status_banner_shadow_offset_y", "status_banner_shadow_color",
+                   "collection_gradient_radius", "collection_gradient_strength", "collection_gradient_corner", "chart_color", "streaming_colors")
+# The same for an episode template: every title card setting, plus the few shared ones the card uses (no card size).
 CARD_TEMPLATE_FIELDS = CARD_FIELDS + ("logo_mode", "uniform_logo_max_w", "uniform_logo_max_h", "text_transform")
-TEMPLATE_SECTIONS = {"poster": None, "season": "season_options", "episode": "episode_options"}
 
 
 def card_values(values):
@@ -3576,7 +3693,8 @@ class Worker:
             return self.layouts
 
     def template(self):
-        """Every layout's settings as the Template view edits them, for posters and for seasons."""
+        """Every layout's settings as the Template view edits them. A season or episode template also gives what its show
+        layout would give it (`inherited`): a setting equal to that follows the show layout."""
         version, config = self.template_config()
         kinds = {"movie": "All movies", "tv": "All TV", "collection": "Collections", "streaming": "Streaming collections", "chart": "Chart collections", "custom": "Custom collections"}
         uses = {}
@@ -3592,23 +3710,25 @@ class Worker:
             values["badges"] = [name for name in values["badges"] if not name.startswith("gradient")] + [f"gradient_{side}" for side in gradient_sides(values["badges"])]
             values["status_banners"] = {category: dict(entry) for category, entry in values["status_banners"]}  # What the page edits: the overrides only
             values["status_banner_font_file"] = values["status_banner_font_file"] or ""  # The page's empty font is the config's null
+            values["streaming_colors"] = dict(values["streaming_colors"])  # Like status_banners: the overrides, by service
             return values
         def pick_card(style):
             values = {key: value for key, value in asdict(style).items() if key in CARD_TEMPLATE_FIELDS + ("width", "height")}
             values["card_gradient"] = values["card_gradient"] or "none"  # The page's "none" and empty font are the config's null
             return {key: "" if key.endswith("_font_file") and value is None else value for key, value in values.items()}
-        media = self.template_media(config)
+        media, stored = self.template_media(config), config["layouts"]
         layouts = []
-        for name, options in config["layouts"].items():
-            options = dict(options)
-            season = options.pop("season_options", None)
-            card = options.pop("episode_options", None)
-            # A layout without season_options or episode_options (a movie layout) gets no Season or Episode card mode
-            layouts.append({"name": name, "uses": uses.get(name, []), "media": media.get(name), "seasons": season is not None, "cards": card is not None,
-                            "poster": pick(Style(**options)), "season": pick(Style(**{**options, **(season or {})})),
-                            "episode": pick_card(Style(**{**options, **card})) if card is not None else None})
+        for name, options in stored.items():
+            base, role = options.get("extends"), options.get("role", "poster")
+            shown = pick_card if role == "episode" else pick
+            entry = {"name": name, "base": base, "role": role, "uses": uses.get(name, []), "media": media.get(name),
+                     "values": shown(Style(**layout_options(stored, name)))}
+            if base:
+                entry["inherited"] = shown(Style(**stored[base]))
+            layouts.append(entry)
         return {"version": version, "default": config.get("default_layout"), "layouts": layouts,
-                "fonts": self.template_fonts(config), "banners": banner_settings(())}  # The categories as they are with nothing overridden
+                "fonts": self.template_fonts(config), "banners": banner_settings(()),
+                "glows": {name: color for name, _, _, color in STREAMING}}  # Each streaming service's own glow, for its Background row  # The categories as they are with nothing overridden
 
     def library_kinds(self, config):
         """[(title, "movie" or "show")] for the configured Plex libraries, or None when Plex can't say. Plex gets a few seconds to
@@ -3636,54 +3756,51 @@ class Worker:
             return self.library_cache[1]
 
     def template_media(self, config):
-        """{layout: the assets categories ("movies", "tv", "collections") it makes posters for}, worked out the way item_layout
-        picks layouts, from which configured Plex libraries hold movies or shows. Layouts nothing is known to use are left out,
-        and so is everything when Plex can't say; the page then previews them on any title."""
-        libraries = self.library_kinds(config)
-        if libraries is None:
-            return {}
+        """{layout: what it makes posters for}, worked out the way item_layout picks layouts: "movies" and "tv" from which
+        configured Plex libraries hold movies or shows, and "collections:<kind>" (collection_kind's kinds) for collections.
+        Layouts nothing is known to use are left out; the page then previews them on any title. Without an answer from Plex
+        only the collection kinds with a layout of their own are known."""
         by_type = config.get("layout_by_type", {})
         by_library = {str(library): name for library, name in config.get("layout_by_library", {}).items()}
+        kinds = {kind: by_type.get(kind) or (by_type.get("collection") if kind == "custom" else None) for kind in ("collection", "streaming", "chart", "custom")}
         media = {}
         def add(name, category):
             if name:
                 media.setdefault(name, set()).add(category)
-        for kind in ("collection", "streaming", "chart", "custom"):
-            add(by_type.get(kind), "collections")
-        for title, kind in libraries:
+        for kind, name in kinds.items():
+            add(name, f"collections:{kind}")
+        for title, kind in self.library_kinds(config) or ():
             name = by_library.get(title, by_type.get("movie" if kind == "movie" else "tv", config.get("default_layout")))
             add(name, "movies" if kind == "movie" else "tv")
-            if "collection" not in by_type:  # Otherwise a library's collections use the collection layout, not the library's
-                add(name, "collections")
+            for collection, chosen in kinds.items():  # A kind without a layout of its own uses its library's
+                if not chosen:
+                    add(name, f"collections:{collection}")
         return {name: sorted(categories) for name, categories in media.items()}
 
     def template_fonts(self, config):
         """The font files in each layout's resource_dir/fonts, named as the config would name them (relative to the YAML)."""
         base, found = self.config_path.parent.resolve(), set()
-        for options in config["layouts"].values():
-            folder = local_path(str(options.get("resource_dir") or Style.resource_dir), base) / "fonts"
+        for name in config["layouts"]:
+            folder = local_path(str(layout_options(config["layouts"], name).get("resource_dir") or Style.resource_dir), base) / "fonts"
             for path in folder.rglob("*") if folder.is_dir() else ():
                 if path.suffix.lower() in (".ttf", ".otf", ".ttc"):
                     found.add(path.relative_to(base).as_posix() if path.is_relative_to(base) else path.as_posix())
         return sorted(found, key=str.casefold)
 
-    def template_style(self, name, mode, values):
-        """The layout (or its season or episode card version) with unsaved Template settings on top."""
+    def template_role(self, name):
+        """(layouts, the layout's role: "poster", "season" or "episode")."""
         layouts = self.template_config()[1]["layouts"]
         if not isinstance(name, str) or name not in layouts:
             raise ValueError("Unknown layout")
-        if mode not in TEMPLATE_SECTIONS:
-            raise ValueError("Unknown mode")
-        if not isinstance(values, dict) or set(values) - set(CARD_TEMPLATE_FIELDS if mode == "episode" else TEMPLATE_FIELDS):
+        return layouts, layouts[name].get("role", "poster")
+
+    def template_style(self, name, values):
+        """The layout (a season or episode template on top of its show layout) with unsaved Template settings on top."""
+        layouts, role = self.template_role(name)
+        if not isinstance(values, dict) or set(values) - set(CARD_TEMPLATE_FIELDS if role == "episode" else TEMPLATE_FIELDS):
             raise ValueError("Only the Template view's settings can be changed here")
-        options = dict(layouts[name])
-        season = options.pop("season_options", None) or {}
-        card = options.pop("episode_options", None)
-        if mode == "episode" and card is None:
-            raise ValueError(f"Layout {name} has no episode_options")
-        extra = {"poster": {}, "season": season, "episode": card}[mode]
         try:
-            return Style(**{**options, **extra, **card_values(values)})
+            return Style(**{**layout_options(layouts, name), **card_values(values)})
         except TypeError as error:
             raise ValueError(str(error)) from None
 
@@ -3736,11 +3853,12 @@ class Worker:
                 self.decoded.popitem(last=False)
         return image
 
-    def template_preview(self, name, mode, values, rel, width, banner=""):
-        """(JPEG, note) of a layout with unsaved settings on one title's saved poster and logo, rendered in memory.
+    def template_preview(self, name, values, rel, width, banner=""):
+        """(JPEG, note, boxes) of a layout with unsaved settings on one title's saved poster and logo, rendered in memory;
+        `boxes` is where each of the layout editor's layers was drawn, as {"w", "h", "boxes": {layer: [left, top, right, bottom]}}.
         For seasons it uses the show's first season with a poster (Specials last); for episode cards, the show's first
         saved episode still (note "no-still" when it has none, and the card is drawn on the show's poster instead)."""
-        style = self.template_style(name, mode, values)
+        style, mode = self.template_style(name, values), self.template_role(name)[1]
         title = self.path(rel, (2,))
         if not title.is_dir():
             raise ValueError("Folder not found")
@@ -3754,7 +3872,13 @@ class Worker:
                 raise ValueError("This show has no season poster saved yet; pick another")
             number, folder = min(seasons, key=lambda pair: (pair[0] == 0, pair[0]))
         poster = ArtworkFiles.source(folder, "poster")
-        if poster is None:
+        # A collection that draws its own background (not a TMDb franchise) whose poster is still that background: drawn
+        # again here, so the layout's Background settings show as they change
+        meta = web_meta(title) if title.parent.name == "collections" else {}
+        generated = ArtworkFiles.source(title, "generated") if meta else None
+        glow = bool(meta) and (meta.get("kind", "collection") != "collection" or not meta.get("tmdb_id")) and (
+            poster is None or (generated is not None and file_digest(poster) == file_digest(generated)))
+        if poster is None and not glow:
             raise ValueError("This title has no poster saved yet; pick another")
         self.idle()
         base = self.config_path.parent
@@ -3768,7 +3892,8 @@ class Worker:
         bound = (2 * style.width, 2 * style.height)
         try:
             with self.rendering:
-                background = self.decode(poster, bound)
+                background = (glow_background(meta.get("background_color") or default_background_color(item, style), style.collection_gradient_radius,
+                                              style.collection_gradient_strength, style.collection_gradient_corner) if glow else self.decode(poster, bound))
                 logo = self.decode(logo_path, bound) if logo_path and style.logo_mode != "none" else None
                 with self.lock:
                     renderer = self.drafts.pop((card, style), None) or (CardRenderer if card else Renderer)(style, base)
@@ -3776,12 +3901,13 @@ class Worker:
                     while len(self.drafts) > 4:
                         self.drafts.popitem(last=False)
                 image = renderer.render(background, logo, False, item)
+                boxes = {"w": image.width, "h": image.height, "boxes": dict(renderer.boxes)}
         except (RuntimeError, KeyError, TypeError) as error:
             raise ValueError(f"Couldn't build the preview: {error}") from None
         buffer = io.BytesIO()
         image.convert("RGB").save(buffer, format="JPEG", quality=85)
         notes = ["no-still"] * (card and folder == title) + ["no-logo"] * (logo is None and style.logo_mode != "none")
-        return buffer.getvalue(), " ".join(notes)
+        return buffer.getvalue(), " ".join(notes), boxes
 
     @staticmethod
     def short_hash(path):
@@ -3825,7 +3951,7 @@ class Worker:
             return None  # A TMDb franchise: its posters are real ones
         default = default_background_color(item, style)
         color = meta.get("background_color") or default
-        key = [color, style.collection_gradient_radius, style.collection_gradient_strength, style.collection_gradient_corner]
+        key = glow_key(item, style, color)
         path = ArtworkFiles.source(title, "generated")
         if redraw or path is None or meta.get("generated") != key:
             if path:
@@ -4033,20 +4159,27 @@ class Worker:
         atomic_write(folder / (key + (".png" if alpha else ".jpg")), buffer.getvalue())
         return buffer.getvalue(), "image/png" if alpha else "image/jpeg"
 
-    def template_merge(self, name, mode, values):
-        """The layout with layout-editor settings saved into it (into season_options or episode_options for those modes),
-        for tk.box to store; refused when a render would refuse it."""
+    def template_merge(self, name, values):
+        """The layout with layout-editor settings saved into it, for tk.box to store; refused when a render would refuse it.
+        A season or episode template keeps only what differs from its show layout, so a setting set back to the show's
+        follows the show again."""
         if not values:
             raise ValueError("Nothing to save")
-        self.template_style(name, mode, values)
-        layout = json.loads(json.dumps(self.template_config()[1]["layouts"][name]))
-        section = TEMPLATE_SECTIONS[mode]
-        (layout.setdefault(section, {}) if section else layout).update(card_values(values))
+        self.template_style(name, values)
+        layouts = self.template_config()[1]["layouts"]
+        layout = json.loads(json.dumps(layouts[name]))
+        layout.update(card_values(values))
+        base = layout.get("extends")
+        if base:
+            shown = Style(**layouts[base])
+            for key in set(layout) - set(LAYOUT_LINK):
+                if getattr(Style(**{**layouts[base], key: layout[key]}), key) == getattr(shown, key):
+                    del layout[key]
         return layout
 
 
-def worker_image(data, kind="image/jpeg", note=""):
-    return {"image": base64.b64encode(data).decode("ascii"), "type": kind, **({"note": note} if note else {})}
+def worker_image(data, kind="image/jpeg", note="", boxes=None):
+    return {"image": base64.b64encode(data).decode("ascii"), "type": kind, **({"note": note} if note else {}), **({"boxes": boxes} if boxes else {})}
 
 
 def worker_width(params, low, high, default):
@@ -4081,9 +4214,9 @@ def worker_upload(worker, params):
 
 
 def worker_template_preview(worker, params):
-    image, note = worker.template_preview(params.get("layout"), params.get("mode"), params.get("values") or {}, params.get("id"),
-                                          worker_width(params, 160, 720, 480), str(params.get("banner") or ""))
-    return worker_image(image, note=note)
+    image, note, boxes = worker.template_preview(params.get("layout"), params.get("values") or {}, params.get("id"),
+                                                 worker_width(params, 160, 720, 480), str(params.get("banner") or ""))
+    return worker_image(image, note=note, boxes=boxes)
 
 
 def worker_check(worker, params):
@@ -4121,7 +4254,7 @@ WORKER_METHODS = {
     "clear": lambda w, p: w.drop_previews() or {},
     "template": lambda w, p: w.template(),
     "template_preview": worker_template_preview,
-    "template_merge": lambda w, p: {"layout": w.template_merge(p.get("layout"), p.get("mode"), p.get("values") or {})},
+    "template_merge": lambda w, p: {"layout": w.template_merge(p.get("layout"), p.get("values") or {})},
     "check": worker_check,
     "collections": worker_collections,
 }

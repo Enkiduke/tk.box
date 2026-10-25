@@ -4,7 +4,7 @@ import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
 import {ArtworkTitles} from './artwork-titles.js';
-import {LayoutAdvanced,LayoutEditor} from './artwork-layouts.js';
+import {LayoutAdvanced,LayoutEditor,type LayoutEntry} from './artwork-layouts.js';
 import {ArtworkCollections,ScheduleRow,type ScheduleState} from './artwork-collections.js';
 import {openConsole,type Job} from './admin-console.js';
 
@@ -17,7 +17,7 @@ type Schedules={scrub:{enabled:boolean;time:string};added:{enabled:boolean;minut
 type Settings={revision:number;libraries:string[];upload:boolean;uploadLogo:boolean;includeSeasons:boolean;includeEpisodes:boolean;includeCollections:boolean;
   missingArt:'stock'|'skip';quality:number;workers:number;language:string;completionLabel:string;defaultLayout:string;layoutByLibrary:Record<string,string>;layoutByType:Partial<Record<LayoutType,string>>;
   schedules:Schedules;keysSet:Record<string,boolean>};
-type Overview={settings:Settings;layouts:string[];libraries:Library[];engine:Engine;queue:{running:number|null;queued:number};schedules:Record<keyof Schedules,ScheduleState>};
+type Overview={settings:Settings;layouts:LayoutEntry[];libraries:Library[];engine:Engine;queue:{running:number|null;queued:number};schedules:Record<keyof Schedules,ScheduleState>};
 const tabs=[['titles','Titles'],['layouts','Layouts'],['schedules','Schedules'],['settings','Settings']] as const;
 
 // `title` is a Plex rating key, from a title's details (Edit artwork).
@@ -36,7 +36,7 @@ export function ArtworkAdmin({params}:{params:URLSearchParams}) {
     <div role="tabpanel">
       {tab==='settings'?<ArtworkSettings data={data} changed={overview.reload}/>
         :tab==='schedules'?<ArtworkSchedules data={data} changed={overview.reload}/>
-        :tab==='layouts'?(advanced?<LayoutAdvanced names={data.layouts} inUse={name=>used(data.settings,name)} changed={overview.reload} back={()=>setAdvanced(false)}/>:<LayoutEditor engineReady={data.engine.ready} advanced={()=>setAdvanced(true)}/>)
+        :tab==='layouts'?(advanced?<LayoutAdvanced layouts={data.layouts} inUse={name=>used(data.settings,name)?'Choose another layout where this one is used first':data.layouts.some(l=>l.base===name)?'Delete its season and episode templates first':null} changed={overview.reload} back={()=>setAdvanced(false)}/>:<LayoutEditor engineReady={data.engine.ready} advanced={()=>setAdvanced(true)}/>)
         :<ArtworkTitles ratingKey={title} engineReady={data.engine.ready} upload={data.settings.upload}/>}
     </div>
   </>;
@@ -74,7 +74,8 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const toggleLibrary=(key:string,on:boolean)=>{const layoutByLibrary={...draft.layoutByLibrary};if(!on)delete layoutByLibrary[key];set({libraries:on?[...draft.libraries,key]:draft.libraries.filter(k=>k!==key),layoutByLibrary});};
   const libraryLayout=(key:string,layout:string)=>{const layoutByLibrary={...draft.layoutByLibrary};if(layout)layoutByLibrary[key]=layout;else delete layoutByLibrary[key];set({layoutByLibrary});};
   const typeLayout=(type:LayoutType,layout:string)=>{const layoutByType={...draft.layoutByType};if(layout)layoutByType[type]=layout;else delete layoutByType[type];set({layoutByType});};
-  const layoutOptions=(none:string)=><><option value="">{none}</option>{data.layouts.map(name=><option key={name} value={name}>{name}</option>)}</>;
+  const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
+  const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
     await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});setDone(true);
   });
@@ -85,7 +86,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
         <td><select aria-label={`${l.title} layout`} disabled={!on} value={draft.layoutByLibrary[l.key]??''} onChange={e=>libraryLayout(l.key,e.target.value)}>{layoutOptions('By kind of title (below)')}</select></td></tr>;})}</tbody></table></div>
         :<Empty title="No libraries">Your Plex account shows no movie or TV libraries.</Empty>}
       <div className="form-columns">
-        <label>Default layout<select value={draft.defaultLayout} onChange={e=>set({defaultLayout:e.target.value})}>{data.layouts.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+        <label>Default layout<select value={draft.defaultLayout} onChange={e=>set({defaultLayout:e.target.value})}>{shows.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
         <label>Movies<select value={draft.layoutByType.movie??''} onChange={e=>typeLayout('movie',e.target.value)}>{layoutOptions('The default layout')}</select></label>
         <label>TV shows<select value={draft.layoutByType.tv??''} onChange={e=>typeLayout('tv',e.target.value)}>{layoutOptions('The default layout')}</select></label>
         <label>Custom collections<select value={draft.layoutByType.custom??''} onChange={e=>typeLayout('custom',e.target.value)}>{layoutOptions('Their library’s layout')}</select></label>

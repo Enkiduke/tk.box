@@ -21,7 +21,9 @@ export type Kind = 'poster' | 'logo';
 export type Meta = Record<string, unknown> & { type?: string; title?: string; year?: string | number; rating_key?: string | number; tmdb_id?: number; tvdb_id?: number; imdb_id?: string; no_logo?: boolean };
 type Before = Record<string, string | boolean | null>;
 export type Pending = { title: string; before?: Before };
-export type TitleRow = { id: string; cat: string; title: string; year?: string | number; first: boolean; thumb: string | null };
+// `kind` (collections only): chart, streaming, custom or collection, as the engine recorded it; a folder from before it did
+// counts as a chart when it is named like one, else as a collection.
+export type TitleRow = { id: string; cat: string; title: string; year?: string | number; first: boolean; thumb: string | null; kind?: string; service?: string };
 type FileEntry = { name: string; thumb: string; full: string; kb: number; kept: boolean; size?: string; hash?: string; source?: string | null };
 export type Section = { id: string; label: string | null; pv: string; rendered: FileEntry | null; poster: FileEntry | null; logo: FileEntry | null; posters: FileEntry[]; logos: FileEntry[] };
 type Mark = { rel: string; before?: [string, string | boolean | null] };
@@ -138,7 +140,9 @@ export class ArtworkFiles {
         if (hit && hit.at === at) { rows.push(hit.row); continue; }
         const meta = await this.meta(folder), names = await readdir(folder), title = String(meta.title || entry.name);
         const cover = ['rendered', 'poster'].map(n => names.find(f => isImage(f) && basename(f, extname(f)).toLowerCase() === n)).find(Boolean);
-        const row: TitleRow = { id, cat, title, ...(meta.year ? { year: meta.year } : {}), first: cat === 'collections' && CHARTS.includes(collectionKey(title)),
+        const chart = cat === 'collections' && CHARTS.includes(collectionKey(title));
+        const row: TitleRow = { id, cat, title, ...(meta.year ? { year: meta.year } : {}), first: chart,
+          ...(cat === 'collections' ? { kind: typeof meta.kind === 'string' ? meta.kind : chart ? 'chart' : 'collection', ...(typeof meta.service === 'string' ? { service: meta.service } : {}) } : {}),
           thumb: cover ? await this.url(join(folder, cover), `${id}/${cover}`, 300) : null };
         this.rows.set(id, { at, row }); rows.push(row);
       }
