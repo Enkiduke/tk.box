@@ -260,11 +260,28 @@ class CollectionSources:
         return rows
 
     def universes(self, query="", kind="movie"):
+        """The universes of one media type, those you have most of first: each one's list is read (from the cache when
+        it can be) and matched with your libraries. One whose list can't be read is still offered, without a count, last."""
         if kind not in ("movie", "tv"):
             raise ValueError("Choose movies or TV for universe collections")
-        return [{"key": key, "name": name, "url": url, "description": "Curated universe membership from " + COLLECTION_PROVIDERS[collection_source(url)[0]][0],
-                 "type": kind, "provider": collection_source(url)[0]}
+        rows = [{"key": key, "name": name, "url": collection_source(url)[1], "type": kind, "provider": collection_source(url)[0],
+                 "description": "Curated universe membership from " + COLLECTION_PROVIDERS[collection_source(url)[0]][0]}
                 for key, name, url, kinds in COLLECTION_UNIVERSES if kind in kinds and query.casefold() in name.casefold()]
+        try:
+            items = self.artwork.plex.scan(media_type="movie" if kind == "movie" else "show")
+        except (RuntimeError, ValueError):
+            return rows
+        def count(row):
+            try:
+                members = [item["member"] for item in self.fetch(row["url"], kind, 250)["items"]]
+            except (RuntimeError, ValueError):
+                return row
+            owned = owned_members(members, items)
+            return {**row, "owned": owned, "total": len(members),
+                    "description": f"You have {owned} of {len(members)}. " + row["description"]}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            rows = list(pool.map(count, rows))
+        return sorted(rows, key=lambda row: ("owned" not in row, -row.get("owned", 0), row["name"].casefold()))
 
     def discover(self, provider, query=""):
         rows = []
@@ -474,6 +491,16 @@ class CollectionSources:
                     row.update(member={"tmdb_id": match["id"]}, title=match.get("title") or match.get("name") or row["title"],
                                year=str(match.get("release_date") or match.get("first_air_date") or row["year"])[:4])
         return {"provider": provider, "url": url, "name": name, "type": kind, "limit": limit, "items": rows}
+
+
+def owned_members(members, items):
+    """How many of a list's members are in Plex, matched by TMDb or IMDb ID, or by title and year."""
+    tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
+    imdb = {item["imdb_id"] for item in items if item.get("imdb_id")}
+    titles = {(item["title"].casefold(), str(item.get("year") or "")) for item in items}
+    named = {title for title, _ in titles}
+    return sum(1 for m in members if m.get("tmdb_id") in tmdb or m.get("imdb_id") in imdb
+               or "title" in m and ((str(m["title"]).casefold(), str(m["year"])) in titles if m.get("year") else str(m["title"]).casefold() in named))
 
 
 def collection_active(schedule, today=None):
