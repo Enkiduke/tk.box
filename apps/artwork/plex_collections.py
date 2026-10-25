@@ -1002,6 +1002,19 @@ def index_added(artwork, rating_keys, now=None):
     return 0
 
 
+def franchise_counts(artwork, index):
+    """How many movies each library has of each TMDb collection now, from a Plex scan and the Discover index:
+    [{"library", "name", "items"}], so the Collections page needn't wait for a full run to see movies come and go."""
+    counts = {}
+    for movie in artwork.plex.scan(media_type="movie"):
+        entry = index["movies"].get(str(movie.get("tmdb_id")))
+        collection = index["collections"].get(str(entry[0])) if entry and entry[0] else None
+        if collection:
+            key = (movie["library"], collection["name"])
+            counts[key] = counts.get(key, 0) + 1
+    return [{"library": library, "name": name, "items": items} for (library, name), items in sorted(counts.items())]
+
+
 def partly_owned(artwork, query="", today=None, index=None):
     """The TMDb movie collections each library holds some but not all of the released movies of, from the Discover
     index (see build_index) matched with Plex now, closest to complete first: ({"name", "url", "description", "type",
@@ -1405,9 +1418,11 @@ def discover(config_path, data):
                 result["name"] = preset[1]
             return result
         provider, query = data.get("provider", "all"), str(data.get("query") or "")[:200]
-        if mode in ("universes", "partial"):  # From the Discover index, matched with Plex now: no lookups while you wait
+        if mode in ("universes", "partial", "franchises"):  # From the Discover index, matched with Plex now: no lookups while you wait
             index = load_index(sources.artwork)
             built = {"built": index["built"]}
+            if mode == "franchises":
+                return {"results": franchise_counts(sources.artwork, index) if index["built"] else [], "index": built}
             if mode == "universes":
                 return {"results": sources.universes(query, data.get("type", "movie"), index), "index": built}
             rows, unread = partly_owned(sources.artwork, query, index=index)
