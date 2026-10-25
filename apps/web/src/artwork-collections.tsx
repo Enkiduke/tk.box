@@ -190,9 +190,7 @@ function AutomaticCollection({tile,setting,onClose,save}:{tile:Tile;setting?:Aut
       </section>
       <div className="collection-editor-options">
         <section className="collection-editor-panel">
-          <h3>Where it shows in Plex</h3>
-          {!visibility&&<p className="muted small">Left as it is in Plex until you change one.</p>}
-          {places.map(([k,label,hint])=><Switch key={k} label={label} description={hint} checked={visibility?.[k]??false} onChange={v=>setVisibility({...hidden,...visibility,[k]:v})}/>)}
+          <Switch label="Show on Home" description={`${homeHint}${visibility?'':' Left as Plex has it until you change it.'}`} checked={onHome(visibility)} onChange={v=>setVisibility(everywhere(v))}/>
         </section>
       </div>
       <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
@@ -273,7 +271,9 @@ function TitleSearch({type,members,add}:{type:Definition['type'];members:Member[
     </div>}
   </div>;
 }
-const places=[['home','Your Home','Pinned to your Home screen.'],['shared','Friends’ Home','On the Home screen of people you share with.'],['recommended','Library recommendations','In the library’s Recommended tab.']] as const;
+// One switch for where a collection shows: everyone's Home screen and the library's Recommended tab, together.
+const homeHint='On everyone’s Home screen and in the library’s Recommended tab.';
+const onHome=(v?:Visibility)=>!!v&&Object.values(v).some(Boolean),everywhere=(on:boolean)=>({home:on,shared:on,recommended:on});
 function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void;remove:()=>void}) {
   const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[paste,setPaste]=useState<string>();
   const set=(patch:Partial<Definition>)=>setD(x=>({...x,...patch}));
@@ -316,8 +316,7 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
       </section>
       <div className="collection-editor-options">
         <section className="collection-editor-panel">
-          <h3>Where it shows in Plex</h3>
-          {places.map(([k,label,hint])=><Switch key={k} label={label} description={hint} checked={visibility[k]??false} onChange={v=>set({visibility:{home:visibility.home??false,shared:visibility.shared??false,recommended:visibility.recommended??false,[k]:v}})}/>)}
+          <Switch label="Show on Home" description={homeHint} checked={onHome(visibility)} onChange={v=>set({visibility:everywhere(v)})}/>
         </section>
         {d.type==='movie'&&<section className="collection-editor-panel">
           <h3>Radarr</h3>
