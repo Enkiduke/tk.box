@@ -156,6 +156,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const sportsStore = new SportsStore(db, id => iptv.relist(id)), sports = new SportsSchedule(iptv, sportsStore, healthStore, () => health.pump(),
     {espn: list(config.SPORTS_ESPN_LEAGUES, DEFAULT_ESPN), tsdb: list(config.SPORTS_TSDB_LEAGUES, DEFAULT_TSDB), tsdbKey: () => serviceKeys.get('thesportsdb') ?? '123', zone: config.SPORTS_NAME_TIMEZONE ?? 'America/New_York', nameHours: 3, tickMs: 60000},
     (message, detail) => app.log.info(detail, message));
+  // A watched event channel stays on past its scheduled end (SportsStore.hold).
+  live.observer.watching = (id, seen) => sportsStore.hold(id, seen);
   registerSports(app, iptv, sportsStore, sports, admin);
   // Admin › Connections: keys no feature's own settings hold. A new TheSportsDB key is used from the next download on,
   // a new Plex admin token from the next background task.

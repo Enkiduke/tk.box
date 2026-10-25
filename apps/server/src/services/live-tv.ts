@@ -18,7 +18,8 @@ type Relay = {
   encode: boolean; release: () => void; restarts: number; live: boolean; stopped: boolean; ready: Promise<void>; source?: LiveSource; stderr: string;
   lease?: ConnectionLease; cancel: AbortController;
 };
-export type LiveObserver = { tuned?: (channelId: string) => void; tuneFailed?: (channelId: string) => void };
+// `watching` reports, every sweep, each channel with viewers and its viewers' latest request.
+export type LiveObserver = { tuned?: (channelId: string) => void; tuneFailed?: (channelId: string) => void; watching?: (channelId: string, seen: number) => void };
 type Viewer = { id: string; hash: string; channelId: string; seen: number };
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const probeSchema = z.object({ streams: z.array(z.object({ codec_type: z.string(), codec_name: z.string().optional(), width: z.number().optional(), height: z.number().optional(), pix_fmt: z.string().optional() })) });
@@ -112,7 +113,12 @@ export class LiveTv {
     const viewer = this.viewers.get(id), relay = viewer && this.relays.get(viewer.channelId);
     return relay && { delivery: (relay.encode ? 'transcode' : 'remux') as LiveDelivery, source: relay.source ?? {}, restarts: relay.restarts };
   }
-  sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
+  sweep(now = Date.now()) {
+    for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash);
+    const seen = new Map<string, number>();
+    for (const v of this.viewers.values()) seen.set(v.channelId, Math.max(seen.get(v.channelId) ?? 0, v.seen));
+    for (const [channelId, at] of seen) this.observer.watching?.(channelId, at);
+  }
 
   private async prepare(relay: Relay) {
     relay.lease = await this.connections.viewer(relay.cancel.signal);
