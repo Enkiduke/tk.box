@@ -129,7 +129,7 @@ export class ArtworkSchedule {
       if (this.again) { this.again = false; void this.tick(new Date(), true); }
     }
   }
-  // Each library's titles added since this check's watermark, one job each (a show or season batch counts once), oldest
+  // Each library's titles added since this check's watermark, one job each (a show's new episodes count once), oldest
   // first; `queue` says whether it queued one (false: already queued). The watermark moves only past what was handled,
   // so titles over the limit, or every library when Plex didn't answer for one, come next time. The first check only
   // sets it.

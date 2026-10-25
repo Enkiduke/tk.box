@@ -74,30 +74,23 @@ export function catalogDto(node:CatalogNode,libraryId:string):CatalogItem {
     ratings:externalRatings(node),logoUrl:logo?versioned(`/api/v1/catalog/items/${node.ratingKey}/artwork?kind=logo`,logo):undefined,tagline:node.tagline||undefined,airDate:node.originallyAvailableAt,
     studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined,tmdbId:tmdbId(node),imdbId:imdbId(node)};
 }
-// Plex lists recently added TV one episode at a time. Like Plex's own home hub, episodes of a
-// season that arrived together (each within a day of the next) collapse into one season card.
-// Only a season's newest batch is grouped; older stragglers stay as episodes so ids remain unique.
-// Batches from several seasons of one show that arrived together then merge into one show card
-// ("2 seasons · 16 episodes"), placed where the show's newest episode is. Again only the show's newest run merges.
-const batchWindowSeconds=24*60*60;
-type SeasonBatch={episodes:CatalogItem[];batchable:boolean};
-const near=(a?:number,b?:number)=>Math.abs((a??0)-(b??0))<=batchWindowSeconds;
-export function groupRecentEpisodes(items:CatalogItem[]):CatalogItem[] {
-  const open=new Map<string,SeasonBatch>(),closed=new Set<string>(),batches:SeasonBatch[]=[];
+// Plex lists recently added TV one episode at a time, newest first. Each show gets one card holding all its episodes in
+// the list, however they arrived: one episode stays itself, one season becomes a season card, several seasons a show card
+// ("2 seasons · 16 episodes"). The card sits where the show's newest episode is. With `limit`, the list is read only until
+// a show past the limit would start a card, so no card takes in episodes older than the row reaches.
+export function groupRecentEpisodes(items:CatalogItem[],limit=Infinity):CatalogItem[] {
+  const shows=new Map<string,CatalogItem[]>(),runs:CatalogItem[][]=[];
   for(const item of items) {
-    const season=item.type==='episode'?item.parentId:undefined,batch=season?open.get(season):undefined;
-    if(season&&batch&&near(batch.episodes.at(-1)!.addedAt,item.addedAt)){batch.episodes.push(item);continue;}
-    if(season&&batch){open.delete(season);closed.add(season);}
-    const entry={episodes:[item],batchable:!!season&&!closed.has(season)};batches.push(entry);if(entry.batchable)open.set(season!,entry);
+    const show=item.type==='episode'?item.showId:undefined,run=show?shows.get(show):undefined;
+    if(run){run.push(item);continue;}
+    if(runs.length>=limit)break;
+    const entry=[item];runs.push(entry);if(show)shows.set(show,entry);
   }
-  const openShows=new Map<string,SeasonBatch[]>(),closedShows=new Set<string>(),out:SeasonBatch[][]=[];
-  for(const batch of batches) {
-    const show=batch.batchable?batch.episodes[0]!.showId:undefined,run=show?openShows.get(show):undefined;
-    if(show&&run&&near(run.at(-1)!.episodes.at(-1)!.addedAt,batch.episodes[0]!.addedAt)){run.push(batch);continue;}
-    if(show&&run){openShows.delete(show);closedShows.add(show);}
-    const entry=[batch];out.push(entry);if(show&&!closedShows.has(show))openShows.set(show,entry);
-  }
-  return out.map(run=>run.length>1?showCard(run.map(b=>b.episodes)):seasonCard(run[0]!.episodes));
+  return runs.map(run=>{
+    const seasons=new Map<string,CatalogItem[]>();
+    for(const e of run){const key=e.parentId??'',season=seasons.get(key);if(season)season.push(e);else seasons.set(key,[e]);}
+    return seasons.size>1?showCard([...seasons.values()]):seasonCard(run);
+  });
 }
 function seasonCard([first,...rest]:CatalogItem[]):CatalogItem {
   return !rest.length||!first!.parentId?first!:{
