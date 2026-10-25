@@ -31,9 +31,13 @@ from engine_common import (CHARTS, DEFAULTS, HTTP, Metadata, atomic_write, colle
 
 
 def create_collection(plex, params):
-    """The new collection's Directory element (None if Plex doesn't return one)."""
+    """The new collection's Directory element (None if Plex doesn't return one). tk.box reads the CREATED line to make
+    the new collection's poster straight away."""
     with plex.http.request("POST", plex.url + "/library/collections", headers=plex.headers, params=params) as response:
-        return ET.fromstring(response.content).find("Directory")
+        created = ET.fromstring(response.content).find("Directory")
+    if created is not None and str(created.get("ratingKey") or "").isdigit():
+        print(f"CREATED {params['title']}: Plex ID {created.get('ratingKey')}", flush=True)
+    return created
 
 
 def collection_titles(plex, section_key):

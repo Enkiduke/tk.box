@@ -135,6 +135,16 @@ export class ArtworkEngine {
     if (!this.store.settings().upload || args.includes('--item')) return [];
     return this.store.collectionsConfig().franchise.sync ? [{ label: 'Every collection: apply', args: ['all', 'apply'] }] : [];
   }
+  // A poster for each collection a collections run just made, so it doesn't wait for the next artwork run. Only when
+  // Collection posters is on, and not when an artwork run over every title is already queued (it makes them anyway).
+  private postersFor(created: { name: string; key: string }[], from: number, run: ArtworkRun) {
+    if (!created.length || !this.store.settings().includeCollections || this.queue.some(j => j.script === 'artwork' && !j.args.includes('--item'))) return;
+    const actor = this.store.job(from).actor;
+    for (const { name, key } of created) {
+      const args = ['--item', key, '--changed-only'];
+      if (!this.pending(args)) this.add(actor, `Poster for new collection: ${name}`, args, run, 'artwork');
+    }
+  }
   // The franchise and streaming collections the last full apply kept in Plex (the collections engine writes this file).
   keptCollections(): KeptCollections {
     try {
@@ -149,7 +159,12 @@ export class ArtworkEngine {
     const job = this.queue.shift(); if (!job) return;
     const keys = this.secrets();
     const running = this.current = { id: job.id, script: job.script, args: job.args, lines: [] as string[], dropped: 0, canceled: false, secrets: [job.run.token, ...Object.values(keys).filter((v): v is string => !!v)] } as Running & { script: EngineScript; args: string[] };
-    const say = (line: string) => { running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
+    const created: { name: string; key: string }[] = [];
+    const say = (line: string) => {
+      const made = job.script === 'collections' ? /^CREATED (.+): Plex ID (\d{1,10})$/.exec(line) : null;
+      if (made) created.push({ name: made[1]!, key: made[2]! });
+      running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; }
+    };
     let code: number | null = null;
     try {
       this.store.jobStarted(job.id);
@@ -168,6 +183,8 @@ export class ArtworkEngine {
     if (status === 'succeeded') try { job.done?.(); } catch (e) { this.log('artwork job follow-up failed', { jobId: job.id, error: (e as Error).message }); }
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('artwork job finished', { jobId: job.id, status, code });
+    // Collections it made are in Plex even if the run failed later on, so they get their posters either way.
+    this.postersFor(created, job.id, job.run);
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // Written whole and then moved into place, so the engine never reads a half-written config.
