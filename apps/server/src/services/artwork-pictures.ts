@@ -3,7 +3,7 @@ import { remoteJson } from '../providers/remote-json.js';
 import type { Meta } from './artwork-files.js';
 
 // The pictures TMDb, Fanart.tv, TVDB and Plex offer for one title (posters, logos or backdrops), as the title editor lists
-// them. The title's IDs come from its .overlayrr.json, so looking only needs Plex for Plex's own pictures. The providers are
+// them. The title's IDs come from its .artwork.json, so looking only needs Plex for Plex's own pictures. The providers are
 // asked side by side and their answers kept for a day; each one that fails becomes a note, not an error.
 const TMDB = 'https://api.themoviedb.org/3', FANART = 'https://webservice.fanart.tv/v3', TVDB = 'https://api4.thetvdb.com/v4';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/original';

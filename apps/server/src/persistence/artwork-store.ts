@@ -4,7 +4,7 @@ import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
 
-// Artwork's settings, layouts and job history. The engine (apps/artwork/overlayrr.py) reads none of this directly:
+// Artwork's settings, layouts and job history. The engine (apps/artwork/artwork_engine.py) reads none of this directly:
 // before each run tk.box writes it out as the engine's JSON config (artworkConfig). Provider keys are sealed.
 export const layoutName = z.string().regex(/^[\w-]{1,40}$/, 'Use letters, numbers, dashes or underscores (up to 40)');
 const libraryId = z.string().regex(/^\d{1,10}$/);
@@ -73,12 +73,12 @@ export type JobRow = { id: number; label: string; args: string[]; script: 'artwo
 // Everything starts local-only: nothing is sent to Plex until an administrator turns uploads on. The tk-* layouts
 // (apps/artwork/defaults.json) are used by kind of title until a library is given its own.
 const defaults: ArtworkSettings = { libraries: [], upload: false, uploadLogo: true, includeSeasons: true, includeEpisodes: false, includeCollections: false,
-  missingArt: 'stock', quality: 95, workers: 2, language: 'en', completionLabel: 'Overlayrr', defaultLayout: 'tk-movies', layoutByLibrary: {},
+  missingArt: 'stock', quality: 95, workers: 2, language: 'en', completionLabel: 'tk.box', defaultLayout: 'tk-movies', layoutByLibrary: {},
   layoutByType: { movie: 'tk-movies', tv: 'tk-tv', custom: 'tk-custom', collection: 'tk-collections', streaming: 'tk-streaming', chart: 'tk-charts' },
   schedules: { scrub: { enabled: false, time: '04:00' }, added: { enabled: false, minutes: 60 } } };
 
-// The layouts seeded before the tk-* set (Overlayrr's example config), and the tk-* layout each one's uses move to.
-const RETIRED: Record<string, string> = { 'overlayrr-main': 'tk-movies', 'tk-movies': 'tk-movies', 'tk-tv': 'tk-tv', 'collection-tmdb': 'tk-collections',
+// The layouts seeded before the tk-* set (the engine's example config), and the tk-* layout each one's uses move to.
+const RETIRED: Record<string, string> = { 'tk-movies': 'tk-movies', 'tk-tv': 'tk-tv', 'collection-tmdb': 'tk-collections',
   'streaming-collection': 'tk-streaming', 'chart-collection': 'tk-charts' };
 const SEED_VERSION = 2;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tk.box's artwork engine (Overlayrr): Plex -> artwork APIs -> layouts -> disk/Plex.
+"""tk.box's artwork engine: Plex -> artwork APIs -> layouts -> disk/Plex.
 
 Posters, season posters and title cards; making and changing Plex collections is plex_collections.py's.
 
@@ -229,7 +229,7 @@ class ArtworkFiles:
     extensions = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
     def __init__(self, root, full=True):
-        """`full` reads every title's .overlayrr.json now (a whole-library run; it also catches an ID claimed by two
+        """`full` reads every title's .artwork.json now (a whole-library run; it also catches an ID claimed by two
         folders). Otherwise, for a run on one title, folders are found by the ID in their name and the files are only
         read when that finds nothing."""
         self.root, self.index, self.lock, self.scanned = root, {}, threading.RLock(), False
@@ -256,7 +256,7 @@ class ArtworkFiles:
 
     @staticmethod
     def metadata(folder):
-        path = folder / ".overlayrr.json"
+        path = folder / ".artwork.json"
         if not path.exists():
             return {}
         try:
@@ -316,7 +316,7 @@ class ArtworkFiles:
             if renamed.exists():
                 return None
             folder.rename(renamed)
-            atomic_write(renamed / ".overlayrr.json", json.dumps({**self.metadata(renamed), "type": "collection", "rating_key": item["rating_key"]}, indent=2).encode())
+            atomic_write(renamed / ".artwork.json", json.dumps({**self.metadata(renamed), "type": "collection", "rating_key": item["rating_key"]}, indent=2).encode())
             self.index = {entry: path for entry, path in self.index.items() if path != folder}
             self.register("collections", renamed, [f"plex-{key}"])
             return renamed
@@ -421,9 +421,9 @@ class ArtworkFiles:
         a poster of your own has somewhere to go."""
         with self.lock:
             folder = self.folder(item, create=True)
-            if not (folder / ".overlayrr.json").exists():
+            if not (folder / ".artwork.json").exists():
                 metadata = {key: item[key] for key in ("type", "title", "year", "rating_key") if item.get(key) is not None}
-                atomic_write(folder / ".overlayrr.json", json.dumps(metadata, indent=2).encode())
+                atomic_write(folder / ".artwork.json", json.dumps(metadata, indent=2).encode())
             return folder
 
     def save(self, item, background, logo, stock):
@@ -446,13 +446,13 @@ class ArtworkFiles:
                 source_stock = previous.get("stock_poster") == file_digest(poster)
             if source_stock:
                 metadata["stock_poster"] = file_digest(poster)
-            atomic_write(folder / ".overlayrr.json", json.dumps(metadata, indent=2).encode())
+            atomic_write(folder / ".artwork.json", json.dumps(metadata, indent=2).encode())
             if item.get("season") is not None:
                 show = self.metadata(show_folder)
                 show.update({key: value for key, value in metadata.items() if key not in ("season", "season_title", "episode", "episode_title", "rating_key", "stock_poster")})
                 if item.get("parent_rating_key"):
                     show["rating_key"] = item["parent_rating_key"]
-                atomic_write(show_folder / ".overlayrr.json", json.dumps(show, indent=2).encode())
+                atomic_write(show_folder / ".artwork.json", json.dumps(show, indent=2).encode())
             return folder
 
 
@@ -723,7 +723,7 @@ class Style:
     index_bottom: float = CARD_MARGIN
     index_stroke_color: str = "#000000"
     shadow_color: str = "#000000"  # Of the title and season/episode shadow
-    # Collection posters Overlayrr draws itself (streaming services, "New Episodes"); they apply when a poster is generated.
+    # Collection posters the engine draws itself (streaming services, "New Episodes"); they apply when a poster is generated.
     collection_gradient_radius: float = 1.25  # How far the glow reaches from the center
     collection_gradient_strength: float = 0.55  # How much the edges darken
     collection_gradient_corner: float = 0.4  # Extra darkening toward the bottom left
@@ -1896,7 +1896,7 @@ class Artwork(Metadata):
         self.logo_lock, self.logo_locks, self.show_logos = threading.Lock(), {}, {}
 
     def generated_poster(self, item, style, label, bundled, remote, fallback=None):
-        """Poster inputs for a collection Overlayrr draws itself: a logo (a logo file in the collection's folder, else
+        """Poster inputs for a collection the engine draws itself: a logo (a logo file in the collection's folder, else
         the bundled file under resources/, else the first of `remote` that downloads) over its generated background
         (unless a poster file is in the folder)."""
         item["_stock_poster"] = False
@@ -2795,7 +2795,7 @@ def download_alternates(artwork, sources, items, styles, posters, icons, poster_
                     with Image.open(io.BytesIO(data)) as image:
                         suffix = IMAGE_SUFFIXES.get(image.format, ".png")
                         image.verify()
-                    # Plex also lists Overlayrr's own finished posters; those aren't sources. (verify() must come first.)
+                    # Plex also lists the engine's own finished posters; those aren't sources. (verify() must come first.)
                     with Image.open(io.BytesIO(data)) as image:
                         ours = provider == "plex" and image.getexif().get(OVERLAY_EXIF_TAG) == OVERLAY_EXIF_VALUE
                 except (OSError, ValueError, RuntimeError, SyntaxError) as error:
@@ -2821,7 +2821,7 @@ def download_alternates(artwork, sources, items, styles, posters, icons, poster_
 def import_posters(config_path, source):
     """--import-posters: save the poster URLs of a Kometa/MediUX metadata YAML (TMDb IDs -> url_poster, seasons ->
     url_poster) as poster files in the titles' asset folders, replacing any poster already saved there. Titles that
-    aren't in your Plex libraries are skipped. Episode and background URLs are ignored: Overlayrr draws its own cards.
+    aren't in your Plex libraries are skipped. Episode and background URLs are ignored: the engine draws its own cards.
     `source` is a file, or "-" for YAML pasted in at the terminal."""
     config = read_config(config_path)
     if not config.get("plex", {}).get("libraries"):
@@ -2895,9 +2895,9 @@ def import_posters(config_path, source):
             if season.get("url_poster"):
                 save(folder / f"Season {int(number):02d}", season["url_poster"], f"{title} season {number}")
     print(f"Imported {counts['saved']} posters; {counts['missing']} not in your Plex libraries, {counts['failed']} failed."
-          + (f" Ignored {counts['episodes']} episode entries (Overlayrr draws its own title cards)." if counts["episodes"] else ""))
+          + (f" Ignored {counts['episodes']} episode entries (tk.box draws its own title cards)." if counts["episodes"] else ""))
     if counts["saved"]:
-        print("Nothing was rendered or uploaded. Run overlayrr.py with --changed-only to build them.")
+        print("Nothing was rendered or uploaded. Run artwork_engine.py with --changed-only to build them.")
     return 1 if counts["failed"] else 0
 
 
@@ -3230,7 +3230,7 @@ WEB_FILE = re.compile(r"(poster|logo)(\d+|-[0-9a-f]{8})?", re.I)
 
 
 def web_meta(folder):
-    """A folder's .overlayrr.json, or {} when it's missing or broken (the page still lists the folder)."""
+    """A folder's .artwork.json, or {} when it's missing or broken (the page still lists the folder)."""
     try:
         return ArtworkFiles.metadata(folder)
     except ValueError:
@@ -3539,14 +3539,14 @@ class Worker:
 
     @staticmethod
     def write_no_logo(title, on):
-        """Set or clear the title's "No logo" (kept in its .overlayrr.json, which pushes preserve)."""
+        """Set or clear the title's "No logo" (kept in its .artwork.json, which pushes preserve)."""
         meta = ArtworkFiles.metadata(title)
         if not meta:
             raise ValueError("This title has no saved details yet, so run the script for it once first")
         meta.pop("no_logo", None)
         if on:
             meta["no_logo"] = True
-        atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+        atomic_write(title / ".artwork.json", json.dumps(meta, indent=2).encode())
 
     def render_preview(self, title, folder, season, files, width):
         base = self.config_path.parent
@@ -3831,7 +3831,7 @@ class Worker:
             if path:
                 path.unlink()
             path = ArtworkFiles.save_image(title, "generated", generated_background(item, style, color))
-            atomic_write(title / ".overlayrr.json", json.dumps({**ArtworkFiles.metadata(title), "generated": key}, indent=2).encode())
+            atomic_write(title / ".artwork.json", json.dumps({**ArtworkFiles.metadata(title), "generated": key}, indent=2).encode())
         return color, default, path
 
     def generated_info(self, rel):
@@ -3870,7 +3870,7 @@ class Worker:
         meta.pop("background_color", None)
         if color is not None and color.lower() != found[1].lower():
             meta["background_color"] = color.lower()
-        atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+        atomic_write(title / ".artwork.json", json.dumps(meta, indent=2).encode())
         self.generated(title, redraw=True)
         result = self.use_generated(rel, kept)
         if web_meta(title).get("rating_key"):
@@ -3941,7 +3941,7 @@ class Worker:
             meta.pop("background_color", None)
             if before[f"{rel}|background"]:
                 meta["background_color"] = before[f"{rel}|background"]
-            atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+            atomic_write(title / ".artwork.json", json.dumps(meta, indent=2).encode())
             self.generated(title, redraw=True)
         found = {}
         for folder, season, where in sections:
@@ -3996,7 +3996,7 @@ class Worker:
     @staticmethod
     def relink(title, plex):
         """The title's Plex ID once Plex has given it a new one (its file was re-added, its library rebuilt): found again by
-        its TMDb, TVDB or IMDb ID in the configured libraries, and saved in its .overlayrr.json."""
+        its TMDb, TVDB or IMDb ID in the configured libraries, and saved in its .artwork.json."""
         meta = ArtworkFiles.metadata(title)
         kind = {"movie": "movie", "tv": "show"}.get(meta.get("type"))
         ids = [(field, str(meta[field])) for field in ("tmdb_id", "tvdb_id", "imdb_id") if meta.get(field)]
@@ -4008,7 +4008,7 @@ class Worker:
         if match is None:
             raise ValueError(f"Plex no longer has {title.name}: neither its saved Plex ID nor its TMDb, TVDB or IMDb ID is in your libraries")
         meta["rating_key"] = match["rating_key"]
-        atomic_write(title / ".overlayrr.json", json.dumps(meta, indent=2).encode())
+        atomic_write(title / ".artwork.json", json.dumps(meta, indent=2).encode())
         print(f"NOTE {title.name}: its Plex ID is now {match['rating_key']}", file=sys.stderr)
         return str(match["rating_key"])
 

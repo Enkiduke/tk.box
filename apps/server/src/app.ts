@@ -218,7 +218,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   registerExplore(app, plex, exploreStore, auth, admin, hash => identity.accountToken(hash));
   // Artwork: the engine runs as a separate Python process, apart from every playback path.
   const artworkStore = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
-  const artwork = new ArtworkEngine(artworkStore, {python: config.PYTHON_PATH, script: resolve('apps/artwork/overlayrr.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'), dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, plexUrl: config.PLEX_URL},
+  const artwork = new ArtworkEngine(artworkStore, {python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'), dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, plexUrl: config.PLEX_URL},
     (message, detail) => app.log.info(detail, message), () => exploreStore.view().traktClientId || undefined);
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
   artwork.useWorker(artworkWorker);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tk.box's Plex Metadata cleanup: the poster files the artwork engine (overlayrr.py) sent to Plex that Plex no longer uses.
+"""tk.box's Plex Metadata cleanup: the poster files the artwork engine (artwork_engine.py) sent to Plex that Plex no longer uses.
 
 Plex keeps every poster ever uploaded in its Metadata folder, and its API can't delete one. This script reads which
 images Plex still uses from a copy of its library database (which Plex makes itself), then works on the files in
@@ -29,7 +29,7 @@ import zipfile
 
 from PIL import Image
 
-from engine_common import (HTTP, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE, SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE, Plex, local_path,
+from engine_common import (HTTP, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE, SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUES, Plex, local_path,
                            option, read_config, run_lock)
 
 
@@ -80,9 +80,9 @@ def images_in_use(database):
     return names
 
 
-def made_by_overlayrr(tags, scope="ours"):
-    """Whether an image's EXIF tags say Overlayrr made it (scope "overlays": any overlay poster, Kometa's included)."""
-    return tags.get(OVERLAY_EXIF_TAG) == OVERLAY_EXIF_VALUE and (scope == "overlays" or str(tags.get(SOFTWARE_EXIF_TAG, "")).startswith(SOFTWARE_EXIF_VALUE))
+def made_by_engine(tags, scope="ours"):
+    """Whether an image's EXIF tags say the artwork engine made it (scope "overlays": any overlay poster, Kometa's included)."""
+    return tags.get(OVERLAY_EXIF_TAG) == OVERLAY_EXIF_VALUE and (scope == "overlays" or str(tags.get(SOFTWARE_EXIF_TAG, "")).startswith(SOFTWARE_EXIF_VALUES))
 
 
 def plex_bundles(database, metadata, rating_keys):
@@ -111,7 +111,7 @@ def plex_bundles(database, metadata, rating_keys):
 def remove_superseded_posters(plex, metadata, uploaded):
     """After uploading, delete the posters those items had before from Plex's Metadata folder (its API
     can't delete one). `uploaded` is {rating key: label}. Only a file that Plex lists for the item without selecting it, that
-    no item uses any more, that sits in the item's own bundle folders and that carries both of Overlayrr's tags is removed."""
+    no item uses any more, that sits in the item's own bundle folders and that carries both of the engine's tags is removed."""
     def unselected(key):
         photos = plex.xml(f"/library/metadata/{key}/posters").findall("Photo")
         return {urlparse(p.get("ratingKey")).path.split("/")[-1] for p in photos
@@ -135,7 +135,7 @@ def remove_superseded_posters(plex, metadata, uploaded):
                     path = Path(root) / name
                     try:
                         with Image.open(path) as image:
-                            ours = made_by_overlayrr(image.getexif())
+                            ours = made_by_engine(image.getexif())
                         if ours:
                             path.unlink()
                     except (OSError, ValueError) as error:
@@ -144,12 +144,12 @@ def remove_superseded_posters(plex, metadata, uploaded):
                     if ours:
                         removed += 1
                         print(f"REMOVED old poster of {uploaded[key]}: {name}", flush=True)
-    print(f"Removed {removed} superseded Overlayrr poster{'s' * (removed != 1)}.", flush=True)
+    print(f"Removed {removed} superseded tk.box poster{'s' * (removed != 1)}.", flush=True)
     return removed
 
 
-def overlayrr_orphans(metadata, in_use, min_age_seconds, scope="ours"):
-    """Uploaded poster files that Plex no longer uses and that Overlayrr made (both EXIF tags). scope "overlays" takes
+def engine_orphans(metadata, in_use, min_age_seconds, scope="ours"):
+    """Uploaded poster files that Plex no longer uses and that the artwork engine made (both EXIF tags). scope "overlays" takes
     any overlay poster, Kometa's included.
 
     Only files inside an Uploads folder (never Contents), with no extension, not in use, old enough to be sure the
@@ -171,18 +171,18 @@ def overlayrr_orphans(metadata, in_use, min_age_seconds, scope="ours"):
                     tags = image.getexif()
             except (OSError, ValueError):
                 continue
-            if made_by_overlayrr(tags, scope):
+            if made_by_engine(tags, scope):
                 found.append(path)
     return sorted(found)
 
 
 def cleanup(config_path, mode="report"):
-    """Find (report), set aside (move), delete (remove) or bring back (restore) unused Overlayrr posters."""
+    """Find (report), set aside (move), delete (remove) or bring back (restore) unused tk.box posters."""
     config = read_config(config_path)
     plex = config.get("plex", {})
     base = config_path.resolve().parent
     data_dir = metadata_folder(config, base)
-    metadata, restore = data_dir / "Metadata", data_dir / "Overlayrr Restore"
+    metadata, restore = data_dir / "Metadata", data_dir / "tk.box Restore"
     if mode == "restore":
         files = [path for path in restore.rglob("*") if path.is_file()] if restore.is_dir() else []
         for path in files:
@@ -199,7 +199,7 @@ def cleanup(config_path, mode="report"):
     server.require("Cleanup (to ask Plex which images are in use)")
     with tempfile.TemporaryDirectory() as folder:
         in_use = images_in_use(plex_snapshot(server, Path(folder)))
-    orphans = overlayrr_orphans(metadata, in_use, float(option(plex, "cleanup_min_age_minutes")) * 60)
+    orphans = engine_orphans(metadata, in_use, float(option(plex, "cleanup_min_age_minutes")) * 60)
     size = 0
     label = {"report": "UNUSED", "move": "MOVE", "remove": "REMOVE"}[mode]
     for path in orphans:
@@ -212,7 +212,7 @@ def cleanup(config_path, mode="report"):
         elif mode == "remove":
             path.unlink()
     done = {"report": "Found", "move": "Moved", "remove": "Removed"}[mode]
-    print(f"{done} {len(orphans)} unused Overlayrr posters ({size / 1e6:.1f} MB); {len(in_use)} images are in use.")
+    print(f"{done} {len(orphans)} unused tk.box posters ({size / 1e6:.1f} MB); {len(in_use)} images are in use.")
     if mode == "report" and orphans:
         print("Nothing was changed. Use move to set them aside (reversible with restore), or remove to delete them.")
     return 0
@@ -244,7 +244,7 @@ def main():
     parser.add_argument("config", type=Path, help="The JSON config tk.box writes for the artwork engine")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("report", help="List the unused posters; changes nothing")
-    commands.add_parser("move", help="Set them aside in plex.data_dir/Overlayrr Restore (reversible with restore)")
+    commands.add_parser("move", help="Set them aside in plex.data_dir/tk.box Restore (reversible with restore)")
     commands.add_parser("remove", help="Delete them")
     commands.add_parser("restore", help="Put back what move set aside")
     commands.add_parser("superseded", help="Delete the old posters of these items, after their new ones were sent to Plex").add_argument(

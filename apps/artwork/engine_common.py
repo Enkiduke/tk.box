@@ -1,4 +1,4 @@
-"""What tk.box's artwork engine (overlayrr.py) and collections engine (plex_collections.py) share: the config and its
+"""What tk.box's artwork engine (artwork_engine.py) and collections engine (plex_collections.py) share: the config and its
 defaults, the HTTP cache, the Plex client, TMDb and TVDB lookups, the public-link downloader and the run lock.
 
 Nothing here draws or decodes an image, so the collections engine runs without Pillow or NumPy loaded. Requires
@@ -37,7 +37,7 @@ PLEX_RESOLUTIONS = {"sd": "480p", "480": "480p", "576": "576p", "720": "720p", "
 
 # Settings left out of the config, top level and under plex: (no name is used in both).
 DEFAULTS = {"assets_dir": "assets", "cache_dir": ".cache", "workers": 2, "quality": 95, "language": "en", "missing_art": "stock",
-            "overlay_marker": True, "completion_label": "Overlayrr", "collection_min_items": 2, "collection_sync": "sync",
+            "overlay_marker": True, "completion_label": "tk.box", "collection_min_items": 2, "collection_sync": "sync",
             "franchise_collections": True, "collection_streaming": "off", "collection_region": "US", "recent_movie_days": 90, "recent_episode_days": 7,
             "cleanup_min_age_minutes": 60, "upload_logo": True, "collections":[{'name': 'Halloween - All-Time Classics',
   'library': 'Movies',
@@ -160,7 +160,9 @@ SHOW_FIELDS = ("type", "title", "year", "tmdb_id", "tvdb_id", "imdb_id", "layout
 # ImageMaid's --overlays-only remove only our orphaned posters from Plex.
 OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE = 0x04BC, "overlay"
 # plex_cleanup.py only touches posters that also say they are ours (EXIF Software tag); Kometa's overlays carry just the one above.
-SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE = 0x0131, "Overlayrr"
+SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE = 0x0131, "tk.box"
+# Posters already in Plex from before the engine was renamed carry its former name there; they are still ours.
+SOFTWARE_EXIF_VALUES = (SOFTWARE_EXIF_VALUE, "Overlayrr")
 # Cache lifetimes. API answers go stale in a day; downloaded images only need to last between nearby runs, because the
 # artwork a title uses is saved in assets/ anyway. Full runs delete what has expired (prune_cache).
 JSON_TTL, IMAGE_TTL, THUMB_TTL = 86400, 7 * 86400, 30 * 86400
@@ -230,7 +232,7 @@ class HTTP:
                           allowed_methods=["GET"], respect_retry_after_header=True)
             for scheme in ("http://", "https://"):
                 session.mount(scheme, HTTPAdapter(max_retries=retry))
-            session.headers["User-Agent"] = "Overlayrr-Standalone/1.0"
+            session.headers["User-Agent"] = "tk.box/1.0"
             self.local.session = session
         return self.local.session
 
@@ -523,8 +525,8 @@ class Plex:
         return items
 
     def poster_collections(self):
-        """Collections that get Overlayrr posters: every movie collection, plus the TV collections named for a streaming
-        service (service) or "New Episodes" (chart), whether Overlayrr or Kometa made them."""
+        """Collections that get tk.box posters: every movie collection, plus the TV collections named for a streaming
+        service (service) or "New Episodes" (chart), whether tk.box or Kometa made them."""
         shows = []
         for collection in self.collections("show"):
             service = streaming_service(collection["title"])
@@ -781,11 +783,11 @@ def run_lock(config_path):
     except ImportError:
         yield
         return
-    with open(config_path.resolve().with_name(".overlayrr.lock"), "w") as handle:
+    with open(config_path.resolve().with_name(".artwork.lock"), "w") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("Waiting for another Overlayrr run to finish...", flush=True)
+            print("Waiting for another artwork run to finish...", flush=True)
             fcntl.flock(handle, fcntl.LOCK_EX)
         yield
 
@@ -810,7 +812,7 @@ def web_download(url):
                 raise ValueError("That link points at a private address")
             tls = {"server_hostname": parsed.hostname, "assert_hostname": parsed.hostname, "ca_certs": requests.certs.where()} if https else {}
             target = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
-            headers = {"Host": parsed.netloc.rpartition("@")[2], "User-Agent": "Overlayrr-Standalone/1.0"}
+            headers = {"Host": parsed.netloc.rpartition("@")[2], "User-Agent": "tk.box/1.0"}
             unique = list(dict.fromkeys(addresses))
             for address in unique:  # Like a normal connect: the next address when one can't be reached (no IPv6 route)
                 pool = (urllib3.HTTPSConnectionPool if https else urllib3.HTTPConnectionPool)(

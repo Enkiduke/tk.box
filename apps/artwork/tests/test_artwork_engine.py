@@ -28,18 +28,18 @@ ROOT = STANDALONE.parent
 needs_parent_app = unittest.skipUnless((ROOT / "backend").is_dir(), "compares against the parent app in ../backend")
 sys.path.insert(0, str(STANDALONE))
 import engine_common as common
-import overlayrr as sp
+import artwork_engine as sp
 import plex_cleanup as cleanup
 import plex_collections as pc
 
 
 def example_config():
-    """Overlayrr's example layouts (overlayrr-main, tk-movies, tk-tv...), which these tests pin down; tk.box seeds its own from defaults.json."""
+    """tk.box's example layouts (example-main, tk-movies, tk-tv...), which these tests pin down; tk.box seeds its own from defaults.json."""
     return sp.read_config(STANDALONE / "tests" / "example_layouts.json")
 
 
 def rendered_path(base, rating_key):
-    matches = [path.parent / "rendered.jpg" for path in (base / "assets").rglob(".overlayrr.json")
+    matches = [path.parent / "rendered.jpg" for path in (base / "assets").rglob(".artwork.json")
                if str(json.loads(path.read_text())["rating_key"]) == str(rating_key)]
     if len(matches) != 1:
         raise AssertionError(f"Expected one asset folder for Plex ID {rating_key}, got {matches}")
@@ -85,7 +85,7 @@ class RendererTests(unittest.TestCase):
         assignment = next(n for n in tree.body if isinstance(n, ast.AnnAssign) and n.target.id == "_DEFAULT_PRESETS_TEMPLATE")
         presets = ast.literal_eval(assignment.value)["uniformlogo"]["presets"]
         options = next(p["options"] for p in presets if p["name"] == "simposter-main")
-        explicit = example_config()["layouts"]["overlayrr-main"]
+        explicit = example_config()["layouts"]["example-main"]
         for name, value in asdict(main_style()).items():
             if name in options and name in explicit:
                 self.assertEqual(value, options[name], name)
@@ -165,7 +165,7 @@ class LayoutTests(unittest.TestCase):
     def test_selection_precedence_and_season_override(self):
         config = example_config()
         styles = sp.layout_styles(config)
-        self.assertEqual(sp.item_layout({"type": "movie"}, config, styles), ("overlayrr-main", False))
+        self.assertEqual(sp.item_layout({"type": "movie"}, config, styles), ("example-main", False))
         config["layout_by_type"] = {"movie": "tk-movies", "tv": "tk-tv"}
         self.assertEqual(sp.item_layout({"type": "movie"}, config, styles), ("tk-movies", False))
         self.assertEqual(sp.item_layout({"type": "tv", "season": 1}, config, styles), ("tk-tv", True))
@@ -455,7 +455,7 @@ class ArtworkTests(unittest.TestCase):
             # The check ImageMaid's --overlays-only applies to every candidate file.
             with Image.open(path) as image:
                 tags = image.getexif()
-                return tags.get(0x04BC) == "overlay" and tags.get(0x0131) == "Overlayrr"
+                return tags.get(0x04BC) == "overlay" and tags.get(0x0131) == "tk.box"
         path = self.folder_job()
         config = json.loads(path.read_text(encoding="utf-8"))
         config["items"].append({**config["items"][0], "output": "render.jpg"})
@@ -722,18 +722,18 @@ class ArtworkTests(unittest.TestCase):
         item = {"type": "movie", "rating_key": "9"}
         url = self.artwork.plex.url + "/library/metadata/9"
         self.http.label_data[url] = {"type": "movie", "rating_key": "9", "labels": ["4K", "Kids & Family"]}
-        self.assertEqual(self.artwork.plex.mark_uploaded(item), "Overlayrr")
-        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "Overlayrr"])
+        self.assertEqual(self.artwork.plex.mark_uploaded(item), "tk.box")
+        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "tk.box"])
         put = next(call for call in self.http.calls if call[0] == "PUT")
         self.assertEqual(put[2]["params"], {"type": 1, "label.locked": 1, "label[0].tag.tag": "4K",
-                                          "label[1].tag.tag": "Kids & Family", "label[2].tag.tag": "Overlayrr"})
+                                          "label[1].tag.tag": "Kids & Family", "label[2].tag.tag": "tk.box"})
         self.http.calls.clear()
         self.artwork.plex.mark_uploaded(item)
         self.assertEqual([call[0] for call in self.http.calls], ["GET"])
-        self.assertEqual(self.artwork.plex.mark_uploaded(item, stock=True), "Overlayrr: Stock")
-        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "Overlayrr: Stock"])
+        self.assertEqual(self.artwork.plex.mark_uploaded(item, stock=True), "tk.box: Stock")
+        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "tk.box: Stock"])
         self.artwork.plex.mark_uploaded(item)
-        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "Overlayrr"])
+        self.assertEqual(self.http.label_data[url]["labels"], ["4K", "Kids & Family", "tk.box"])
 
     def test_shows_and_seasons_label_their_own_rating_keys(self):
         self.artwork.plex.settings["completion_label"] = "My Posters"
@@ -747,7 +747,7 @@ class ArtworkTests(unittest.TestCase):
             self.assertEqual(next(call for call in self.http.calls if call[0] == "PUT")[2]["params"]["type"], type_id)
 
     def test_label_read_failure_never_replaces_existing_labels(self):
-        self.artwork.plex.settings["completion_label"] = "Overlayrr"
+        self.artwork.plex.settings["completion_label"] = "tk.box"
         url = self.artwork.plex.url + "/library/metadata/9"
         self.http.replies[url] = b'<MediaContainer><Video ratingKey="8" type="movie"/></MediaContainer>'
         with self.assertRaisesRegex(ValueError, "requested movie 9"):
@@ -756,7 +756,7 @@ class ArtworkTests(unittest.TestCase):
 
     def test_label_added_only_after_successful_upload_and_verified_before_cache(self):
         path = self.folder_job(upload=True)
-        self.config["plex"]["completion_label"] = "Overlayrr"
+        self.config["plex"]["completion_label"] = "tk.box"
         path.write_text(json.dumps(self.config), encoding="utf-8")
         url = self.artwork.plex.url + "/library/metadata/9"
         self.http.label_data[url] = {"type": "movie", "rating_key": "9", "labels": ["Keep"]}
@@ -790,7 +790,7 @@ class ArtworkTests(unittest.TestCase):
 
     def test_unconfirmed_label_errors_and_retries_instead_of_marking_complete(self):
         path = self.folder_job(upload=True)
-        self.config["plex"]["completion_label"] = "Overlayrr"
+        self.config["plex"]["completion_label"] = "tk.box"
         path.write_text(json.dumps(self.config), encoding="utf-8")
         url = self.artwork.plex.url + "/library/metadata/9"
         self.http.label_data[url] = {"type": "movie", "rating_key": "9", "labels": ["Keep"]}
@@ -806,19 +806,19 @@ class ArtworkTests(unittest.TestCase):
         self.assertFalse((self.http.cache / "renders").exists())
         result, output = self.run_folder_job(path, changed_only=True)
         self.assertEqual(result, 0)
-        self.assertIn("Plex: Overlayrr", output)
-        self.assertEqual(self.http.label_data[url]["labels"], ["Keep", "Overlayrr"])
+        self.assertIn("Plex: tk.box", output)
+        self.assertEqual(self.http.label_data[url]["labels"], ["Keep", "tk.box"])
 
     def test_local_only_run_does_not_add_server_labels(self):
         path = self.folder_job(upload=False)
-        self.config["plex"]["completion_label"] = "Overlayrr"
+        self.config["plex"]["completion_label"] = "tk.box"
         path.write_text(json.dumps(self.config), encoding="utf-8")
         self.assertEqual(self.run_folder_job(path)[0], 0)
         self.assertFalse(any(call[1].startswith(self.artwork.plex.url) for call in self.http.calls))
 
     def test_added_sends_what_plex_lacks_and_skips_what_it_has(self):
         path = self.folder_job(upload=True)
-        self.config["plex"]["completion_label"] = "Overlayrr"
+        self.config["plex"]["completion_label"] = "tk.box"
         path.write_text(json.dumps(self.config), encoding="utf-8")
         url = self.artwork.plex.url + "/library/metadata/9"
         self.http.label_data[url] = {"type": "movie", "rating_key": "9", "labels": []}
@@ -829,7 +829,7 @@ class ArtworkTests(unittest.TestCase):
         result, output = self.run_folder_job(path, rating_key=9, added=True)
         self.assertEqual(result, 0)
         self.assertIn("LAYOUT", output)  # The file was there, but Plex had nothing: built again and sent
-        self.assertEqual((posts(), self.http.label_data[url]["labels"]), ([url + "/posters"], ["Overlayrr"]))
+        self.assertEqual((posts(), self.http.label_data[url]["labels"]), ([url + "/posters"], ["tk.box"]))
         self.http.calls.clear()
         self.assertIn("EXISTS", self.run_folder_job(path, rating_key=9, added=True)[1])  # Plex has it: nothing to do
         self.assertEqual(posts(), [])
@@ -837,7 +837,7 @@ class ArtworkTests(unittest.TestCase):
         self.http.calls.clear()
         result, output = self.run_folder_job(path, rating_key=9, added=True)
         self.assertIn("RELOAD", output)  # Sent as it is, not rendered again
-        self.assertEqual((posts(), self.http.label_data[url]["labels"]), ([url + "/posters"], ["Overlayrr"]))
+        self.assertEqual((posts(), self.http.label_data[url]["labels"]), ([url + "/posters"], ["tk.box"]))
 
     def test_added_key_of_a_season_or_episode_becomes_its_show_and_numbers(self):
         base = self.artwork.plex.url + "/library/metadata/"
@@ -849,7 +849,7 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual([plex.added_target(key) for key in (9, 21, 22)], [(9, None, None), (20, 2, None), (20, 2, 5)])
 
     def test_force_one_plex_id_bypasses_changed_only_and_updates_only_target(self):
-        self.config["plex"].update(upload=True, completion_label="Overlayrr")
+        self.config["plex"].update(upload=True, completion_label="tk.box")
         self.config["layouts"]["custom"] = {"width": 200, "height": 300}
         self.config["items"] = [{"rating_key": "10", "poster": "unrelated-missing.jpg", "logo": "unrelated-missing.png"}]
         self.config["overrides"] = {"9": {"poster": self.poster_url, "logo": self.logo_url}}
@@ -869,7 +869,7 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(other.read_bytes(), b"unrelated output stays untouched")
         self.assertEqual([call[1] for call in self.http.calls if call[0] == "POST"], [url + "/posters"])
         self.assertFalse(any("/library/sections" in call[1] or "/metadata/10" in call[1] for call in self.http.calls))
-        self.assertEqual(self.http.label_data[url]["labels"], ["Overlayrr"])
+        self.assertEqual(self.http.label_data[url]["labels"], ["tk.box"])
 
     def test_exact_title_filters_and_ambiguity_never_process_other_titles(self):
         self.config["layouts"]["custom"] = {"width": 200, "height": 300}
@@ -1209,7 +1209,7 @@ class ArtworkTests(unittest.TestCase):
         with Image.open(cards[0]) as first, Image.open(cards[1]) as second:
             self.assertEqual(first.size, (320, 180))
             self.assertNotEqual(first.tobytes(), second.tobytes())
-        self.assertEqual(json.loads((cards[1].parent / ".overlayrr.json").read_text())["episode_title"], "Cat's in the Bag")
+        self.assertEqual(json.loads((cards[1].parent / ".artwork.json").read_text())["episode_title"], "Cat's in the Bag")
         self.assertTrue(list(cards[0].parent.parent.parent.glob("logo.*")))
 
 
@@ -1439,7 +1439,7 @@ class ArtworkTests(unittest.TestCase):
         # Its folder is made anyway, so it is listed and a poster of your own can be chosen for it
         folders = list((self.base / "assets" / "collections").glob("*{plex-78}"))
         self.assertEqual(len(folders), 1)
-        self.assertEqual(json.loads((folders[0] / ".overlayrr.json").read_text(encoding="utf-8"))["rating_key"], "78")
+        self.assertEqual(json.loads((folders[0] / ".artwork.json").read_text(encoding="utf-8"))["rating_key"], "78")
 
 
     def test_recent_collections_are_created_once_and_get_chart_posters(self):
@@ -1583,7 +1583,7 @@ class CleanupTests(unittest.TestCase):
             if overlay:
                 exif[0x04BC] = "overlay"
             if software:
-                exif[0x0131] = "Overlayrr"
+                exif[0x0131] = "tk.box"
             Image.new("RGB", (8, 8), "red").save(path, format="JPEG", exif=exif)
             old = path.stat().st_mtime - hours * 3600
             os.utime(path, (old, old))
@@ -1624,7 +1624,7 @@ class CleanupTests(unittest.TestCase):
     def present(self):
         return {name for name, path in self.files.items() if path.exists()}
 
-    def test_report_lists_only_unused_overlayrr_posters_and_changes_nothing(self):
+    def test_report_lists_only_unused_engine_posters_and_changes_nothing(self):
         result, text = self.cleanup()
         self.assertEqual(result, 0)
         listed = {line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("UNUSED ")}
@@ -1636,14 +1636,14 @@ class CleanupTests(unittest.TestCase):
         self.cleanup("move")
         kept = set(self.files) - {"orphan", "orphan_two"}
         self.assertEqual(self.present(), kept)
-        restored = self.data / "Overlayrr Restore/Movies/a/abc.bundle/Uploads/posters/orphan"
+        restored = self.data / "tk.box Restore/Movies/a/abc.bundle/Uploads/posters/orphan"
         self.assertTrue(restored.is_file())
         self.assertIn("Restored 2 files", self.cleanup("restore")[1])
         self.assertEqual(self.present(), set(self.files))
-        self.assertFalse((self.data / "Overlayrr Restore").exists())
+        self.assertFalse((self.data / "tk.box Restore").exists())
         self.cleanup("remove")
         self.assertEqual(self.present(), kept)
-        self.assertFalse((self.data / "Overlayrr Restore").exists())
+        self.assertFalse((self.data / "tk.box Restore").exists())
 
     def test_posters_in_use_stay_even_when_selected_for_other_fields(self):
         self.write_database({"user_thumb_url": "upload://posters/in_use", "user_art_url": "upload://art/orphan"})
@@ -1677,7 +1677,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Restored 2 files", result.stdout)
         self.assertEqual(self.present(), set(self.files))
-        result = subprocess.run([sys.executable, str(STANDALONE / "overlayrr.py"), str(self.config_path), "--cleanup"], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(self.config_path), "--cleanup"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)  # The artwork engine no longer has it
 
     def test_snapshot_download_accepts_zip_or_raw_database(self):
@@ -1717,7 +1717,7 @@ class ArtworkFileTests(unittest.TestCase):
             worker.base_item = lambda title, season: (dict(item), style)
             title = base / "assets" / "collections" / "Halloween Picks {plex-5}"
             title.mkdir(parents=True)
-            (title / ".overlayrr.json").write_text(json.dumps({"type": "collection", "title": "Halloween Picks", "rating_key": "5"}), encoding="utf-8")
+            (title / ".artwork.json").write_text(json.dumps({"type": "collection", "title": "Halloween Picks", "rating_key": "5"}), encoding="utf-8")
             sp.ArtworkFiles.save_image(title, "poster", sp.generated_background(item, style))  # What a run drew
             rel = "collections/" + title.name
             names = lambda: sorted(path.name for path in title.iterdir() if path.suffix == ".png")
@@ -1846,7 +1846,7 @@ class CLIAndHTTPTests(unittest.TestCase):
                 {"title": "Movie B", "rating_key": "2", "poster": "poster.png", "logo": "logo.png", "output": "b.png"}])
             path = base / "config.json"
             path.write_text(json.dumps(config), encoding="utf-8")
-            command = [sys.executable, str(STANDALONE / "overlayrr.py"), str(path)]
+            command = [sys.executable, str(STANDALONE / "artwork_engine.py"), str(path)]
             result = subprocess.run(command + ["--title", "movie a", "--type", "movie", "--year", "1999", "--remake"], cwd=base.parent, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             a = base / "assets/movies/Movie A (1999) {plex-1}/a.png"
@@ -1901,7 +1901,7 @@ class CLIAndHTTPTests(unittest.TestCase):
                 {"poster": "poster.jpg", "logo": "logo.png", "output": "render.jpg"}])
             path = base / "config.json"
             path.write_text(json.dumps(config), encoding="utf-8")
-            command = [sys.executable, str(STANDALONE / "overlayrr.py"), str(path)]
+            command = [sys.executable, str(STANDALONE / "artwork_engine.py"), str(path)]
             result = subprocess.run(command, cwd=base.parent, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             for suffix in ("png", "jpg"):
@@ -1927,7 +1927,7 @@ class CLIAndHTTPTests(unittest.TestCase):
             config = configured(layouts={"custom": {"width": 200, "height": 300}},
                                 collections=[{"name": "Empty", "library": "Movies", "type": "movie"}])
             path.write_text(json.dumps(config), encoding="utf-8")
-            artwork = subprocess.run([sys.executable, str(STANDALONE / "overlayrr.py"), str(path), "--check"], capture_output=True, text=True)
+            artwork = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(path), "--check"], capture_output=True, text=True)
             self.assertEqual(artwork.returncode, 0, artwork.stderr)  # Collection definitions aren't the artwork engine's to judge
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
             self.assertEqual(collections.returncode, 1)
@@ -1944,7 +1944,7 @@ class CLIAndHTTPTests(unittest.TestCase):
             path.write_text(json.dumps(config), encoding="utf-8")
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
             self.assertEqual(collections.returncode, 0, collections.stderr)  # Nor are layouts the collections engine's
-            artwork = subprocess.run([sys.executable, str(STANDALONE / "overlayrr.py"), str(path), "--check"], capture_output=True, text=True)
+            artwork = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(path), "--check"], capture_output=True, text=True)
             self.assertIn("Define at least one named layout", artwork.stderr)
             config["workers"] = 0
             path.write_text(json.dumps(config), encoding="utf-8")
@@ -2137,10 +2137,10 @@ class SafeguardTests(unittest.TestCase):
         renamed = root / "movies" / "My Matrix"
         named.mkdir(parents=True)
         renamed.mkdir()
-        (renamed / ".overlayrr.json").write_text(json.dumps({"type": "movie", "tmdb_id": 603}))
+        (renamed / ".artwork.json").write_text(json.dumps({"type": "movie", "tmdb_id": 603}))
         files = sp.ArtworkFiles(root, full=False)
         self.assertEqual(files.folder({"type": "movie", "tmdb_id": 949}), named)
-        self.assertFalse(files.scanned)  # Found by its name; no .overlayrr.json was read
+        self.assertFalse(files.scanned)  # Found by its name; no .artwork.json was read
         self.assertEqual(files.folder({"type": "movie", "tmdb_id": 603}), renamed)
         self.assertTrue(files.scanned)
 

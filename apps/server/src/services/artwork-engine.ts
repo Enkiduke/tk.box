@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
 
-// Runs the artwork engine (apps/artwork/overlayrr.py) and the collections engine (apps/artwork/plex_collections.py) as
+// Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
 // their own Python processes: tk.box writes their shared JSON config from the database, passes credentials in the
 // environment, and streams the output into the job history. The rendering happens entirely in those processes (which
 // lower their own CPU priority), so the server's event loop and the streaming paths never do image work. One job runs
@@ -72,6 +72,26 @@ export class ArtworkEngine {
   constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private traktClientId: () => string | undefined = () => undefined) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
+    this.renameFiles();
+  }
+  // The engine's files once carried its former name: each title's details and the collections journal move to their
+  // current names, once, before any job or the worker reads them.
+  private renameFiles() {
+    if (this.store.state<boolean>('files:renamed')) return;
+    try {
+      const walk = (folder: string) => {
+        for (const entry of readdirSync(folder, { withFileTypes: true })) {
+          const path = join(folder, entry.name);
+          if (entry.isDirectory()) walk(path);
+          else if (entry.name === '.overlayrr.json' && !existsSync(join(folder, '.artwork.json'))) renameSync(path, join(folder, '.artwork.json'));
+        }
+      };
+      if (existsSync(join(this.workDir, 'assets'))) walk(join(this.workDir, 'assets'));
+      const journal = join(this.workDir, 'collections-state.json');
+      if (existsSync(join(this.workDir, 'overlayrr-collections.json')) && !existsSync(journal)) renameSync(join(this.workDir, 'overlayrr-collections.json'), journal);
+      rmSync(join(this.workDir, '.overlayrr.lock'), { force: true });
+      this.store.setState('files:renamed', true);
+    } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
   secrets(): EngineSecrets { const radarr = this.store.collectionsConfig().radarrKey, trakt = this.traktClientId(); return { ...this.store.keys(), ...(radarr ? { radarr } : {}), ...(trakt ? { traktClientId: trakt } : {}) }; }
@@ -183,7 +203,7 @@ export class ArtworkEngine {
       if (!engine.ready) throw new Error(`The artwork engine is not set up: ${engine.error}`);
       const file = this.writeConfig(job.run.libraries, 'config.json');
       const collections = job.script === 'collections';
-      say(`> ${collections ? 'plex_collections' : 'overlayrr'} ${job.args.join(' ')}`);
+      say(`> ${collections ? 'plex_collections' : 'artwork_engine'} ${job.args.join(' ')}`);
       const child = running.child = spawn(this.paths.python, [collections ? this.paths.collectionsScript : this.paths.script, file, ...job.args], { cwd: this.workDir, env: childEnv(job.run, keys), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);

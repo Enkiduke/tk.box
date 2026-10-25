@@ -1,4 +1,4 @@
-// The layout editor's settings, ported from Overlayrr's Template editor: each group's rows, their ranges and controls,
+// The layout editor's settings, ported from the engine's former Template editor: each group's rows, their ranges and controls,
 // and when a row applies (`when`). Keys are the engine's layout fields; the engine checks every value again on save.
 export type V = Record<string, any>;
 export type Field = { k: string; label: string; min?: number; max?: number; step?: number; int?: boolean; bool?: boolean; color?: boolean; auto?: boolean;
