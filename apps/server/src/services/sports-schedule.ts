@@ -102,7 +102,7 @@ export class SportsSchedule {
         if (!window) continue;
         windows.set(channel.id, window);
       }
-      this.store.replaceWindows(source.id, source.lead_minutes, windows);
+      this.store.replaceWindows(source.id, source.lead_minutes, windows, now);
       this.iptv.syncNumbers(source.id, now);
       this.log('sports channels matched', { sourceId: source.id, events: events.length, windows: windows.size, zones: Object.fromEntries(zones) });
     }

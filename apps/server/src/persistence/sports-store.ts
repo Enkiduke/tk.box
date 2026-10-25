@@ -14,6 +14,9 @@ export const sportsPolicy = z.object({ enabled: z.boolean(), leadMinutes: z.numb
 export type SportsPolicy = z.infer<typeof sportsPolicy>;
 // Shown for a short while after the final whistle, so a viewer is not cut off mid-celebration.
 export const GRACE_MS = 15 * 60_000;
+// Events often run past their scheduled end: an event channel being watched, and every feed of its event, stays on
+// until this long after its last viewer leaves.
+export const WATCH_HOLD_MS = 15 * 60_000;
 
 // Live Sports settings, shared by every event-driven source. "selected" shows only the listed leagues;
 // unscheduled covers channels matched by a written time or a guide listing alone, which belong to no league.
@@ -42,7 +45,7 @@ export function eventRank(s: SportsSettings) {
   return (sport: string | null, key: string | null) => [sports.get(sport ?? 'sports') ?? sports.size, key ? leagues.get(key) ?? leagues.size : leagues.size + 1] as const;
 }
 type EventRow = { id: string; source: SportsEvent['source']; sport: string; league: string; league_key: string | null; title: string; start: number; end: number; state: SportsEvent['state']; time_known: number; sides: string; abbreviations: string; ended_at: number | null };
-type WindowRow = { channel_id: string; event_id: string | null; title: string; league: string; start: number; end: number; visible_from: number; visible_until: number; state: string | null; matched_by: Window['matchedBy']; sport: string | null; league_key: string | null };
+type WindowRow = { channel_id: string; event_id: string | null; title: string; league: string; start: number; end: number; visible_from: number; visible_until: number; state: string | null; matched_by: Window['matchedBy']; stack_key: string | null; sport: string | null; league_key: string | null };
 
 export class SportsStore {
   // `changed` reclassifies a source's channels into regular and event channels (IptvStore.relist).
@@ -100,12 +103,34 @@ export class SportsStore {
     return (this.db.prepare('SELECT * FROM sports_events WHERE end>=? AND start<=? ORDER BY start').all(from, to) as EventRow[])
       .map(r => ({ id: r.id, source: r.source, sport: r.sport, league: r.league, leagueKey: r.league_key ?? '', title: r.title, start: r.start, end: r.end, state: r.state, timeKnown: !!r.time_known, sides: JSON.parse(r.sides), abbreviations: JSON.parse(r.abbreviations) }));
   }
-  // Replaces a source's windows in one transaction. Returns channels whose window is newly open or about to.
-  replaceWindows(sourceId: string, leadMinutes: number, windows: Map<string, Window>) {
+  // Replaces a source's windows in one transaction. A held channel keeps its window open until its hold ends, the old
+  // window carried over if the schedule no longer matches it.
+  replaceWindows(sourceId: string, leadMinutes: number, windows: Map<string, Window>, now = Date.now()) {
     return this.db.transaction(() => {
+      this.db.prepare('DELETE FROM sports_holds WHERE until<=?').run(now);
+      const held = this.db.prepare('SELECT w.*,h.until FROM sports_windows w JOIN sports_holds h ON h.channel_id=w.channel_id WHERE w.source_id=?').all(sourceId) as (WindowRow & { until: number })[];
       this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
       const put = this.db.prepare('INSERT INTO sports_windows(channel_id,source_id,event_id,title,league,start,end,visible_from,visible_until,state,matched_by,stack_key,sport,league_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       for (const [channelId, w] of windows) put.run(channelId, sourceId, w.eventId, w.title.slice(0, 300), w.league.slice(0, 120), w.start, w.end, w.start - leadMinutes * 60_000, w.end + GRACE_MS, w.state, w.matchedBy, stackKey(w).slice(0, 300), w.sport ?? 'sports', w.leagueKey || null);
+      const extend = this.db.prepare('UPDATE sports_windows SET visible_until=MAX(visible_until,?) WHERE channel_id=?');
+      for (const h of held) {
+        if (windows.has(h.channel_id)) extend.run(h.until, h.channel_id);
+        else put.run(h.channel_id, sourceId, h.event_id, h.title, h.league, h.start, h.end, h.visible_from, h.until, h.state, h.matched_by, h.stack_key, h.sport, h.league_key);
+      }
+    })();
+  }
+  // Keeps a watched event channel and the other feeds of its event on until WATCH_HOLD_MS after `seen`, the viewer's
+  // last request. Written at most once a minute per channel.
+  hold(channelId: string, seen: number) {
+    const until = seen + WATCH_HOLD_MS, current = this.db.prepare('SELECT until FROM sports_holds WHERE channel_id=?').get(channelId) as { until: number } | undefined;
+    if (current && current.until >= until - 60_000) return;
+    const w = this.db.prepare('SELECT source_id,stack_key FROM sports_windows WHERE channel_id=?').get(channelId) as { source_id: string; stack_key: string | null } | undefined;
+    if (!w) return;
+    const feeds = w.stack_key === null ? [channelId] : (this.db.prepare('SELECT channel_id FROM sports_windows WHERE source_id=? AND stack_key=?').all(w.source_id, w.stack_key) as { channel_id: string }[]).map(r => r.channel_id);
+    this.db.transaction(() => {
+      const put = this.db.prepare('INSERT INTO sports_holds VALUES(?,?) ON CONFLICT(channel_id) DO UPDATE SET until=MAX(until,excluded.until)');
+      const extend = this.db.prepare('UPDATE sports_windows SET visible_until=? WHERE channel_id=? AND visible_until<?');
+      for (const id of feeds) { put.run(id, until); extend.run(until, id, until); }
     })();
   }
   windows(sourceId: string) { return new Map((this.db.prepare('SELECT * FROM sports_windows WHERE source_id=?').all(sourceId) as WindowRow[]).map(r => [r.channel_id, r])); }

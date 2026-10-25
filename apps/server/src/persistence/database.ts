@@ -181,6 +181,11 @@ export function openDatabase(path: string) {
       db.exec('ALTER TABLE iptv_sources ADD COLUMN allow_private_streams INTEGER NOT NULL DEFAULT 0');
       db.prepare('INSERT INTO migrations VALUES(20)').run();
     }
+    // Event channels being watched past their window, and until when they stay on (SportsStore.hold).
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=21').get()) {
+      db.exec('CREATE TABLE sports_holds(channel_id TEXT PRIMARY KEY, until INTEGER NOT NULL)');
+      db.prepare('INSERT INTO migrations VALUES(21)').run();
+    }
   })();
   return db;
 }

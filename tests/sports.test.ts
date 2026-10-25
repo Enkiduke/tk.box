@@ -163,6 +163,31 @@ test('feeds of one event combine into one selectable row, with or without a sche
   assert.equal(guide.programs.find(p => p.program)?.program?.title, 'Houston Texans at Jacksonville Jaguars');
 });
 
+test('a watched event stays on, with every feed of its event, until 15 minutes after its last viewer', () => {
+  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
+  const names = ['NFL 02: Jaguars vs Texans', 'NFL | 02 Texans at Jaguars', 'NFL 02: Houston Texans @ Jacksonville Jaguars | Away Stream'];
+  iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="f${i}",${n}\nhttps://streams.invalid/${i}`).join('\n')));
+  store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
+  store.upsert([{ ...nfl[0]!, start: t - HOUR, end: t + 2 * HOUR }], t);
+  new SportsSchedule(iptv, store, health, () => {}, { espn: [], tsdb: [], tsdbKey: () => '123', zone: 'UTC', nameHours: 3, tickMs: 3600_000 }).match(t);
+  const [feed] = iptv.stacks()[0]!.feeds, scheduled = store.window(feed!.id)!.visible_until;
+  // While the event is scheduled, a hold never shortens its window.
+  store.hold(feed!.id, t);
+  assert.equal(store.window(feed!.id)!.visible_until, scheduled);
+  // The schedule no longer matches the event (it ran past its listing), but the viewer's feed and its siblings stay on.
+  store.replaceWindows(s.id, 30, new Map(), t); iptv.syncNumbers(s.id, t);
+  const rows = iptv.stacks();
+  assert.equal(rows.length, 1, 'the feeds still share one row');
+  assert.equal(rows[0]!.feeds.length, 3);
+  assert.ok(rows[0]!.feeds.every(f => store.window(f.id)!.visible_until === t + 15 * 60_000));
+  assert.equal(iptv.tune(feed!.id).id, feed!.id);
+  // 15 minutes after the last viewer, the hold ends and the channels are removed as usual.
+  store.replaceWindows(s.id, 30, new Map(), t + 15 * 60_000); iptv.syncNumbers(s.id, t + 15 * 60_000);
+  assert.equal(store.windows(s.id).size, 0);
+  assert.equal(iptv.stacks().length, 0);
+});
+
 test('the guide leads into an event with "starting soon" and is blank after it, for event matches only', () => {
   const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
