@@ -349,16 +349,25 @@ export class PlexAdapter {
     const url=new URL(`/library/sections/${libraryId}/${path}`,this.config.PLEX_URL);
     if(path==='all')applyCatalogFilters(url,query,library.type);
     else {if(query.q)url.searchParams.set('title',query.q);if(query.genre)url.searchParams.set('genre',query.genre);}
-    // The first page of recent TV over-fetches episodes so season batches can be grouped into full cards.
-    const grouped=path==='recentlyAdded'&&library.type==='show'&&query.offset===0,size=grouped?60:query.limit;
-    url.searchParams.set('X-Plex-Container-Start',String(query.offset));url.searchParams.set('X-Plex-Container-Size',String(size));
     url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Guid,Collection,Producer');
-    const container=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
-    requireThat(container.Metadata.length<=size,'PLEX_PAGINATION_INVALID','Plex did not honor the requested page limit.',502);
-    requireThat(container.offset===undefined||container.offset===query.offset,'PLEX_PAGINATION_INVALID','Plex returned an unexpected page.',502);
-    const items=container.Metadata.map(node=>{requireThat((node.librarySectionID??container.librarySectionID??libraryId)===libraryId,'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);return catalogDto(node,libraryId);});
-    if(grouped){const cards=groupRecentEpisodes(items);return {items:await this.withShowSummaries(grant,cards.slice(0,query.limit)),offset:0,limit:query.limit,hasMore:cards.length>query.limit||(container.totalSize!==undefined?items.length<container.totalSize:items.length===size)};}
-    return {items,offset:query.offset,limit:query.limit,total:container.totalSize,hasMore:container.totalSize!==undefined?query.offset+items.length<container.totalSize:items.length===query.limit};
+    const read=async(start:number,size:number)=>{
+      url.searchParams.set('X-Plex-Container-Start',String(start));url.searchParams.set('X-Plex-Container-Size',String(size));
+      const container=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+      requireThat(container.Metadata.length<=size,'PLEX_PAGINATION_INVALID','Plex did not honor the requested page limit.',502);
+      requireThat(container.offset===undefined||container.offset===start,'PLEX_PAGINATION_INVALID','Plex returned an unexpected page.',502);
+      const items=container.Metadata.map(node=>{requireThat((node.librarySectionID??container.librarySectionID??libraryId)===libraryId,'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);return catalogDto(node,libraryId);});
+      return {items,more:container.totalSize!==undefined?start+items.length<container.totalSize:items.length===size,total:container.totalSize};
+    };
+    // The first page of recent TV reads episodes, 60 at a time, until its cards are settled: a show past the last card
+    // turns up, or Plex runs out.
+    if(path==='recentlyAdded'&&library.type==='show'&&query.offset===0) {
+      const items:CatalogItem[]=[],settled=()=>groupRecentEpisodes(items,query.limit+1).length>query.limit;let more=true;
+      for(let start=0;more&&start<600&&!settled();start+=60){const page=await read(start,60);items.push(...page.items);more=page.more;}
+      const cards=groupRecentEpisodes(items,query.limit+1);
+      return {items:await this.withShowSummaries(grant,cards.slice(0,query.limit)),offset:0,limit:query.limit,hasMore:cards.length>query.limit||more};
+    }
+    const {items,more,total}=await read(query.offset,query.limit);
+    return {items,offset:query.offset,limit:query.limit,total,hasMore:more};
   }
   // Season and show cards grouped from episodes carry no description, so they take the series' own. A show that
   // can't be read keeps its card without one.
@@ -372,7 +381,7 @@ export class PlexAdapter {
     return cards.map(c=>{const id=showOf(c),summary=id?summaries.get(id):undefined;return summary?{...c,summary}:c;});
   }
   // A library's titles added after `sinceMs`, newest first, read page by page until Plex's list gets back to then (at
-  // most `max` entries; `complete` says it got there). TV episodes that arrived together group as on the Recent shelf.
+  // most `max` entries; `complete` says it got there). TV episodes group into one card per show, as on the Recent shelf.
   async addedSince(grant:PlexGrant,libraryId:string,sinceMs:number,max=2000) {
     const library=this.library(grant,libraryId),size=100,items:CatalogItem[]=[];
     let complete=false;

@@ -8,7 +8,8 @@ import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {config,fakePlex,metadata} from './fixtures.js';
 import {ArtworkCache} from '../apps/server/src/providers/artwork-cache.js';
-import {sortIndex,promotedHubs,promotedCollectionIds,externalRatings,catalogNode} from '../apps/server/src/providers/plex-catalog.js';
+import type {CatalogItem} from '../packages/contracts/src/index.js';
+import {sortIndex,promotedHubs,promotedCollectionIds,externalRatings,catalogNode,groupRecentEpisodes} from '../apps/server/src/providers/plex-catalog.js';
 
 function catalogFixture() {
   const base=fakePlex(),requests:{path:string;query:URLSearchParams;token:string|null}[]=[],nodes:Record<string,Record<string,unknown>>={
@@ -191,20 +192,27 @@ test('a passed Plex check is reused for the recheck window, while sign-out and P
   }finally{db.close();}
 });
 
-test('recent TV uses series posters and groups a season batch into one card while keeping stragglers separate',async()=>{
+test('recent TV uses series posters and gives a season one card however its episodes arrived',async()=>{
   const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
-  const episode=(key:string,season:string,index:number,addedAt:number)=>({ratingKey:key,librarySectionID:'20',type:'episode',title:`Episode ${index}`,parentRatingKey:season,parentTitle:'Season 1',parentIndex:1,index,grandparentRatingKey:'100',grandparentTitle:'Fixture show',thumb:`/library/metadata/${key}/thumb/1`,grandparentThumb:'/library/metadata/100/thumb/1',addedAt});
+  const episode=(key:string,show:string,season:string,index:number,addedAt:number)=>({ratingKey:key,librarySectionID:'20',type:'episode',title:`Episode ${index}`,parentRatingKey:season,parentTitle:'Season 1',parentIndex:1,index,grandparentRatingKey:show,grandparentTitle:`Show ${show}`,thumb:`/library/metadata/${key}/thumb/1`,grandparentThumb:`/library/metadata/${show}/thumb/1`,addedAt});
   const day=86400;
-  f.setPage({MediaContainer:{Metadata:[episode('501','101',3,10*day),episode('502','101',2,10*day-60),episode('503','101',1,10*day-120),episode('601','201',1,8*day),episode('504','101',0,2*day)],totalSize:5}});
+  f.setPage({MediaContainer:{Metadata:[episode('501','100','101',3,10*day),episode('502','100','101',2,10*day-60),episode('601','200','201',1,8*day),episode('504','100','101',1,2*day)],totalSize:4}});
   const page=await plex.catalogPage(grant,'20',{shelf:'recent',limit:20});
   assert.equal(f.requests.find(r=>r.path==='/library/sections/20/recentlyAdded')!.query.get('X-Plex-Container-Size'),'60');
-  assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['season','101'],['episode','601'],['episode','504']]);
-  const season=page.items[0]!;assert.equal(season.episodeCount,3);assert.equal(season.showTitle,'Fixture show');assert.equal(season.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster&v=1');
-  assert.equal(page.items[1]!.showPosterUrl,'/api/v1/catalog/items/100/artwork?kind=poster&v=1');assert.equal(page.items[1]!.posterUrl,'/api/v1/catalog/items/601/artwork?kind=poster&v=1');
+  assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['season','101'],['episode','601']]);
+  const season=page.items[0]!;assert.equal(season.episodeCount,3);assert.equal(season.showTitle,'Show 100');assert.equal(season.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster&v=1');
+  assert.equal(page.items[1]!.showPosterUrl,'/api/v1/catalog/items/200/artwork?kind=poster&v=1');assert.equal(page.items[1]!.posterUrl,'/api/v1/catalog/items/601/artwork?kind=poster&v=1');
   assert.equal(page.hasMore,false);
 });
 
-test('recent TV merges seasons of one show that arrived together into a show card, around other shows',async()=>{
+test('recent TV stops taking in episodes where the row ends, so a card never reaches past it',()=>{
+  const ep=(show:string,season:string,id:string)=>({id,libraryId:'20',type:'episode',title:id,summary:'',viewOffsetMs:0,watched:false,genres:[],parentId:season,showId:show,showTitle:show}) as CatalogItem;
+  const cards=groupRecentEpisodes([ep('a','a1','1'),ep('b','b1','2'),ep('a','a1','3'),ep('c','c1','4'),ep('b','b1','5'),ep('a','a2','6')],2);
+  assert.deepEqual(cards.map(c=>[c.type,c.id,c.episodeCount]),[['season','a1',2],['episode','2',undefined]]);
+  assert.deepEqual(groupRecentEpisodes([ep('a','a1','1'),ep('b','b1','2'),ep('a','a2','3')]).map(c=>[c.type,c.id,c.seasonCount]),[['show','a',2],['episode','2',undefined]]);
+});
+
+test('recent TV merges every season of one show into a show card, around other shows',async()=>{
   const f=catalogFixture(),plex=new PlexAdapter(config(),'test',f.transport),grant=await plex.authorize('fixture');
   const episode=(key:string,show:string,season:string,index:number,addedAt:number)=>({ratingKey:key,librarySectionID:'20',type:'episode',title:`Episode ${index}`,parentRatingKey:season,parentTitle:`Season ${season}`,parentIndex:1,index,grandparentRatingKey:show,grandparentTitle:`Show ${show}`,thumb:`/library/metadata/${key}/thumb/1`,grandparentThumb:`/library/metadata/${show}/thumb/1`,addedAt});
   const day=86400;
@@ -212,11 +220,11 @@ test('recent TV merges seasons of one show that arrived together into a show car
     episode('11','100','102',2,10*day),episode('12','100','102',1,10*day-60),
     episode('21','200','201',2,10*day-90),episode('22','200','201',1,10*day-100),
     episode('13','100','101',2,10*day-120),episode('14','100','101',1,10*day-180),
-    // A later batch of the same show stays as its own season card.
+    // An earlier batch of the same show joins its card.
     episode('15','100','103',2,5*day),episode('16','100','103',1,5*day-60)],totalSize:8}});
   const page=await plex.catalogPage(grant,'20',{shelf:'recent',limit:20});
-  assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['show','100'],['season','201'],['season','103']]);
-  const show=page.items[0]!;assert.equal(show.title,'Show 100');assert.equal(show.seasonCount,2);assert.equal(show.episodeCount,4);assert.equal(show.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster&v=1');
+  assert.deepEqual(page.items.map(i=>[i.type,i.id]),[['show','100'],['season','201']]);
+  const show=page.items[0]!;assert.equal(show.title,'Show 100');assert.equal(show.seasonCount,3);assert.equal(show.episodeCount,6);assert.equal(show.posterUrl,'/api/v1/catalog/items/100/artwork?kind=poster&v=1');
 });
 
 test('non-title jump buckets follow the sorted order and pick a readable granularity',()=>{
