@@ -4,10 +4,10 @@ import { randomBytes } from 'node:crypto';
 import { openDatabase } from '../apps/server/src/persistence/database.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
-import { SportsStore, type SportsSettings } from '../apps/server/src/persistence/sports-store.js';
+import { SportsStore, allowed, type SportsSettings } from '../apps/server/src/persistence/sports-store.js';
 import { SportsSchedule } from '../apps/server/src/services/sports-schedule.js';
 import { Vault } from '../apps/server/src/security/vault.js';
-import { channelWindow, eventScore, nameTime, cleanTitle, type SportsEvent } from '../apps/server/src/services/sports-match.js';
+import { channelWindow, eventScore, nameTime, cleanTitle, eventChannelName, type SportsEvent } from '../apps/server/src/services/sports-match.js';
 import { espnEvents, tsdbEvents, espnLeagueLogo, tsdbLeagueLogo } from '../apps/server/src/providers/sports-feeds.js';
 
 const HOUR = 3600_000, now = Date.parse('2026-10-18T17:30:00Z');
@@ -132,6 +132,14 @@ test('real provider names: a family writing UK times is learned from known kicko
 test('real provider names: league shows count while the league plays, team-channel filler does not', () => {
   const sunday = Date.parse('2026-10-18T15:00:00Z'), listing = (title: string) => [{ start: sunday - HOUR, end: sunday + 5 * HOUR, title }];
   assert.equal(channelWindow({ id: 'r', name: 'NFL Redzone', group: '', programs: listing('NFL Red Zone') }, events, sunday, opts)?.matchedBy, 'epg');
+  // Without a guide listing, a RedZone channel airs for the Sunday afternoon slate: 1 PM ET kickoff to its end, not the night game.
+  const redZone = win('US: NFL Redzone'), jaguars = events.find(e => e.id === 'espn:401872996')!;
+  assert.deepEqual(redZone && [redZone.title, redZone.start, redZone.end, redZone.leagueKey], ['NFL RedZone', jaguars.start, jaguars.end, 'football/nfl']);
+  const selected = { leagueMode: 'selected', leagues: ['football/nfl'], unscheduled: false } as SportsSettings;
+  assert.equal(allowed(selected)(redZone!), true, 'RedZone follows the NFL, not the setting for channels with no scheduled game');
+  assert.equal(allowed({ ...selected, leagues: [] })(redZone!), false);
+  assert.equal(channelWindow({ id: 'r', name: 'US NFL RedZone (S)', group: 'US Sports', programs: [] }, events, jaguars.end + HOUR, opts), undefined);
+  assert.deepEqual(['US: NFL REDZONE', 'US NFL RedZone (Lower BW HD) (A)'].map(eventChannelName), ['NFL RedZone', 'NFL RedZone']);
   assert.equal(channelWindow({ id: 'o', name: 'US NBA Oklahoma City Thunder (HD) (S)', group: '', programs: listing('NBA: Oklahoma City Thunder') }, events, sunday, opts), undefined);
   assert.equal(win('NFL 02: Jaguars vs Texans (10.18 9:30AM ET)')?.eventId, 'espn:401872996');
   assert.equal(win('NFL 02: Houston Texans @ Jacksonville Jaguars | Away Stream | 9:30 AM')?.eventId, 'espn:401872996');
@@ -242,7 +250,7 @@ test('a sports source is checked and numbered only while live or starting soon, 
 });
 
 test('event channel names keep only the event; feed labels keep the provider slot', async () => {
-  const { eventChannelName, channelTag } = await import('../apps/server/src/services/sports-match.js');
+  const { channelTag } = await import('../apps/server/src/services/sports-match.js');
   const cases: [string, string, string][] = [
     ['Bundesliga 09ⓧ: Borussia Monchengladbach vs. TSG Hoffenheim | Sunday, 18 October 2026 16:30', 'Borussia Monchengladbach vs. TSG Hoffenheim', 'Bundesliga 09'],
     ['Eredivisie: FC Groningen vs AFC Ajax @ Oct 18 10:35 AM :Sportsnet+ 09', 'FC Groningen vs AFC Ajax', 'Sportsnet+ 09'],
