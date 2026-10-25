@@ -42,7 +42,9 @@ function openPlexPopup(url='') {
 
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean}>('/setup'),scrolled=useScrolled();
-  const me=identity.error&&[401,403].includes(identity.error.status)?undefined:identity.data;
+  // Only a 401 means signed out. A 403 is Plex refusing a check, which the server has already retried; the viewer stays
+  // signed in with what they're watching, and the next check tries again.
+  const me=identity.error?.status===401?undefined:identity.data;
   // Edit artwork, offered on every title's menu to admins, opens the title editor over the current page.
   const [artwork,setArtwork]=useState<string>(),admin=me?.role==='admin';
   useEffect(()=>{setArtworkEditor(admin?setArtwork:undefined);return()=>setArtworkEditor(undefined);},[admin]);
@@ -208,7 +210,7 @@ function App() {
     rememberFeed(current.channel.stack,id);watchChannel(tuneTarget(current.channel,id),current.program);
   };
   const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
-  useEffect(()=>{if(identity.error&&[401,403].includes(identity.error.status)){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
+  useEffect(()=>{if(identity.error?.status===401){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
   const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>setError(e.message));};
   const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item??loadingNext;
   const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
