@@ -4,7 +4,7 @@ import { basename, extname, join } from 'node:path';
 import { AppError, requireThat } from '../errors.js';
 
 // Admin › Artwork's titles as the engine keeps them on disk: assets/<movies|tv|collections>/<title>[/Season NN], each with
-// its poster and logo, the candidates set aside beside them (poster2, poster-1a2b3c4d) and its .overlayrr.json. Browsing,
+// its poster and logo, the candidates set aside beside them (poster2, poster-1a2b3c4d) and its .artwork.json. Browsing,
 // picking and pushing happen here; the engine's worker is only asked for what needs its renderer (previews, thumbnails it
 // hasn't made yet, generated backgrounds, Live marks and Discard, which read its render records).
 export const CATEGORIES = ['movies', 'tv', 'collections'] as const;
@@ -95,12 +95,12 @@ export class ArtworkFiles {
     requireThat((await stat(folder).catch(() => undefined))?.isDirectory(), 'ARTWORK_NOT_FOUND', 'Folder not found', 404);
     return { title: season ? join(folder, '..') : folder, folder, titleRel: rel.split('/').slice(0, 2).join('/'), season: season ? Number(basename(folder).split(' ')[1]) : null };
   }
-  meta(folder: string) { return readJson<Meta>(join(folder, '.overlayrr.json'), {}); }
+  meta(folder: string) { return readJson<Meta>(join(folder, '.artwork.json'), {}); }
   private async writeMeta(folder: string, change: (meta: Meta) => void) {
     const meta = await this.meta(folder);
     requireThat(Object.keys(meta).length, 'VALIDATION_FAILED', 'This title has no saved details yet, so run the script for it once first');
     change(meta);
-    await atomicWrite(join(folder, '.overlayrr.json'), JSON.stringify(meta, null, 2));
+    await atomicWrite(join(folder, '.artwork.json'), JSON.stringify(meta, null, 2));
   }
   private async url(path: string, rel: string, width: number) {
     const { mtimeNs } = await stat(path, { bigint: true });
@@ -134,7 +134,7 @@ export class ArtworkFiles {
       for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
         if (!entry.isDirectory()) continue;
         const folder = join(base, entry.name), id = `${cat}/${entry.name}`, at = (await stat(folder)).mtimeMs, hit = this.rows.get(id);
-        // A folder's own time changes whenever a file in it is added, renamed or replaced (its .overlayrr.json too).
+        // A folder's own time changes whenever a file in it is added, renamed or replaced (its .artwork.json too).
         if (hit && hit.at === at) { rows.push(hit.row); continue; }
         const meta = await this.meta(folder), names = await readdir(folder), title = String(meta.title || entry.name);
         const cover = ['rendered', 'poster'].map(n => names.find(f => isImage(f) && basename(f, extname(f)).toLowerCase() === n)).find(Boolean);

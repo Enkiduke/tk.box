@@ -1,7 +1,7 @@
 {
-  "default_layout": "overlayrr-main",
+  "default_layout": "example-main",
   "layouts": {
-    "overlayrr-main": {
+    "example-main": {
       "width": 2000,
       "height": 3000,
       "poster_zoom": 1,

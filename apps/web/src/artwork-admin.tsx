@@ -9,7 +9,7 @@ import {ArtworkCollections,ScheduleRow,type ScheduleState} from './artwork-colle
 import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Artwork: custom posters, season posters and episode title cards, made by the artwork engine
-// (apps/artwork/overlayrr.py) and sent to Plex, where every Plex app and tk.box picks them up.
+// (apps/artwork/artwork_engine.py) and sent to Plex, where every Plex app and tk.box picks them up.
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
 type LayoutType='movie'|'tv'|'custom'|'collection'|'streaming'|'chart';

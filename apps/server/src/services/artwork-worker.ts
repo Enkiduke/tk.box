@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
 import { childEnv, type ArtworkEngine, type ArtworkRun } from './artwork-engine.js';
 
-// The artwork engine's interactive side (`overlayrr.py --worker`): one long-lived Python process that answers the Admin ›
+// The artwork engine's interactive side (`artwork_engine.py --worker`): one long-lived Python process that answers the Admin ›
 // Artwork pages (titles, picks, previews, layout previews) as JSON lines. It starts when an administrator opens those
 // pages (their settings start it ahead of the first click), restarts when the credentials it was given change, and stops
 // after a while unused. Like jobs, it is its own process, so rendering previews never runs on the server's event loop.

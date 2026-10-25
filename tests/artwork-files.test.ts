@@ -14,7 +14,7 @@ function setup(){
   const base=mkdtempSync(join(tmpdir(),'tk-artwork-')),root=join(base,'assets'),cache=join(base,'cache');
   mkdirSync(cache,{recursive:true});
   const title=join(root,'movies','Alien (1979) {tmdb-348}');mkdirSync(title,{recursive:true});
-  writeFileSync(join(title,'.overlayrr.json'),JSON.stringify({type:'movie',title:'Alien',year:'1979',tmdb_id:348,imdb_id:'tt0078748',rating_key:'10'}));
+  writeFileSync(join(title,'.artwork.json'),JSON.stringify({type:'movie',title:'Alien',year:'1979',tmdb_id:348,imdb_id:'tt0078748',rating_key:'10'}));
   writeFileSync(join(base,'config.json'),'{}');
   return {base,root,cache,title,files:new ArtworkFiles(root,cache,join(base,'config.json'))};
 }
@@ -48,9 +48,9 @@ test('turning a title’s logo off, then picking a logo, turns it back on',async
   const {title,files}=setup(),id='movies/Alien (1979) {tmdb-348}';
   writeFileSync(join(title,'logo.png'),png(10,10));writeFileSync(join(title,'logo2.png'),png(20,10));
   await files.noLogo(id,true);
-  assert.equal(JSON.parse(readFileSync(join(title,'.overlayrr.json'),'utf8')).no_logo,true);
+  assert.equal(JSON.parse(readFileSync(join(title,'.artwork.json'),'utf8')).no_logo,true);
   await files.select(id,'logo','logo2.png');
-  assert.equal('no_logo' in JSON.parse(readFileSync(join(title,'.overlayrr.json'),'utf8')),false);
+  assert.equal('no_logo' in JSON.parse(readFileSync(join(title,'.artwork.json'),'utf8')),false);
   const {pending}=await files.state(true);
   assert.equal(pending[id]!.before![`${id}|nologo`],false);
 });
@@ -72,7 +72,7 @@ test('a push finds a title again by its TMDb ID when Plex has given it a new Ple
     return {status:200,data:{MediaContainer:{totalSize:2,Metadata:[{ratingKey:'77',Guid:[{id:'tmdb://999'}]},{ratingKey:'88',Guid:[{id:'imdb://tt0078748'},{id:'tmdb://348'}]}]}}};};
   const [job]=await files.push(['movies/Alien (1979) {tmdb-348}'],false,plex,[{key:'1',type:'movie'},{key:'2',type:'show'}]);
   assert.deepEqual(job!.args,['--item','88','--changed-only']);
-  assert.equal(JSON.parse(readFileSync(join(title,'.overlayrr.json'),'utf8')).rating_key,'88');
+  assert.equal(JSON.parse(readFileSync(join(title,'.artwork.json'),'utf8')).rating_key,'88');
   assert.ok(!asked.some(p=>p.includes('/sections/2/')));  // Only libraries of its kind are read
   assert.deepEqual(readdirSync(title).filter(n=>n.endsWith('.tmp')),[]);
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tk.box's collections engine: the Plex collections tk.box keeps, apart from the artwork engine (overlayrr.py).
+"""tk.box's collections engine: the Plex collections tk.box keeps, apart from the artwork engine (artwork_engine.py).
 
 - Franchise collections from TMDb, "<Service> Shows" streaming collections and the "Newly Released" / "New Episodes"
   smart collections, made and kept in line with your libraries. Each franchise or streaming one can be turned off.
@@ -657,15 +657,15 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
         with artwork.http.request(method, url + "/api/v3/" + path, headers={"X-Api-Key": token}, **kwargs) as response:
             return response.json() if response.content else None
     # This durable journal is intentionally outside the expiring artwork cache.
-    state_path = artwork.base / "overlayrr-collections.json"
+    state_path = artwork.base / "collections-state.json"
     try:
-        state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "server": url, "tag": "overlayrr-" + secrets.token_hex(8), "movies": {}}
+        state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "server": url, "tag": "tkbox-" + secrets.token_hex(8), "movies": {}}
     except (OSError, ValueError):
-        raise ValueError("Cannot read overlayrr-collections.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup") from None
+        raise ValueError("Cannot read collections-state.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup") from None
     if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("movies"), dict) or not isinstance(state.get("tag"), str):
-        raise ValueError("Invalid overlayrr-collections.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup")
+        raise ValueError("Invalid collections-state.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup")
     if state.get("server") != url:
-        raise ValueError("Radarr URL differs from overlayrr-collections.json; Radarr acquisition and cleanup refused. Restore the previous radarr.url or the journal for this server")
+        raise ValueError("Radarr URL differs from collections-state.json; Radarr acquisition and cleanup refused. Restore the previous radarr.url or the journal for this server")
     save = lambda: atomic_write(state_path, json.dumps(state, indent=2).encode())
     movies = request("GET", "movie")
     existing = {int(movie["tmdbId"]): movie for movie in movies}
@@ -739,7 +739,7 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
         movie = existing.get(tmdb_id)
         if movie is None or tag is None or tag not in movie.get("tags", []) or movie["id"] != record["id"] or not record.get("path") or movie.get("path") != record["path"]:
             continue
-        print(f"{' ' if apply else 'PLAN '}RADARR REMOVE + DELETE FILES {movie['title']} (tmdb:{tmdb_id}; added by Overlayrr)", flush=True)
+        print(f"{' ' if apply else 'PLAN '}RADARR REMOVE + DELETE FILES {movie['title']} (tmdb:{tmdb_id}; added by tk.box)", flush=True)
         if apply:
             fresh = request("GET", f"movie/{record['id']}")
             if fresh.get("tmdbId") != tmdb_id or tag not in fresh.get("tags", []) or fresh.get("path") != record["path"]:
@@ -945,7 +945,7 @@ class CollectionBuilder:
                     lead_list(plex, self.apply, sections[library], current["rating_key"], current["title"], library, "!002")
                 if current is not None and current.get("smart"):
                     counts["smart"] += 1
-                    print(f"SKIP {current['title']} [{library}]: a smart collection can't be edited by hand; delete it in Plex to let Overlayrr rebuild it")
+                    print(f"SKIP {current['title']} [{library}]: a smart collection can't be edited by hand; delete it in Plex to let tk.box rebuild it")
                     continue
                 if current is None:
                     if library not in listed:

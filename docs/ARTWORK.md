@@ -1,21 +1,21 @@
 # Artwork (Admin › Artwork)
 
-Custom posters, season posters and episode title cards, merged in from Overlayrr. They're sent to Plex, so tk.box and every Plex app show them; tk.box's own artwork route needs no changes (a new upload gets a new Plex image path).
+Custom posters, season posters and episode title cards. They're sent to Plex, so tk.box and every Plex app show them; tk.box's own artwork route needs no changes (a new upload gets a new Plex image path).
 
 ## How it fits together
 
-- **Engine:** `apps/artwork/overlayrr.py` with its bundled `resources/` (fonts, badges, streaming logos). It is Overlayrr's renderer and Plex/TMDb/Fanart.tv/TVDB code, run as a separate Python process for every job. It lowers its own CPU priority (`nice 10`), so ffmpeg and the server come first.
+- **Engine:** `apps/artwork/artwork_engine.py` with its bundled `resources/` (fonts, badges, streaming logos). It is the renderer and Plex/TMDb/Fanart.tv/TVDB code, run as a separate Python process for every job. It lowers its own CPU priority (`nice 10`), so ffmpeg and the server come first.
 - **Collections engine:** `apps/artwork/plex_collections.py` makes and keeps Plex's collections: franchise, streaming and chart collections, custom and seasonal ones, Radarr acquisition, and Discover. It reads the same config. It shares `apps/artwork/engine_common.py` with the artwork engine: the config checks and defaults, the HTTP cache, the Plex client, TMDb and TVDB lookups (`Metadata`, which the artwork engine's `Artwork` builds on), the public-link downloader and the run lock. Nothing in that module touches images, so the collections engine never loads Pillow or NumPy. Its commands are `all`, `custom`, `added`, `discover`, `defaults` and `check`. Jobs for both scripts share one queue. A run over every title queues `all apply` first when franchise collections are kept in sync and results go to Plex, so new collections get their posters in the same pass. Newly added titles join their custom collections on the collections' own schedule. Settings are checked by both scripts before saving.
 - **Plex Metadata cleanup:** `apps/artwork/plex_cleanup.py` finds the posters the artwork engine sent to Plex that Plex no longer uses. Its commands are `report`, `move`, `remove` and `restore` for the whole Metadata folder, and `superseded <keys>` for the items just pushed. It reads which images are in use from a copy of Plex's database, and only touches files carrying both of the artwork engine's EXIF markers. It needs `plex.data_dir`, which tk.box doesn't write into the config, so nothing in tk.box runs it yet.
-- **Settings and layouts live in tk.box's database** (`artwork_settings`, `artwork_layouts`; migration 17). There is no YAML: before each run tk.box writes the engine's JSON config to `DATA_DIR/artwork/config.json` (`artworkConfig` in `services/artwork-engine.ts`). The first start seeds the layouts from `apps/artwork/defaults.json`: six tk-* layouts taken from the live Overlayrr config (tk-movies, tk-tv, tk-custom, tk-collections, tk-streaming, tk-charts), used by kind of title until a library is given its own. A database seeded with the earlier set (overlayrr-main and Overlayrr's example layouts) has those replaced once, and settings that named them move to the tk-* ones. The engine tests keep Overlayrr's example layouts in `apps/artwork/tests/example_layouts.json`.
+- **Settings and layouts live in tk.box's database** (`artwork_settings`, `artwork_layouts`; migration 17). There is no YAML: before each run tk.box writes the engine's JSON config to `DATA_DIR/artwork/config.json` (`artworkConfig` in `services/artwork-engine.ts`). The first start seeds the layouts from `apps/artwork/defaults.json`: six tk-* layouts (tk-movies, tk-tv, tk-custom, tk-collections, tk-streaming, tk-charts), used by kind of title until a library is given its own. A database seeded with the earlier set (the engine's example layouts) has those replaced once, and settings that named them move to the tk-* ones. The engine tests keep the example layouts in `apps/artwork/tests/example_layouts.json`.
 - **Credentials:** provider keys are sealed in the database. The Plex token is that of the administrator who started the job; scheduled jobs use the Plex admin token. Both are passed to the engine in its environment for that run only, and are redacted from the job output.
 - **Files:** asset folders and rendered results are kept in `DATA_DIR/artwork/assets`, and downloads in `CACHE_DIR/artwork`.
 - **Jobs** run one at a time, in order. Their output streams to the Jobs tab, and the last 2000 lines are kept with each job. A restart marks unfinished jobs as canceled.
-- **Worker:** the interactive pages (Titles, Layouts) talk to one long-lived `overlayrr.py --worker` process (`services/artwork-worker.ts`). It speaks JSON lines on stdin/stdout, with images base64-encoded, and lowers its own priority (`nice 5`).
+- **Worker:** the interactive pages (Titles, Layouts) talk to one long-lived `artwork_engine.py --worker` process (`services/artwork-worker.ts`). It speaks JSON lines on stdin/stdout, with images base64-encoded, and lowers its own priority (`nice 5`).
   - It starts when those pages are opened and stops after 10 minutes unused.
   - It restarts when the Plex token or keys change.
   - It reads the same `config.json`, which tk.box writes again whenever settings, layouts or collections are saved.
-  - The worker's methods are Overlayrr's former web interface (`Worker` in the engine), without its login, YAML editing or cron code.
+  - The worker's methods (`Worker` in the engine) are only what needs the renderer; tk.box itself lists titles, keeps picks and asks the providers.
 - **Images** reach the page only through the admin routes, because tk.box's CSP allows images from itself alone:
   - asset files and previews come from the worker;
   - Plex's own copies come through the worker, with the token;
@@ -47,4 +47,4 @@ py -3 -m unittest discover -s apps/artwork/tests      # Windows
 python3 -m unittest discover -s apps/artwork/tests    # Linux
 ```
 
-`test_streaming_collections_group_shows_and_skip_smart_collections` also fails in the standalone Overlayrr; three parity tests are skipped outside its parent app.
+`test_streaming_collections_group_shows_and_skip_smart_collections` is a known failure; three parity tests are skipped.

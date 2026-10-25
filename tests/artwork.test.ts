@@ -104,9 +104,9 @@ test('a daily schedule falls due at its local time, or the day before until then
 });
 test('a database seeded with the earlier layouts gets the tk-* set, and settings follow the renames',()=>{
   const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
-  for(const name of ['overlayrr-main','tk-movies','tk-tv','collection-tmdb','streaming-collection','chart-collection'])insert.run(name,1,'{"width":1000}');
+  for(const name of ['tk-movies','tk-tv','collection-tmdb','streaming-collection','chart-collection'])insert.run(name,1,'{"width":1000}');
   insert.run('mine',3,'{"width":1200}');
-  db.prepare('INSERT INTO artwork_settings VALUES(1,4,?)').run(JSON.stringify({libraries:['1'],defaultLayout:'overlayrr-main',layoutByLibrary:{'1':'tk-tv','2':'mine'},layoutByType:{collection:'collection-tmdb'},keys:{}}));
+  db.prepare('INSERT INTO artwork_settings VALUES(1,4,?)').run(JSON.stringify({libraries:['1'],defaultLayout:'tk-movies',layoutByLibrary:{'1':'tk-tv','2':'mine'},layoutByType:{collection:'collection-tmdb'},keys:{}}));
   const store=new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));
   assert.deepEqual(store.layoutNames(),['mine','tk-charts','tk-collections','tk-custom','tk-movies','tk-streaming','tk-tv']);
   assert.notEqual(store.layout('tk-movies').value.width,1000);
