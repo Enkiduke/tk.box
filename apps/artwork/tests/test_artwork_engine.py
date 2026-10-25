@@ -5,6 +5,7 @@ Run from the repository root: py -3 -m unittest discover -s apps/artwork/tests""
 import ast
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from dataclasses import asdict
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
@@ -1311,7 +1312,7 @@ class ArtworkTests(unittest.TestCase):
             config = Path(folder) / "config.json"
             pc.record_kept(config, kept)
             self.assertEqual([e["name"] for e in pc.read_kept(config)], ["Alien", "Heat"])
-        self.assertEqual(sp.collection_key("Star Trek: Alternate Reality Collection"), sp.collection_key("Star Trek Alternate Reality"))
+        self.assertEqual(common.collection_key("Star Trek: Alternate Reality Collection"), common.collection_key("Star Trek Alternate Reality"))
 
         # tk.box's settings are what Plex holds: one turned off is deleted (and still listed, off), as is one an earlier
         # run kept that no longer qualifies; where it shows is set for one that asks.
@@ -1361,6 +1362,41 @@ class ArtworkTests(unittest.TestCase):
             self.assertEqual(pc.custom_collections(self.artwork, True), 0)
         self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
 
+        # A custom collection named like a franchise one keeps it: the franchise side neither trims nor deletes it.
+        # Without the claim, minimum=3 would make the earlier franchise "Alien" no longer qualify, and delete it.
+        self.http.replies[common.TMDB + "/movie/30"] = {"belongs_to_collection": None}
+        self.http.replies[plex + "/library/sections/1/collections"] = container('<Directory ratingKey="900" title="Alien" type="collection" subtype="movie"/>', totalSize=1)
+        self.config["collections"] = [{"name": "Alien", "library": "Movies", "type": "movie", "members": [{"tmdb_id": 10}, {"tmdb_id": 11}]}]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            pc.build_collections(self.artwork, False, minimum=3, earlier=[{"name": "Alien", "library": "Movies", "kind": "franchise", "rating_key": "900"}])
+        self.assertIn("SKIP Alien [Movies]: kept as one of tk.box's custom collections", output.getvalue())
+        self.assertNotIn("no longer one of the franchise collections", output.getvalue())
+        self.assertNotIn("WARN", output.getvalue())
+
+
+    def test_partly_owned_lists_collections_missing_released_movies(self):
+        plex = "http://plex.invalid:32400"
+        def video(key, title, tmdb):
+            return f'<Video ratingKey="{key}" title="{title}" type="movie"><Guid id="tmdb://{tmdb}"/></Video>'
+        self.http.replies.update({
+            plex + "/library/sections": b'<MediaContainer><Directory key="1" title="Movies" type="movie"/></MediaContainer>',
+            plex + "/library/sections/1/all": f'<MediaContainer totalSize="4">{video(1, "Alien", 10)}{video(2, "Aliens", 11)}{video(3, "Heat", 20)}{video(4, "Solo", 30)}</MediaContainer>'.encode(),
+            common.TMDB + "/movie/10": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
+            common.TMDB + "/movie/11": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
+            common.TMDB + "/movie/20": {"belongs_to_collection": {"id": 200, "name": "Heat Collection"}},
+            common.TMDB + "/movie/30": {"belongs_to_collection": None},
+            common.TMDB + "/collection/100": {"name": "Alien Collection", "parts": [
+                {"id": 10, "title": "Alien", "release_date": "1979-05-25"}, {"id": 11, "title": "Aliens", "release_date": "1986-07-18"},
+                {"id": 12, "title": "Alien 3", "release_date": "1992-05-22"}, {"id": 13, "title": "Alien 5", "release_date": "2030-01-01"},
+                {"id": 14, "title": "Untitled", "release_date": ""}]},
+            common.TMDB + "/collection/200": {"name": "Heat Collection", "parts": [{"id": 20, "title": "Heat", "release_date": "1995-12-15"}]}})
+        rows, failed = pc.partly_owned(self.artwork, today=date(2026, 10, 25))
+        self.assertEqual(failed, 0)
+        # Heat is complete; unreleased and undated parts aren't missing.
+        self.assertEqual(rows, [{"name": "Alien", "url": "https://www.themoviedb.org/collection/100/", "type": "movie", "provider": "tmdb",
+                                 "library": "Movies", "owned": 2, "total": 3, "description": "2 of 3 in Movies. Missing Alien 3 (1992)"}])
+        self.assertEqual(pc.partly_owned(self.artwork, "heat", today=date(2026, 10, 25))[0], [])
 
     def test_streaming_collections_group_shows_and_skip_smart_collections(self):
         plex = "http://plex.invalid:32400"

@@ -333,28 +333,34 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
 function Removed({count,restore}:{count:number;restore:()=>void}) {
   return count>0?<p className="muted small">{count} removed · <button type="button" className="link-button" onClick={restore}>Put {count===1?'it':'them'} back</button></p>:null;
 }
-type Row={key?:string;name:string;url:string|null;description?:string;type:'movie'|'tv';provider:string};
+// A Partly owned row is a TMDb collection one library has some of: it names that library and how much of it is there.
+type Row={key?:string;name:string;url:string|null;description?:string;type:'movie'|'tv';provider:string;library?:string;owned?:number;total?:number};
 type Preview={name:string;url:string;type:'movie'|'tv';limit:number;provider:string;items:{title:string;year?:number;member:Member}[]};
 const providers=[['all','Every source'],['tmdb','TMDb'],['trakt','Trakt'],['mdblist','MDBList'],['imdb','IMDb'],['letterboxd','Letterboxd'],['flixpatrol','FlixPatrol']] as const;
 function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing:Definition[];onClose:()=>void;add:(entry:Definition)=>void}) {
-  const [mode,setMode]=useState<'recommendations'|'universes'|'browse'|'url'>('universes'),[type,setType]=useState<'movie'|'tv'>('movie'),[provider,setProvider]=useState('all'),[query,setQuery]=useState('');
+  const [mode,setMode]=useState<'recommendations'|'universes'|'partial'|'browse'|'url'>('universes'),[type,setType]=useState<'movie'|'tv'>('movie'),[provider,setProvider]=useState('all'),[query,setQuery]=useState('');
   const [rows,setRows]=useState<Row[]>(),[preview,setPreview]=useState<Preview>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
   const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState(''),[dropped,setDropped]=useState<Member[]>([]);
-  const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await api<{results:Row[]}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type});setRows(r.results);});
-  const open=(body:object)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(r.name);setLibrary(libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setProblem('');});
-  useEffect(()=>{if(mode==='universes'||mode==='recommendations')find();},[mode,type]);
+  const [failed,setFailed]=useState(0),[owned,setOwned]=useState<Row>(),[acquire,setAcquire]=useState(false);
+  // Partly owned looks up every movie on TMDb, which can take minutes before a franchise run has cached them.
+  const slow=mode==='partial';
+  const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await api<{results:Row[];failed?:number}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type},undefined,slow?600000:undefined);setRows(r.results);setFailed(r.failed??0);});
+  const open=(body:object,row?:Row)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(row?.library?row.name:r.name);setLibrary(row?.library??libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setOwned(row?.library?row:undefined);setAcquire(false);setProblem('');});
+  const added=(r:Row)=>!!r.library&&existing.some(x=>x.library===r.library&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name)));
+  useEffect(()=>{if(mode==='universes'||mode==='recommendations'||mode==='partial')find();},[mode,type]);
   // Titles taken out of the preview stay out of the collection, and out of the list when it's kept up to date.
   const out=new Set(dropped.map(memberText)),kept=preview?.items.map(i=>i.member).filter(m=>!out.has(memberText(m)))??[];
   return <Modal title="Discover collections" onClose={onClose}>
     <div className="form-stack artwork-discover">
-      <div className="toggle-group" role="radiogroup" aria-label="Find collections">{([['universes','Universes'],['recommendations','Recommended'],['browse','Search lists'],['url','Import a list']] as const).map(([m,label])=><button key={m} type="button" role="radio" aria-checked={mode===m} onClick={()=>{setMode(m);setRows(undefined);setPreview(undefined);setQuery('');}}>{label}</button>)}</div>
+      <div className="toggle-group" role="radiogroup" aria-label="Find collections">{([['universes','Universes'],['partial','Partly owned'],['recommendations','Recommended'],['browse','Search lists'],['url','Import a list']] as const).map(([m,label])=><button key={m} type="button" role="radio" aria-checked={mode===m} onClick={()=>{setMode(m);setRows(undefined);setPreview(undefined);setQuery('');}}>{label}</button>)}</div>
       {!preview&&(mode==='url'?<form className="setting-line" onSubmit={e=>{e.preventDefault();open({url,type,limit});}}><input className="grow" type="url" required placeholder="A public TMDb, IMDb, Trakt, Letterboxd, MDBList or FlixPatrol list" value={url} onChange={e=>setUrl(e.target.value)}/>
           <select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select><input aria-label="Most titles" type="number" min="1" max="250" value={limit} onChange={e=>setLimit(Number(e.target.value))}/><button className="primary" disabled={mutation.busy}>Preview</button></form>
         :<form className="setting-line" onSubmit={e=>{e.preventDefault();find();}}>
-          {mode==='universes'?<select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select>
+          {mode==='partial'?null:mode==='universes'?<select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select>
             :<select aria-label="Source" value={provider} onChange={e=>setProvider(e.target.value)}>{providers.filter(([p])=>mode!=='browse'||p!=='all').map(([p,label])=><option key={p} value={p}>{label}</option>)}</select>}
           <input className="grow" type="search" placeholder="Search" value={query} onChange={e=>setQuery(e.target.value)}/><button disabled={mutation.busy||(mode==='browse'&&provider==='all')}>Search</button></form>)}
-      {mutation.busy&&<Loading/>}{mutation.error&&<ErrorNotice message={mutation.error}/>}
+      {mutation.busy&&<Loading/>}{mutation.busy&&slow&&!rows&&<p className="muted small">Looking up every movie on TMDb. The first time, before a franchise run has cached them, this can take a few minutes.</p>}
+      {mutation.error&&<ErrorNotice message={mutation.error}/>}
       {preview?<div className="form-stack">
         <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
         <h3>{preview.name} <small className="muted">{kept.length} {preview.type==='tv'?'shows':'movies'}</small></h3>
@@ -362,16 +368,20 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
         <Removed count={dropped.length} restore={()=>setDropped([])}/>
         <form className="form-stack" onSubmit={e=>{e.preventDefault();
           if(existing.some(x=>x.library===library&&(keyOf(x.name)===keyOf(name)||x.source?.url===preview.url))){setProblem('This name or list is already in that library. Edit that collection instead.');return;}
-          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:kept,...(dropped.length?{exclude:dropped}:{}),source:{url:preview.url,limit:preview.limit,refresh}});}}>
+          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:kept,...(dropped.length?{exclude:dropped}:{}),source:{url:preview.url,limit:preview.limit,refresh},...(owned&&acquire?{acquire:true}:{})});}}>
           <div className="form-columns"><label>Name<input required value={name} onChange={e=>setName(e.target.value)}/></label>
             <label>Plex library<select required value={library} onChange={e=>setLibrary(e.target.value)}><option value="">Choose a library</option>{libraries.filter(l=>(l.type==='show'?'tv':'movie')===preview.type).map(l=><option key={l.key} value={l.title}>{l.title}</option>)}</select></label></div>
+          {owned&&keyOf(name)===keyOf(owned.name)&&library===owned.library&&<p className="muted small">Named like its franchise collection, it takes that collection over in Plex.</p>}
           <Switch label="Keep this list up to date" description="Each collection run uses the list as it is then." checked={refresh} onChange={setRefresh}/>
+          {owned&&<Switch label="Download missing movies" description={`Radarr adds the ${(owned.total??0)-(owned.owned??0)} missing once you turn the collection on and save.`} checked={acquire} onChange={setAcquire}/>}
           {problem&&<p className="danger small">{problem}</p>}
           <div className="button-row"><button className="primary">Add collection</button><span className="muted small">It starts off; review it, turn it on and save.</span></div>
         </form></div>
       :rows&&(rows.length?<ul className="artwork-discover-rows">{rows.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
-          {r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:50}),type:r.type})}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
+          {added(r)?<span className="muted small">In your collections</span>:r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:r.library?250:50}),type:r.type},r)}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
+        :mode==='partial'?<Empty title="Nothing partly owned">{query?'Try another search.':'Every TMDb collection in your movie libraries is complete.'}</Empty>
         :<Empty title="No collections found">Try another search, or import a list by its address.</Empty>)}
+      {rows&&mode==='partial'&&failed>0&&<p className="muted small">{failed} TMDb {failed===1?'lookup':'lookups'} failed, so some collections may be missing. Try again later.</p>}
       <p className="muted small">TMDb and MDBList need keys in Connections. IMDb lists must be public.</p>
     </div>
   </Modal>;
