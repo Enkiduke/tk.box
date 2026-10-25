@@ -207,7 +207,8 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
     const check=()=>{const style=getComputedStyle(el),pad=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight),gap=parseFloat(style.columnGap)||0;setLoops((endless.copies()?endless.setWidth():el.scrollWidth-pad+gap)>el.clientWidth);};
     check();const resize=new ResizeObserver(check);resize.observe(el);return()=>resize.disconnect();
   });
-  const scroll=(direction:number)=>ref.current?.scrollBy({left:direction*ref.current.clientWidth*.85,behavior:'smooth'});
+  const glide=useGlide(ref);
+  const scroll=(direction:number)=>{const el=ref.current;if(el)glide(direction*el.clientWidth*.85,!looping);};
   return <section className={`row ${className}`}>
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
     <div className="row-viewport" {...endless.handlers}>
@@ -220,6 +221,32 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
+}
+// Animates a row's arrow scroll in script. The browser's own smooth scroll turns instant whenever Windows animation
+// effects are off, so like the drift it does not follow the reduced-motion preference.
+// Snap is held off while it moves (mandatory snap would catch every step) and the move ends on a card's start, so
+// turning snap back on does not nudge it. An endless row's own wrap may jump it a set width mid-move; that is followed.
+function useGlide(ref:{current:HTMLDivElement|null}) {
+  const frame=useRef(0);
+  useEffect(()=>()=>cancelAnimationFrame(frame.current),[]);
+  return (distance:number,snap:boolean)=>{
+    const el=ref.current;if(!el)return;cancelAnimationFrame(frame.current);
+    let from=el.scrollLeft,to=from+distance;
+    if(snap){
+      const max=el.scrollWidth-el.clientWidth,left=el.getBoundingClientRect().left,pad=parseFloat(getComputedStyle(el).scrollPaddingLeft)||0;
+      const starts=Array.from(el.children,c=>from+c.getBoundingClientRect().left-left-pad);
+      to=starts.reduce((best,x)=>Math.abs(x-to)<Math.abs(best-to)?x:best,to);
+      to=Math.max(0,Math.min(max,to));el.style.scrollSnapType='none';
+    }
+    const start=performance.now(),duration=450,ease=(t:number)=>t<.5?4*t*t*t:1-(-2*t+2)**3/2;
+    let last=from;
+    const step=(now:number)=>{
+      const shift=el.scrollLeft-last;if(Math.abs(shift)>2){from+=shift;to+=shift;}
+      const t=Math.min(1,(now-start)/duration);el.scrollLeft=from+(to-from)*ease(t);last=el.scrollLeft;
+      if(t<1)frame.current=requestAnimationFrame(step);else if(snap)el.style.scrollSnapType='';
+    };
+    frame.current=requestAnimationFrame(step);
+  };
 }
 // A copy of an endless row's cards. A row is wider than the screen, so part of what is on screen is often a copy:
 // it stays clickable, but screen readers and the Tab key skip it, even as its cards change what they show.
