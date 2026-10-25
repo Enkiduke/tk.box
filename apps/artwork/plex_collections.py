@@ -494,7 +494,7 @@ def validate_collections(config):
         raise ValueError("collections must be a list")
     seen = set()
     for entry in definitions:
-        if not isinstance(entry, dict) or set(entry) - {"name", "library", "type", "enabled", "schedule", "sync", "members", "rules", "visibility", "acquire", "cleanup", "source"}:
+        if not isinstance(entry, dict) or set(entry) - {"name", "library", "type", "enabled", "schedule", "sync", "members", "rules", "visibility", "acquire", "cleanup", "source", "exclude"}:
             raise ValueError("Each collection must be a mapping with supported collection settings")
         for field in ("name", "library"):
             value = entry.get(field)
@@ -521,10 +521,10 @@ def validate_collections(config):
                 raise ValueError("Source limit must be an integer from 1 to 250")
             if "refresh" in source and type(source["refresh"]) is not bool:
                 raise ValueError("Source refresh must be true or false")
-        members, rules = entry.get("members", []), entry.get("rules", {})
-        if not isinstance(members, list) or not isinstance(rules, dict):
-            raise ValueError("Collection members must be a list and rules must be a mapping")
-        for member in members:
+        members, rules, exclude = entry.get("members", []), entry.get("rules", {}), entry.get("exclude", [])
+        if not isinstance(members, list) or not isinstance(exclude, list) or not isinstance(rules, dict):
+            raise ValueError("Collection members and exclude must be lists and rules must be a mapping")
+        for member in members + exclude:
             if not isinstance(member, dict) or not member or set(member) - {"rating_key", "tmdb_id", "imdb_id", "title", "year"}:
                 raise ValueError("Collection members use rating_key, tmdb_id, imdb_id, or title and optional year")
             if sum(key in member for key in ("rating_key", "tmdb_id", "imdb_id", "title")) != 1 or ("year" in member and "title" not in member):
@@ -584,8 +584,11 @@ def validate_automatic(config):
         raise ValueError("automatic_collections must be a list")
     found = {}
     for entry in settings:
-        if not isinstance(entry, dict) or set(entry) - {"name", "library", "kind", "enabled", "visibility"}:
-            raise ValueError("Each automatic collection setting supports name, library, kind, enabled and visibility")
+        if not isinstance(entry, dict) or set(entry) - {"name", "library", "kind", "enabled", "visibility", "exclude"}:
+            raise ValueError("Each automatic collection setting supports name, library, kind, enabled, visibility and exclude")
+        exclude = entry.get("exclude", [])
+        if not isinstance(exclude, list) or any(not isinstance(key, str) or not key.isdigit() for key in exclude):
+            raise ValueError("An automatic collection's exclude is a list of Plex IDs")
         if not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("name", "library")):
             raise ValueError("Automatic collection settings need a name and a library")
         if entry.get("kind", "franchise") not in ("franchise", "streaming") or type(entry.get("enabled", True)) is not bool:
@@ -764,6 +767,9 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
         if entry.get("enabled", True) and source and source.get("refresh", option({}, "collection_source_refresh")):
             result = sources.fetch(source["url"], entry["type"], source.get("limit"))
             entry["members"] = [row["member"] for row in result["items"]]
+    # Titles the admin removed stay out, whether they were picked or came from a list.
+    for entry in definitions:
+        entry["members"] = [member for member in entry.get("members", []) if member not in entry.get("exclude", [])]
     enabled = [entry for entry in definitions if entry.get("enabled", True)]
     # Until tk.box saves its collections the engine's seasonal presets stand in, all off; only saved ones come out of Plex.
     off = [entry for entry in definitions if not entry.get("enabled", True)] if "collections" in artwork.config and added_item is None else []
@@ -804,6 +810,8 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
         try:
             candidates = [item for item in items if item["library"] == library and item["type"] == entry["type"]]
             keys, missing = collection_members(entry, candidates)
+            dropped = collection_members({"members": entry.get("exclude", [])}, candidates)[0]
+            keys = [key for key in keys if key not in dropped]
             if active:
                 if added_item is not None:
                     keys = [key for key in keys if key == added_item.get("rating_key")]
@@ -815,7 +823,7 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
                 if not keys:
                     print(f"SKIP {name} [{library}]: no matching titles; membership left alone", flush=True)
                 else:
-                    builder.groups({(library, "custom"): {"name": name, "type": 2 if entry["type"] == "tv" else 1, "keys": keys}},
+                    builder.groups({(library, "custom"): {"name": name, "type": 2 if entry["type"] == "tv" else 1, "keys": keys, "drop": dropped}},
                                    {item["rating_key"]: item["title"] for item in candidates}, sections, 1, added_item is None and entry.get("sync", "append") == "sync" and not missing)
                     if current is None and apply:
                         current = next((c for c in plex.collections("show" if entry["type"] == "tv" else "movie")
@@ -917,13 +925,15 @@ class CollectionBuilder:
         setting has it applied. Every one that qualifies is noted in `wanted`."""
         plex, counts, prefix, listed, settings = self.plex, self.counts, self.prefix, {}, settings or {}
         for (library, label), group in sorted(groups.items(), key=lambda pair: (pair[0][0], pair[1]["name"].casefold())):
-            want, name = group["keys"], group["name"]
+            name, setting = group["name"], settings.get((library, collection_key(group["name"])), {})
+            # Titles the admin removed come out even when membership only adds.
+            drop = set(group.get("drop", ())) | set(setting.get("exclude", ()))
+            want = [key for key in group["keys"] if key not in drop]
             if len(want) < minimum:
                 continue
             service = str(label).startswith("stream:")  # The streaming services lead the collections list, after the charts
             kept = {"name": name, "library": library, "kind": "streaming" if service else "franchise", "items": len(want)}
             self.wanted.add((library, collection_key(name)))
-            setting = settings.get((library, collection_key(name)), {})
             try:
                 current = self.existing.get((library, collection_key(name)))
                 if not setting.get("enabled", True):
@@ -960,7 +970,7 @@ class CollectionBuilder:
                 kept = {**kept, "name": current["title"], "rating_key": current["rating_key"]}
                 have = members_of(plex, current["rating_key"])
                 add_keys = [key for key in want if key not in have]
-                remove = [key for key in have if key not in want] if sync else []
+                remove = [key for key in have if key not in want] if sync else [key for key in have if key in drop]
                 self.kept.append(kept)
                 if setting.get("visibility"):
                     show_in(plex, self.apply, prefix, sections[library], current["title"], library, current["rating_key"], setting["visibility"])

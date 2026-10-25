@@ -15,9 +15,9 @@ type Member={rating_key?:string;tmdb_id?:number;imdb_id?:string;title?:string;ye
 type Visibility={home?:boolean;shared?:boolean;recommended?:boolean};
 type Definition={name:string;library:string;type:'movie'|'tv';enabled?:boolean;schedule?:string;sync?:'sync'|'append';members?:Member[];
   rules?:{genres?:string[];year_from?:number;year_to?:number;title_contains?:string};visibility?:Visibility;
-  acquire?:boolean;cleanup?:'keep'|'remove-delete';source?:{url:string;limit?:number;refresh?:boolean}};
-// A franchise or streaming collection set apart from how it's made: turned off, or where it shows.
-type Automatic={name:string;library:string;kind:'franchise'|'streaming';enabled?:boolean;visibility?:Visibility};
+  acquire?:boolean;cleanup?:'keep'|'remove-delete';source?:{url:string;limit?:number;refresh?:boolean};exclude?:Member[]};
+// A franchise or streaming collection set apart from how it's made: turned off, where it shows, or titles taken out (by Plex ID).
+type Automatic={name:string;library:string;kind:'franchise'|'streaming';enabled?:boolean;visibility?:Visibility;exclude?:string[]};
 type Franchise={sync:boolean;franchises:boolean;minItems:number;mode:'sync'|'append';streaming:'off'|'originals'|'available';region:string;recent:boolean;recentMovieDays:number;recentEpisodeDays:number};
 type Radarr={url:string;rootFolder:string;qualityProfileId:number;search:boolean};
 type Kept={name:string;library:string;kind:'franchise'|'streaming'|'custom';items:number;rating_key?:string;off?:boolean};
@@ -60,11 +60,12 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const change=(next:Partial<Draft>)=>{setDraft({...draft,...next});setDirty(true);setSaved('');};
   const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}}),radarr=(patch:Partial<Radarr>)=>change({radarr:{...draft.radarr,...patch}});
   const setDefinition=(index:number,value:Definition|null)=>change({definitions:value?draft.definitions.map((d,i)=>i===index?value:d):draft.definitions.filter((_,i)=>i!==index)});
-  // A franchise or streaming collection that's on and has no visibility of its own needs no entry.
+  // A franchise or streaming collection that's on, with no visibility of its own and nothing taken out, needs no entry.
   const setAutomatic=(tile:Tile,patch:Partial<Automatic>)=>{
     const rest=draft.automatic.filter(a=>idOf(a)!==tile.id),current=draft.automatic.find(a=>idOf(a)===tile.id);
     const next:Automatic={name:tile.name,library:tile.library,kind:tile.kind as Automatic['kind'],...current,...patch};
-    change({automatic:next.enabled===false||next.visibility?[...rest,next]:rest});
+    if(!next.exclude?.length)delete next.exclude;
+    change({automatic:next.enabled===false||next.visibility||next.exclude?[...rest,next]:rest});
   };
   const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});setSaved('Saved. Preview the plan to see what would change in Plex.');});
   // Every run opens in the Console.
@@ -169,24 +170,26 @@ function CollectionGrid({tiles,open,toggle}:{tiles:Tile[];open:(tile:Tile)=>void
 // A franchise or streaming collection: its titles as Plex has them (TMDb decides what's in it), whether it's on, and
 // where it shows.
 function AutomaticCollection({tile,setting,onClose,save}:{tile:Tile;setting?:Automatic;onClose:()=>void;save:(patch:Partial<Automatic>)=>void}) {
-  const [on,setOn]=useState(setting?.enabled!==false),[visibility,setVisibility]=useState(setting?.visibility);
-  const titles=useApi<CatalogPage>(tile.ratingKey?`/catalog/collections/${tile.ratingKey}/items?limit=60`:undefined),items=titles.data?.items??[];
-  const more=(titles.data?.total??items.length)-items.length;
+  const [on,setOn]=useState(setting?.enabled!==false),[visibility,setVisibility]=useState(setting?.visibility),[exclude,setExclude]=useState(setting?.exclude??[]);
+  const titles=useApi<CatalogPage>(tile.ratingKey?`/catalog/collections/${tile.ratingKey}/items?limit=60`:undefined),all=titles.data?.items??[],items=all.filter(i=>!exclude.includes(i.id));
+  const more=(titles.data?.total??all.length)-all.length;
   return <Modal title={tile.name} onClose={onClose}>
-    <form className="collection-editor" onSubmit={e=>{e.preventDefault();save({enabled:on,visibility});}}>
+    <form className="collection-editor" onSubmit={e=>{e.preventDefault();save({enabled:on,visibility,exclude});}}>
       <div className="collection-editor-head">
         <h2 className="collection-editor-title">{tile.name}</h2>
         <Switch label={on?'On':'Off'} checked={on} onChange={setOn}/>
       </div>
-      <p className="muted small">{kindLabel(tile.kind)} collection in {tile.library}. Its titles come from TMDb and follow your library{tile.kind==='streaming'?' and the services’ catalogs':''}.{on?'':' Off, it comes out of Plex on the next run.'}</p>
+      <p className="muted small">{kindLabel(tile.kind)} collection in {tile.library}. Its titles come from TMDb and follow your library{tile.kind==='streaming'?' and the services’ catalogs':''}; ones you remove stay out.{on?'':' Off, it comes out of Plex on the next run.'}</p>
       <section className="collection-editor-titles">
         <div className="collection-editor-section-head"><h3>Titles {tile.items!==undefined&&<span className="count">{tile.items}</span>}</h3></div>
         {!tile.ratingKey?<p className="collection-editor-empty muted small">{on?'Not in Plex yet. Apply to make it.':'Not in Plex.'}</p>
           :titles.error?<ErrorNotice message={titles.error.message} retry={titles.reload}/>:!titles.data?<Loading/>
           :<div className="collection-editor-grid"><ul className="title-grid">{items.map(i=><li key={i.id} className="title-tile" title={i.year?`${i.title} (${i.year})`:i.title}>
-            <span className="title-tile-art"><Artwork src={i.posterUrl} alt="" fallback={<><Icon name={i.type==='movie'?'movies':'shows'}/><span>{i.title}</span></>}/></span>
+            <span className="title-tile-art"><Artwork src={i.posterUrl} alt="" fallback={<><Icon name={i.type==='movie'?'movies':'shows'}/><span>{i.title}</span></>}/>
+              <button type="button" className="icon-button title-tile-remove" aria-label={`Remove ${i.title}`} onClick={()=>setExclude(x=>[...x,i.id])}><Icon name="close" size={14}/></button></span>
             <span className="title-tile-name">{i.title}</span>{i.year?<small>{i.year}</small>:null}</li>)}</ul>
             {more>0&&<p className="muted small">And {more} more.</p>}</div>}
+        <Removed count={exclude.length} restore={()=>setExclude([])}/>
       </section>
       <div className="collection-editor-options">
         <section className="collection-editor-panel">
@@ -275,12 +278,18 @@ function TitleSearch({type,members,add}:{type:Definition['type'];members:Member[
 const homeHint='On everyone’s Home screen and in the library’s Recommended tab.';
 const onHome=(v?:Visibility)=>!!v&&Object.values(v).some(Boolean),everywhere=(on:boolean)=>({home:on,shared:on,recommended:on});
 function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void;remove:()=>void}) {
-  const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[paste,setPaste]=useState<string>();
+  const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[exclude,setExclude]=useState(value.exclude??[]),[paste,setPaste]=useState<string>();
   const set=(patch:Partial<Definition>)=>setD(x=>({...x,...patch}));
   const refreshed=!!d.source&&d.source.refresh!==false,visibility=d.visibility??{};
-  const add=(more:Member[])=>setMembers(list=>{const have=new Set(list.map(memberText));return [...list,...more.filter(m=>{const k=memberText(m);return !have.has(k)&&!!have.add(k);})];});
+  const add=(more:Member[])=>{
+    const back=new Set(more.map(memberText));setExclude(list=>list.filter(m=>!back.has(memberText(m))));
+    setMembers(list=>{const have=new Set(list.map(memberText));return [...list,...more.filter(m=>{const k=memberText(m);return !have.has(k)&&!!have.add(k);})];});
+  };
+  // A removed title is remembered, so it stays out of a list that's kept up to date and comes out of the Plex collection.
+  const drop=(gone:Member[])=>{const keys=new Set(gone.map(memberText));setMembers(list=>list.filter(m=>!keys.has(memberText(m))));setExclude(list=>[...list.filter(m=>!keys.has(memberText(m))),...gone]);};
+  const out=new Set(exclude.map(memberText)),shown=members.filter(m=>!out.has(memberText(m)));
   return <Modal title={d.name||'Collection'} onClose={onClose}>
-    <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members};if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}save(next);}}>
+    <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members:shown,exclude};if(!exclude.length)delete next.exclude;if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}save(next);}}>
       <div className="collection-editor-head">
         <input className="collection-editor-name" aria-label="Name" placeholder="Collection name" required maxLength={120} value={d.name} onChange={e=>set({name:e.target.value})}/>
         <Switch label={d.enabled!==false?'On':'Off'} checked={d.enabled!==false} onChange={v=>set({enabled:v})}/>
@@ -299,20 +308,21 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
       </section>}
       <section className="collection-editor-titles">
         <div className="collection-editor-section-head">
-          <h3>Titles <span className="count">{members.length}</span></h3>
+          <h3>Titles <span className="count">{shown.length}</span></h3>
           {!refreshed&&<div className="button-row">
             <button type="button" onClick={()=>setPaste(p=>p===undefined?'':undefined)}>{paste===undefined?'Add by ID':'Close'}</button>
-            {members.length>0&&<button type="button" onClick={()=>setMembers([])}>Remove all</button>}</div>}
+            {shown.length>0&&<button type="button" onClick={()=>drop(shown)}>Remove all</button>}</div>}
         </div>
-        {refreshed?<p className="muted small">These come from the list and are refreshed on every run.</p>:<>
+        {refreshed?<p className="muted small">These come from the list and are refreshed on every run; ones you remove stay out.</p>:<>
           {!tmdbConfigured&&<p className="muted small">Add a TMDb key in Artwork › Settings to search for titles and see their posters.</p>}
           <TitleSearch type={d.type} members={members} add={m=>add([m])}/>
           {paste!==undefined&&<div className="collection-editor-paste">
             <textarea rows={4} autoFocus placeholder={'One per line: tmdb:948, imdb:tt0077651, plex:12345, or Halloween | 1978'} value={paste} onChange={e=>setPaste(e.target.value)}/>
             <button type="button" disabled={!paste.trim()} onClick={()=>{add(parseMembers(paste));setPaste(undefined);}}>Add</button></div>}
         </>}
-        {members.length?<div className="collection-editor-grid"><TitleGrid type={d.type} members={members} remove={refreshed?undefined:i=>setMembers(list=>list.filter((_,j)=>j!==i))}/></div>
+        {shown.length?<div className="collection-editor-grid"><TitleGrid type={d.type} members={shown} remove={i=>drop([shown[i]!])}/></div>
           :<p className="collection-editor-empty muted small">{refreshed?'The list hasn’t been read yet.':'No titles yet. Search above to add some.'}</p>}
+        <Removed count={exclude.length} restore={()=>add(exclude)}/>
       </section>
       <div className="collection-editor-options">
         <section className="collection-editor-panel">
@@ -329,16 +339,22 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
     </form>
   </Modal>;
 }
+// How many titles were taken out of a collection, and a way to put them back.
+function Removed({count,restore}:{count:number;restore:()=>void}) {
+  return count>0?<p className="muted small">{count} removed · <button type="button" className="link-button" onClick={restore}>Put {count===1?'it':'them'} back</button></p>:null;
+}
 type Row={key?:string;name:string;url:string|null;description?:string;type:'movie'|'tv';provider:string};
 type Preview={name:string;url:string;type:'movie'|'tv';limit:number;provider:string;items:{title:string;year?:number;member:Member}[]};
 const providers=[['all','Every source'],['tmdb','TMDb'],['trakt','Trakt'],['mdblist','MDBList'],['imdb','IMDb'],['letterboxd','Letterboxd'],['flixpatrol','FlixPatrol']] as const;
 function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing:Definition[];onClose:()=>void;add:(entry:Definition)=>void}) {
   const [mode,setMode]=useState<'recommendations'|'universes'|'browse'|'url'>('universes'),[type,setType]=useState<'movie'|'tv'>('movie'),[provider,setProvider]=useState('all'),[query,setQuery]=useState('');
   const [rows,setRows]=useState<Row[]>(),[preview,setPreview]=useState<Preview>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
-  const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState('');
+  const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState(''),[dropped,setDropped]=useState<Member[]>([]);
   const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await api<{results:Row[]}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type});setRows(r.results);});
-  const open=(body:object)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setName(r.name);setLibrary(libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setProblem('');});
+  const open=(body:object)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(r.name);setLibrary(libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setProblem('');});
   useEffect(()=>{if(mode==='universes'||mode==='recommendations')find();},[mode,type]);
+  // Titles taken out of the preview stay out of the collection, and out of the list when it's kept up to date.
+  const out=new Set(dropped.map(memberText)),kept=preview?.items.map(i=>i.member).filter(m=>!out.has(memberText(m)))??[];
   return <Modal title="Discover collections" onClose={onClose}>
     <div className="form-stack artwork-discover">
       <div className="toggle-group" role="radiogroup" aria-label="Find collections">{([['universes','Universes'],['recommendations','Recommended'],['browse','Search lists'],['url','Import a list']] as const).map(([m,label])=><button key={m} type="button" role="radio" aria-checked={mode===m} onClick={()=>{setMode(m);setRows(undefined);setPreview(undefined);setQuery('');}}>{label}</button>)}</div>
@@ -351,11 +367,12 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
       {mutation.busy&&<Loading/>}{mutation.error&&<ErrorNotice message={mutation.error}/>}
       {preview?<div className="form-stack">
         <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
-        <h3>{preview.name} <small className="muted">{preview.items.length} {preview.type==='tv'?'shows':'movies'}</small></h3>
-        <div className="collection-editor-grid"><TitleGrid type={preview.type} members={preview.items.map(i=>i.member)}/></div>
+        <h3>{preview.name} <small className="muted">{kept.length} {preview.type==='tv'?'shows':'movies'}</small></h3>
+        <div className="collection-editor-grid"><TitleGrid type={preview.type} members={kept} remove={i=>setDropped(d=>[...d,kept[i]!])}/></div>
+        <Removed count={dropped.length} restore={()=>setDropped([])}/>
         <form className="form-stack" onSubmit={e=>{e.preventDefault();
           if(existing.some(x=>x.library===library&&(keyOf(x.name)===keyOf(name)||x.source?.url===preview.url))){setProblem('This name or list is already in that library. Edit that collection instead.');return;}
-          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:preview.items.map(i=>i.member),source:{url:preview.url,limit:preview.limit,refresh}});}}>
+          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:kept,...(dropped.length?{exclude:dropped}:{}),source:{url:preview.url,limit:preview.limit,refresh}});}}>
           <div className="form-columns"><label>Name<input required value={name} onChange={e=>setName(e.target.value)}/></label>
             <label>Plex library<select required value={library} onChange={e=>setLibrary(e.target.value)}><option value="">Choose a library</option>{libraries.filter(l=>(l.type==='show'?'tv':'movie')===preview.type).map(l=><option key={l.key} value={l.title}>{l.title}</option>)}</select></label></div>
           <Switch label="Keep this list up to date" description="Each collection run uses the list as it is then." checked={refresh} onChange={setRefresh}/>

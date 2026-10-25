@@ -1313,6 +1313,15 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(calls, [("DELETE", "/library/collections/970", None), ("DELETE", "/library/collections/980", None)])
         self.assertEqual(kept, [])
 
+        # A title removed from a collection comes out of it in Plex, even when membership only adds.
+        self.http.replies[plex + "/library/sections/1/collections"] = container('<Directory ratingKey="990" title="Picks" type="collection" subtype="movie"/>', totalSize=1)
+        self.http.replies[plex + "/library/metadata/990/children"] = container(video(3, "Heat", 20))
+        self.config["collections"] = [{"name": "Picks", "library": "Movies", "type": "movie", "members": [{"title": "Alien"}, {"title": "Heat"}], "exclude": [{"title": "Heat"}]}]
+        calls.clear()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
+        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
+
 
     def test_streaming_collections_group_shows_and_skip_smart_collections(self):
         plex = "http://plex.invalid:32400"
