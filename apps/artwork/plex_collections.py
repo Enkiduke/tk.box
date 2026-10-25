@@ -6,7 +6,8 @@
 - tk.box's collections are what Plex holds: one turned off or removed in tk.box is deleted from Plex (its titles stay).
 - Custom and seasonal collections defined in tk.box (by hand, from a curated universe or a public list), with Radarr
   fetching a seasonal collection's missing movies and, when asked, removing them again once its season ends.
-- Discover: the public lists and universes the Collections page offers, and a preview of what one would hold.
+- Discover: the public lists and universes the Collections page offers, the TMDb collections a library has only part
+  of, and a preview of what one would hold.
 
 It reads the same JSON config tk.box writes for the artwork engine and shares its Plex, TMDb and HTTP code
 (engine_common.py), but none of its imaging: Pillow and NumPy are never loaded here. A collection's poster is the
@@ -840,6 +841,54 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
     return builder.failures + radarr_failed
 
 
+def franchise_name(collection):
+    """A TMDb movie collection's name as its franchise collection is called: "Alien Collection" is "Alien"."""
+    return re.sub(r"\s+Collection$", "", collection.get("name") or "").strip() or str(collection["id"])
+
+
+def partly_owned(artwork, query="", today=None):
+    """The TMDb movie collections each library holds some but not all of the released movies of, found the way
+    franchise collections are (each movie's belongs_to_collection), closest to complete first: ({"name", "url",
+    "description", "type", "provider", "library", "owned", "total"} rows, number of failed TMDb lookups)."""
+    if not artwork.keys.get("tmdb_key"):
+        raise ValueError("Set TMDB_API_KEY to find partly owned collections")
+    today, failed = (today or date.today()).isoformat(), []
+    def lookup(path):
+        try:
+            return artwork.tmdb(path)
+        except (RuntimeError, ValueError):
+            failed.append(path)
+            return {}
+    movies = [movie for movie in artwork.plex.scan(media_type="movie") if movie.get("tmdb_id")]
+    ids = sorted({movie["tmdb_id"] for movie in movies})
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        franchises = dict(zip(ids, pool.map(lambda movie_id: lookup(f"/movie/{movie_id}").get("belongs_to_collection") or {}, ids)))
+    owned = {}
+    for movie in movies:
+        franchise = franchises[movie["tmdb_id"]]
+        if franchise.get("id"):
+            owned.setdefault((movie["library"], franchise["id"]), set()).add(movie["tmdb_id"])
+    collections = sorted({collection_id for _, collection_id in owned})
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        details = dict(zip(collections, pool.map(lambda collection_id: lookup(f"/collection/{collection_id}"), collections)))
+    rows = []
+    for (library, collection_id), have in owned.items():
+        detail = details[collection_id]
+        # Movies not out yet aren't missing; a part with no date isn't out either.
+        missing = [part for part in detail.get("parts", []) if part.get("id") and part["id"] not in have
+                   and (part.get("release_date") or "9999") <= today]
+        name = franchise_name({"id": collection_id, **detail})
+        if not missing or query.casefold() not in name.casefold():
+            continue
+        titles = [f"{part.get('title') or part['id']} ({part['release_date'][:4]})" for part in sorted(missing, key=lambda p: p["release_date"])]
+        more = f" and {len(titles) - 5} more" if len(titles) > 5 else ""
+        rows.append({"name": name, "url": f"https://www.themoviedb.org/collection/{collection_id}/", "type": "movie", "provider": "tmdb",
+                     "library": library, "owned": len(have), "total": len(have) + len(missing),
+                     "description": f"{len(have)} of {len(have) + len(missing)} in {library}. Missing {', '.join(titles[:5])}{more}"})
+    rows.sort(key=lambda row: (row["total"] - row["owned"], -row["owned"], row["name"].casefold(), row["library"]))
+    return rows, len(failed)
+
+
 def wanted_collections(artwork, streaming, region, franchises=True):
     """What the franchise (with `franchises`) and streaming collections should hold, from TMDb: ({(library, label):
     {"name", "type", "keys"}}, {rating key: title}, number of failed lookups)."""
@@ -874,7 +923,7 @@ def wanted_collections(artwork, streaming, region, franchises=True):
     for movie in movies:
         franchise = franchises[movie["tmdb_id"]]
         if franchise.get("id"):
-            add(movie["library"], franchise["id"], re.sub(r"\s+Collection$", "", franchise.get("name") or "").strip() or str(franchise["id"]), 1, movie)
+            add(movie["library"], franchise["id"], franchise_name(franchise), 1, movie)
     if streaming != "off":
         shows = artwork.plex.scan(media_type="show")
         for show, services in zip(shows, lookup(show_services, shows, [])):
@@ -919,13 +968,18 @@ class CollectionBuilder:
             self.failed(name, library, error)
             return False
 
-    def groups(self, groups, titles, sections, minimum, sync, settings=None):
+    def groups(self, groups, titles, sections, minimum, sync, settings=None, claimed=()):
         """Franchise and streaming collections: create the missing ones, add to (and with `sync` trim) the rest. One the
         admin turned off (in `settings`, from validate_automatic) comes out of Plex instead, and one with a visibility
-        setting has it applied. Every one that qualifies is noted in `wanted`."""
+        setting has it applied. One with the name of a custom collection (in `claimed`) is that collection's to keep.
+        Every one that qualifies or is claimed is noted in `wanted`."""
         plex, counts, prefix, listed, settings = self.plex, self.counts, self.prefix, {}, settings or {}
         for (library, label), group in sorted(groups.items(), key=lambda pair: (pair[0][0], pair[1]["name"].casefold())):
             name, setting = group["name"], settings.get((library, collection_key(group["name"])), {})
+            if (library, collection_key(name)) in claimed:
+                self.wanted.add((library, collection_key(name)))
+                print(f"SKIP {name} [{library}]: kept as one of tk.box's custom collections", flush=True)
+                continue
             # Titles the admin removed come out even when membership only adds.
             drop = set(group.get("drop", ())) | set(setting.get("exclude", ()))
             want = [key for key in group["keys"] if key not in drop]
@@ -1084,7 +1138,9 @@ def build_collections(artwork, apply, minimum=2, sync=True, franchises=True, str
         print(f"WARN {failed} TMDb lookups failed; collections are only added to this run, never trimmed or deleted", file=sys.stderr)
     kept = [] if kept is None else kept
     builder = CollectionBuilder(artwork.plex, apply, kinds)
-    builder.groups(groups, titles, sections, minimum, sync, validate_automatic(artwork.config))
+    # A custom collection named like a franchise one (one added from Discover's Partly owned) takes it over.
+    claimed = {(entry["library"], collection_key(entry["name"])) for entry in validate_collections(artwork.config)}
+    builder.groups(groups, titles, sections, minimum, sync, validate_automatic(artwork.config), claimed)
     kept.extend(builder.kept)
     for row in earlier:
         if row.get("kind") not in ("franchise", "streaming") or (row["library"], collection_key(row["name"])) in builder.wanted:
@@ -1186,7 +1242,8 @@ def added(config_path, rating_key):
 
 
 def discover(config_path, data):
-    """The Collections page's Discover: recommendations, a provider's lists, universes, or a preview of one list."""
+    """The Collections page's Discover: recommendations, a provider's lists, universes, partly owned TMDb collections,
+    or a preview of one list."""
     sources = CollectionSources(engine(config_path, read_collections_config(config_path)))
     mode = data.get("mode", "recommendations")
     try:
@@ -1202,6 +1259,9 @@ def discover(config_path, data):
         provider, query = data.get("provider", "all"), str(data.get("query") or "")[:200]
         if mode == "universes":
             return {"results": sources.universes(query, data.get("type", "movie"))}
+        if mode == "partial":
+            rows, failed = partly_owned(sources.artwork, query)
+            return {"results": rows, "failed": failed}
         rows = sources.discover(provider, query) if mode == "browse" else sources.recommendations(provider, query)
         return {"results": rows}
     except RuntimeError:
