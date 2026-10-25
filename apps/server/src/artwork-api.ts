@@ -47,7 +47,6 @@ const plexPath=z.string().max(500).regex(/^\/library\/(?:metadata\/\d+\/(?:[\w/]
 const link=z.string().url().max(2000);
 const width=z.coerce.number().int().min(64).max(2000).optional();
 const crop=z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().positive().max(1),h:z.number().positive().max(1)}).strict();
-const templateMode=z.enum(['poster','season','episode']);
 const templateValues=z.record(z.string().regex(/^[a-z_]{1,60}$/),z.unknown()).refine(v=>JSON.stringify(v).length<=40000,'Too many settings');
 // Plex's own candidates also link to its metadata CDN (Gracenote stills) and IMDb's image host.
 const providerHosts=(host:string)=>['image.tmdb.org','assets.fanart.tv','artworks.thetvdb.com','metadata-static.plex.tv','m.media-amazon.com'].includes(host);
@@ -61,8 +60,8 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   const files=new ArtworkFiles(join(engine.workDir,'assets'),join(engine.paths.cacheDir,'artwork'),join(engine.workDir,'config.json'));
   const pictures=new ArtworkPictures(()=>store.keys(),()=>store.settings().language||'en');
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=await admin(request);return worker.request<T>(runOf(grant),method,params);};
-  const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string},cache='no-store')=>{
-    reply.header('Cache-Control',cache);if(image.note)reply.header('X-Artwork-Note',image.note);
+  const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string;boxes?:unknown},cache='no-store')=>{
+    reply.header('Cache-Control',cache);if(image.note)reply.header('X-Artwork-Note',image.note);if(image.boxes)reply.header('X-Artwork-Boxes',JSON.stringify(image.boxes));
     return reply.type(image.type).send(image.bytes);
   };
   // Plex's JSON answer for a path on the server, with the administrator's token; a refusal comes back as its status.
@@ -90,7 +89,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     const status=await engine.status(!!query.recheck);
     // The titles and layouts usually come next; start the worker so their first request doesn't wait for Python to load.
     if(status.ready)worker.warm(runOf(grant));
-    return {settings:store.view(),layouts:store.layoutNames(),libraries:libraries(grant),engine:status,queue:engine.busy(),schedules:schedule.states()};
+    return {settings:store.view(),layouts:store.layoutList(),libraries:libraries(grant),engine:status,queue:engine.busy(),schedules:schedule.states()};
   });
   app.put('/api/v1/admin/artwork/settings',async request=>{
     const {grant}=await admin(request),{expectedRevision,...value}=artworkSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
@@ -203,11 +202,11 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   // The layout editor: every layout's settings as it edits them, live previews of unsaved changes, and saving them.
   app.get('/api/v1/admin/artwork/template',async request=>ask(request,'template'));
   app.post('/api/v1/admin/artwork/template/preview',{config:{rateLimit:{max:600,timeWindow:60000}}},async(request,reply)=>{
-    const input=z.object({layout:layoutName,mode:templateMode,values:templateValues,id:rel,w:z.number().int().min(160).max(720),banner:z.string().max(40).default('')}).strict().parse(request.body);
+    const input=z.object({layout:layoutName,values:templateValues,id:rel,w:z.number().int().min(160).max(720),banner:z.string().max(40).default('')}).strict().parse(request.body);
     const {grant}=await admin(request);return send(reply,await worker.image(runOf(grant),'template_preview',input));
   });
   app.post('/api/v1/admin/artwork/template/save',async request=>{
-    const input=z.object({layout:layoutName,mode:templateMode,values:templateValues}).strict().parse(request.body),{grant}=await admin(request),run=runOf(grant);
+    const input=z.object({layout:layoutName,values:templateValues}).strict().parse(request.body),{grant}=await admin(request),run=runOf(grant);
     const {layout}=await worker.request<{layout:Record<string,unknown>}>(run,'template_merge',input);
     await store.saveLayout(grant.accountId,input.layout,store.layout(input.layout).revision,layoutValue.parse(layout),layouts=>engine.check({layouts},run));
     changed(grant);return worker.request(run,'template');

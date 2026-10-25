@@ -9,7 +9,8 @@ import { childEnv, type ArtworkEngine, type ArtworkRun } from './artwork-engine.
 // pages (their settings start it ahead of the first click), restarts when the credentials it was given change, and stops
 // after a while unused. Like jobs, it is its own process, so rendering previews never runs on the server's event loop.
 type Reply = { id?: number; result?: unknown; error?: string; ready?: boolean };
-export type WorkerImage = { image: string; type: string; note?: string };
+// `boxes` (layout previews only): where each layer of the layout editor was drawn, in the image's pixels.
+export type WorkerImage = { image: string; type: string; note?: string; boxes?: unknown };
 const IDLE_MS = 30 * 60000;
 
 export class ArtworkWorker {
@@ -30,8 +31,8 @@ export class ArtworkWorker {
     });
   }
   async image(run: ArtworkRun, method: string, params: Record<string, unknown>) {
-    const { image, type, note } = await this.request<WorkerImage>(run, method, params);
-    return { bytes: Buffer.from(image, 'base64'), type, ...(note ? { note } : {}) };
+    const { image, type, note, boxes } = await this.request<WorkerImage>(run, method, params);
+    return { bytes: Buffer.from(image, 'base64'), type, ...(note ? { note } : {}), ...(boxes ? { boxes } : {}) };
   }
   // Start it now, so the page's first request doesn't wait for Python to load.
   warm(run: ArtworkRun) { void this.ready(run).then(() => this.touch(), () => {}); }

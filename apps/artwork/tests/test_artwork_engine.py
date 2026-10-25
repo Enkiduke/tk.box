@@ -48,13 +48,20 @@ def rendered_path(base, rating_key):
 
 def main_style(**changes):
     config = example_config()
-    options = dict(config["layouts"][config["default_layout"]])
-    options.pop("season_options", None)
-    return sp.Style(**{**options, **changes})
+    return sp.Style(**{**config["layouts"][config["default_layout"]], **changes})
 
 
 def configured(**changes):
     return {"default_layout": "custom", "layouts": {"custom": {}}, **changes}
+
+
+def with_templates(base=None, season=None, episode=None):
+    """A config whose "custom" layout has season and/or episode templates of its own."""
+    layouts = {"custom": base or {}}
+    for role, options in (("season", season), ("episode", episode)):
+        if options is not None:
+            layouts[f"custom-{role}"] = {"extends": "custom", "role": role, **options}
+    return configured(layouts=layouts)
 
 
 def original_renderer():
@@ -149,6 +156,18 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(image.getpixel((82, 152)), (255, 255, 255))
         self.assertEqual(image.getpixel((82, 142)), (0, 0, 0))
 
+    def test_boxes_say_where_each_layer_was_drawn(self):
+        # The layout editor's preview selects layers by these boxes, so they must match the final image, border included.
+        style = sp.Style(width=200, height=300, uniform_logo_max_w=400, uniform_logo_max_h=400, matte_height_ratio=0.2, fade_height_ratio=0,
+                         border_enabled=True, border_px=20, border_color="#0000FF")
+        renderer = sp.Renderer(style)
+        image = renderer.render(Image.new("RGB", (200, 300), "black"), Image.new("RGBA", (400, 200), "white"))
+        white = Image.eval(image.convert("L"), lambda value: 255 if value == 255 else 0).getbbox()
+        self.assertEqual(renderer.boxes["logo"], list(white))
+        self.assertEqual(renderer.boxes["artwork"], [2, 2, 202, 302])
+        self.assertEqual(renderer.boxes["border"], [0, 0, 204, 304])
+        self.assertEqual(renderer.boxes["matte"], [2, 242, 202, 302])
+
     def test_season_text_placeholders_and_visible_position(self):
         style = sp.Style(width=200, height=300, logo_mode="none", text_overlay_enabled=True,
                          custom_text="{season}", font_size=150, position_y=0.95, text_transform="uppercase")
@@ -184,24 +203,43 @@ class LayoutTests(unittest.TestCase):
         self.assertIn(("custom", False), sp.layout_styles(config))
         for bad in ({"default_layout": "missing", "layouts": {"custom": {}}},
                     configured(layout_by_type={"tv": "missing"}),
-                    configured(layouts={"custom": {"season_options": {"unknown": 1}}}),
-                    configured(layouts={"custom": {"season_options": {"font_size": -1}}})):
+                    with_templates(season={"unknown": 1}),
+                    with_templates(season={"font_size": -1}),
+                    configured(layouts={"custom": {"season_options": {}}})):
             with self.assertRaises(ValueError):
                 sp.layout_styles(bad)
         styles = sp.layout_styles(config)
         with self.assertRaisesRegex(ValueError, "Undefined"):
             sp.item_layout({"type": "tv", "layout": "missing"}, config, styles)
 
-    def test_episode_layout_needs_episode_options(self):
+    def test_episode_layout_needs_an_episode_template(self):
         episode = {"type": "tv", "season": 1, "episode": 2}
         config = configured()
-        with self.assertRaisesRegex(ValueError, "episode_options"):
+        with self.assertRaisesRegex(ValueError, "episode template"):
             sp.item_layout(episode, config, sp.layout_styles(config))
-        config = configured(layouts={"custom": {"episode_options": {"width": 320, "height": 180}}})
+        config = with_templates(base={"font_size": 90}, episode={"width": 320, "height": 180})
         styles = sp.layout_styles(config)
         self.assertEqual(sp.item_layout(episode, config, styles), ("custom", "episode"))
         self.assertEqual(sp.item_layout({"type": "tv", "season": 1}, config, styles), ("custom", True))
-        self.assertEqual(styles["custom", "episode"].width, 320)
+        self.assertEqual((styles["custom", "episode"].width, styles["custom", "episode"].font_size), (320, 90))
+        self.assertIs(styles["custom", True], styles["custom", False])  # No season template: seasons look like the show
+        with self.assertRaisesRegex(ValueError, "Undefined"):  # A template is only ever reached through its show layout
+            sp.item_layout({"type": "tv", "layout": "custom-episode", **episode}, config, styles)
+
+    def test_templates_extend_one_layout_of_their_own(self):
+        two = with_templates(season={})
+        two["layouts"]["other-season"] = {"extends": "custom", "role": "season"}
+        for bad in (two,
+                    configured(layouts={"custom": {}, "x": {"extends": "missing", "role": "season"}}),
+                    configured(layouts={"custom": {}, "x": {"extends": "custom", "role": "poster"}}),
+                    configured(layouts={"custom": {}, "x": {"role": "season"}}),
+                    {**with_templates(season={}), "layouts": {**with_templates(season={})["layouts"], "y": {"extends": "custom-season", "role": "episode"}}},
+                    {**with_templates(season={}), "layout_by_type": {"tv": "custom-season"}},
+                    {**with_templates(season={}), "default_layout": "custom-season"}):
+            with self.assertRaises(ValueError):
+                sp.layout_styles(bad)
+        styles = sp.layout_styles(with_templates(base={"font_size": 90, "position_y": 0.2}, season={"position_y": 0.9}))
+        self.assertEqual((styles["custom", True].font_size, styles["custom", True].position_y), (90, 0.9))
 
 class TitleCardTests(unittest.TestCase):
     def test_title_split_matches_titlecardmaker_bottom_style(self):
@@ -995,12 +1033,12 @@ class ArtworkTests(unittest.TestCase):
         self.artwork.select({**show, "season": 2}, child, False, series)
         self.assertEqual([call[1] for call in self.http.calls[calls:]], [])
 
-    def test_season_and_episode_options_cannot_override_logo_choice(self):
-        for kind in ("season_options", "episode_options"):
+    def test_season_and_episode_templates_cannot_override_logo_choice(self):
+        for kind in ("season", "episode"):
             for setting in ({"logo_preference": "color"}, {"logo_min_brightness": 10}):
                 with self.assertRaisesRegex(ValueError, "series' logo"):
-                    sp.layout_styles(configured(layouts={"custom": {kind: setting}}))
-        sp.layout_styles(configured(layouts={"custom": {"logo_preference": "color", "season_options": {"logo_mode": "none"}}}))
+                    sp.layout_styles(with_templates(**{kind: setting}))
+        sp.layout_styles(with_templates(base={"logo_preference": "color"}, season={"logo_mode": "none"}))
 
     def test_color_preference_avoids_black_and_does_not_favor_white(self):
         colors = {"black": (10, 10, 10, 255), "white": (250, 250, 250, 255), "pale": (230, 180, 180, 255),
@@ -1076,9 +1114,9 @@ class ArtworkTests(unittest.TestCase):
     def test_season_pipeline_inherits_layout_and_uses_own_plex_upload_id(self):
         self.config["plex"].update(include_seasons=True, upload=True)
         self.config["layout_by_type"] = {"tv": "show-look"}
-        self.config["layouts"]["show-look"] = {"width": 200, "height": 300, "grain_amount": 0,
-            "uniform_logo_max_w": 1500, "uniform_logo_max_h": 500,
-            "season_options": {"text_overlay_enabled": True, "custom_text": "{season}", "font_size": 150, "position_y": 0.95}}
+        self.config["layouts"]["show-look"] = {"width": 200, "height": 300, "grain_amount": 0, "uniform_logo_max_w": 1500, "uniform_logo_max_h": 500}
+        self.config["layouts"]["show-look-season"] = {"extends": "show-look", "role": "season",
+            "text_overlay_enabled": True, "custom_text": "{season}", "font_size": 150, "position_y": 0.95}
         self.http.replies[self.artwork.plex.url + "/library/sections"] = b'<MediaContainer><Directory key="1" title="Movies" type="show"/></MediaContainer>'
         self.http.replies[self.artwork.plex.url + "/library/sections/1/all"] = b'<MediaContainer totalSize="1"><Directory type="show" ratingKey="10" title="Show"><Guid id="tmdb://1396"/></Directory></MediaContainer>'
         self.http.replies[self.artwork.plex.url + "/library/metadata/10/children"] = b'<MediaContainer><Directory type="season" ratingKey="11" index="1" title="Season 1"/><Directory type="season" ratingKey="12" index="0" title="Specials"/></MediaContainer>'
@@ -1182,9 +1220,10 @@ class ArtworkTests(unittest.TestCase):
 
     def test_episode_title_cards_use_tmdb_still_show_logo_and_own_plex_upload_id(self):
         self.config["plex"].update(include_episodes=True, upload=True)
-        self.config["layouts"]["custom"] = {"width": 200, "height": 300, "episode_options": {
+        self.config["layouts"]["custom"] = {"width": 200, "height": 300}
+        self.config["layouts"]["custom-episode"] = {"extends": "custom", "role": "episode",
             "width": 320, "height": 180, "uniform_logo_max_w": 1155, "uniform_logo_max_h": 650,
-            "text_transform": "uppercase", "title_font_size": 40, "index_font_size": 20}}
+            "text_transform": "uppercase", "title_font_size": 40, "index_font_size": 20}
         plex = self.artwork.plex.url
         self.http.replies[plex + "/library/sections"] = b'<MediaContainer><Directory key="1" title="Movies" type="show"/></MediaContainer>'
         self.http.replies[plex + "/library/sections/1/all"] = b'<MediaContainer totalSize="1"><Directory type="show" ratingKey="10" title="Show"><Guid id="tmdb://1396"/></Directory></MediaContainer>'
@@ -1745,6 +1784,50 @@ class ArtworkFileTests(unittest.TestCase):
             with Image.open(title / "poster.png") as poster:
                 for got, want in zip(poster.convert("RGB").getpixel((500, 750)), (0x9b, 0x43, 0x0c)):
                     self.assertLessEqual(abs(got - want), 2)  # The glow's center, give or take the dither
+
+    def test_a_run_redraws_a_generated_poster_when_its_layouts_glow_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            files = sp.ArtworkFiles(Path(directory) / "assets")
+            item = {"type": "collection", "title": "Netflix", "rating_key": "7", "service": "Netflix"}
+            drawn, style = dict(item), sp.Style()
+            background = sp.generated_background(drawn, style)  # What generated_poster draws, and notes
+            drawn["_generated"] = sp.glow_key(drawn, style)
+            folder = files.save(drawn, background, None, False)
+            meta = sp.ArtworkFiles.metadata(folder)
+            self.assertEqual((meta["kind"], meta["service"], meta["generated"]), ("streaming", "Netflix", sp.glow_key(item, style)))
+            self.assertEqual(sp.file_digest(folder / "poster.png"), sp.file_digest(folder / "generated.png"))
+
+            def run(style):
+                again = dict(item)
+                files.apply(again)
+                files.refresh_generated(again, style)
+                return again, sp.file_digest(folder / "poster.png")
+            _, same = run(style)
+            self.assertEqual(same, sp.file_digest(folder / "generated.png"))  # Nothing changed: left as it was
+            darker = sp.Style(collection_gradient_strength=0.9)
+            again, redrawn = run(darker)
+            self.assertNotEqual(redrawn, same)
+            self.assertEqual(redrawn, sp.file_digest(folder / "generated.png"))
+            self.assertEqual(again["poster"], str(folder / "poster.png"))
+            self.assertEqual(sp.ArtworkFiles.metadata(folder)["generated"], sp.glow_key(item, darker))
+
+            (folder / "poster.png").unlink()
+            Image.new("RGB", (20, 30), "red").save(folder / "poster.png")  # A poster of the collection's own
+            own = sp.file_digest(folder / "poster.png")
+            self.assertEqual(run(sp.Style(collection_gradient_strength=0.2))[1], own)
+
+    def test_layout_media_names_each_kind_of_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps(configured()), encoding="utf-8")
+            worker = sp.Worker(config)
+            worker.library_kinds = lambda config: [("Movies", "movie"), ("TV", "show")]
+            chosen = {"default_layout": "m", "layout_by_type": {"movie": "m", "tv": "t", "streaming": "s", "collection": "c"}}
+            # Custom collections follow the collection layout; charts have none of their own, so they use their library's
+            self.assertEqual(worker.template_media(chosen), {"m": ["collections:chart", "movies"], "t": ["collections:chart", "tv"],
+                                                             "s": ["collections:streaming"], "c": ["collections:collection", "collections:custom"]})
+            worker.library_kinds = lambda config: None  # Plex can't say: the kinds with layouts of their own are still known
+            self.assertEqual(worker.template_media(chosen), {"s": ["collections:streaming"], "c": ["collections:collection", "collections:custom"]})
 
     def test_original_downloaded_bytes_are_saved_without_recompression(self):
         with tempfile.TemporaryDirectory() as directory:

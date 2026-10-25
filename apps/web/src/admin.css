@@ -92,23 +92,97 @@
 
 /* Layout editor */
 .artwork-template{display:flex;flex-direction:column;gap:14px}
-.artwork-template-layout{display:grid;grid-template-columns:minmax(260px,380px) minmax(0,1fr);gap:24px;align-items:start}
-.artwork-template-shot{position:sticky;top:calc(var(--nav-h) + 16px);margin:0;display:flex;flex-direction:column;gap:8px}
-.artwork-template-frame{position:relative;display:grid;place-items:center;max-height:70vh;border-radius:8px;overflow:hidden;background:var(--surface-2)}
+/* Layouts: each layout as a row that opens the poster studio */
+.artwork-layout-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.artwork-layout-list li.child{margin-left:28px}
+.artwork-layout-row{display:flex;align-items:center;gap:14px;width:100%;padding:12px 16px;text-align:left;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.artwork-layout-row .grow{display:flex;flex-direction:column;min-width:0}
+.artwork-layout-row small{color:var(--muted);font-size:12px}
+.artwork-layout-tag{padding:2px 9px;border-radius:10px;background:var(--surface-3);color:var(--muted);font-size:11px;font-weight:600}
+.artwork-layout-tag.unsaved{background:var(--accent-tint);color:var(--accent)}
+.artwork-layout-edit{padding:5px 14px;border:1px solid var(--line-strong);border-radius:8px;font-size:13px;font-weight:600}
+.artwork-layout-row:hover .artwork-layout-edit{border-color:var(--accent);color:var(--accent)}
+/* The poster studio: a window nearly the size of the screen, with layers, the preview and the chosen layer's settings side by side,
+   each scrolling on its own. */
+dialog:has(.poster-studio){width:calc(100% - 48px);max-width:1680px;height:calc(100vh - 48px);max-height:none;margin:24px auto;overflow:hidden}
+dialog:has(.poster-studio) .modal-content{height:100%;padding:18px 22px 20px}
+.poster-studio{display:flex;flex-direction:column;gap:12px;height:100%;min-height:0}
+.studio-head{display:flex;align-items:center;gap:24px;margin-right:44px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.studio-head-group{display:flex;align-items:center;gap:10px;min-width:0}
+.studio-head-group.grow{flex:1 1 0}
+.studio-head-end{justify-content:flex-end}
+.studio-head :is(select,input,button){height:38px;margin:0;padding-top:0;padding-bottom:0}
+.studio-head button{padding-inline:16px}
+.studio-layout{width:auto;min-width:180px;font-size:16px;font-weight:650}
+.studio-described{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.studio-sample{flex:none}
+.studio-sample>span{white-space:nowrap}
+.studio-sample select{width:300px}
+.studio-find{width:220px}
+.studio-unsaved{padding:4px 10px;border-radius:12px;background:var(--accent-tint);color:var(--accent);font-size:12px;font-weight:600;white-space:nowrap}
+.poster-studio>.success,.poster-studio>.notice{margin:0}
+.studio-body{flex:1;min-height:0;display:grid;grid-template-columns:230px minmax(0,1fr) 440px;gap:18px}
+.studio-layers,.studio-inspector{min-height:0;overflow:auto;scrollbar-width:thin}
+.studio-layers{display:flex;flex-direction:column;gap:8px}
+.studio-layers h4{margin:4px 0 2px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.studio-layers ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.studio-layers li{display:flex;align-items:center;gap:2px}
+.studio-layers li.child{margin-left:16px;padding-left:8px;border-left:1px solid var(--line)}
+.studio-layer{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:8px 10px;border:0;border-radius:8px;background:transparent;font-size:13px;text-align:left;color:var(--text)}
+.studio-layer:hover{background:var(--surface-2)}
+.studio-layer.active{background:var(--surface-3);font-weight:600}
+.studio-layer.off{color:var(--dim)}
+.studio-layer.dim{opacity:.35}
+.studio-layer .count,.studio-section summary .count{padding:1px 7px;border-radius:9px;background:var(--accent-tint);color:var(--accent);font-size:11px;font-weight:600}
+.studio-tag{padding:0 5px;border-radius:4px;background:var(--surface-3);color:var(--muted);font-size:10px;font-weight:700}
+.studio-eye{padding:6px;color:var(--muted)}
+.studio-eye[aria-pressed]{background:transparent;border-color:transparent;color:var(--muted)}
+.studio-eye[aria-pressed=false]{color:var(--dim)}
+.studio-eye:hover{color:var(--text)}
+.studio-keys{display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:auto;padding-top:12px;font-size:12px;color:var(--muted)}
+.studio-canvas{min-height:0;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;background:var(--bg)}
+.studio-canvas>p{margin:0;text-align:center;min-height:1.4em}
+.studio-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;container-type:size}
+.studio-stage .artwork-template-frame{width:min(100cqw,calc(100cqh * var(--ratio)));height:auto}
+.artwork-template-frame{position:relative;display:grid;place-items:center;border-radius:8px;overflow:hidden;background:var(--surface-2)}
 .artwork-template-frame img{width:100%;height:100%;object-fit:contain}
 .artwork-template-frame.busy img{opacity:.7}
 .artwork-template-frame .spinner{position:absolute}
 .artwork-template-frame.error{outline:1px solid var(--danger)}
-.artwork-template-controls{display:flex;flex-direction:column;gap:10px;min-width:0}
-.artwork-group{border:1px solid var(--line);border-radius:10px;background:var(--surface)}
-.artwork-group summary{display:flex;align-items:center;gap:10px;padding:10px 14px;margin:0!important;font-weight:600;cursor:pointer}
-.artwork-group summary select{font-size:12px;padding:4px 8px}
-.artwork-group summary .count{margin-left:8px;padding:1px 7px;border-radius:9px;background:var(--accent-tint);color:var(--accent);font-size:11px}
-.artwork-group p{padding:0 14px}
+.studio-picker{position:absolute;inset:0;cursor:pointer}
+.studio-outline{position:absolute;pointer-events:none;border-radius:3px}
+.studio-outline.selected{outline:2px dashed var(--accent);outline-offset:3px}
+.studio-outline.hover{outline:1px solid rgba(255,255,255,.75);outline-offset:3px}
+.studio-outline em{position:absolute;left:-4px;bottom:calc(100% + 6px);padding:1px 6px;border-radius:4px;background:rgba(0,0,0,.75);color:#fff;font-size:11px;font-style:normal;font-weight:600;white-space:nowrap}
+.studio-inspector{display:flex;flex-direction:column;gap:10px;padding-right:4px}
+.studio-inspector>p{margin:0}
+.studio-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.studio-inspector-head h3{display:flex;align-items:center;gap:8px;margin:0;font-size:16px}
+.studio-inspector-head select{width:auto;font-size:12px;padding:4px 8px}
+.studio-section,.studio-hits,.studio-inspector>.artwork-field{border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.studio-section summary{display:flex;align-items:center;gap:8px;padding:9px 12px;margin:0!important;font-size:13px;font-weight:650;cursor:pointer}
+.studio-section p{margin:0;padding:0 12px 8px}
+.studio-inspector>.artwork-field{border-top:1px solid var(--line)}
+.studio-hits{display:flex;flex-direction:column}
+.studio-hits>.link-button{display:flex;align-items:center;gap:6px;padding:9px 12px;font-weight:650;text-align:left}
+.studio-shared .link-button{display:inline;padding:0}
+.artwork-banners{border-top:1px solid var(--line)}
+.artwork-banners p{padding:8px 12px 0}
+.artwork-banners .artwork-chips{padding:8px 12px}
+.poster-studio .artwork-field{grid-template-columns:128px minmax(0,1fr) auto;gap:10px;padding:6px 12px}
+.poster-studio .artwork-field .artwork-number{width:72px}
+.artwork-key{display:none}
+.poster-studio.keys .artwork-key{display:block}
+.artwork-anchor{display:grid;gap:4px;width:max-content}
+.artwork-anchor button{display:grid;place-items:center;width:34px;height:26px;padding:0;border-radius:6px}
+.artwork-anchor button span{width:6px;height:6px;border-radius:50%;background:var(--dim)}
+.artwork-anchor button[aria-pressed=true] span{background:var(--accent)}
 .artwork-field{display:grid;grid-template-columns:200px minmax(0,1fr) auto;align-items:center;gap:12px;padding:6px 14px;border-top:1px solid var(--line)}
 .artwork-field label{display:flex;flex-direction:column;font-size:13px;font-weight:550}
 .artwork-field label small{color:var(--muted);font-weight:400;font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .artwork-field.changed label{color:var(--accent)}
+.artwork-field label small.artwork-from{font-family:inherit;font-style:italic}
+.artwork-field-actions{display:flex;align-items:center;gap:6px}
 .artwork-field .toggle-group{flex-wrap:wrap}
 .artwork-range,.artwork-color{display:flex;align-items:center;gap:10px}
 .artwork-range input[type=range]{flex:1;min-width:0}

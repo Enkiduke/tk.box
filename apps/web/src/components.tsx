@@ -36,6 +36,13 @@ const paths:Record<string,ReactNode>={
   calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4m8-4v4"/></>,
   trash:<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>,
   key:<><circle cx="8" cy="15" r="4.5"/><path d="m11.2 11.8 8.8-8.8m-3.5 3.5 2.5 2.5m-5-0.5 2 2"/></>,
+  eye:<><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></>,
+  'eye-off':<><path d="M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4M6.6 6.6C3.9 8.3 2.5 12 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.9-1.4"/><path d="m3 3 18 18M9.9 9.9a3 3 0 0 0 4.2 4.2"/></>,
+  text:<path d="M5 6V4h14v2M12 4v16m-3 0h6"/>,frame:<><rect x="3" y="3" width="18" height="18" rx="3"/><rect x="7" y="7" width="10" height="10" rx="1"/></>,
+  matte:<><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15h18M3 18.5h18"/></>,flag:<path d="M5 21V4m0 0h12l-2.5 4.5L17 13H5"/>,
+  sparkle:<path d="M12 3c.8 4.6 2.4 6.2 7 7-4.6.8-6.2 2.4-7 7-.8-4.6-2.4-6.2-7-7 4.6-.8 6.2-2.4 7-7zM19 16c.3 1.6.9 2.2 2.5 2.5-1.6.3-2.2.9-2.5 2.5-.3-1.6-.9-2.2-2.5-2.5 1.6-.3 2.2-.9 2.5-2.5z"/>,
+  logo:<><path d="M4 16 8 6l4 10m-6.5-3.5h5"/><path d="M14 6h3.5a2.5 2.5 0 0 1 0 5H14zm0 5h4a2.5 2.5 0 0 1 0 5h-4z"/></>,
+  hd:<><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M7 9v6m0-3h4m0-3v6m3-6v6h1.5a3 3 0 0 0 0-6z"/></>,
 };
 paths.settings=<><path d="M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"/><circle cx="15" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/></>;
 export function Icon({name,size=20}:{name:string;size?:number}) {

@@ -13,7 +13,7 @@ const ok=async()=>{};
 
 test('artwork starts from the engine’s bundled layouts, local-only',()=>{
   const {store}=seeded();
-  assert.deepEqual(store.layoutNames(),['tk-charts','tk-collections','tk-custom','tk-movies','tk-streaming','tk-tv']);
+  assert.deepEqual(store.layoutNames(),['tk-charts','tk-collections','tk-custom','tk-movies','tk-streaming','tk-tv','tk-tv-episode','tk-tv-season']);
   const view=store.view();
   assert.equal(view.upload,false);assert.equal(view.defaultLayout,'tk-movies');assert.equal(view.layoutByType.custom,'tk-custom');assert.deepEqual(view.keysSet,{tmdb:false,tvdb:false,fanart:false,mdblist:false});
   assert.equal(view.schedules.added.enabled,false);
@@ -43,6 +43,27 @@ test('artwork layouts in use cannot be removed, and a name is created once',asyn
   assert.equal(created.revision,1);
   await assert.rejects(store.saveLayout('admin','posters-2',0,{width:1000},ok),{code:'REVISION_CONFLICT'});
   assert.equal((await store.saveLayout('admin','posters-2',1,{width:1000},ok)).value.width,1000);
+});
+test('season and episode options inside a layout become templates of their own, once, and tk-movies loses its seasons',async()=>{
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
+  db.prepare('INSERT INTO artwork_state VALUES(?,?)').run('layouts:seed','2');
+  insert.run('tk-movies',2,JSON.stringify({width:2000,season_options:{font_size:10}}));
+  insert.run('tk-tv',4,JSON.stringify({width:2000,season_options:{font_size:20},episode_options:{width:3200}}));
+  insert.run('tk-tv-season',1,JSON.stringify({width:1}));  // A name already taken
+  const store=new ArtworkStore(db,vault);
+  assert.deepEqual(store.layoutNames(),['tk-movies','tk-tv','tk-tv-episode','tk-tv-season','tk-tv-season-2']);
+  assert.deepEqual(store.layout('tk-movies').value,{width:2000});
+  assert.deepEqual(store.layout('tk-tv'),{...store.layout('tk-tv'),revision:5,value:{width:2000}});
+  assert.deepEqual(store.layout('tk-tv-season-2').value,{extends:'tk-tv',role:'season',font_size:20});
+  assert.deepEqual(store.layout('tk-tv-episode').value,{extends:'tk-tv',role:'episode',width:3200});
+  assert.deepEqual(store.layoutList().find(l=>l.name==='tk-tv-episode'),{name:'tk-tv-episode',base:'tk-tv',role:'episode'});
+  // A layout with templates is deleted after them, and a template is never what a kind of title uses.
+  assert.throws(()=>store.removeLayout('admin','tk-tv'),{code:'LAYOUT_IN_USE'});
+  const base={...store.settings(),revision:undefined};delete base.revision;
+  await assert.rejects(store.update('admin',0,{...base,layoutByType:{tv:'tk-tv-episode'}},ok),{code:'LAYOUT_IS_TEMPLATE'});
+  db.prepare('UPDATE artwork_layouts SET value=? WHERE name=?').run(JSON.stringify({season_options:{}}),'tk-movies');
+  new ArtworkStore(db,vault);
+  assert.equal(store.layoutNames().length,5);  // Only once
 });
 test('the engine config names libraries by title for their layouts and keeps credentials out',()=>{
   const {store}=seeded(),settings={...store.settings(),libraries:['1','2'],layoutByLibrary:{'1':'tk-movies','2':'tk-tv','9':'tk-tv'},layoutByType:{collection:'tk-collections'},upload:true};
@@ -108,7 +129,7 @@ test('a database seeded with the earlier layouts gets the tk-* set, and settings
   insert.run('mine',3,'{"width":1200}');
   db.prepare('INSERT INTO artwork_settings VALUES(1,4,?)').run(JSON.stringify({libraries:['1'],defaultLayout:'tk-movies',layoutByLibrary:{'1':'tk-tv','2':'mine'},layoutByType:{collection:'collection-tmdb'},keys:{}}));
   const store=new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));
-  assert.deepEqual(store.layoutNames(),['mine','tk-charts','tk-collections','tk-custom','tk-movies','tk-streaming','tk-tv']);
+  assert.deepEqual(store.layoutNames(),['mine','tk-charts','tk-collections','tk-custom','tk-movies','tk-streaming','tk-tv','tk-tv-episode','tk-tv-season']);
   assert.notEqual(store.layout('tk-movies').value.width,1000);
   const s=store.settings();
   assert.equal(s.defaultLayout,'tk-movies');assert.deepEqual(s.layoutByLibrary,{'1':'tk-tv','2':'mine'});
