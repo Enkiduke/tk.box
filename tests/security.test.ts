@@ -41,6 +41,16 @@ test('PIN binding, encrypted persistence, polling bounds and revoked access fail
     identity.logout(signed.cookie); await assert.rejects(identity.authenticate(signed.cookie, 17000), {code: 'UNAUTHENTICATED'});
   } finally {db.close();}
 });
+test('a session ends only after 7 days unused, and each use renews it', async () => {
+  const db = openDatabase(':memory:'), plex = new PlexAdapter(config(), 'test', fakePlex().transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex);
+  try {
+    const day = 86400000, signed = await identity.finish((await identity.start(0)).binding, 3000); assert.ok(signed);
+    await identity.authenticate(signed.cookie, 6 * day);
+    identity.session(signed.cookie, 12 * day);
+    await identity.authenticate(signed.cookie, 18 * day);
+    assert.throws(() => identity.session(signed.cookie, 25 * day + 1), {code: 'UNAUTHENTICATED'});
+  } finally {db.close();}
+});
 test('immutable stored mode and ownership guard all history writes', async () => {
   const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport);
   const playback = new PlaybackService(db, plex), grant = await plex.authorize('fixture');
