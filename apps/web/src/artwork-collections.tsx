@@ -3,7 +3,7 @@ import type {CatalogPage} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
-import {Card,Switch,date as when,remember,remembered,useMutation} from './settings-ui.js';
+import {Card,Switch,date as when,plural,remember,remembered,useMutation} from './settings-ui.js';
 import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Collections: every Plex collection the engine keeps, in one grid. Franchise and streaming collections come
@@ -335,16 +335,26 @@ function Removed({count,restore}:{count:number;restore:()=>void}) {
 }
 // A Partly owned row is a TMDb collection one library has some of: it names that library and how much of it is there.
 type Row={key?:string;name:string;url:string|null;description?:string;type:'movie'|'tv';provider:string;library?:string;owned?:number;total?:number};
+// When the Discover index was built (seconds; null: not yet), and how many movies in Plex it hasn't read.
+type DiscoverIndex={built:number|null;unread?:number};
 type Preview={name:string;url:string;type:'movie'|'tv';limit:number;provider:string;items:{title:string;year?:number;member:Member}[]};
 const providers=[['all','Every source'],['tmdb','TMDb'],['trakt','Trakt'],['mdblist','MDBList'],['imdb','IMDb'],['letterboxd','Letterboxd'],['flixpatrol','FlixPatrol']] as const;
 function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing:Definition[];onClose:()=>void;add:(entry:Definition)=>void}) {
   const [mode,setMode]=useState<'recommendations'|'universes'|'partial'|'browse'|'url'>('universes'),[type,setType]=useState<'movie'|'tv'>('movie'),[provider,setProvider]=useState('all'),[query,setQuery]=useState('');
   const [rows,setRows]=useState<Row[]>(),[preview,setPreview]=useState<Preview>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
   const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState(''),[dropped,setDropped]=useState<Member[]>([]);
-  const [failed,setFailed]=useState(0),[owned,setOwned]=useState<Row>(),[acquire,setAcquire]=useState(false);
-  // Partly owned looks up every movie on TMDb and Universes reads every universe's list: minutes, until they are cached.
-  const slow=mode==='partial'||mode==='universes';
-  const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await api<{results:Row[];failed?:number}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type},undefined,slow?600000:undefined);setRows(r.results);setFailed(r.failed??0);});
+  const [index,setIndex]=useState<DiscoverIndex>(),[building,setBuilding]=useState(false),[owned,setOwned]=useState<Row>(),[acquire,setAcquire]=useState(false);
+  // Partly owned and Universes read the Discover index (built by the nightly full run, joined by newly added movies).
+  const indexed=mode==='partial'||mode==='universes';
+  const ask=()=>api<{results:Row[];index?:DiscoverIndex}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type});
+  const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await ask();setRows(r.results);setIndex(r.index);});
+  const build=()=>void mutation.run(async()=>{await api('/admin/artwork/collections/index','POST');setBuilding(true);});
+  // While the index builds in the background, look again every 15 seconds (for up to 30 minutes) until it's newer.
+  useEffect(()=>{
+    if(!building||!indexed)return;
+    let tries=0;const timer=setInterval(()=>void ask().then(r=>{if(r.index?.built!==index?.built){setRows(r.results);setIndex(r.index);setBuilding(false);}else if(++tries>=120)setBuilding(false);},()=>{}),15000);
+    return ()=>clearInterval(timer);
+  },[building,mode,type,index?.built]);
   const open=(body:object,row?:Row)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(row?.library?row.name:r.name);setLibrary(row?.library??libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setOwned(row?.library?row:undefined);setAcquire(false);setProblem('');});
   // A partly owned collection is added for its library; a universe in any library of its type is added, and isn't offered.
   const added=(r:Row)=>!!r.library&&existing.some(x=>x.library===r.library&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name)));
@@ -361,7 +371,9 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
           {mode==='partial'?null:mode==='universes'?<select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select>
             :<select aria-label="Source" value={provider} onChange={e=>setProvider(e.target.value)}>{providers.filter(([p])=>mode!=='browse'||p!=='all').map(([p,label])=><option key={p} value={p}>{label}</option>)}</select>}
           <input className="grow" type="search" placeholder="Search" value={query} onChange={e=>setQuery(e.target.value)}/><button disabled={mutation.busy||(mode==='browse'&&provider==='all')}>Search</button></form>)}
-      {mutation.busy&&<Loading/>}{mutation.busy&&slow&&!rows&&<p className="muted small">{mode==='partial'?'Looking up every movie on TMDb.':'Reading every universe’s list and matching it with your libraries.'} The first time, before they are cached, this can take a few minutes.</p>}
+      {mutation.busy&&<Loading/>}{indexed&&index&&!preview&&<p className="muted small">{building?'Building the index in the background. This list updates when it’s done.'
+        :index.built===null?<>These counts come from an index built each night with the full collections run. It hasn’t been built yet. <button type="button" className="link-button" disabled={mutation.busy} onClick={build}>Build it now</button></>
+        :<>Updated {when(index.built*1000)}{index.unread?` · ${plural(index.unread,'movie')} not read yet`:''} · <button type="button" className="link-button" disabled={mutation.busy} onClick={build}>Refresh</button></>}</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       {preview?<div className="form-stack">
         <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
@@ -382,9 +394,8 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
       :shown&&(shown.length?<ul className="artwork-discover-rows">{shown.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
           {added(r)?<span className="muted small">In your collections</span>:r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:r.library?250:50}),type:r.type},r)}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
         :mode==='universes'&&!query&&rows?.length?<Empty title="Every universe is added">Edit them in your collections.</Empty>
-        :mode==='partial'?<Empty title="Nothing partly owned">{query?'Try another search.':'Every TMDb collection in your movie libraries is complete.'}</Empty>
+        :mode==='partial'?<Empty title="Nothing partly owned">{query?'Try another search.':index?.built===null?'Build the index to see them.':'Every TMDb collection in your movie libraries is complete.'}</Empty>
         :<Empty title="No collections found">Try another search, or import a list by its address.</Empty>)}
-      {rows&&mode==='partial'&&failed>0&&<p className="muted small">{failed} TMDb {failed===1?'lookup':'lookups'} failed, so some collections may be missing. Try again later.</p>}
       <p className="muted small">TMDb and MDBList need keys in Connections. IMDb lists must be public.</p>
     </div>
   </Modal>;

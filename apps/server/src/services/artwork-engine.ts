@@ -126,12 +126,12 @@ export class ArtworkEngine {
     const same = (job: { script: EngineScript; args: string[] }) => job.script === script && job.args.join('\0') === args.join('\0');
     return (!!this.current && same(this.current)) || this.queue.some(same);
   }
-  // A Discover answer from the collections engine, asked of the worker with this run's credentials. Partly owned looks
-  // up every movie on TMDb and Universes reads every universe's list, which takes minutes until they are cached.
+  // A Discover answer from the collections engine, asked of the worker with this run's credentials. Partly owned and
+  // Universes read the Discover index the collections jobs keep, so none of them waits on TMDb or a list.
   async discover(run: ArtworkRun, input: Record<string, unknown>) {
     requireThat(this.worker, 'ARTWORK_ENGINE_UNAVAILABLE', 'The artwork engine is not set up.', 503);
     this.writeConfig(run.libraries, 'config.json');
-    return this.worker.request(run, 'collections', { command: 'discover', input }, input.mode === 'partial' || input.mode === 'universes' ? 600000 : undefined);
+    return this.worker.request(run, 'collections', { command: 'discover', input });
   }
   // The seasonal presets used until collections are first saved; they ship with the engine, so they're asked for once.
   defaultCollections(run: ArtworkRun) {

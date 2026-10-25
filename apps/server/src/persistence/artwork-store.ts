@@ -279,7 +279,7 @@ export class ArtworkStore {
   private audit(actor: string, event: string, detail: unknown, now: number) { this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
 }
 // The collections engine's commands; every artwork engine job starts with an option (or has none).
-const COLLECTION_COMMANDS = new Set(['all', 'custom', 'added']);
+const COLLECTION_COMMANDS = new Set(['all', 'custom', 'added', 'index']);
 const job = (r: Record<string, unknown>): JobRow => {
   const args = JSON.parse(r.args as string) as string[];
   return { id: r.id as number, label: r.label as string, args, script: COLLECTION_COMMANDS.has(args[0] ?? '') ? 'collections' : 'artwork', actor: r.actor as string, status: r.status as JobStatus,

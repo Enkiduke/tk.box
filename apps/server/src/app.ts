@@ -222,7 +222,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     (message, detail) => app.log.info(detail, message), () => exploreStore.view().traktClientId || undefined);
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
   artwork.useWorker(artworkWorker);
-  const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message));
+  // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
+  const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plex.sessions(grant)).length;
+  const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message), streaming);
   registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin);
   artwork.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   app.addHook('onReady', async () => { artworkSchedule.start(); });

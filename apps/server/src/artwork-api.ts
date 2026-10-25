@@ -248,6 +248,13 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
       query:z.string().max(200).optional(),type:z.enum(['movie','tv']).optional(),universe:z.string().max(60).optional(),url:link.optional(),limit:z.number().int().min(1).max(250).optional()}).strict().parse(request.body);
     const {grant}=await admin(request);return engine.discover(runOf(grant),input);
   });
+  // Builds the Discover index now, in the background, instead of waiting for the nightly run.
+  app.post('/api/v1/admin/artwork/collections/index',async request=>{
+    const {grant}=await admin(request);
+    if(engine.pending(['index','build'],'collections'))return {queued:false};
+    engine.enqueue(grant.accountId,'Discover index: build',['index','build'],runOf(grant),{script:'collections'});
+    return {queued:true};
+  });
   app.post('/api/v1/admin/artwork/collections/run',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{
     const input=z.object({kind:z.enum(['custom','all','added']),mode:z.enum(['plan','apply']),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),ratingKey:z.string().regex(/^\d{1,10}$/).optional()}).strict().parse(request.body),{grant}=await admin(request);
     requireThat(input.mode==='plan'||store.settings().upload,'ARTWORK_UPLOAD_OFF','Applying collections changes Plex. Turn on Send results to Plex in Artwork settings first.',409);

@@ -10,6 +10,8 @@ import { WAITING } from './plex-background.js';
 // and every N minutes as well for anything a dropped feed missed. A check reads each library's recently added list back
 // to a watermark, oldest first, and moves the watermark only past what it handled, so nothing is missed and nothing old
 // is made again. Plex is read with the Plex admin token (services/plex-background.ts); without a working one, they wait.
+// The nightly full collections run, which also builds Discover's index, waits while anyone is streaming, up to
+// DEFER_MS after its time; newly added movies join that index every few minutes in one small job.
 // Daily tasks by the name their state is kept under: artwork's, then the collections' (prefixed "collections-").
 export const DAILY = {
   scrub: { label: 'Nightly: update changed titles', script: 'artwork', args: ['--changed-only'], upload: false },
@@ -17,10 +19,12 @@ export const DAILY = {
   'collections-all': { label: 'Nightly: update every collection', script: 'collections', args: ['all', 'apply'], upload: true }
 } as const;
 type Daily = keyof typeof DAILY;
-type StateName = ScheduleName | `collections-${CollectionScheduleName}`;
+type StateName = ScheduleName | `collections-${CollectionScheduleName}` | 'index-added';
 type AddedItem = { id: string; title: string; showTitle?: string; addedAt?: number };
 export type ScheduleState = { lastRun?: number; note?: string };
-const LATE_MS = 2 * 3600000;
+const LATE_MS = 2 * 3600000, DEFER_MS = 4 * 3600000, INDEX_EVERY_MS = 15 * 60000;
+// Daily tasks that wait while anyone is streaming (in tk.box or any Plex app).
+const DEFERRED: readonly Daily[] = ['collections-all'];
 // A check waits this long after Plex's last finished title, so a season or a scan arrives whole, but no longer than
 // SETTLE_MAX_MS after the first. Each check queues at most MAX_QUEUED jobs; the rest wait for the next.
 const SETTLE_MS = 30000, SETTLE_MAX_MS = 3 * 60000, MAX_QUEUED = 50;
@@ -44,7 +48,7 @@ export class ArtworkSchedule {
   private libraries: PlexGrant['libraries'] = [];
   private notifications: PlexNotifications;
   constructor(private store: ArtworkStore, private engine: ArtworkEngine, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
-    private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
+    private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private streaming: (grant: PlexGrant) => Promise<number> = async () => 0) {
     this.notifications = new PlexNotifications(() => this.openNotifications(), sections => this.finished(sections), log);
   }
   start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); this.notifications.start(); }
@@ -88,22 +92,32 @@ export class ArtworkSchedule {
       const dueDaily = (Object.keys(DAILY) as Daily[]).filter(name => {
         if (!daily[name].enabled) return false;
         const due = lastDue(daily[name].time, now);
-        return (this.state(name).lastRun ?? 0) < due && now.getTime() - due < LATE_MS;
+        return (this.state(name).lastRun ?? 0) < due && now.getTime() - due < (DEFERRED.includes(name) ? DEFER_MS + LATE_MS : LATE_MS);
       });
       const every = (name: StateName, value: { enabled: boolean; minutes: number }) => value.enabled && (soon || now.getTime() - (this.state(name).lastRun ?? 0) >= value.minutes * 60000);
       const added = every('added', schedules.added), collectionsAdded = every('collections-added', own.added);
-      if (!dueDaily.length && !added && !collectionsAdded) return;
+      const indexAdded = soon || now.getTime() - (this.state('index-added').lastRun ?? 0) >= INDEX_EVERY_MS;
+      if (!dueDaily.length && !added && !collectionsAdded && !indexAdded) return;
       const grant = await this.adminGrant().catch(() => undefined);
       if (!grant) {
         for (const name of [...dueDaily, ...(added ? ['added' as const] : []), ...(collectionsAdded ? ['collections-added' as const] : [])]) this.note(name, WAITING);
         return;
       }
       const run = { token: grant.serverToken, libraries: grant.libraries };
+      // Within DEFER_MS of its time, a deferred task waits for the streams to end; after that it runs anyway.
+      const waiting = dueDaily.filter(name => DEFERRED.includes(name) && now.getTime() - lastDue(daily[name].time, now) < DEFER_MS);
+      const streams = waiting.length ? await this.streaming(grant).catch(() => 0) : 0;
       for (const name of dueDaily) {
         const task = DAILY[name];
+        if (streams && waiting.includes(name)) {
+          const by = new Date(lastDue(daily[name].time, now) + DEFER_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          this.note(name, `Waiting: ${streams} stream${streams === 1 ? ' is' : 's are'} playing. Runs when they stop, or at ${by}.`);
+          continue;
+        }
         this.store.setState(`schedule:${name}`, { lastRun: now.getTime(), note: task.upload && !settings.upload ? 'Skipped: Send results to Plex is off.' : 'Queued.' });
-        if (task.upload && !settings.upload) continue;
-        if (!this.engine.pending([...task.args], task.script)) this.engine.enqueue('system:schedule', task.label, [...task.args], run, { script: task.script });
+        // The full run builds the Discover index too; without it, the index is still built.
+        const args = task.upload && !settings.upload ? name === 'collections-all' ? ['index', 'build'] : undefined : [...task.args];
+        if (args && !this.engine.pending(args, task.script)) this.engine.enqueue('system:schedule', args[0] === 'index' ? 'Nightly: Discover index' : task.label, args, run, { script: task.script });
       }
       // Collections first, so a title joins its collections before its artwork is made. They check the libraries the
       // custom collections that are on use.
@@ -123,6 +137,12 @@ export class ArtworkSchedule {
         this.engine.enqueue('system:schedule', `Newly added: ${item.showTitle ?? item.title}`, args, run);
         return true;
       });
+      // Newly added movies join the Discover index, all of them in one job, whatever else is on.
+      if (indexAdded) {
+        const ids: string[] = [];
+        await this.added('index-added', grant.libraries.filter(l => l.type === 'movie').map(l => l.key), grant, now, item => { ids.push(item.id); return true; });
+        if (ids.length) this.engine.enqueue('system:schedule', `Discover index: ${ids.length} newly added movie${ids.length === 1 ? '' : 's'}`, ['index', 'added', ...ids], run, { script: 'collections' });
+      }
     } catch (e) { this.log('artwork schedule failed', { error: (e as Error).message }); }
     finally {
       this.ticking = false;
@@ -133,8 +153,8 @@ export class ArtworkSchedule {
   // first; `queue` says whether it queued one (false: already queued). The watermark moves only past what was handled,
   // so titles over the limit, or every library when Plex didn't answer for one, come next time. The first check only
   // sets it.
-  private async added(name: 'added' | 'collections-added', libraries: string[], grant: PlexGrant, now: Date, queue: (item: AddedItem) => boolean) {
-    const mark = name === 'added' ? 'added:watermark' : 'collections-added:watermark', watermark = this.store.state<number>(mark);
+  private async added(name: 'added' | 'collections-added' | 'index-added', libraries: string[], grant: PlexGrant, now: Date, queue: (item: AddedItem) => boolean) {
+    const mark = `${name}:watermark`, watermark = this.store.state<number>(mark);
     const done = (note: string) => this.store.setState(`schedule:${name}`, { lastRun: now.getTime(), note });
     if (watermark === undefined) { this.store.setState(mark, now.getTime()); return done('Watching for titles added from now on.'); }
     const found: (AddedItem & { at: number })[] = [];
