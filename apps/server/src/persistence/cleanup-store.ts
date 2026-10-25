@@ -17,7 +17,7 @@ export const cleanupSettings = z.object({
   dryRun: z.boolean(),
   deleteFromRadarr: z.boolean(), deleteFromSonarr: z.boolean(), deleteFromSeerr: z.boolean(),
   // Rule 1: the requester watched it; days after anyone last watched it. Rule 2: the requester hasn't; days after it
-  // was added. Rules 3 and 4 are for requests by exempt users: days after anyone's watch, or after an exempt user's.
+  // was added, or Rule 1's days after anyone else last watched it, whichever is later. Rules 3 and 4 are for requests by exempt users: days after anyone's watch, or after an exempt user's.
   daysAfterWatched: days, daysAfterUnwatched: days, daysAfterAnyWatchExempt: days, daysAfterExemptWatch: days,
   // Plex account IDs, as Tautulli shows them.
   exemptUserIds: z.array(z.number().int().positive().max(2 ** 53)).max(100),
