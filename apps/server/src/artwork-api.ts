@@ -8,6 +8,7 @@ import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
 import {requireThat} from './errors.js';
 import {remoteJson} from './providers/remote-json.js';
+import {TmdbTitles} from './providers/tmdb-titles.js';
 
 // Admin › Artwork: the engine's settings, layouts, titles, collections, schedules and jobs. Every route is
 // administrator-only. Jobs and the worker run as the administrator who asked, with their Plex token, which the engine
@@ -50,7 +51,7 @@ const libraries=(grant:PlexGrant)=>grant.libraries.filter(l=>['movie','show'].in
 const runOf=(grant:PlexGrant):ArtworkRun=>({token:grant.serverToken,libraries:grant.libraries});
 
 export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,admin:Admin) {
-  const remote=new ExploreImages(fetch,providerHosts,15*1024*1024);
+  const remote=new ExploreImages(fetch,providerHosts,15*1024*1024),titles=new TmdbTitles(()=>store.keys().tmdb);
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=await admin(request);return worker.request<T>(runOf(grant),method,params);};
   const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string},cache='no-store')=>{
     reply.header('Cache-Control',cache);if(image.note)reply.header('X-Artwork-Note',image.note);
@@ -172,6 +173,16 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     requireThat(response.status<400,'CATALOG_UNAVAILABLE',response.status===401?'Radarr refused the API key.':`Radarr answered ${response.status}.`,502);
     const profiles=z.array(z.object({id:z.number().int(),name:z.string()}).passthrough()).catch([]).parse(response.data);
     return {connected:true,profiles:profiles.map(({id,name})=>({id,name}))};
+  });
+  // Picking a collection's titles: a TMDb search, and posters for the members it already has.
+  app.get('/api/v1/admin/artwork/collections/titles/search',{config:{rateLimit:{max:120,timeWindow:60000}}},async request=>{
+    const q=z.object({q:z.string().trim().min(1).max(200),type:z.enum(['movie','tv'])}).strict().parse(request.query);await admin(request);
+    return {results:await titles.search(q.type,q.q)};
+  });
+  app.post('/api/v1/admin/artwork/collections/titles/lookup',async request=>{
+    const member=z.object({rating_key:z.string().max(20).optional(),tmdb_id:z.number().int().positive().optional(),imdb_id:z.string().regex(/^tt\d{1,12}$/).optional(),title:z.string().max(300).optional(),year:z.number().int().optional()}).strict();
+    const input=z.object({type:z.enum(['movie','tv']),members:z.array(member).max(500)}).strict().parse(request.body);await admin(request);
+    return {configured:titles.configured(),items:titles.configured()?await titles.lookup(input.type,input.members):input.members.map(()=>null)};
   });
   app.post('/api/v1/admin/artwork/collections/discover',async request=>{
     const input=z.object({mode:z.enum(['recommendations','browse','universes','preview']),provider:z.enum(['all','tmdb','trakt','mdblist','imdb','letterboxd','flixpatrol']).optional(),
