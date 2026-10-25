@@ -1,6 +1,6 @@
 import {useEffect,useState,type ReactNode} from 'react';
 import {api} from './api.js';
-import {useApi,invalidate} from './hooks.js';
+import {useApi,useDebounced,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,Switch,date as when,remember,remembered,useMutation} from './settings-ui.js';
 import {openConsole,type Job} from './admin-console.js';
@@ -21,6 +21,8 @@ type Schedules={custom:Daily;all:Daily;added:EveryFew};
 export type ScheduleState={lastRun?:number;note?:string};
 type View={revision:number;definitions:Definition[]|null;franchise:Franchise;radarr:Radarr;radarrKeySet:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
 const tabs=[['collections','Collections'],['schedules','Schedules'],['settings','Settings']] as const;
+// New collections start out of every Home screen and recommendation row.
+const hidden={home:false,shared:false,recommended:false};
 const keyOf=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]/g,'').replace(/collection$/,'');
 const memberText=(m:Member)=>m.tmdb_id?`tmdb:${m.tmdb_id}`:m.rating_key?`plex:${m.rating_key}`:m.imdb_id?`imdb:${m.imdb_id}`:m.year?`${m.title} | ${m.year}`:m.title??'';
 const parseMembers=(text:string):Member[]=>text.split('\n').map(s=>s.trim()).filter(Boolean).map(line=>{
@@ -87,12 +89,12 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
         <KeptList kept={data.kept} franchise={data.franchise} actions={<>
           <button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start({kind:'franchise',mode:'plan'})}>Preview the plan</button>
           <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'franchise',mode:'apply'})}>Apply now</button></>} settings={()=>setTab('settings')}/>
-        <Card title="Custom and seasonal collections" description="Picked titles, Plex rules or public lists." actions={<>
+        <Card title="Custom and seasonal collections" description="Picked titles or public lists." actions={<>
           <button onClick={()=>setDiscover(true)}><Icon name="explore" size={16}/>Discover</button>
-          <button onClick={()=>{change({definitions:[...draft.definitions,{name:'New collection',library:libraries[0]?.title??'',type:libraries[0]?.type==='show'?'tv':'movie',enabled:false,sync:'append',members:[]}]});setEditing(draft.definitions.length);}}><Icon name="plus" size={16}/>New</button></>}>
+          <button onClick={()=>{change({definitions:[...draft.definitions,{name:'New collection',library:libraries[0]?.title??'',type:libraries[0]?.type==='show'?'tv':'movie',enabled:false,sync:'append',members:[],visibility:hidden}]});setEditing(draft.definitions.length);}}><Icon name="plus" size={16}/>New</button></>}>
           {data.definitions===null&&<p className="muted small">Seasonal presets, all off. Pick a library, turn some on, then save.</p>}
           {draft.definitions.length?<div className="table-scroll"><table><thead><tr><th>Collection</th><th>Library</th><th>When</th><th>On</th><th/></tr></thead><tbody>{draft.definitions.map((d,i)=><tr key={i}>
-            <td><strong>{d.name}</strong><small>{d.source?'From a list':`${d.members?.length??0} picks`}{d.rules&&Object.keys(d.rules).length?' · rules':''}{d.acquire?' · Radarr':''}</small></td>
+            <td><strong>{d.name}</strong><small>{d.source?'From a list':`${d.members?.length??0} picks`}{d.acquire?' · Radarr':''}</small></td>
             <td>{d.library||<span className="danger">Choose one</span>}<small>{d.type==='tv'?'TV':'Movies'}</small></td><td>{d.schedule||'All year'}</td>
             <td><input type="checkbox" role="switch" className="switch" aria-label={`${d.name} on`} checked={d.enabled!==false} onChange={e=>setDefinition(i,{...d,enabled:e.target.checked})}/></td>
             <td><div className="button-row"><button onClick={()=>setEditing(i)}>Edit</button><button className="icon-button" aria-label={`Remove ${d.name}`} onClick={()=>setDefinition(i,null)}><Icon name="close" size={16}/></button></div></td></tr>)}</tbody></table></div>
@@ -160,36 +162,113 @@ function KeptList({kept,franchise,actions,settings}:{kept:View['kept'];franchise
     <div className="button-row">{actions}</div>
   </Card>;
 }
+// A member's poster and name from TMDb, kept for the page's life so reopening a collection doesn't ask again.
+// undefined while it is being looked up; null when TMDb has no match (or isn't set up).
+type TitleCard={tmdb_id:number;title:string;year?:number;poster?:string};
+const cards=new Map<string,TitleCard|null>(),cardKey=(type:Definition['type'],m:Member)=>`${type}:${memberText(m)}`;
+let tmdbConfigured=true;
+const plain=({rating_key,tmdb_id,imdb_id,title,year}:Member):Member=>({...rating_key?{rating_key}:{},...tmdb_id?{tmdb_id}:{},...imdb_id?{imdb_id}:{},...title?{title}:{},...Number(year)?{year:Number(year)}:{}});
+function useTitleCards(type:Definition['type'],members:Member[]) {
+  const [,redraw]=useState(0),missing=members.filter(m=>!cards.has(cardKey(type,m))).slice(0,500),wanted=missing.map(memberText).join('\n');
+  useEffect(()=>{
+    if(!missing.length)return;
+    const done=(items:(TitleCard|null)[])=>{missing.forEach((m,i)=>cards.set(cardKey(type,m),items[i]??null));redraw(n=>n+1);};
+    api<{configured:boolean;items:(TitleCard|null)[]}>('/admin/artwork/collections/titles/lookup','POST',{type,members:missing.map(plain)})
+      .then(r=>{tmdbConfigured=r.configured;done(r.items);},()=>done([]));
+  },[type,wanted]);
+  return (m:Member)=>cards.get(cardKey(type,m));
+}
+function TitleTile({member,card,type,remove}:{member:Member;card:TitleCard|null|undefined;type:Definition['type'];remove?:()=>void}) {
+  const name=card?.title||member.title||(member.rating_key?`Plex title ${member.rating_key}`:member.imdb_id??`TMDb ${member.tmdb_id}`),year=card?.year??member.year;
+  const src=card?.poster??(member.rating_key?`/api/v1/catalog/items/${member.rating_key}/artwork?kind=poster`:undefined);
+  return <li className="title-tile" title={year?`${name} (${year})`:name}>
+    <span className="title-tile-art">{card===undefined&&!member.rating_key?<span className="title-tile-wait"/>:<Artwork src={src} alt="" fallback={<><Icon name={type==='tv'?'shows':'movies'}/><span>{name}</span></>}/>}
+      {remove&&<button type="button" className="icon-button title-tile-remove" aria-label={`Remove ${name}`} onClick={remove}><Icon name="close" size={14}/></button>}</span>
+    <span className="title-tile-name">{name}</span>{year?<small>{year}</small>:null}
+  </li>;
+}
+function TitleGrid({type,members,remove}:{type:Definition['type'];members:Member[];remove?:(index:number)=>void}) {
+  const card=useTitleCards(type,members);
+  return <ul className="title-grid">{members.map((m,i)=><TitleTile key={`${memberText(m)}\0${i}`} member={m} card={card(m)} type={type} remove={remove&&(()=>remove(i))}/>)}</ul>;
+}
+// TMDb's matches for what's typed, as posters; picking one adds it by its TMDb ID.
+function TitleSearch({type,members,add}:{type:Definition['type'];members:Member[];add:(m:Member)=>void}) {
+  const [query,setQuery]=useState(''),q=useDebounced(query.trim(),350),[found,setFound]=useState<{q:string;results?:TitleCard[];error?:string}>();
+  useEffect(()=>{
+    if(!q){setFound(undefined);return;}
+    const stop=new AbortController();setFound(f=>({q,results:f?.results}));
+    api<{results:TitleCard[]}>(`/admin/artwork/collections/titles/search?${new URLSearchParams({q,type})}`,'GET',undefined,stop.signal)
+      .then(r=>setFound({q,results:r.results}),(e:Error)=>{if(!stop.signal.aborted)setFound({q,error:e.message});});
+    return()=>stop.abort();
+  },[q,type]);
+  const picked=new Set(members.flatMap(m=>m.tmdb_id?[m.tmdb_id]:[])),noun=type==='tv'?'shows':'movies';
+  return <div className="title-search">
+    <label className="title-search-box"><Icon name="search" size={18}/><input type="search" aria-label={`Search for ${noun}`} placeholder={`Search for ${noun} to add`} value={query}
+      onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')e.preventDefault();if(e.key==='Escape'&&query){e.preventDefault();e.stopPropagation();setQuery('');}}}/>
+      {query&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>setQuery('')}><Icon name="close" size={16}/></button>}</label>
+    {query.trim()&&<div className="title-search-results">
+      {found?.error?<p className="danger small">{found.error}</p>:!found?.results?<p className="muted small">Searching…</p>:!found.results.length?<p className="muted small">No {noun} match “{found.q}”.</p>
+        :<ul className="title-grid">{found.results.map(c=>{const added=picked.has(c.tmdb_id);return <li key={c.tmdb_id} className="title-tile">
+          <button type="button" className={`title-tile-art title-pick${added?' added':''}`} disabled={added} aria-label={added?`${c.title} is added`:`Add ${c.title}`} onClick={()=>{cards.set(cardKey(type,{tmdb_id:c.tmdb_id}),c);add({tmdb_id:c.tmdb_id});}}>
+            <Artwork src={c.poster} alt="" fallback={<><Icon name={type==='tv'?'shows':'movies'}/><span>{c.title}</span></>}/>
+            <span className="title-pick-badge"><Icon name={added?'check':'plus'} size={16}/></span></button>
+          <span className="title-tile-name">{c.title}</span>{c.year?<small>{c.year}</small>:null}</li>;})}</ul>}
+    </div>}
+  </div>;
+}
+const places=[['home','Your Home','Pinned to your Home screen.'],['shared','Friends’ Home','On the Home screen of people you share with.'],['recommended','Library recommendations','In the library’s Recommended tab.']] as const;
 function EditDefinition({value,libraries,onClose,save}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void}) {
-  const [d,setD]=useState(value),[members,setMembers]=useState((value.members??[]).map(memberText).join('\n'));
+  const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[paste,setPaste]=useState<string>();
   const set=(patch:Partial<Definition>)=>setD(x=>({...x,...patch}));
-  const rules=d.rules??{},rule=(patch:Partial<NonNullable<Definition['rules']>>)=>{const next={...rules,...patch} as Record<string,unknown>;for(const k of Object.keys(next))if(next[k]===undefined||next[k]===''||(Array.isArray(next[k])&&!(next[k] as unknown[]).length))delete next[k];set({rules:next as Definition['rules']});};
   const refreshed=!!d.source&&d.source.refresh!==false,visibility=d.visibility??{};
+  const add=(more:Member[])=>setMembers(list=>{const have=new Set(list.map(memberText));return [...list,...more.filter(m=>{const k=memberText(m);return !have.has(k)&&!!have.add(k);})];});
   return <Modal title={d.name||'Collection'} onClose={onClose}>
-    <form className="form-stack" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members:refreshed?d.members??[]:parseMembers(members)};if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}save(next);}}>
-      <div className="form-columns">
-        <label>Name<input required maxLength={120} value={d.name} onChange={e=>set({name:e.target.value})}/></label>
+    <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members};if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}save(next);}}>
+      <div className="collection-editor-head">
+        <input className="collection-editor-name" aria-label="Name" placeholder="Collection name" required maxLength={120} value={d.name} onChange={e=>set({name:e.target.value})}/>
+        <Switch label={d.enabled!==false?'On':'Off'} checked={d.enabled!==false} onChange={v=>set({enabled:v})}/>
+      </div>
+      <div className="collection-editor-fields">
         <label>Plex library<select required value={d.library} onChange={e=>{const l=libraries.find(x=>x.title===e.target.value);set({library:e.target.value,...(l?{type:l.type==='show'?'tv':'movie'}:{})});}}><option value="">Choose a library</option>{libraries.map(l=><option key={l.key} value={l.title}>{l.title}</option>)}{d.library&&!libraries.some(l=>l.title===d.library)&&<option value={d.library}>{d.library}</option>}</select></label>
         <label>Membership<select value={d.sync??'append'} onChange={e=>set({sync:e.target.value as 'sync'|'append'})}><option value="append">Only add new members</option><option value="sync">Add and remove to match</option></select></label>
-        <label>Shown from–to<input placeholder="10/01-10/31" pattern="\d{2}/\d{2}-\d{2}/\d{2}" value={d.schedule??''} onChange={e=>set({schedule:e.target.value.trim()})}/><small>MM/DD-MM/DD; empty for all year.</small></label>
+        <label>Shown from–to<input placeholder="All year, or 10/01-10/31" pattern="\d{2}/\d{2}-\d{2}/\d{2}" title="MM/DD-MM/DD" value={d.schedule??''} onChange={e=>set({schedule:e.target.value.trim()})}/></label>
       </div>
-      <Switch label="On" checked={d.enabled!==false} onChange={v=>set({enabled:v})}/>
-      {d.source&&<div className="form-columns"><label>List address<input type="url" value={d.source.url} onChange={e=>set({source:{...d.source!,url:e.target.value}})}/></label>
-        <label>Most titles<input type="number" min="1" max="250" value={d.source.limit??50} onChange={e=>set({source:{...d.source!,limit:Number(e.target.value)}})}/></label>
-        <Switch label="Keep up to date from the list" description="Each collection run uses the list as it is then." checked={d.source.refresh!==false} onChange={v=>set({source:{...d.source!,refresh:v}})}/></div>}
-      <label>{d.source?'Saved titles':'Titles'}<textarea rows={8} disabled={refreshed} placeholder={'tmdb:948\nAlien | 1979'} value={members} onChange={e=>setMembers(e.target.value)}/>
-        <small>{refreshed?'Kept up to date from the list; turn that off to edit these.':'One per line: tmdb:948, imdb:tt0077651, plex:12345, or Halloween | 1978 (titles must match Plex).'}</small></label>
-      <details open={!!Object.keys(rules).length}><summary>Plex rules (titles that match are added too)</summary><div className="form-columns">
-        <label>Genres<input placeholder="Horror, Thriller" value={(rules.genres??[]).join(', ')} onChange={e=>rule({genres:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})}/></label>
-        <label>Year from<input type="number" min="1" max="9999" value={rules.year_from??''} onChange={e=>rule({year_from:e.target.value?Number(e.target.value):undefined})}/></label>
-        <label>Year through<input type="number" min="1" max="9999" value={rules.year_to??''} onChange={e=>rule({year_to:e.target.value?Number(e.target.value):undefined})}/></label>
-        <label>Title contains<input value={rules.title_contains??''} onChange={e=>rule({title_contains:e.target.value||undefined})}/></label></div></details>
-      <details><summary>Where it shows in Plex</summary>
-        {(['home','shared','recommended'] as const).map(k=><Switch key={k} label={{home:'Your Home',shared:'Friends’ Home',recommended:'Library recommendations'}[k]} checked={visibility[k]??true} onChange={v=>set({visibility:{...visibility,[k]:v}})}/>)}</details>
-      {d.type==='movie'&&<details open={!!d.acquire}><summary>Radarr</summary>
-        <Switch label="Download missing movies" description="Needs Radarr and TMDb IDs." checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
-        {d.acquire&&<label>After the season ends<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as 'keep'|'remove-delete'})}><option value="keep">Keep downloaded movies</option><option value="remove-delete">Delete the movies it downloaded</option></select></label>}</details>}
-      <div className="button-row"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
+      {d.source&&<section className="collection-editor-panel">
+        <div className="collection-editor-source">
+          <label className="grow">List address<input type="url" value={d.source.url} onChange={e=>set({source:{...d.source!,url:e.target.value}})}/></label>
+          <label>Most titles<input type="number" min="1" max="250" value={d.source.limit??50} onChange={e=>set({source:{...d.source!,limit:Number(e.target.value)}})}/></label>
+        </div>
+        <Switch label="Keep up to date from the list" description="Each collection run uses the list as it is then. Turn this off to pick titles yourself." checked={d.source.refresh!==false} onChange={v=>set({source:{...d.source!,refresh:v}})}/>
+      </section>}
+      <section className="collection-editor-titles">
+        <div className="collection-editor-section-head">
+          <h3>Titles <span className="count">{members.length}</span></h3>
+          {!refreshed&&<div className="button-row">
+            <button type="button" onClick={()=>setPaste(p=>p===undefined?'':undefined)}>{paste===undefined?'Add by ID':'Close'}</button>
+            {members.length>0&&<button type="button" onClick={()=>setMembers([])}>Remove all</button>}</div>}
+        </div>
+        {refreshed?<p className="muted small">These come from the list and are refreshed on every run.</p>:<>
+          {!tmdbConfigured&&<p className="muted small">Add a TMDb key in Artwork › Settings to search for titles and see their posters.</p>}
+          <TitleSearch type={d.type} members={members} add={m=>add([m])}/>
+          {paste!==undefined&&<div className="collection-editor-paste">
+            <textarea rows={4} autoFocus placeholder={'One per line: tmdb:948, imdb:tt0077651, plex:12345, or Halloween | 1978'} value={paste} onChange={e=>setPaste(e.target.value)}/>
+            <button type="button" disabled={!paste.trim()} onClick={()=>{add(parseMembers(paste));setPaste(undefined);}}>Add</button></div>}
+        </>}
+        {members.length?<div className="collection-editor-grid"><TitleGrid type={d.type} members={members} remove={refreshed?undefined:i=>setMembers(list=>list.filter((_,j)=>j!==i))}/></div>
+          :<p className="collection-editor-empty muted small">{refreshed?'The list hasn’t been read yet.':'No titles yet. Search above to add some.'}</p>}
+      </section>
+      <div className="collection-editor-options">
+        <section className="collection-editor-panel">
+          <h3>Where it shows in Plex</h3>
+          {places.map(([k,label,hint])=><Switch key={k} label={label} description={hint} checked={visibility[k]??false} onChange={v=>set({visibility:{home:visibility.home??false,shared:visibility.shared??false,recommended:visibility.recommended??false,[k]:v}})}/>)}
+        </section>
+        {d.type==='movie'&&<section className="collection-editor-panel">
+          <h3>Radarr</h3>
+          <Switch label="Download missing movies" description="Needs Radarr and TMDb IDs." checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
+          {d.acquire&&<label>After the season ends<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as 'keep'|'remove-delete'})}><option value="keep">Keep downloaded movies</option><option value="remove-delete">Delete the movies it downloaded</option></select></label>}
+        </section>}
+      </div>
+      <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
     </form>
   </Modal>;
 }
@@ -216,10 +295,10 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
       {preview?<div className="form-stack">
         <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
         <h3>{preview.name} <small className="muted">{preview.items.length} {preview.type==='tv'?'shows':'movies'}</small></h3>
-        <ol className="artwork-discover-list">{preview.items.map((item,i)=><li key={i}>{item.title}{item.year?<small className="muted"> {item.year}</small>:null}</li>)}</ol>
+        <div className="collection-editor-grid"><TitleGrid type={preview.type} members={preview.items.map(i=>i.member)}/></div>
         <form className="form-stack" onSubmit={e=>{e.preventDefault();
           if(existing.some(x=>x.library===library&&(keyOf(x.name)===keyOf(name)||x.source?.url===preview.url))){setProblem('This name or list is already in that library. Edit that collection instead.');return;}
-          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',members:preview.items.map(i=>i.member),source:{url:preview.url,limit:preview.limit,refresh}});}}>
+          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:preview.items.map(i=>i.member),source:{url:preview.url,limit:preview.limit,refresh}});}}>
           <div className="form-columns"><label>Name<input required value={name} onChange={e=>setName(e.target.value)}/></label>
             <label>Plex library<select required value={library} onChange={e=>setLibrary(e.target.value)}><option value="">Choose a library</option>{libraries.filter(l=>(l.type==='show'?'tv':'movie')===preview.type).map(l=><option key={l.key} value={l.title}>{l.title}</option>)}</select></label></div>
           <Switch label="Keep this list up to date" description="Each collection run uses the list as it is then." checked={refresh} onChange={setRefresh}/>

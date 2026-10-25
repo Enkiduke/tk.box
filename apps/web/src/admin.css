@@ -128,7 +128,52 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .artwork-discover-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto}
 .artwork-discover-rows li{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .artwork-discover-rows small{display:block}
-.artwork-discover-list{max-height:30vh;overflow:auto;margin:0;padding-left:22px;columns:2;font-size:13px}
+/* A custom collection: its settings up top, its titles as posters, then where it shows and Radarr side by side. */
+dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
+.collection-editor{display:flex;flex-direction:column;gap:22px}
+.collection-editor h3{display:flex;align-items:center;gap:8px;margin:0;font-size:15px;font-weight:650}
+.collection-editor .count{padding:1px 8px;border-radius:10px;background:var(--surface-3);color:var(--muted);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.collection-editor-head{display:flex;align-items:center;gap:24px;margin-right:44px}
+.collection-editor-name{flex:1;min-width:0;padding:8px 12px;font-size:22px;font-weight:650;color:var(--text);background:transparent;border-color:transparent}
+.collection-editor-name:hover{border-color:var(--line)}
+.collection-editor-name:focus{border-color:var(--line-strong);background:var(--surface-2)}
+.collection-editor-head .switch-row{flex:none;align-items:center;gap:12px}
+.collection-editor-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.collection-editor-panel{display:flex;flex-direction:column;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.collection-editor-source{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:16px}
+.collection-editor-titles{display:flex;flex-direction:column;gap:14px}
+.collection-editor-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.collection-editor-section-head button{padding:6px 12px;font-size:13px}
+.collection-editor-paste{display:flex;align-items:flex-start;gap:10px}
+.collection-editor-paste textarea{flex:1}
+.collection-editor-grid{max-height:min(460px,48vh);overflow:auto;padding:4px 6px 4px 2px;scrollbar-width:thin}
+.collection-editor-empty{margin:0;padding:28px;border:1px dashed var(--line-strong);border-radius:10px;text-align:center}
+.collection-editor-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
+.collection-editor-panel .switch-row{align-items:center}
+.collection-editor-foot{padding-top:18px;border-top:1px solid var(--line)}
+.title-search{display:flex;flex-direction:column;gap:12px}
+.title-search-box{flex-direction:row;align-items:center;gap:10px;padding:0 6px 0 14px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface-2);color:var(--muted)}
+.title-search-box:focus-within{border-color:var(--accent)}
+.title-search-box input{flex:1;min-width:0;padding:12px 0;border:0;background:transparent;font-size:15px;outline:none;box-shadow:none}
+.title-search-results{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);max-height:min(420px,45vh);overflow:auto;scrollbar-width:thin}
+.title-search-results p{margin:0}
+.title-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:16px 14px;margin:0;padding:0;list-style:none}
+.title-tile{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:12.5px}
+.title-tile small{color:var(--dim);font-size:11.5px}
+.title-tile-art{position:relative;display:block;aspect-ratio:2/3;margin-bottom:6px;border-radius:var(--radius);overflow:hidden;background:var(--surface-2);box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.title-tile-art img{width:100%;height:100%;object-fit:cover}
+.title-tile-name{overflow:hidden;color:var(--text);font-weight:550;white-space:nowrap;text-overflow:ellipsis}
+.title-tile-wait{position:absolute;inset:0;background:linear-gradient(100deg,var(--surface-2) 30%,var(--surface-3) 50%,var(--surface-2) 70%);background-size:300% 100%;animation:title-wait 1.4s ease-in-out infinite}
+@keyframes title-wait{from{background-position:100% 0}to{background-position:0 0}}
+.title-tile-remove{position:absolute;top:6px;right:6px;z-index:2;width:28px;height:28px;padding:0;background:rgba(12,12,16,.82);opacity:0;transition:opacity .15s}
+.title-tile:hover .title-tile-remove,.title-tile-remove:focus-visible{opacity:1}
+.title-tile-remove:hover{background:#b9483d;color:#fff}
+.title-pick{width:100%;padding:0;border:2px solid transparent;cursor:pointer}
+.title-pick:hover{border-color:var(--accent)}
+.title-pick:disabled{cursor:default;opacity:1}
+.title-pick.added img{opacity:.45}
+.title-pick-badge{position:absolute;right:6px;bottom:6px;z-index:2;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:rgba(12,12,16,.82);color:var(--text);transition:background .15s,color .15s}
+.title-pick:hover .title-pick-badge,.title-pick.added .title-pick-badge{background:var(--accent);color:var(--accent-ink)}
 /* Clean Up: keep the condition, timer and its starting point together. */
 .cleanup-settings .settings-card{margin-bottom:0}
 .cleanup-note{margin:0;padding:10px 12px;border-radius:6px;background:var(--surface-2);color:var(--muted);font-size:12px;line-height:1.55}
