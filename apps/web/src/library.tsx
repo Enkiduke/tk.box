@@ -5,6 +5,7 @@ import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkele
 import {useOverrides,useWithOverride} from './media-actions.js';
 import {LiveEventsNow,LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
+import {plural} from './settings-ui.js';
 import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 
 type BrowseProps={libraries:Library[];onOpen:(id:string)=>void};
@@ -276,6 +277,12 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
         <div className="detail-main">
           {media.tagline&&<p className="tagline">{media.tagline}</p>}
           <p className="synopsis">{media.summary||'No synopsis available.'}</p>
+          {/* Each collection the title is in opens that collection under Movies or TV Shows, closing this dialog. */}
+          {media.collections?.map(c=><a key={c.id} className="detail-collection" href={link(c.kind==='show'?'shows':'movies',{view:'collections',collection:c.id,library:media.libraryId})}>
+            <span className="detail-collection-art">{c.posterUrl?<FadeImage src={c.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<Icon name="collection" size={18}/></span>
+            <span className="detail-collection-text"><span className="detail-collection-label">Part of</span><strong>{c.title}</strong>{c.count!==undefined&&<span className="detail-collection-count">{plural(c.count,c.kind==='show'?'show':'movie')}</span>}</span>
+            <Icon name="next" size={18}/>
+          </a>)}
         </div>
         {people&&people.length>0&&<dl className="detail-people">{people.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
       </div>

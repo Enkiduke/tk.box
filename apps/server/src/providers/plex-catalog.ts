@@ -16,7 +16,8 @@ export const catalogNode=z.object({
   ratingImage:z.string().max(200).optional().catch(undefined),audienceRating:z.number().optional().catch(undefined),audienceRatingImage:z.string().max(200).optional().catch(undefined),
   tagline:z.string().max(500).optional().catch(undefined),originallyAvailableAt:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().catch(undefined),studio:z.string().max(200).optional().catch(undefined),
   Director:z.array(z.object({tag:z.string().max(200)})).max(50).optional().catch(undefined),Role:z.array(z.object({tag:z.string().max(200)})).max(500).optional().catch(undefined),
-  Guid:z.array(z.object({id:z.string().max(200)})).max(20).optional().catch(undefined)
+  Guid:z.array(z.object({id:z.string().max(200)})).max(20).optional().catch(undefined),
+  Collection:z.array(z.object({tag:z.string().max(500)})).max(50).optional().catch(undefined)
 });
 // A movie's or show's TMDB id from its agent guids (tmdb://603). An episode's or season's would be its own, not the show's.
 const tmdbId=(node:CatalogNode)=>{if(node.type!=='movie'&&node.type!=='show')return undefined;const id=node.Guid?.map(g=>/^tmdb:\/\/(\d{1,10})$/.exec(g.id)?.[1]).find(Boolean);return id?Number(id):undefined;};
