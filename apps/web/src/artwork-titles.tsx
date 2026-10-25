@@ -9,7 +9,7 @@ import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Artwork › Titles: every title's asset folder, as the engine keeps it. Pick a poster or logo (a saved file, one
 // the providers offer, a crop of a backdrop, or your own), compare the preview with what was last made, then push.
-// Every image comes through tk.box's admin routes, and the engine's worker does the work.
+// Every image comes through tk.box's admin routes; the engine's worker draws previews and thumbnails.
 type Title={id:string;cat:'movies'|'tv'|'collections';title:string;year?:number;thumb:string|null};
 type Pending={title:string};
 type TitlesView={titles:Title[];upload:boolean;pending:Record<string,Pending>};
@@ -17,10 +17,10 @@ type File={name:string;thumb:string;full:string;kb:number;kept:boolean;size?:str
 type Section={id:string;label:string|null;pv:string;rendered:File|null;poster:File|null;logo:File|null;posters:File[];logos:File[]};
 // generated: a streaming, chart, custom or curated collection's drawn background, kept as one file however often it's recoloured.
 type Generated={color:string;default:string;name:string;hash:string;thumb:string;full:string};
-type Detail={id:string;title:string;year?:number;key?:string;tv:boolean;no_logo:boolean;generated?:Generated|null;sections:Section[]};
+type Detail={id:string;title:string;year?:number;key?:string;tv:boolean;no_logo:boolean;sections:Section[]};
 type Live={known:false}|{known:true;poster?:string|null;logo?:string|null};
 type RemoteItem={provider:string;url:string|null;plex:string|null;view:string;thumb:string;language?:string|null;text?:boolean|null;width:number;height:number};
-type Remote={items:RemoteItem[];notes:string[];target:[number,number]|null};
+type Remote={items:RemoteItem[];notes:string[]};
 type Kind='poster'|'logo';
 const ROOT='/api/v1/admin/artwork';
 const named=(title:string,year?:number)=>title+(year&&!title.includes(`(${year})`)?` (${year})`:'');
@@ -87,9 +87,11 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const seriesLive=useApi<Live>(d&&scope>0?`/admin/artwork/title/live?id=${encodeURIComponent(d.sections[0]!.id)}`:undefined);
   const remoteKind=(kind:'poster'|'logo'|'backdrop')=>section&&(kind!=='logo'||scope===0)?`/admin/artwork/title/remote?id=${encodeURIComponent(kind==='logo'?d!.sections[0]!.id:section.id)}&kind=${kind}`:undefined;
   const remote=useApi<Remote>(remoteKind(tab)),backdrops=useApi<Remote>(tab==='poster'?remoteKind('backdrop'):undefined);
+  // Drawn by the engine, which may ask Plex first, so the rest of the title doesn't wait for it.
+  const background=useApi<{generated:Generated|null}>(d?.id.startsWith('collections/')?`/admin/artwork/title/background?id=${encodeURIComponent(d.id)}`:undefined);
   // Leaving a title lets the worker forget its previews.
   useEffect(()=>()=>{void api('/admin/artwork/title/clear','POST',{}).catch(()=>{});},[]);
-  const reload=()=>{detail.reload();state.reload();live.reload();seriesLive.reload();};
+  const reload=()=>{detail.reload();state.reload();live.reload();seriesLive.reload();background.reload();};
   const act=async(label:string,work:()=>Promise<{warning?:string|null}|unknown>,done:string)=>{
     if(busy)return;setBusy(label);setError('');setMessage('');
     try{const r=await work() as {warning?:string|null}|undefined;setMessage(r?.warning??done);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);reload();}
@@ -106,7 +108,7 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const staged=(kind:Kind,which:Section,info?:Live)=>!info||!info.known?changed:kind in info&&(which[kind]?.hash??null)!==info[kind];
   const next=staged('poster',section,live.data)||staged('logo',d.sections[0]!,scope>0?seriesLive.data:live.data);
   const liveHash=live.data?.known?live.data[tab]:undefined;
-  const g=tab==='poster'&&scope===0?d.generated:undefined;
+  const g=tab==='poster'&&scope===0?background.data?.generated??undefined:undefined;
   // The generated background has its own tile, so its copy in use as the poster isn't listed again.
   const files:File[]=[...(section[tab]?[section[tab]!]:[]),...section[`${tab}s` as 'posters'|'logos']].filter(f=>!g||f.hash!==g.hash);
   const rows=(remote.data?.items??[]).filter(x=>tab!=='poster'||text==='all'||(x.text!==null&&x.text===(text==='text')));
@@ -125,7 +127,12 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   };
   const choose=(c:Candidate)=>{
     const u=target();
-    if(c.type==='backdrop'){const t=backdrops.data?.target;if(t)setCrop({x:c.x,target:t});return;}
+    // Cropped to the poster size of this title's layout
+    if(c.type==='backdrop'){
+      if(busy)return;setBusy(keyOf(c));setError('');
+      void api<{target:[number,number]}>(`/admin/artwork/title/target?id=${encodeURIComponent(section!.id)}`).then(({target})=>setCrop({x:c.x,target}),(e:Error)=>setError(e.message)).finally(()=>setBusy(undefined));
+      return;
+    }
     if(c.type==='file'){if(c.cur){setZoom({src:c.f.full,label:c.f.name});return;}void act(`f:${c.f.name}`,()=>api('/admin/artwork/title/select','POST',{id:u.id,kind:u.kind,name:c.f.name}),`${tab==='logo'?'Logo':'Poster'} updated.`);return;}
     void act(`r:${sourceOf(c.x)}`,()=>api('/admin/artwork/title/import','POST',{id:u.id,kind:u.kind,...(c.x.plex?{plex:c.x.plex}:{url:c.x.url}),use:true}),`${tab==='logo'?'Logo':'Poster'} updated.`);
   };

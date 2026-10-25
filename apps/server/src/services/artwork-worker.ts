@@ -6,11 +6,11 @@ import { childEnv, type ArtworkEngine, type ArtworkRun } from './artwork-engine.
 
 // The artwork engine's interactive side (`overlayrr.py --worker`): one long-lived Python process that answers the Admin ›
 // Artwork pages (titles, picks, previews, layout previews) as JSON lines. It starts when an administrator opens those
-// pages, restarts when the credentials it was given change, and stops after a while unused. Like jobs, it is its own
-// process, so rendering previews never runs on the server's event loop.
+// pages (their settings start it ahead of the first click), restarts when the credentials it was given change, and stops
+// after a while unused. Like jobs, it is its own process, so rendering previews never runs on the server's event loop.
 type Reply = { id?: number; result?: unknown; error?: string; ready?: boolean };
 export type WorkerImage = { image: string; type: string; note?: string };
-const IDLE_MS = 10 * 60000;
+const IDLE_MS = 30 * 60000;
 
 export class ArtworkWorker {
   private child?: ChildProcessWithoutNullStreams;
@@ -33,6 +33,8 @@ export class ArtworkWorker {
     const { image, type, note } = await this.request<WorkerImage>(run, method, params);
     return { bytes: Buffer.from(image, 'base64'), type, ...(note ? { note } : {}) };
   }
+  // Start it now, so the page's first request doesn't wait for Python to load.
+  warm(run: ArtworkRun) { void this.ready(run).then(() => this.touch(), () => {}); }
   // Settings, layouts or collections changed: write the config again; the worker reads it again when it sees it changed.
   refresh(run: ArtworkRun) { this.engine.refreshConfig(run.libraries); }
   close() { clearTimeout(this.idle); this.stop(); }
