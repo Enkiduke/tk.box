@@ -1375,6 +1375,25 @@ class ArtworkTests(unittest.TestCase):
         self.assertNotIn("WARN", output.getvalue())
 
 
+    def test_universes_are_sorted_by_how_much_of_them_is_in_plex(self):
+        items = [{"title": "Alien", "year": "1979", "tmdb_id": 10}, {"title": "Iron Man", "year": "2008", "imdb_id": "tt0371746"},
+                 {"title": "Thor", "year": "2011"}]
+        self.assertEqual(pc.owned_members([{"tmdb_id": 10}, {"imdb_id": "tt0371746"}, {"title": "thor", "year": 2011},
+                                           {"title": "Thor", "year": 2022}, {"tmdb_id": 99}], items), 3)
+        lists = {"https://www.imdb.com/list/ls539646485/": [{"imdb_id": "tt0371746"}, {"title": "Thor", "year": 2011}, {"tmdb_id": 1}],
+                 "https://www.imdb.com/list/ls543971628/": [{"tmdb_id": 10}, {"tmdb_id": 2}]}
+        def fetch(url, kind, limit):
+            if url not in lists:
+                raise ValueError("unreadable")
+            return {"items": [{"member": m} for m in lists[url]]}
+        sources = pc.CollectionSources(self.artwork)
+        with patch.object(self.artwork.plex, "scan", return_value=items), patch.object(sources, "fetch", side_effect=fetch):
+            rows = sources.universes()
+        self.assertEqual([(r["key"], r.get("owned"), r.get("total")) for r in rows[:2]], [("mcu", 2, 3), ("avp", 1, 2)])
+        self.assertTrue(rows[1]["description"].startswith("You have 1 of 2. "))
+        self.assertTrue(all("owned" not in r for r in rows[2:]))  # Unreadable lists come last, without a count
+        self.assertEqual(rows[0]["url"], "https://www.imdb.com/list/ls539646485/")
+
     def test_partly_owned_lists_collections_missing_released_movies(self):
         plex = "http://plex.invalid:32400"
         def video(key, title, tmdb):

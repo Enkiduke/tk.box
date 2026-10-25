@@ -342,11 +342,13 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
   const [rows,setRows]=useState<Row[]>(),[preview,setPreview]=useState<Preview>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
   const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState(''),[dropped,setDropped]=useState<Member[]>([]);
   const [failed,setFailed]=useState(0),[owned,setOwned]=useState<Row>(),[acquire,setAcquire]=useState(false);
-  // Partly owned looks up every movie on TMDb, which can take minutes before a franchise run has cached them.
-  const slow=mode==='partial';
+  // Partly owned looks up every movie on TMDb and Universes reads every universe's list: minutes, until they are cached.
+  const slow=mode==='partial'||mode==='universes';
   const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await api<{results:Row[];failed?:number}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type},undefined,slow?600000:undefined);setRows(r.results);setFailed(r.failed??0);});
   const open=(body:object,row?:Row)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(row?.library?row.name:r.name);setLibrary(row?.library??libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setOwned(row?.library?row:undefined);setAcquire(false);setProblem('');});
+  // A partly owned collection is added for its library; a universe in any library of its type is added, and isn't offered.
   const added=(r:Row)=>!!r.library&&existing.some(x=>x.library===r.library&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name)));
+  const shown=rows?.filter(r=>!r.key||!existing.some(x=>x.type===r.type&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name))));
   useEffect(()=>{if(mode==='universes'||mode==='recommendations'||mode==='partial')find();},[mode,type]);
   // Titles taken out of the preview stay out of the collection, and out of the list when it's kept up to date.
   const out=new Set(dropped.map(memberText)),kept=preview?.items.map(i=>i.member).filter(m=>!out.has(memberText(m)))??[];
@@ -359,7 +361,7 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
           {mode==='partial'?null:mode==='universes'?<select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select>
             :<select aria-label="Source" value={provider} onChange={e=>setProvider(e.target.value)}>{providers.filter(([p])=>mode!=='browse'||p!=='all').map(([p,label])=><option key={p} value={p}>{label}</option>)}</select>}
           <input className="grow" type="search" placeholder="Search" value={query} onChange={e=>setQuery(e.target.value)}/><button disabled={mutation.busy||(mode==='browse'&&provider==='all')}>Search</button></form>)}
-      {mutation.busy&&<Loading/>}{mutation.busy&&slow&&!rows&&<p className="muted small">Looking up every movie on TMDb. The first time, before a franchise run has cached them, this can take a few minutes.</p>}
+      {mutation.busy&&<Loading/>}{mutation.busy&&slow&&!rows&&<p className="muted small">{mode==='partial'?'Looking up every movie on TMDb.':'Reading every universe’s list and matching it with your libraries.'} The first time, before they are cached, this can take a few minutes.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       {preview?<div className="form-stack">
         <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
@@ -377,8 +379,9 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
           {problem&&<p className="danger small">{problem}</p>}
           <div className="button-row"><button className="primary">Add collection</button><span className="muted small">It starts off; review it, turn it on and save.</span></div>
         </form></div>
-      :rows&&(rows.length?<ul className="artwork-discover-rows">{rows.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
+      :shown&&(shown.length?<ul className="artwork-discover-rows">{shown.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
           {added(r)?<span className="muted small">In your collections</span>:r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:r.library?250:50}),type:r.type},r)}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
+        :mode==='universes'&&!query&&rows?.length?<Empty title="Every universe is added">Edit them in your collections.</Empty>
         :mode==='partial'?<Empty title="Nothing partly owned">{query?'Try another search.':'Every TMDb collection in your movie libraries is complete.'}</Empty>
         :<Empty title="No collections found">Try another search, or import a list by its address.</Empty>)}
       {rows&&mode==='partial'&&failed>0&&<p className="muted small">{failed} TMDb {failed===1?'lookup':'lookups'} failed, so some collections may be missing. Try again later.</p>}
