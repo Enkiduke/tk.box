@@ -68,8 +68,11 @@ function JobOutput({job:listed,changed}:{job:Job;changed:()=>void}) {
     };
     void poll();return()=>{live=false;window.clearTimeout(timer);};
   },[id]);
-  // Stays at the bottom while new lines arrive, unless the reader scrolled up.
-  useEffect(()=>{const el=output.current;if(el&&el.scrollHeight-el.scrollTop-el.clientHeight<80)el.scrollTop=el.scrollHeight;},[lines.length]);
+  // Stays at the bottom while new lines arrive, unless the reader scrolled up. Whether to follow is decided as the reader
+  // scrolls, not after new lines have already grown the output.
+  const follow=useRef(true);
+  const scrolled=()=>{const el=output.current;if(el)follow.current=el.scrollHeight-el.scrollTop-el.clientHeight<40;};
+  useEffect(()=>{const el=output.current;if(el&&follow.current)el.scrollTop=el.scrollHeight;},[lines,job]);
   if(!job)return error?<div className="admin-console-body"><ErrorNotice message={error}/></div>:<div className="admin-console-body"><Loading/></div>;
   const running=active(job),[label,tone]=statusLabels[job.status];
   return <>
@@ -79,6 +82,6 @@ function JobOutput({job:listed,changed}:{job:Job;changed:()=>void}) {
       {running&&<button className="small" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`${base}/${id}/cancel`,'POST',{}))}>Cancel run</button>}
       {error&&<span className="danger small">{error}</span>}{mutation.error&&<span className="danger small">{mutation.error}</span>}
     </div>
-    <pre ref={output} className="admin-console-output" aria-live="off">{lines.length?lines.join('\n'):running?'Starting…':'No output.'}</pre>
+    <pre ref={output} className="admin-console-output" aria-live="off" onScroll={scrolled}>{lines.length?lines.join('\n'):running?'Starting…':'No output.'}</pre>
   </>;
 }
