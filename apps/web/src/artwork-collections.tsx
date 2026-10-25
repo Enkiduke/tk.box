@@ -47,9 +47,9 @@ const season=(schedule:string)=>schedule.split('-').map(part=>{const [m,d]=part.
 
 export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<Draft>();
-  const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[date,setDate]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
+  const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
-  const mutation=useMutation(view.reload),run=useMutation(()=>invalidate('/admin/artwork/jobs')),[one,setOne]=useState(false),[title,setTitle]=useState('');
+  const mutation=useMutation(view.reload);
   const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:JSON.parse(JSON.stringify(d.definitions??d.defaults)) as Definition[],automatic:d.automatic??[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
   useEffect(reset,[view.data?.revision,!!view.data]);
   if(!engineReady)return <Empty title="The artwork engine isn’t set up">Set it up (above) to manage collections.</Empty>;
@@ -67,11 +67,13 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     if(!next.exclude?.length)delete next.exclude;
     change({automatic:next.enabled===false||next.visibility||next.exclude?[...rest,next]:rest});
   };
-  const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});setSaved('Saved. Preview the plan to see what would change in Plex.');});
-  // Every run opens in the Console.
-  const start=(body:object)=>void run.run(async()=>{openConsole(await api<Job>('/admin/artwork/collections/run','POST',body));setOne(false);});
+  // Saving also applies every collection to Plex (when results go to Plex); the run opens in the Console.
+  const save=()=>void mutation.run(async()=>{
+    await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});
+    if(!data.upload){setSaved('Saved. Turn on Send results to Plex in Artwork › Settings to apply it.');return;}
+    openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'apply'}));invalidate('/admin/artwork/jobs');setSaved('Saved and applying to Plex.');
+  });
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
-  const blocked=dirty?'Save your changes first':undefined,needsUpload=!data.upload?'Turn on Send results to Plex in Artwork › Settings first':undefined;
   const tiles=collectionTiles(draft,data.kept.collections),open=tiles.find(t=>t.id===opened);
   const types=draft.franchise.franchises||draft.franchise.streaming!=='off';
   return <div className="form-stack">
@@ -114,21 +116,9 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
         <CollectionGrid tiles={tiles} open={t=>t.index===undefined?setOpened(t.id):setEditing(t.index)}
           toggle={(t,on)=>t.index===undefined?setAutomatic(t,{enabled:on}):setDefinition(t.index,{...draft.definitions[t.index]!,enabled:on})}/>
         {presets.length>0&&data.definitions!==null&&<div className="button-row"><button onClick={()=>change({definitions:[...draft.definitions,...JSON.parse(JSON.stringify(presets)) as Definition[]]})}>Add the {presets.length} seasonal presets you don’t have</button></div>}
-        <div className="button-row"><button disabled={run.busy||!!blocked} title={blocked} onClick={()=>start(date?{kind:'custom',mode:'plan',date}:{kind:'all',mode:'plan'})}>Preview the plan</button>
-          <label className="artwork-inline" title="Previews custom and seasonal collections as of that day.">as of<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
-          <button disabled={run.busy||!!blocked||!data.upload} title={blocked??needsUpload} onClick={()=>start({kind:'all',mode:'apply'})}>Apply now</button>
-          <button disabled={!!blocked} title={blocked??'Adds one title to the custom collections it matches.'} onClick={()=>setOne(true)}>One title…</button></div>
       </Card>}
     </div>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}{run.error&&<ErrorNotice message={run.error} dismiss={()=>run.setError('')}/>}
-    {one&&<Modal title="Add one title to custom collections" onClose={()=>setOne(false)}>
-      <h2>One title</h2>
-      <p className="muted small">Adds it to the custom collections it matches.{data.upload?'':' Sending to Plex is off, so this only previews.'}</p>
-      <form className="form-stack" onSubmit={e=>{e.preventDefault();start({kind:'added',mode:data.upload?'apply':'plan',ratingKey:title});}}>
-        <label>Plex ID<input inputMode="numeric" pattern="\d{1,10}" required autoFocus placeholder="e.g. 12345" value={title} onChange={e=>setTitle(e.target.value.trim())}/><small>From the title’s Plex web address.</small></label>
-        <div className="button-row"><button className="primary" disabled={run.busy}>{data.upload?'Apply':'Preview'}</button><button type="button" onClick={()=>setOne(false)}>Cancel</button></div>
-      </form>
-    </Modal>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
     {(dirty||saved)&&<div className="button-row sticky-actions">{dirty&&<><button className="primary" disabled={mutation.busy} onClick={save}>Save collections</button><button onClick={reset}>Discard changes</button></>}{saved&&!dirty&&<span className="success" role="status">{saved}</span>}</div>}
     {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)}
       save={value=>{setDefinition(editing,value);setEditing(undefined);}} remove={()=>{setDefinition(editing,null);setEditing(undefined);}}/>}
