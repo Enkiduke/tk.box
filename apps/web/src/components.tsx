@@ -37,7 +37,7 @@ const paths:Record<string,ReactNode>={
   trash:<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>,
   key:<><circle cx="8" cy="15" r="4.5"/><path d="m11.2 11.8 8.8-8.8m-3.5 3.5 2.5 2.5m-5-0.5 2 2"/></>,
 };
-paths.settings=paths.gear;
+paths.settings=<><path d="M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"/><circle cx="15" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/></>;
 export function Icon({name,size=20}:{name:string;size?:number}) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]??paths.movies}</svg>;
 }
