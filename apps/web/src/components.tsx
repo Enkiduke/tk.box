@@ -207,8 +207,8 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
     const check=()=>{const style=getComputedStyle(el),pad=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight),gap=parseFloat(style.columnGap)||0;setLoops((endless.copies()?endless.setWidth():el.scrollWidth-pad+gap)>el.clientWidth);};
     check();const resize=new ResizeObserver(check);resize.observe(el);return()=>resize.disconnect();
   });
-  const glide=useGlide(ref);
-  const scroll=(direction:number)=>{const el=ref.current;if(el)glide(direction*el.clientWidth*.85,!looping);};
+  const glide=useGlide(ref,track);
+  const scroll=(direction:number)=>{const el=ref.current;if(el)glide(direction*el.clientWidth*.85,looping);};
   return <section className={`row ${className}`}>
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
     <div className="row-viewport" {...endless.handlers}>
@@ -222,30 +222,33 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
     </div>
   </section>;
 }
-// Animates a row's arrow scroll in script. The browser's own smooth scroll turns instant whenever Windows animation
-// effects are off, so like the drift it does not follow the reduced-motion preference.
-// Snap is held off while it moves (mandatory snap would catch every step) and the move ends on a card's start, so
-// turning snap back on does not nudge it. An endless row's own wrap may jump it a set width mid-move; that is followed.
-function useGlide(ref:{current:HTMLDivElement|null}) {
-  const frame=useRef(0);
-  useEffect(()=>()=>cancelAnimationFrame(frame.current),[]);
-  return (distance:number,snap:boolean)=>{
-    const el=ref.current;if(!el)return;cancelAnimationFrame(frame.current);
-    let from=el.scrollLeft,to=from+distance;
-    if(snap){
+// Animates a row's arrow scroll. The browser's own smooth scroll turns instant whenever Windows animation effects are
+// off, so like the drift it does not follow the reduced-motion preference. Like the drift, it is a transform animation the
+// browser runs on the compositor (on the endless track, or on each card of a plain row), and the distance moves into the
+// scroll position in one step when it ends. A plain row's move ends on a card's start, so its snap has nothing to correct.
+function useGlide(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElement|null}) {
+  const run=useRef<{animations:Animation[];distance:number}|null>(null);
+  // Moves what the glide has covered so far into the scroll position, in the same frame its transform comes off.
+  const commit=()=>{
+    const current=run.current,el=ref.current;run.current=null;if(!current)return;
+    const moved=(current.animations[0]?.effect?.getComputedTiming().progress??1)*current.distance;
+    current.animations.forEach(a=>a.cancel());if(el)el.scrollLeft+=moved;
+  };
+  useEffect(()=>()=>run.current?.animations.forEach(a=>a.cancel()),[]);
+  return (distance:number,endless:boolean)=>{
+    commit();const el=ref.current;if(!el)return;
+    const from=el.scrollLeft;let to=from+distance;
+    if(!endless){
       const max=el.scrollWidth-el.clientWidth,left=el.getBoundingClientRect().left,pad=parseFloat(getComputedStyle(el).scrollPaddingLeft)||0;
       const starts=Array.from(el.children,c=>from+c.getBoundingClientRect().left-left-pad);
       to=starts.reduce((best,x)=>Math.abs(x-to)<Math.abs(best-to)?x:best,to);
-      to=Math.max(0,Math.min(max,to));el.style.scrollSnapType='none';
+      to=Math.max(0,Math.min(max,to));
     }
-    const start=performance.now(),duration=450,ease=(t:number)=>t<.5?4*t*t*t:1-(-2*t+2)**3/2;
-    let last=from;
-    const step=(now:number)=>{
-      const shift=el.scrollLeft-last;if(Math.abs(shift)>2){from+=shift;to+=shift;}
-      const t=Math.min(1,(now-start)/duration);el.scrollLeft=from+(to-from)*ease(t);last=el.scrollLeft;
-      if(t<1)frame.current=requestAnimationFrame(step);else if(snap)el.style.scrollSnapType='';
-    };
-    frame.current=requestAnimationFrame(step);
+    const shift=to-from;if(Math.abs(shift)<1)return;
+    const targets=endless?[track.current].filter((t):t is HTMLDivElement=>!!t):Array.from(el.children) as HTMLElement[];
+    const animations=targets.map(t=>t.animate([{transform:'translateX(0)'},{transform:`translateX(${-shift}px)`}],{duration:520,easing:'cubic-bezier(.4,0,.2,1)',fill:'forwards'}));
+    const current={animations,distance:shift};run.current=current;
+    animations[0]?.finished.then(()=>{if(run.current===current)commit();},()=>{});
   };
 }
 // A copy of an endless row's cards. A row is wider than the screen, so part of what is on screen is often a copy:
