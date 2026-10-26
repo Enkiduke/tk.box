@@ -214,6 +214,8 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .artwork-discover .setting-line input.grow{width:auto;text-align:left}
 .artwork-discover-rows li .grow{min-width:0}
 .artwork-discover-rows li button{flex-shrink:0}
+.artwork-discover-rows li select{width:auto;min-width:180px;flex-shrink:0}
+.artwork-discover-rows li input[type=checkbox]{flex-shrink:0}
 .artwork-discover-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto}
 .artwork-discover-rows li{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .artwork-discover-rows small{display:block}
@@ -230,6 +232,47 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .collection-editor-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .collection-editor-panel{display:flex;flex-direction:column;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
 .collection-editor-source{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:16px}
+.list-choice{padding-top:14px;border-top:1px solid var(--line)}
+.list-choice summary{display:inline-flex;align-items:center;gap:6px;font-weight:650;cursor:pointer;list-style:none;user-select:none}
+.list-choice summary::-webkit-details-marker{display:none}
+.list-choice summary svg{color:var(--muted);transition:transform .15s}
+.list-choice[open] summary svg{transform:rotate(90deg)}
+.list-choice summary .muted{font-weight:400;margin-left:4px}
+.list-choice-body{display:flex;flex-direction:column;gap:12px;padding-top:14px}
+.title-tile.left-out .title-tile-art{opacity:.35;filter:grayscale(1)}
+.list-choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px 16px;align-items:start}
+.range-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.range-head{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted)}
+.range-head .muted{color:var(--text)}
+.range-slider{position:relative;height:28px}
+.range-slider::before,.range-slider::after{content:"";position:absolute;top:12px;height:4px;border-radius:2px}
+.range-slider::before{left:0;right:0;background:var(--line-strong)}
+.range-slider::after{left:var(--low);right:calc(100% - var(--high));background:var(--accent)}
+.range-slider input{position:absolute;inset:0;width:100%;margin:0;padding:0;border:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none;z-index:1}
+.range-slider input::-webkit-slider-runnable-track{background:none}
+.range-slider input::-moz-range-track{background:none}
+.range-slider input::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--text);border:2px solid var(--accent);pointer-events:auto;cursor:pointer}
+.range-slider input::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--text);border:2px solid var(--accent);pointer-events:auto;cursor:pointer}
+.checklist{position:relative}
+.checklist summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px;font-weight:400;cursor:pointer;list-style:none;user-select:none}
+.checklist[open] summary{border-color:var(--muted)}
+.checklist summary::-webkit-details-marker{display:none}
+.checklist summary span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.checklist summary svg{flex:none;color:var(--muted);transform:rotate(90deg)}
+.checklist-menu{position:absolute;z-index:20;top:calc(100% + 4px);left:0;right:0;min-width:220px;max-height:320px;overflow:auto;padding:4px;scrollbar-width:thin;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface-2);box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.checklist-row{display:flex;align-items:center;gap:6px;padding-right:10px;border-radius:6px}
+.checklist-row:hover{background:var(--surface-3)}
+.checklist-row label{display:flex;flex:1;flex-direction:row;align-items:center;gap:10px;min-width:0;padding:7px 8px;color:var(--text);font-size:14px;cursor:pointer}
+.checklist-row label input{flex:none;margin:0;padding:0}
+.checklist-row label .grow{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.checklist-row label .muted{flex:none;font-variant-numeric:tabular-nums}
+.checklist-row button{font-size:12px}
+.checklist-row button{opacity:0}
+.checklist-row:hover button,.checklist-row button:focus-visible{opacity:1}
+.checklist-actions{display:flex;gap:14px;padding:6px 8px 8px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.checklist-actions button{font-size:13px}
+.checklist-actions button:disabled{color:var(--dim);cursor:default;text-decoration:none}
+.title-tile.left-out .title-tile-name{color:var(--dim)}
 .collection-editor-titles{display:flex;flex-direction:column;gap:14px}
 .collection-editor-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
 .collection-editor-section-head button{padding:6px 12px;font-size:13px}
@@ -320,6 +363,18 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .kept-open,.kept-open:hover,.kept-open:active{display:block;width:100%;height:100%;padding:0;border:0;border-radius:0;background:none;transform:none;cursor:pointer}
 .kept-open>*{transition:opacity .2s,filter .2s}
 .kept-card.off .kept-open>*{opacity:.35;filter:grayscale(1)}
+.season-calendar{display:grid}
+.season-row{display:grid;grid-template-columns:200px minmax(0,1fr);align-items:center;gap:20px;width:100%;padding:10px 0;border:0;border-top:1px solid var(--line);border-radius:0;background:none;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.season-row:hover{background:none}.season-row:hover strong{color:var(--accent)}
+.season-head{padding:0 0 8px;border-top:0;cursor:default}
+.season-name{display:grid;gap:2px;min-width:0}.season-name strong{overflow:hidden;font-size:14px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}.season-name small{color:var(--muted);font-size:12px}
+.season-track{position:relative;display:grid;height:22px}
+.season-track::after{content:"";position:absolute;top:-10px;bottom:-10px;left:var(--today);width:1px;background:var(--accent);opacity:.7}
+.season-head .season-track{height:auto}.season-head .season-track::after{display:none}
+.season-head .season-track span{color:var(--dim);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.season-track i{border-left:1px solid var(--line)}
+.season-track b{position:absolute;top:5px;bottom:5px;border-radius:999px;background:var(--accent)}
+.season-row.off b{background:var(--surface-3)}.season-row.off strong{color:var(--muted)}
 .kept-card input[type=checkbox].kept-switch{position:absolute;right:6px;bottom:6px;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.5)}
 .kept-card:focus-within,.kept-card:hover{outline:2px solid var(--line-strong);outline-offset:2px}
 .collection-editor-title{flex:1;min-width:0;margin:0;padding:8px 0;font-size:22px;font-weight:650}
