@@ -363,7 +363,8 @@ export class PlexAdapter {
     const values=pages.flatMap(p=>p.Metadata.map(node=>(node as Record<string,number|undefined>)[field])).slice(0,total);
     return {entries:sortIndex(sort,values),total:values.length};
   }
-  async catalogPage(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>):Promise<CatalogPage> {
+  // `hidden` gives the TMDb IDs of movies kept off the Recent shelf.
+  async catalogPage(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>,hidden?:()=>Set<number>):Promise<CatalogPage> {
     const library=this.library(grant,libraryId),query=catalogQuery.parse(input);
     const path=query.shelf==='continue'?'onDeck':query.shelf==='recent'?'recentlyAdded':'all';
     const url=new URL(`/library/sections/${libraryId}/${path}`,this.config.PLEX_URL);
@@ -385,6 +386,15 @@ export class PlexAdapter {
       for(let start=0;more&&start<600&&!settled();start+=60){const page=await read(start,60);items.push(...page.items);more=page.more;}
       const cards=groupRecentEpisodes(items,query.limit+1);
       return {items:await this.withShowSummaries(grant,cards.slice(0,query.limit)),offset:0,limit:query.limit,hasMore:cards.length>query.limit||more};
+    }
+    // Recent movies leave out the hidden ones (known by their TMDb guid), reading 60 at a time from the newest until the
+    // page is full.
+    const hide=path==='recentlyAdded'&&library.type==='movie'?hidden?.():undefined;
+    if(hide?.size) {
+      url.searchParams.set('includeGuids','1');url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Collection,Producer');
+      const items:CatalogItem[]=[],end=query.offset+query.limit;let more=true;
+      for(let start=0;more&&start<1200&&items.length<=end;start+=60){const page=await read(start,60);items.push(...page.items.filter(i=>!i.tmdbId||!hide.has(i.tmdbId)));more=page.more;}
+      return {items:items.slice(query.offset,end),offset:query.offset,limit:query.limit,hasMore:items.length>end||more};
     }
     const {items,more,total}=await read(query.offset,query.limit);
     return {items,offset:query.offset,limit:query.limit,total,hasMore:more};

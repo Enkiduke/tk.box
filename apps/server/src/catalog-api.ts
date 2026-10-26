@@ -4,7 +4,8 @@ import {createHash} from 'node:crypto';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {catalogAction,catalogQuery} from './providers/plex-catalog.js';
 
-export function registerCatalog(app:FastifyInstance,plex:PlexAdapter,auth:(request:FastifyRequest)=>Promise<{grant:PlexGrant}>) {
+// `hiddenRecent` gives the TMDb IDs of movies kept off Recently added (collection downloads).
+export function registerCatalog(app:FastifyInstance,plex:PlexAdapter,auth:(request:FastifyRequest)=>Promise<{grant:PlexGrant}>,hiddenRecent:()=>Set<number>=()=>new Set()) {
   const id=(params:unknown)=>z.object({id:z.string().regex(/^\d+$/)}).parse(params).id;
   // `v` only gives changed art a new address (see `versioned`); the image served is always the current one.
   // `scale=2` asks for a double-size poster, for high-density screens.
@@ -12,7 +13,7 @@ export function registerCatalog(app:FastifyInstance,plex:PlexAdapter,auth:(reque
   app.get('/api/v1/catalog/libraries/:id/genres',async request=>{const {grant}=await auth(request);return plex.catalogGenres(grant,id(request.params));});
   app.get('/api/v1/catalog/libraries/:id/genres/art',async request=>{const {grant}=await auth(request);return plex.catalogGenreArt(grant,id(request.params));});
   app.get('/api/v1/catalog/libraries/:id/index',async request=>{const {grant}=await auth(request);return plex.catalogIndex(grant,id(request.params),catalogQuery.parse(request.query));});
-  app.get('/api/v1/catalog/libraries/:id/items',async request=>{const {grant}=await auth(request);return plex.catalogPage(grant,id(request.params),catalogQuery.parse(request.query));});
+  app.get('/api/v1/catalog/libraries/:id/items',async request=>{const {grant}=await auth(request);return plex.catalogPage(grant,id(request.params),catalogQuery.parse(request.query),hiddenRecent);});
   app.get('/api/v1/catalog/items/:id',async request=>{const {grant}=await auth(request);return plex.catalogItem(grant,id(request.params));});
   // Mark watched/unwatched or remove from Continue Watching, as the signed-in viewer.
   app.post('/api/v1/catalog/items/:id/state',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
