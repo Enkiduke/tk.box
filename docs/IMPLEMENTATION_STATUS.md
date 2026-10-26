@@ -24,7 +24,7 @@ Updated October 17, 2026. **Milestone 0 foundations implemented; integration acc
 
 - Removed channel approval (October 18, 2026). Channels list themselves by per-source rules: regular channels while they pass channel checks (optionally only after a first passing check, on by default) and, if the source asks for it, only while the guide has a program on now or within a look-ahead (default 2 hours), with always-on keyword (`24/7`) and per-category exceptions. Event categories list while their event is live or starting soon. Administrators can still hide a channel or always list it. Details: [Channel listing](IPTV_INGESTION.md#channel-listing).
 - Sports events now apply per playlist category, so one playlist can mix event categories with regular stations; Auto Add and bulk approval are gone.
-- Redesigned Settings: a section sidebar (IPTV sources, Live Sports, Playback, Account), a source list, and per-source tabs (Overview with why channels are not listed, Channels with bulk listing overrides, Listing rules and categories, Guide, Checks, Sports, Connection).
+- Redesigned Settings: a section sidebar (IPTV sources, Live Events, Playback, Account), a source list, and per-source tabs (Overview with why channels are not listed, Channels with bulk listing overrides, Listing rules and categories, Guide, Checks, Sports, Connection).
 - **129 tests pass** and typecheck and the web build pass. Browser checks used the isolated `ui-preview` fixture at desktop and narrow widths. Not yet verified against a real provider playlist or EPG.
 
 ## Previous pass: compact library and fast browsing

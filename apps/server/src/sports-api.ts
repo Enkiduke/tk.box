@@ -19,7 +19,7 @@ export function registerSports(app: FastifyInstance, iptv: IptvStore, store: Spo
   app.put('/api/v1/admin/iptv/sources/:id/sports', async req => {
     const { grant } = await admin(req), id = params(req.params); store.setPolicy(grant.accountId, id, sportsPolicy.parse(req.body)); schedule.invalidate(); return view(id);
   });
-  // Live Sports settings: every downloaded league (configured or seen in a schedule), plus any still selected.
+  // Live Events settings: every downloaded league (configured or seen in a schedule), plus any still selected.
   const settingsView = (now = Date.now()) => {
     const settings = store.settings(), configured = new Set(schedule.leagues()), seen = new Map(store.leagues(now).map(l => [l.key, l]));
     const keys = [...new Set([...configured, ...seen.keys(), ...settings.leagues])];

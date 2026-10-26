@@ -310,7 +310,7 @@ export class IptvStore {
   // One lineup row per station within a source, like identity. The default feed is the best quality (FHD, then HD), primary before
   // backup, then a feed confirmed working; the row keeps the earliest lineup position of its feeds.
   // Rows are grouped by source in the administrator's order. Within a source, live event rows form one block, above or
-  // below the rest (Live Sports settings), ordered by sport, league, then start.
+  // below the rest (Live Events settings), ordered by sport, league, then start.
   stacks() {
     const settings=readSportsSettings(this.db),rankOf=eventRank(settings),top=settings.placement==='top',sources=new Map(this.sourceOrder().map((id,i)=>[id,i]));
     const order=(e:NonNullable<Feed['event']>)=>[...rankOf(e.sport,e.league),e.start];
@@ -433,7 +433,7 @@ export class IptvStore {
       return {numbered:permanent.length+admit.length,released:revoke.length};
     })();
   }
-  // Event channels take the lowest free number in the Live Sports block, when one is set. A channel that kept its
+  // Event channels take the lowest free number in the Live Events block, when one is set. A channel that kept its
   // number (a viewer favorited it) keeps it.
   private eventNumber(id:string) {
     const start=readSportsSettings(this.db).numberStart;

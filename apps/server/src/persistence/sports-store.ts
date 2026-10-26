@@ -18,7 +18,7 @@ export const GRACE_MS = 15 * 60_000;
 // until this long after its last viewer leaves.
 export const WATCH_HOLD_MS = 15 * 60_000;
 
-// Live Sports settings, shared by every event-driven source. "selected" shows only the listed leagues;
+// Live Events settings, shared by every event-driven source. "selected" shows only the listed leagues;
 // unscheduled covers channels matched by a written time or a guide listing alone, which belong to no league.
 export const SPORT_ORDER = ['football', 'basketball', 'baseball', 'hockey', 'soccer', 'mma', 'boxing', 'wrestling', 'racing', 'golf', 'tennis', 'rugby', 'cricket', 'cycling', 'darts', 'curling', 'sports'] as const;
 const leagueKey = z.string().min(1).max(80).regex(/^[\w.:/-]+$/);
@@ -73,7 +73,7 @@ export class SportsStore {
     const v = sportsSettings.parse(input);
     return this.db.transaction(() => {
       const current = this.settings().revision;
-      if (current !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Live Sports settings changed. Reload and retry.', 409);
+      if (current !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Live Events settings changed. Reload and retry.', 409);
       this.db.prepare('INSERT INTO sports_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(current + 1, JSON.stringify(v));
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_settings_changed', now, JSON.stringify(v));
       return this.settings();

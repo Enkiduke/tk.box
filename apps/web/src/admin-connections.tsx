@@ -131,7 +131,7 @@ function SportsKey() {
   if(!view.data)return null;
   const saved=view.data.thesportsdb,removing=key===null,changed=removing||!!key?.trim();
   const save=()=>void mutation.run(async()=>{await api('/admin/keys','PUT',{thesportsdb:removing?'':key!.trim()});setKey('');setDone(true);});
-  return <Card title="TheSportsDB" description="Extra Live Sports leagues.">
+  return <Card title="TheSportsDB" description="Extra Live Events leagues.">
     <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
       <label className="narrow">API key
         <span className="setting-line"><input className="grow" type="password" autoComplete="off" maxLength={200} disabled={removing} value={key??''} placeholder={removing?'Removed when you save':saved?'Saved — enter a new one to replace it':'Using the free key'} onChange={e=>{setKey(e.target.value);setDone(false);}}/>

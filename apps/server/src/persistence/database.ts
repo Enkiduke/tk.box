@@ -68,7 +68,7 @@ export function openDatabase(path: string) {
     // The sport an event channel carries, for its fallback icon.
     if (!(db.prepare('PRAGMA table_info(sports_windows)').all() as {name: string}[]).some(c => c.name === 'sport')) db.exec('ALTER TABLE sports_windows ADD COLUMN sport TEXT');
     db.prepare('INSERT OR IGNORE INTO migrations VALUES(7)').run();
-    // Live Sports settings: which leagues are shown and in what order, and the event channel number block.
+    // Live Events settings: which leagues are shown and in what order, and the event channel number block.
     // Events and windows keep a stable league key; rows fetched before this get one on the next download.
     for (const table of ['sports_events', 'sports_windows'])
       if (!(db.prepare(`PRAGMA table_info(${table})`).all() as {name: string}[]).some(c => c.name === 'league_key')) db.exec(`ALTER TABLE ${table} ADD COLUMN league_key TEXT`);

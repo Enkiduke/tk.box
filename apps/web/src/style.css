@@ -848,7 +848,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .list-more{display:flex;justify-content:center;padding:16px 0 8px;font-size:12px;color:var(--dim)}
 .list-more button{font-size:13px;padding:7px 14px}
 
-/* Live Sports settings */
+/* Live Events settings */
 .sports-fieldset{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;min-width:0}
 .sports-fieldset legend{font-size:15px;font-weight:600;margin-bottom:8px;padding:0}
 .sports-fieldset .toolbar{margin:0}
@@ -1056,7 +1056,7 @@ tr:hover .row-actions button{color:var(--text)}
 .listing-choice span{display:flex;flex-direction:column;gap:4px}
 .listing-choice small{color:var(--muted);font-size:12px;line-height:1.45}
 
-/* Account and Live Sports */
+/* Account and Live Events */
 .account-row{display:flex;align-items:center;gap:16px}
 .account-row p{margin:4px 0 0}
 .account-avatar{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#e2672c);color:var(--accent-ink);font-size:18px;font-weight:700}

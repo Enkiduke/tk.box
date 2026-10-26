@@ -291,7 +291,7 @@ test('event channels without a logo get an icon for their sport', async () => {
   assert.equal(iptv.sportFor(iptv.stacks()[0]!.id), 'football');
 });
 
-// Live Sports settings: three leagues airing now plus a channel known only by the time in its name.
+// Live Events settings: three leagues airing now plus a channel known only by the time in its name.
 function liveSports() {
   const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const at = new Date(t - 20 * 60_000), written = `${at.getUTCMonth() + 1}/${at.getUTCDate()} ${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
@@ -309,7 +309,7 @@ function liveSports() {
   return { iptv, store, save, source: s.id, playlist };
 }
 
-test('live sports: only selected leagues are shown, and unscheduled channels follow their own switch', () => {
+test('live events: only selected leagues are shown, and unscheduled channels follow their own switch', () => {
   const { iptv, store, save } = liveSports();
   save({});
   assert.deepEqual(iptv.stacks().map(c => c.name).sort(), ['Arsenal vs Chelsea', 'Big Fight Night', 'Texans vs Jaguars', 'UFC 333'], 'every league by default');
@@ -322,7 +322,7 @@ test('live sports: only selected leagues are shown, and unscheduled channels fol
   assert.throws(() => store.setSettings('owner', revision - 1, current), /changed/, 'a stale revision is refused');
 });
 
-test('live sports: event rows follow sport and league priority, sit above or below other channels, and use their number block', () => {
+test('live events: event rows follow sport and league priority, sit above or below other channels, and use their number block', () => {
   // The guide is grouped by source, so placement is relative to the other channels of the same source.
   const { iptv, save, source, playlist } = liveSports();
   iptv.ingest('owner', source, iptv.status(source).revision, playlist('\n#EXTINF:-1 tvg-id="cnn",CNN\nhttps://streams.invalid/cnn'));

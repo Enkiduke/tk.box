@@ -17,7 +17,7 @@ import './admin.css';
 // The Admin console: server-wide settings and media management tools, apart from each viewer's own Settings.
 // It is its own bundle, loaded only when an administrator opens it, so none of it reaches viewers or the player.
 const groups=[
-  ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Sports','star']]],
+  ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Events','star']]],
   ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore']]],
   ['Server',[['activity','Activity','play'],['admins','Admins','shield'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash']]]
 ] as const;
