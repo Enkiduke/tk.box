@@ -43,6 +43,7 @@ const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun:
   schedule: { enabled: false, schedule: { kind: 'times', times: ['03:30'], days: [] } } };
 export const holdKey = z.string().regex(/^(?:movie|tv):\d{1,10}(?::\d{1,4})?$/);
 export type CleanupHold = { until: number; by: string; at: number };
+export type CleanupKept = { tag: string; by: string; at: number };
 export type CleanupJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 const job = (r: Record<string, unknown>) => ({ id: r.id as number, label: r.label as string, args: JSON.parse(r.args as string) as string[], script: 'cleanup' as const, actor: r.actor as string,
   status: r.status as CleanupJobStatus, createdAt: r.created_at as number, startedAt: r.started_at as number | null, finishedAt: r.finished_at as number | null, exitCode: r.exit_code as number | null });
@@ -111,6 +112,15 @@ export class CleanupStore {
       this.setState('holds', holds);
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, until === null ? 'cleanup_hold_cleared' : 'cleanup_hold_set', now, JSON.stringify({ key, until }));
       return holds;
+    })();
+  }
+  // Titles an administrator kept (tagged in Radarr or Sonarr) since a run, by title key (movie:<tmdb> or tv:<tmdb>,
+  // a show as a whole). Status shows them protected until a run that started after sees the tag itself.
+  kept() { return this.state<Record<string, CleanupKept>>('kept') ?? {}; }
+  setKept(actor: string, key: string, tag: string, now = Date.now()) {
+    this.db.transaction(() => {
+      this.setState('kept', { ...this.kept(), [key]: { tag, by: actor, at: now } });
+      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_title_kept', now, JSON.stringify({ key, tag }));
     })();
   }
   state<T>(name: string) { return this.row<T>(`state:${name}`)?.value; }

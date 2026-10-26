@@ -2,7 +2,7 @@ import {useEffect,useMemo,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
-import {holdEntries,loadLeaving} from './cleanup-holds.js';
+import {holdEntries,keepEntry,keepTitle,loadLeaving} from './cleanup-holds.js';
 import {date,useMutation} from './settings-ui.js';
 
 // Clean Up › Status: every title the last finished run looked at, as posters grouped by what happens to it and when.
@@ -95,11 +95,12 @@ export function CleanupStatus({rules,busy}:{rules:RuleDays;busy:boolean}) {
   </div>;
 }
 
-// Just the poster and its overlays; the name shows on hover. Leaving soon titles start over from a right-click.
+// Just the poster and its overlays; the name shows on hover. Titles waiting to leave start over or are kept from a right-click.
 function TitleCard({item,now,onOpen}:{item:Title;now:number;onOpen:()=>void}) {
-  const {tone}=groupOf(item.status),menu=useMenu(item.title,()=>[holdEntries({key:item.key!,title:item.title}),[{label:'Details',icon:'info',run:onOpen}]]);
-  const leaving=item.status==='leaving'&&item.holdable&&!!item.key;
-  return <><button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} onContextMenu={leaving?menu.onContextMenu:undefined} title={[item.title,meta(item),item.library].filter(Boolean).join(' · ')} aria-label={`${item.title}, ${countdown(item,now)}`}>
+  const {tone}=groupOf(item.status),own={key:item.key!,title:item.title};
+  const menu=useMenu(item.title,()=>[[...holdEntries(own),keepEntry(own)],[{label:'Details',icon:'info',run:onOpen}]]);
+  const waiting=item.holdable&&!!item.key;
+  return <><button type="button" className={`cleanup-card${item.status==='deleted'?' gone':''}`} onClick={onOpen} onContextMenu={waiting?menu.onContextMenu:undefined} title={[item.title,meta(item),item.library].filter(Boolean).join(' · ')} aria-label={`${item.title}, ${countdown(item,now)}`}>
     <span className="cleanup-art">
       <Artwork src={poster(item)} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       <span className={`cleanup-when ${tone}`}>{countdown(item,now)}</span>
@@ -136,6 +137,10 @@ function TitleDetail({item,rules,busy,dryRun,now,onClose}:{item:Title;rules:Rule
             <div><strong>Remove the hold</strong><small>Go back to the rule’s date{item.deletion_date?`, ${day(item.deletion_date)}`:''}.</small></div>
             <button disabled={mutation.busy} onClick={()=>hold({action:'clear'})}><Icon name="close" size={16}/>Remove</button>
           </div>}
+          <div className="cleanup-hold-row">
+            <div><strong>{item.kind==='movie'?'Keep':'Keep the show'}</strong><small>Tags {item.kind==='movie'?'it in Radarr':'the whole series in Sonarr'} with your first protected tag.</small></div>
+            <button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await keepTitle({key:item.key!,title:item.title});onClose();})}><Icon name="check" size={16}/>Keep</button>
+          </div>
           {mutation.error&&<div className="notice error" role="alert"><span>{mutation.error}</span></div>}
           <p className="cleanup-note">The next {dryRun?'preview or ':''}clean up uses the new date{busy?'; the run going now keeps the dates it started with':''}. A hold only ever keeps a title longer than its rule would.</p>
         </div>:item.status==='deleted'?null:<p className="cleanup-note">{item.status==='protected'?'Protected titles are never deleted, so there is nothing to start over.':item.status==='error'||item.status==='not_found'?'The run couldn’t tell when this title is due, so it is kept.':'Run a preview to be able to start this title over.'}</p>}

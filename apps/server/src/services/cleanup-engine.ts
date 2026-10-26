@@ -4,7 +4,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
-import type { CleanupHold, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
+import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
+import { tagArrTitle } from '../providers/arr-tags.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
@@ -40,6 +41,16 @@ export function withHolds(view: CleanupTitles, holds: Record<string, CleanupHold
     if (held === before) return { ...item, holdable };
     const at = held ?? natural;
     return { ...item, holdable, held_until: held === null ? null : new Date(held).toISOString(), status: at <= now ? 'due' : at <= now + leavingDays * DAY ? 'leaving' : 'kept' };
+  }) };
+}
+// A hold key's title as a whole: a season's key names its show.
+export const titleKey = (key: string) => key.split(':').slice(0, 2).join(':');
+// Titles kept since the run the view is from show as protected, with their seasons; a later run sees the tag itself.
+export function withKept(view: CleanupTitles, kept: Record<string, CleanupKept>): CleanupTitles {
+  const since = view.updated ? Date.parse(view.updated) : 0;
+  return { ...view, items: view.items.map(item => {
+    const keep = item.key && waiting.has(item.status) ? kept[titleKey(item.key)] : undefined;
+    return keep && keep.at > since ? { ...item, status: 'protected', reason: `Tagged ${keep.tag}`, holdable: false, held_until: null } : item;
   }) };
 }
 // Start over: the title's rule over again from today. Returns the date to hold it until.
@@ -146,7 +157,18 @@ export class CleanupEngine {
     const from = Math.max(since - live.dropped, 0);
     return { ...job, output: undefined, lines: live.lines.slice(from), next: live.dropped + live.lines.length };
   }
-  titles(): CleanupTitles { return withHolds(this.lastRun(), this.store.holds(), this.store.settings().leavingSoon.days); }
+  titles(): CleanupTitles { return withKept(withHolds(this.lastRun(), this.store.holds(), this.store.settings().leavingSoon.days), this.store.kept()); }
+  // Keep: tag the movie in Radarr, or the whole show in Sonarr (from any of its seasons), with the first protected tag.
+  async keep(actor: string, key: string) {
+    const item = this.titles().items.find(i => i.key === key);
+    if (!item?.key || !waiting.has(item.status)) throw new AppError('CLEANUP_NOT_KEEPABLE', 'Only titles waiting to leave can be kept. Run a preview to refresh the list.', 409);
+    const tag = this.store.settings().exemptArrTags[0];
+    if (!tag) throw new AppError('CLEANUP_NO_TAG', 'Add a protected Radarr and Sonarr tag in Clean Up › Settings first.', 409);
+    const whole = titleKey(item.key), [kind, id] = whole.split(':') as ['movie' | 'tv', string], services = this.services();
+    await tagArrTitle(kind, kind === 'movie' ? services.radarr : services.sonarr, Number(id), tag);
+    this.store.setKept(actor, whole, tag);
+    return { tag, ...this.titles() };
+  }
   // Holds take effect at the next run; a run already going keeps the holds it started with.
   hold(actor: string, key: string, action: { action: 'reset' } | { action: 'clear' }) {
     const item = this.titles().items.find(i => i.key === key);
