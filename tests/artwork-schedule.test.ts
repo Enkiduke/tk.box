@@ -17,7 +17,7 @@ const start=Date.UTC(2026,9,1)/1000;
 async function setup(titles:{id:string;addedAt:number}[],streaming=async()=>0) {
   const store=new ArtworkStore(openDatabase(':memory:'),new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'));
   const {revision,...settings}=store.settings();
-  await store.update('admin',revision,{...settings,libraries:['1'],schedules:{...settings.schedules,added:{enabled:true,minutes:60}}},async()=>{});
+  await store.update('admin',revision,{...settings,libraries:['1'],schedules:{...settings.schedules,added:{enabled:true,schedule:{kind:'every',minutes:60}}}},async()=>{});
   const queued:string[]=[],plex={fail:false,addedSince:async(_:PlexGrant,__:string,since:number)=>{
     if(plex.fail)throw new Error('down');
     return {items:titles.filter(t=>t.addedAt*1000>since).sort((a,b)=>b.addedAt-a.addedAt).map(t=>({...t,title:t.id})),complete:true};

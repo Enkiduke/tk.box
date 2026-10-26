@@ -3,7 +3,8 @@ import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
-import {ScheduleRow,type ScheduleState} from './artwork-collections.js';
+import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
+import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
 import {openConsole,type Job} from './admin-console.js';
 import {CleanupStatus} from './cleanup-status.js';
 
@@ -14,7 +15,7 @@ type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
 type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;deleteFromSeerr:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;
-  seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:{enabled:boolean;time:string}};
+  seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
 type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'seerr'|'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections">Admin › Connections</a>;
@@ -71,7 +72,7 @@ function CleanupSchedules({data,changed}:{data:Overview;changed:()=>void}) {
   const save=()=>void mutation.run(async()=>{const {revision,...saved}=data.settings;await api('/admin/cleanup/settings','PUT',{expectedRevision:revision,...saved,schedule:draft});setDone(true);});
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Schedules" description="Server local time. Needs the Plex token.">
-      <div className="artwork-schedules"><ScheduleRow label="Clean up" hint="A preview while Preview only is on." state={data.schedule} value={draft} set={value=>{setDone(false);setDraft(value);}}/></div>
+      <div className="artwork-schedules"><ScheduleRow label="Clean up" hint="A preview while Preview only is on." state={data.schedule} min={60} value={draft} set={value=>{setDone(false);setDraft(value);}}/></div>
     </Card>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button>{done&&<span className="success" role="status">Saved.</span>}</div>

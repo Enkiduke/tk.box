@@ -6,7 +6,6 @@ import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {artworkConfig} from '../apps/server/src/services/artwork-engine.js';
-import {lastDue} from '../apps/server/src/services/artwork-schedule.js';
 
 const seeded=()=>{const db=openDatabase(':memory:');return {db,store:new ArtworkStore(db,new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'))};};
 const ok=async()=>{};
@@ -78,7 +77,7 @@ test('the engine config names libraries by title for their layouts and keeps cre
 test('settings saved before schedules existed read with the default schedules',()=>{
   const {db,store}=seeded(),{revision:_,schedules:__,...old}=store.settings();
   db.prepare('INSERT INTO artwork_settings VALUES(1,1,?)').run(JSON.stringify({...old,keys:{}}));
-  assert.deepEqual(store.settings().schedules.scrub,{enabled:false,time:'04:00'});
+  assert.deepEqual(store.settings().schedules.scrub,{enabled:false,schedule:{kind:'times',times:['04:00'],days:[]}});
 });
 test('collection schedules saved with the artwork settings move to the collections once',()=>{
   const {db,store}=seeded(),{revision:_,...settings}=store.settings(),vault=new Vault(randomBytes(32));
@@ -87,7 +86,7 @@ test('collection schedules saved with the artwork settings move to the collectio
   const {revision:__,radarrKeySet:___,schedules:____,...collections}=store.collections();
   db.prepare('INSERT INTO artwork_collections VALUES(1,2,?)').run(JSON.stringify({...collections,definitions:[{name:'Halloween',library:'Movies',type:'movie'}]}));
   const moved=new ArtworkStore(db,vault).collections();
-  assert.deepEqual(moved.schedules,{custom:{enabled:true,time:'03:10'},all:{enabled:false,time:'05:00'},added:{enabled:true,minutes:20}});
+  assert.deepEqual(moved.schedules,{custom:{enabled:true,schedule:{kind:'times',times:['03:10'],days:[]}},all:{enabled:false,schedule:{kind:'times',times:['05:00'],days:[]}},added:{enabled:true,schedule:{kind:'every',minutes:20}}});
   assert.equal(moved.revision,3);
   assert.deepEqual(Object.keys(JSON.parse((db.prepare('SELECT value FROM artwork_settings').get() as {value:string}).value).schedules),['scrub','added']);
   assert.equal(new ArtworkStore(db,vault).collections().revision,3);  // Only once
@@ -115,13 +114,6 @@ test('artwork collections keep the Radarr key sealed and out of the engine confi
   const {franchises:_,...older}=value.franchise;
   db.prepare('UPDATE artwork_collections SET value=? WHERE id=1').run(JSON.stringify({...value,franchise:older}));
   assert.equal(store.collections().franchise.franchises,true);
-});
-test('a daily schedule falls due at its local time, or the day before until then',()=>{
-  const at=(h:number,m:number)=>{const d=new Date(2026,9,20,h,m);return d;};
-  assert.equal(lastDue('04:00',at(4,0)),at(4,0).getTime());
-  assert.equal(lastDue('04:00',at(9,30)),at(4,0).getTime());
-  const before=lastDue('04:00',at(3,59)),yesterday=new Date(2026,9,19,4,0).getTime();
-  assert.equal(before,yesterday);
 });
 test('a database seeded with the earlier layouts gets the tk-* set, and settings follow the renames',()=>{
   const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');

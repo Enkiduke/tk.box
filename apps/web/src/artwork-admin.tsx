@@ -5,7 +5,9 @@ import {Empty,ErrorNotice,Icon,Loading,Modal,useMenu} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
 import {ArtworkTitles} from './artwork-titles.js';
 import {LayoutAdvanced,LayoutEditor,type LayoutEntry} from './artwork-layouts.js';
-import {ArtworkCollections,ScheduleRow,type ScheduleState} from './artwork-collections.js';
+import {ArtworkCollections} from './artwork-collections.js';
+import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
+import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
 import {openConsole,type Job} from './admin-console.js';
 
 // Admin › Artwork: custom posters, season posters and episode title cards, made by the artwork engine
@@ -13,7 +15,7 @@ import {openConsole,type Job} from './admin-console.js';
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
 type LayoutType='movie'|'tv'|'custom'|'collection'|'streaming'|'chart';
-type Schedules={scrub:{enabled:boolean;time:string};added:{enabled:boolean;minutes:number}};
+type Schedules={scrub:Scheduled;added:Scheduled};
 type Settings={revision:number;libraries:string[];upload:boolean;uploadLogo:boolean;includeSeasons:boolean;includeEpisodes:boolean;includeCollections:boolean;
   missingArt:'stock'|'skip';quality:number;workers:number;language:string;completionLabel:string;defaultLayout:string;layoutByLibrary:Record<string,string>;layoutByType:Partial<Record<LayoutType,string>>;
   schedules:Schedules;keysSet:Record<string,boolean>};
@@ -133,13 +135,13 @@ function ArtworkSchedules({data,changed}:{data:Overview;changed:()=>void}) {
     <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button>{done&&<span className="success" role="status">Saved.</span>}</div>
   </form>;
 }
-// When artwork jobs run on their own: changed titles daily at a server-local time, and newly added titles as Plex adds
-// them (with a check every N minutes besides). Collections have their own schedules (Admin › Collections).
+// When artwork jobs run on their own: changed titles on a schedule (server local time), and newly added titles as Plex
+// adds them (with a scheduled check besides). Collections have their own schedules (Admin › Collections).
 function SchedulesCard({schedules,states,set}:{schedules:Schedules;states:Overview['schedules'];set:(value:Schedules)=>void}) {
   return <Card title="Schedules" description="Server local time.">
     <div className="artwork-schedules">
-      <ScheduleRow label="Update changed titles" hint="Where artwork, layouts or settings changed." state={states.scrub} value={schedules.scrub} set={scrub=>set({...schedules,scrub})}/>
-      <ScheduleRow label="Newly added titles" hint="As Plex adds them, plus a periodic check." state={states.added} value={schedules.added} set={added=>set({...schedules,added})}/>
+      <ScheduleRow label="Update changed titles" hint="Where artwork, layouts or settings changed." state={states.scrub} min={60} value={schedules.scrub} set={scrub=>set({...schedules,scrub})}/>
+      <ScheduleRow label="Newly added titles" hint="As Plex adds them, plus a periodic check." state={states.added} min={5} value={schedules.added} set={added=>set({...schedules,added})}/>
     </div>
     <p className="muted small">Needs the Plex token in <a href="#admin?section=connections">Connections</a>.</p>
   </Card>;
