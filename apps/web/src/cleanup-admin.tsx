@@ -14,7 +14,7 @@ import {CleanupStatus} from './cleanup-status.js';
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
 type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;deleteFromSeerr:boolean;
-  daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;
+  daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
 type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'seerr'|'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
@@ -80,6 +80,8 @@ function CleanupSchedules({data,changed}:{data:Overview;changed:()=>void}) {
 }
 
 const list=(text:string)=>[...new Set(text.split(',').map(t=>t.trim()).filter(Boolean))];
+type CollectionKind='franchise'|'streaming'|'custom'|'seasonal'|'other';
+const collectionKinds:[CollectionKind,string][]=[['franchise','Franchise'],['streaming','Streaming'],['custom','Custom'],['seasonal','Seasonal'],['other','Other Plex collections']];
 type RetentionField='daysAfterWatched'|'daysAfterUnwatched'|'daysAfterAnyWatchExempt'|'daysAfterExemptWatch';
 function RetentionRow({audience,title,anchor,value,onChange}:{audience:string;title:string;anchor:string;value:number;onChange:(days:number)=>void}) {
   const id=useId();
@@ -130,7 +132,10 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
     </Card>
     <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
       <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);setDone(false);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>
-      <Switch label="Keep titles in Plex collections" description={`Any collection protects a title except “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
+      <Switch label="Keep titles in Plex collections" description={`Never “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
+      {draft.exemptIfInCollection&&<fieldset className="form-stack"><legend>Collections that protect</legend>
+        {collectionKinds.map(([kind,label])=><label key={kind} className="checkbox-label"><input type="checkbox" checked={draft.collectionKinds[kind]} onChange={e=>set({collectionKinds:{...draft.collectionKinds,[kind]:e.target.checked}})}/>{label}</label>)}
+      </fieldset>}
     </Card>
     <Card title="TV seasons" description="Use the same retention timers for individual seasons or for the whole show.">
       <Switch label="Clean up individual seasons" description="Requires Sonarr and Delete from Sonarr below. When off, the whole show is evaluated together." checked={draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,enabled:v}})}/>

@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {CleanupStore} from '../apps/server/src/persistence/cleanup-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {cleanupConfig,cleanupMissing,holdUntil,withHolds,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
+import {cleanupCollections,cleanupConfig,cleanupMissing,holdUntil,withHolds,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
 
 const store=()=>new CleanupStore(openDatabase(':memory:'),new Vault(randomBytes(32)));
 const services:CleanupServices={seerr:{url:'http://seerr:5055',apiKey:'seerr-key'},tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
@@ -61,4 +61,16 @@ test('a hold keeps a title longer and the status shows it until the next run',()
   assert.deepEqual(s.holds(now+4*DAY),{});
   assert.deepEqual(cleanupConfig(settings,services,{plexUrl:'',poster:''},s.holds(now)).holds,{'movie:438631':new Date(now+3*DAY).toISOString()});
   assert.throws(()=>s.setHold('admin','movie:1;drop',now),/can be held/);
+});
+
+test('clean up tells the script which collections protect, with tk.box’s own by kind',()=>{
+  const {revision:_,...settings}=store().settings();
+  // Streaming collections don't protect by default.
+  assert.deepEqual(settings.collectionKinds,{franchise:true,streaming:false,custom:true,seasonal:true,other:true});
+  const kept=[{name:'Netflix Shows',library:'TV',kind:'streaming' as const,items:9},{name:'Halloween',library:'Movies',kind:'custom' as const,items:4},{name:'Comfort Films',library:'Movies',kind:'custom' as const,items:3}];
+  const collections=cleanupCollections(kept,[{name:'Halloween Collection',library:'Movies',schedule:'10-01..10-31'},{name:'Comfort Films',library:'Movies'}]);
+  assert.deepEqual(collections.map(c=>c.kind),['streaming','seasonal','custom']);
+  const config=cleanupConfig(settings,services,{plexUrl:'',poster:''},{},collections);
+  assert.deepEqual(config.protecting_collection_kinds,['franchise','custom','seasonal','other']);
+  assert.deepEqual(config.tkbox_collections[0],{name:'Netflix Shows',library:'TV',kind:'streaming'});
 });
