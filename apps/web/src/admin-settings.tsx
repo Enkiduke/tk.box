@@ -71,7 +71,7 @@ function CreateSource({onClose,created,changed}:{onClose:()=>void;created:(sourc
         <label>Playlist URL<input type="url" value={url} onChange={e=>setUrl(e.target.value)} required autoComplete="off" spellCheck={false} placeholder="https://provider.example/playlist.m3u"/><small>Stored encrypted.</small></label>
         <details><summary>Provider request options</summary><div className="form-stack"><label>Request headers (JSON)<textarea value={headers} onChange={e=>setHeaders(e.target.value)} autoComplete="off" placeholder={'{"User-Agent":"tk.box"}'}/></label><label className="checkbox-label"><input type="checkbox" checked={insecure} onChange={e=>setInsecure(e.target.checked)}/>This provider requires unencrypted HTTP</label></div></details>
       </>:<label>Playlist file<input type="file" accept=".m3u,.m3u8" required onChange={e=>setFile(e.target.files?.[0])}/></label>}
-      <label>Source type<select value={sports} required onChange={e=>setSports(e.target.value)}><option value="" disabled>Choose…</option><option value="regular">Regular channels</option><option value="events">Sports and live events</option></select><small>Event channels list only while their event is on.</small></label>
+      <label>Source type<select value={sports} required onChange={e=>setSports(e.target.value)}><option value="" disabled>Choose…</option><option value="regular">Regular channels</option><option value="events">Event channels</option></select><small>Event channels list only while their event is on.</small></label>
       <div className="button-row"><button className="primary" disabled={mutation.busy} type="submit">{mutation.busy?'Importing…':'Add source'}</button><button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button></div>
     </form>
   </Modal>;
@@ -167,11 +167,11 @@ function SportsPanel({source,changed}:{source:Source;changed:()=>void}) {
   if(!data)return null;
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <Card title="Sports events" description="Channels list only while their matched event is live or starting soon.">
+    <Card title="Events" description="Channels list only while their matched event is live or starting soon.">
       <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled,leadMinutes:lead});setSaved(true);});}}>
-        <Switch label="Use sports events for this source" checked={enabled} onChange={v=>{setEnabled(v);setSaved(false);}}/>
+        <Switch label="Use events for this source" checked={enabled} onChange={v=>{setEnabled(v);setSaved(false);}}/>
         <label className="narrow">List before the start (minutes)<input type="number" min="0" max="720" required value={lead} disabled={!enabled} onChange={e=>{setLead(Number(e.target.value));setSaved(false);}}/><small>Stays 15 min after the end.</small></label>
-        <div className="button-row"><button className="primary" disabled={mutation.busy}>Save sports settings</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
+        <div className="button-row"><button className="primary" disabled={mutation.busy}>Save event settings</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
       </form>
     </Card>
     {data.policy.enabled&&<Card title="Matched events">
@@ -268,7 +268,7 @@ function ListingPanel({source,hasGuide,changed}:{source:Source;hasGuide:boolean;
         <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>Save listing rules</button>{dirty&&<button type="button" onClick={()=>setDraft(data.policy)}>Discard changes</button>}{saved&&<span className="success" role="status">Saved. The lineup has been updated.</span>}</div>
       </form>
     </Card>
-    <Card title="Categories" description={sportsOn?undefined:'Turn on sports events to use event categories.'}>
+    <Card title="Categories" description={sportsOn?undefined:'Turn on events to use event categories.'}>
       {groupMutation.error&&<ErrorNotice message={groupMutation.error}/>}
       {!data.groups.length?<Empty title="No categories yet">Import the playlist to see its categories.</Empty>:<div className="table-scroll"><table className="groups-table"><thead><tr><th>Category</th><th>Listed</th><th>Rules</th><th>Needs guide data</th></tr></thead><tbody>{data.groups.map(g=><tr key={g.name}>
         <td><strong>{g.name||'Uncategorized'}</strong><small>{plural(g.channels,'channel')}</small></td>
@@ -475,7 +475,7 @@ const sportNames:Record<string,string>={football:'American football',basketball:
 export function LiveSportsSettings() {
   const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.settings;setDraft(value);}},[view.data?.settings.revision]);
-  const head=<SectionHead title="Live Sports"/>;
+  const head=<SectionHead title="Live Events"/>;
   if(view.loading&&!view.data)return <>{head}<Loading/></>;
   if(view.error)return <>{head}<ErrorNotice message={view.error.message} retry={view.reload}/></>;
   if(!view.data||!draft)return head;
@@ -492,7 +492,7 @@ export function LiveSportsSettings() {
   const choose=(keys:string[],on:boolean)=>set({leagues:on?[...new Set([...draft.leagues,...keys])]:draft.leagues.filter(k=>!keys.includes(k))});
   const toggle=(sport:string)=>setOpen(o=>o.includes(sport)?o.filter(s=>s!==sport):[...o,sport]);
   return <>{head}
-    <p className="muted small" role="status">{data.lastSync?`Schedules last downloaded ${date(data.lastSync)}`:'Schedules download while a source uses sports events.'}{data.lastError?` · Last error: ${code(data.lastError)}`:''}</p>
+    <p className="muted small" role="status">{data.lastSync?`Schedules last downloaded ${date(data.lastSync)}`:'Schedules download while an IPTV source uses events.'}{data.lastError?` · Last error: ${code(data.lastError)}`:''}</p>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/sports/settings','PUT',{expectedRevision:data.settings.revision,...draft,leagueOrder:shownOrder()});setSaved(true);});}}>
       <Card title="Leagues">
@@ -520,7 +520,7 @@ export function LiveSportsSettings() {
         </div>
         <Switch label="Number event channels in their own block" description={draft.numberStart!==null?`Lowest free number from ${draft.numberStart} up.`:'Lowest free channel number.'} checked={draft.numberStart!==null} onChange={v=>set({numberStart:v?1000:null})}/>
       </Card>
-      <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save Live Sports settings</button>{saved&&<span className="success" role="status">Saved. The lineup has been updated.</span>}</div>
+      <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save Live Events settings</button>{saved&&<span className="success" role="status">Saved. The lineup has been updated.</span>}</div>
     </form>
   </>;
 }
