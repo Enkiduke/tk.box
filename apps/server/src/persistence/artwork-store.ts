@@ -3,13 +3,14 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
+import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 
 // Artwork's settings, layouts and job history. The engine (apps/artwork/artwork_engine.py) reads none of this directly:
 // before each run tk.box writes it out as the engine's JSON config (artworkConfig). Provider keys are sealed.
 export const layoutName = z.string().regex(/^[\w-]{1,40}$/, 'Use letters, numbers, dashes or underscores (up to 40)');
 const libraryId = z.string().regex(/^\d{1,10}$/);
-const daily = z.object({ enabled: z.boolean(), time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/) }).strict();
-const everyFew = z.object({ enabled: z.boolean(), minutes: z.number().int().min(5).max(1440) }).strict();
+// Full runs at most hourly; newly added checks, which are cheap, as often as every 5 minutes.
+const daily = scheduled(60), everyFew = scheduled(5);
 const label = z.string().max(60).refine(value => ![...value].some(c => c.charCodeAt(0) < 32), 'No control characters');
 export const artworkSettings = z.object({
   libraries: z.array(libraryId).max(50),
@@ -23,9 +24,9 @@ export const artworkSettings = z.object({
   layoutByLibrary: z.record(libraryId, layoutName),
   layoutByType: z.object({ movie: layoutName, tv: layoutName, custom: layoutName, collection: layoutName, streaming: layoutName, chart: layoutName }).partial(),
   schedules: z.object({
-    // Each day at a server-local time: --changed-only. Collections have their own schedules.
+    // On its schedule, server local time: --changed-only. Collections have their own schedules.
     scrub: daily,
-    // Titles newly added to the chosen libraries, checked when Plex says it added some and every N minutes besides
+    // Titles newly added to the chosen libraries, checked when Plex says it added some and on a schedule besides
     // (in place of a Tautulli hook).
     added: everyFew
   }).strict()
@@ -41,7 +42,7 @@ export const layoutValue = z.record(z.string().regex(/^[a-z_]{1,60}$/), z.unknow
 export type ArtworkKeys = { tmdb?: string; tvdb?: string; fanart?: string; mdblist?: string };
 const keyNames = ['tmdb', 'tvdb', 'fanart', 'mdblist'] as const;
 // Collection schedules saved with the artwork settings, before collections had their own.
-type OldSchedules = { seasonal?: z.infer<typeof daily>; collections?: z.infer<typeof daily> };
+type OldSchedules = { seasonal?: Scheduled; collections?: Scheduled };
 type Stored = ArtworkSettings & { keys: Partial<Record<typeof keyNames[number], string>>; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
 // Collections: custom and seasonal definitions in the engine's own format (it validates them), how franchise, streaming and
 // chart collections are kept in step, and the Radarr that seasonal collections may download missing movies with.
@@ -57,8 +58,8 @@ export const artworkCollections = z.object({
   franchise: z.object({ sync: z.boolean(), franchises: z.boolean(), minItems: z.number().int().min(1).max(50), mode: z.enum(['sync', 'append']), streaming: z.enum(['off', 'originals', 'available']),
     region: z.string().regex(/^[A-Z]{2}$/), recent: z.boolean(), recentMovieDays: z.number().int().min(1).max(3650), recentEpisodeDays: z.number().int().min(1).max(3650) }).strict(),
   radarr: z.object({ url: origin, rootFolder: z.string().trim().max(300), qualityProfileId: z.number().int().min(0).max(100000), search: z.boolean() }).strict(),
-  // Each day at a server-local time: the custom and seasonal collections, then every collection. Titles newly added to
-  // the libraries the custom collections use join the ones they match, checked when Plex adds some and every N minutes.
+  // On their schedules, server local time: the custom and seasonal collections, then every collection. Titles newly added
+  // to the libraries the custom collections use join the ones they match, checked when Plex adds some and on a schedule.
   schedules: z.object({ custom: daily, all: daily, added: everyFew }).strict()
 }).strict().refine(value => JSON.stringify(value).length <= 400000, 'Too many collections');
 export type ArtworkCollections = z.infer<typeof artworkCollections>;
@@ -66,7 +67,7 @@ export const artworkCollectionsInput = z.object({ value: artworkCollections, rad
 const collectionDefaults: ArtworkCollections = { definitions: null, automatic: [],
   franchise: { sync: false, franchises: true, minItems: 2, mode: 'sync', streaming: 'off', region: 'US', recent: false, recentMovieDays: 90, recentEpisodeDays: 7 },
   radarr: { url: '', rootFolder: '', qualityProfileId: 0, search: true },
-  schedules: { custom: { enabled: false, time: '04:15' }, all: { enabled: false, time: '04:30' }, added: { enabled: false, minutes: 60 } } };
+  schedules: { custom: { enabled: false, schedule: { kind: 'times', times: ['04:15'], days: [] } }, all: { enabled: false, schedule: { kind: 'times', times: ['04:30'], days: [] } }, added: { enabled: false, schedule: { kind: 'every', minutes: 60 } } } };
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export type JobRow = { id: number; label: string; args: string[]; script: 'artwork' | 'collections'; actor: string; status: JobStatus; createdAt: number; startedAt: number | null; finishedAt: number | null; exitCode: number | null };
 
@@ -75,7 +76,7 @@ export type JobRow = { id: number; label: string; args: string[]; script: 'artwo
 const defaults: ArtworkSettings = { libraries: [], upload: false, uploadLogo: true, includeSeasons: true, includeEpisodes: false, includeCollections: false,
   missingArt: 'stock', quality: 95, workers: 2, language: 'en', completionLabel: 'tk.box', defaultLayout: 'tk-movies', layoutByLibrary: {},
   layoutByType: { movie: 'tk-movies', tv: 'tk-tv', custom: 'tk-custom', collection: 'tk-collections', streaming: 'tk-streaming', chart: 'tk-charts' },
-  schedules: { scrub: { enabled: false, time: '04:00' }, added: { enabled: false, minutes: 60 } } };
+  schedules: { scrub: { enabled: false, schedule: { kind: 'times', times: ['04:00'], days: [] } }, added: { enabled: false, schedule: { kind: 'every', minutes: 60 } } } };
 
 // The layouts seeded before the tk-* set (the engine's example config), and the tk-* layout each one's uses move to.
 const RETIRED: Record<string, string> = { 'tk-movies': 'tk-movies', 'tk-tv': 'tk-tv', 'collection-tmdb': 'tk-collections',
@@ -165,7 +166,8 @@ export class ArtworkStore {
   }
   settings() {
     const { revision, value: { keys: _, schedules, ...settings } } = this.stored();
-    return { revision, ...settings, schedules: { scrub: schedules.scrub ?? defaults.schedules.scrub, added: schedules.added ?? defaults.schedules.added } };
+    // Schedules saved as a daily time or every N minutes read as schedules.
+    return { revision, ...settings, schedules: { scrub: toScheduled(schedules.scrub ?? defaults.schedules.scrub) as Scheduled, added: toScheduled(schedules.added ?? defaults.schedules.added) as Scheduled } };
   }
   // What the Admin page shows: whether each key is saved, never the key itself.
   view() { const { keys } = this.stored().value; return { ...this.settings(), keysSet: Object.fromEntries(keyNames.map(k => [k, !!keys[k]])) as Record<typeof keyNames[number], boolean> }; }
@@ -198,7 +200,7 @@ export class ArtworkStore {
     const value = row ? JSON.parse(row.value) as ArtworkCollections & { radarrKey?: string } : { ...collectionDefaults };
     // Collections saved before an option existed read it as its default.
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
-    value.schedules ??= collectionDefaults.schedules;
+    value.schedules = value.schedules ? { custom: toScheduled(value.schedules.custom), all: toScheduled(value.schedules.all), added: toScheduled(value.schedules.added) } as ArtworkCollections['schedules'] : collectionDefaults.schedules;
     value.automatic ??= [];
     return { revision: row?.revision ?? 0, value };
   }

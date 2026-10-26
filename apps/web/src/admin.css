@@ -30,13 +30,28 @@
 .artwork-inline{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .artwork-inline input[type=number]{width:80px}
 .artwork-schedules{display:flex;flex-direction:column}
-.artwork-schedule{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;align-items:center;gap:24px;padding:16px 0;border-top:1px solid var(--line)}
+.artwork-schedule{display:grid;grid-template-columns:minmax(0,1fr) 240px auto;align-items:center;gap:8px 24px;padding:16px 0;border-top:1px solid var(--line)}
 .artwork-schedule:first-child{border-top:0;padding-top:4px}
 .artwork-schedule:last-child{padding-bottom:4px}
 .artwork-schedule-control{display:flex;justify-content:flex-end}
 .artwork-schedule-control label{flex-direction:row;margin:0;color:var(--muted);font-size:13px}
 .artwork-schedule input[type=time]{width:120px}
 .artwork-schedule.off .artwork-schedule-control{opacity:.5}
+.artwork-schedule-editor{grid-column:1/-1;padding-top:4px}
+.schedule-summary{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--text);font-size:13px;white-space:normal;text-align:right}
+.schedule-summary.danger{border-color:var(--danger);color:var(--danger)}
+.schedule-picker{display:flex;flex-direction:column;gap:8px;min-width:0;margin:0;padding:0;border:0}
+.schedule-picker>small{color:var(--dim);line-height:1.5}
+.schedule-picker>small.danger{color:var(--danger)}
+.schedule-line{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.schedule-line input,.schedule-line select{width:auto;height:36px;padding:0 10px;font-size:13px}
+.schedule-line select{padding-right:32px;background-position:right 10px center}
+.schedule-line input[type=number]{width:72px}
+.schedule-line input[type=time]{width:110px}
+.schedule-line .schedule-cron{width:200px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.schedule-time{display:inline-flex;align-items:center}
+.schedule-line .icon-button{width:28px;height:28px;padding:0}
+.schedule-picker .toggle-group button{padding:6px 12px}
 .artwork-schedule-status{color:var(--text)!important;opacity:.75}
 
 /* Titles */

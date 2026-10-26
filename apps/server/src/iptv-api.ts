@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { IptvStore, sourceCreate, sourceOrder, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing, identityResolution } from './persistence/iptv-store.js';
+import { IptvStore, sourceCreate, sourceOrder, sourcePolicy, channelEdit, listingEdit, groupEdit, bulkListing, identityResolution, refreshSchedule } from './persistence/iptv-store.js';
 import { SourceRefresh } from './services/source-refresh.js';
 import { sourceEndpoint } from './providers/source-fetch.js';
 import { AppError } from './errors.js';
@@ -50,7 +50,7 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     return store.bindFeed(grant.accountId,sourceParams(req.params),input.feedId,input.expectedRevision);
   });
   app.put('/api/v1/admin/iptv/sources/:id/guide',async req=>{
-    const {grant}=await admin(req),input=z.object({expectedRevision:revision,endpoint:sourceEndpoint.optional(),intervalHours:z.number().int().min(1).max(168)}).strict().parse(req.body);
+    const {grant}=await admin(req),input=z.object({expectedRevision:revision,endpoint:sourceEndpoint.optional(),intervalHours:z.number().int().min(1).max(168).optional(),schedule:refreshSchedule.optional()}).strict().parse(req.body);
     const result=store.saveGuide(grant.accountId,sourceParams(req.params),input.expectedRevision,input);
     return {...result,guide:{...result.guide,running:refresh.active(result.guide.id)}};
   });

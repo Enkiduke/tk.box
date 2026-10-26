@@ -1,19 +1,22 @@
 import { z } from 'zod';
 import type { Db } from './database.js';
 import { requireThat } from '../errors.js';
+import { nextRun, scheduleEvery, type Schedule } from '../../../../packages/contracts/src/schedule.js';
 import { hamming, SIMILAR, type ProbeResult } from '../services/stream-probe.js';
 import { sportsDormant } from './sports-store.js';
 import { guideMissing, healthHidden } from './listing.js';
 
-export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168), hideFailing: z.boolean() }).strict();
-export type HealthPolicy = z.infer<typeof healthPolicy>;
+// Channels are checked again on a schedule (at most hourly; null is manual only), or every intervalHours (0 is manual
+// only). Neither keeps the current one.
+export const healthPolicy = z.object({ intervalHours: z.number().int().min(0).max(168).optional(), schedule: scheduleEvery(60).nullable().optional(), hideFailing: z.boolean() }).strict();
+export type HealthPolicy = { intervalHours: number; schedule: Schedule | null; hideFailing: boolean };
 export type HealthStatus = 'unchecked' | 'online' | 'offline' | 'placeholder';
 type Row = { channel_id: string; status: HealthStatus; reason: string | null; detail: string | null; fingerprint: string | null; frozen: number; checked_at: number | null; last_online: number | null; failures: number; due: number; priority: number; exempt: number };
 
 // Every channel in a sweep is checked; failures are confirmed by a second check before anything is
 // hidden, and only count while the provider is demonstrably serving other channels, so an outage or
 // expired account never empties the lineup. One success restores a channel.
-const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, hideFailing: true };
+const DEFAULT_POLICY: HealthPolicy = { intervalHours: 24, schedule: { kind: 'every', minutes: 1440 }, hideFailing: true };
 const CONFIRM_MS = 90_000, RETRY_MS = 15 * 60_000, DEFER_MS = 5 * 60_000, YIELD_MS = 60_000, REACHABLE_MS = 12 * 3600_000, PEER_MS = 48 * 3600_000;
 const eligible = "c.present=1 AND c.conflict=0 AND c.listing<>'hidden'";
 // Only channels a passing check would list are worth a connection: no event channel outside its event, and no
@@ -32,14 +35,23 @@ export class HealthStore {
     this.db.prepare(`INSERT INTO iptv_channel_health(channel_id,${keys.join(',')}) VALUES(@channel_id,${keys.map(k => '@' + k).join(',')}) ON CONFLICT(channel_id) DO UPDATE SET ${keys.map(k => `${k}=excluded.${k}`).join(',')}`).run({ channel_id: channelId, ...values });
   }
   policy(sourceId: string): HealthPolicy {
-    const row = this.db.prepare('SELECT interval_hours,hide_failing FROM iptv_health_policies WHERE source_id=?').get(sourceId) as { interval_hours: number; hide_failing: number } | undefined;
-    return row ? { intervalHours: row.interval_hours, hideFailing: !!row.hide_failing } : { ...DEFAULT_POLICY };
+    const row = this.db.prepare('SELECT interval_hours,schedule,hide_failing FROM iptv_health_policies WHERE source_id=?').get(sourceId) as { interval_hours: number; schedule: string | null; hide_failing: number } | undefined;
+    if (!row) return { ...DEFAULT_POLICY };
+    const schedule: Schedule | null = row.schedule ? JSON.parse(row.schedule) : row.interval_hours ? { kind: 'every', minutes: row.interval_hours * 60 } : null;
+    return { intervalHours: row.interval_hours, schedule, hideFailing: !!row.hide_failing };
   }
   setPolicy(actor: string, sourceId: string, input: z.input<typeof healthPolicy>, now = Date.now()) {
     const v = healthPolicy.parse(input), source = this.db.prepare('SELECT kind FROM iptv_sources WHERE id=?').get(sourceId) as { kind: string } | undefined;
     requireThat(source, 'SOURCE_NOT_FOUND', 'Source not found.', 404); requireThat(source.kind === 'm3u', 'INVALID_POLICY', 'Channel checks apply to M3U sources only.');
     this.db.transaction(() => {
-      this.db.prepare('INSERT INTO iptv_health_policies(source_id,interval_hours,connections,hide_failing) VALUES(?,?,1,?) ON CONFLICT(source_id) DO UPDATE SET interval_hours=excluded.interval_hours,hide_failing=excluded.hide_failing').run(sourceId, v.intervalHours, Number(v.hideFailing));
+      const current = this.policy(sourceId).schedule;
+      const schedule = v.schedule !== undefined ? v.schedule : v.intervalHours !== undefined ? v.intervalHours ? { kind: 'every', minutes: v.intervalHours * 60 } as const : null : current;
+      // interval_hours is 0 while checks are manual only, else the nearest whole hours of an every-N schedule.
+      const hours = !schedule ? 0 : schedule.kind === 'every' ? Math.min(168, Math.max(1, Math.round(schedule.minutes / 60))) : 24;
+      this.db.prepare('INSERT INTO iptv_health_policies(source_id,interval_hours,schedule,connections,hide_failing) VALUES(?,?,?,1,?) ON CONFLICT(source_id) DO UPDATE SET interval_hours=excluded.interval_hours,schedule=excluded.schedule,hide_failing=excluded.hide_failing').run(sourceId, hours, schedule && JSON.stringify(schedule), Number(v.hideFailing));
+      // A new schedule brings each channel's next check forward to its next run, never later than it was.
+      const next = schedule && JSON.stringify(schedule) !== JSON.stringify(current) ? nextRun(schedule, now) : undefined;
+      if (next !== undefined) this.db.prepare('UPDATE iptv_channel_health SET due=MIN(due,?) WHERE priority=0 AND channel_id IN (SELECT id FROM iptv_channels WHERE source_id=?)').run(next, sourceId);
       this.audit(actor, 'iptv_health_policy_changed', sourceId, now);
     })();
     return this.policy(sourceId);
@@ -75,15 +87,17 @@ export class HealthStore {
   // A relay that is delivering media is proof enough; no probe connection is spent on it.
   relayOnline(channelId: string, now = Date.now()) {
     const source = this.sourceOf(channelId); if (!source) return;
-    this.save(channelId, { status: 'online', reason: 'LIVE_RELAY', failures: 0, last_online: now, checked_at: now, priority: 0, due: now + (this.policy(source).intervalHours || 24) * 3600_000 });
+    this.save(channelId, { status: 'online', reason: 'LIVE_RELAY', failures: 0, last_online: now, checked_at: now, priority: 0, due: this.nextCheck(source, now) });
   }
+  // When a channel checked at `now` is next due; with checks manual only, the sweep skips it whatever this says.
+  private nextCheck(sourceId: string, now: number) { return nextRun(this.policy(sourceId).schedule ?? DEFAULT_POLICY.schedule!, now) ?? now + 24 * 3600_000; }
   private lastOnline(sourceId: string) { return (this.db.prepare('SELECT MAX(h.last_online) AS at FROM iptv_channel_health h JOIN iptv_channels c ON c.id=h.channel_id WHERE c.source_id=?').get(sourceId) as { at: number | null }).at; }
   private slates(sourceId: string) { return (this.db.prepare('SELECT fingerprint FROM iptv_offline_slates WHERE source_id=?').all(sourceId) as { fingerprint: string }[]).map(r => r.fingerprint); }
   // Applies one probe result. Returns what was decided, or undefined when the channel left the lineup meanwhile.
   record(channelId: string, r: ProbeResult, now = Date.now()) {
     return this.db.transaction(() => {
       const source = this.sourceOf(channelId); if (!source) return undefined;
-      const row = this.row(channelId), status = row?.status ?? 'unchecked', policy = this.policy(source), next = now + (policy.intervalHours || 24) * 3600_000;
+      const row = this.row(channelId), status = row?.status ?? 'unchecked', policy = this.policy(source), next = this.nextCheck(source, now);
       if (r.verdict === 'inconclusive') { this.save(channelId, { due: now + (r.reason === 'CANCELLED' ? YIELD_MS : RETRY_MS) }); return { status, applied: false as const }; }
       let verdict = r.verdict, reason = r.reason, immediate = false;
       const fingerprint = r.informative && r.fingerprint ? r.fingerprint : null;

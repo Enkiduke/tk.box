@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import { Vault, digest } from '../security/vault.js';
 import { requireThat } from '../errors.js';
+import { nextRun, scheduleEvery, type Schedule } from '../../../../packages/contracts/src/schedule.js';
 import { validateEndpoint, sourceEndpoint, type SourceEndpoint } from '../providers/source-fetch.js';
 import { readSportsSettings, eventRank } from './sports-store.js';
 import { listed, listingState, listingPolicy, readListingPolicy, alwaysOnMatch, type Listing, type ListingState } from './listing.js';
@@ -14,16 +15,21 @@ import type { CustomChannelStore } from './custom-channels.js';
 import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
 
 type Kind='m3u'|'xmltv';
-type SourceRow={id:string;kind:Kind;name:string;revision:number;interval_hours:number;encrypted_endpoint:string|null;encrypted_snapshot:string|null;encrypted_candidate:string|null;candidate_digest:string|null;last_attempt:number|null;last_success:number|null;next_due:number|null;last_error:string|null;retry_after:number|null;allow_private_streams:number};
+type SourceRow={id:string;kind:Kind;name:string;revision:number;interval_hours:number;encrypted_endpoint:string|null;encrypted_snapshot:string|null;encrypted_candidate:string|null;candidate_digest:string|null;last_attempt:number|null;last_success:number|null;next_due:number|null;last_error:string|null;retry_after:number|null;allow_private_streams:number;schedule:string|null};
 type ChannelRow={id:string;source_id:string;identity:string;encrypted_provider:string;listing:Listing;event:number;guide_exempt:number;present:number;conflict:number;first_seen:number;last_seen:number;missing_since:number|null;display_name:string|null;stack_key:string|null;number:number|null;position:number|null};
 type Feed={id:string;sourceId:string;name:string;number:number;position:number;hasLogo:boolean;stack:string;quality?:string;rank:number;online:boolean;label?:string;event?:{sport:string|null;league:string|null;start:number}};
 // Viewer visibility: listed by the source's rules (listing.ts) and holding a lineup number.
 const viewable=listed;
 const hours=z.number().int().min(1).max(168);
+export const refreshSchedule=scheduleEvery(60);
 export const sourceCreate=z.object({kind:z.enum(['m3u','xmltv']),name:z.string().trim().min(1).max(120),endpoint:sourceEndpoint.optional()}).strict();
 export const sourceOrder=z.object({ids:z.array(z.string().uuid()).max(64)}).strict();
 // allowPrivateStreams lets FFmpeg reach this source's streams on the local network (a LAN tuner); otherwise only public addresses.
-export const sourcePolicy=z.object({expectedRevision:z.number().int().nonnegative(),intervalHours:hours,allowPrivateStreams:z.boolean().optional()}).strict();
+// A remote source refreshes on its schedule, at most hourly; intervalHours is every so many hours. Neither keeps the current one.
+export const sourcePolicy=z.object({expectedRevision:z.number().int().nonnegative(),intervalHours:hours.optional(),schedule:refreshSchedule.optional(),allowPrivateStreams:z.boolean().optional()}).strict();
+const refreshOf=(row:SourceRow):Schedule=>row.schedule?JSON.parse(row.schedule) as Schedule:{kind:'every',minutes:row.interval_hours*60};
+// When a remote source next refreshes after `now`; an uploaded one never does.
+const nextDue=(row:SourceRow,now:number)=>row.encrypted_endpoint?nextRun(refreshOf(row),now)??null:null;
 const listingValue=z.enum(['auto','always','hidden']);
 export const channelEdit=z.object({expectedRevision:z.number().int().nonnegative(),listing:listingValue.optional(),displayName:z.string().trim().min(1).max(200).nullable().optional(),number:z.number().int().min(1).max(999999).optional(),position:z.number().int().min(0).max(999999).optional(),acceptIdentity:z.boolean().optional(),stack:z.string().trim().max(120).nullable().optional()}).strict();
 export const listingEdit=listingPolicy.extend({expectedRevision:z.number().int().nonnegative()}).strict();
@@ -43,7 +49,7 @@ export class IptvStore {
   private audit(actor:string,event:string,id:string,now:number) {this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor,event,now,JSON.stringify({id}));}
   private check(row:SourceRow,expected:number) {requireThat(row.revision===expected,'REVISION_CONFLICT','Source changed. Reload and retry.',409);}
   private snapshot<T>(row:SourceRow):T|undefined {return row.encrypted_snapshot ? JSON.parse(this.vault.open(row.encrypted_snapshot,`iptv:snapshot:${row.id}`)) as T : undefined;}
-  status(id:string) {const r=this.source(id),feed=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(id) as {feed_id:string}|undefined;return {id:r.id,kind:r.kind,name:r.name,revision:r.revision,intervalHours:r.interval_hours,remote:!!r.encrypted_endpoint,lastAttempt:r.last_attempt,lastSuccess:r.last_success,nextDue:r.next_due,lastError:r.last_error,retryAfter:r.retry_after,candidateDigest:r.candidate_digest,allowPrivateStreams:!!r.allow_private_streams,feedId:feed?.feed_id};}
+  status(id:string) {const r=this.source(id),feed=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(id) as {feed_id:string}|undefined;return {id:r.id,kind:r.kind,name:r.name,revision:r.revision,intervalHours:r.interval_hours,schedule:refreshOf(r),remote:!!r.encrypted_endpoint,lastAttempt:r.last_attempt,lastSuccess:r.last_success,nextDue:r.next_due,lastError:r.last_error,retryAfter:r.retry_after,candidateDigest:r.candidate_digest,allowPrivateStreams:!!r.allow_private_streams,feedId:feed?.feed_id};}
   private sourceOrder() {return (this.db.prepare('SELECT id FROM iptv_sources ORDER BY sort_order,rowid').all() as {id:string}[]).map(r=>r.id);}
   list() {return this.sourceOrder().map(id=>this.status(id));}
   // The guide lists each playlist's channels together, in this order.
@@ -107,7 +113,10 @@ export class IptvStore {
   policy(actor:string,id:string,input:z.input<typeof sourcePolicy>,now=Date.now()) {
     const v=sourcePolicy.parse(input);
     this.db.transaction(()=>{const row=this.source(id);this.check(row,v.expectedRevision);
-      this.db.prepare('UPDATE iptv_sources SET revision=revision+1,interval_hours=?,next_due=?,allow_private_streams=? WHERE id=?').run(v.intervalHours,row.encrypted_endpoint?Math.max(now+v.intervalHours*3600000,row.retry_after??0):null,v.allowPrivateStreams===undefined?row.allow_private_streams:Number(v.allowPrivateStreams),id);this.audit(actor,'iptv_source_policy_changed',id,now);
+      // interval_hours stays the nearest whole hours of an every-N schedule, for anything reading it.
+      const schedule=v.schedule??(v.intervalHours?{kind:'every',minutes:v.intervalHours*60} as const:refreshOf(row)),changed=JSON.stringify(schedule)!==JSON.stringify(refreshOf(row));
+      const interval=schedule.kind==='every'?Math.min(168,Math.max(1,Math.round(schedule.minutes/60))):row.interval_hours,updated={...row,schedule:JSON.stringify(schedule)};
+      this.db.prepare('UPDATE iptv_sources SET revision=revision+1,interval_hours=?,schedule=?,next_due=?,allow_private_streams=? WHERE id=?').run(interval,updated.schedule,changed||v.intervalHours?(row.encrypted_endpoint?Math.max(nextDue(updated,now)!,row.retry_after??0):null):row.next_due,v.allowPrivateStreams===undefined?row.allow_private_streams:Number(v.allowPrivateStreams),id);this.audit(actor,'iptv_source_policy_changed',id,now);
     })();return this.status(id);
   }
   due(now=Date.now()) {return (this.db.prepare('SELECT id FROM iptv_sources WHERE encrypted_endpoint IS NOT NULL AND next_due<=? AND (retry_after IS NULL OR retry_after<=?) ORDER BY next_due,id LIMIT 4').all(now,now) as {id:string}[]).map(r=>r.id);}
@@ -115,7 +124,7 @@ export class IptvStore {
   failed(id:string,expected:number,retryAfter:number|undefined,now=Date.now()) {
     // A settings edit during fetch wins. Never overwrite its newly selected cadence.
     const row=this.source(id);if(row.revision!==expected)return;
-    this.db.prepare('UPDATE iptv_sources SET last_error=?,retry_after=?,next_due=? WHERE id=?').run(retryAfter?'SOURCE_RATE_LIMITED':'SOURCE_REFRESH_FAILED',retryAfter??null,Math.max(now+row.interval_hours*3600000,retryAfter??0),id);
+    this.db.prepare('UPDATE iptv_sources SET last_error=?,retry_after=?,next_due=? WHERE id=?').run(retryAfter?'SOURCE_RATE_LIMITED':'SOURCE_REFRESH_FAILED',retryAfter??null,Math.max(nextDue(row,now)??now,retryAfter??0),id);
   }
   ingest(actor:string,id:string,expected:number,bytes:Buffer,now=Date.now()) {
     const row=this.source(id);this.check(row,expected);
@@ -129,7 +138,7 @@ export class IptvStore {
         // Hold a majority disappearance until the exact candidate is reviewed.
         if(old.length>=2 && old.filter(c=>!plan.present.has(c.id)).length>old.length/2) {
           const text=JSON.stringify(parsed),fingerprint=digest(text);
-          this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_candidate=?,candidate_digest=?,last_attempt=?,last_error=?,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:candidate:${id}`),fingerprint,now,'SNAPSHOT_REVIEW_REQUIRED',current.encrypted_endpoint?now+current.interval_hours*3600000:null,id);
+          this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_candidate=?,candidate_digest=?,last_attempt=?,last_error=?,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:candidate:${id}`),fingerprint,now,'SNAPSHOT_REVIEW_REQUIRED',nextDue(current,now),id);
           this.audit(actor,'iptv_snapshot_held',id,now);return {status:'review_required' as const,source:this.status(id)};
         }
       }
@@ -148,7 +157,7 @@ export class IptvStore {
   }
   private publish(actor:string,row:SourceRow,parsed:M3uSnapshot|XmlSnapshot,now:number) {
     if(row.kind==='m3u')this.reconcile(row,parsed as M3uSnapshot,now);
-    this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(parsed),`iptv:snapshot:${row.id}`),now,now,row.encrypted_endpoint?now+row.interval_hours*3600000:null,row.id);
+    this.db.prepare('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(parsed),`iptv:snapshot:${row.id}`),now,now,nextDue(row,now),row.id);
     this.audit(actor,'iptv_snapshot_published',row.id,now);
     // New channels and new listings change what is listed.
     if(row.kind==='m3u')this.relist(row.id);
@@ -470,11 +479,11 @@ export class IptvStore {
       this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);this.audit(actor,'iptv_feed_linked',sourceId,now);this.coverage(sourceId);
     })();return this.status(sourceId);
   }
-  saveGuide(actor:string,sourceId:string,expected:number,input:{endpoint?:SourceEndpoint;intervalHours:number},now=Date.now()) {
+  saveGuide(actor:string,sourceId:string,expected:number,input:{endpoint?:SourceEndpoint;intervalHours?:number;schedule?:Schedule},now=Date.now()) {
     return this.db.transaction(()=>{
       const source=this.source(sourceId);this.check(source,expected);
       requireThat(source.kind==='m3u','MAPPING_SCOPE','Add a program guide to an M3U source.');
-      const interval=hours.parse(input.intervalHours),endpoint=input.endpoint?validateEndpoint(input.endpoint):undefined;
+      const interval=hours.optional().parse(input.intervalHours),schedule=refreshSchedule.optional().parse(input.schedule),endpoint=input.endpoint?validateEndpoint(input.endpoint):undefined;
       const oldId=this.status(sourceId).feedId,old=oldId?this.source(oldId):undefined;
       requireThat(old||endpoint,'GUIDE_ENDPOINT_REQUIRED','Enter an EPG URL.');
       // Legacy feeds can be shared. Copy their saved data before editing so other playlists are unaffected.
@@ -492,7 +501,7 @@ export class IptvStore {
         }
       } else if(endpoint)this.replaceEndpoint(actor,old.id,old.revision,endpoint,now);
       const feed=this.status(feedId!);
-      this.policy(actor,feed.id,{expectedRevision:feed.revision,intervalHours:interval},now);
+      this.policy(actor,feed.id,{expectedRevision:feed.revision,intervalHours:interval,schedule},now);
       this.bindFeed(actor,sourceId,feed.id,expected,now);
       return {source:this.status(sourceId),guide:this.status(feed.id)};
     })();

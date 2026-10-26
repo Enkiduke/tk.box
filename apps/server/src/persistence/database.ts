@@ -186,6 +186,11 @@ export function openDatabase(path: string) {
       db.exec('CREATE TABLE sports_holds(channel_id TEXT PRIMARY KEY, until INTEGER NOT NULL)');
       db.prepare('INSERT INTO migrations VALUES(21)').run();
     }
+    // Refreshes and channel checks on a schedule (JSON, packages/contracts/src/schedule.ts); NULL is every interval_hours.
+    if (!db.prepare('SELECT 1 FROM migrations WHERE version=22').get()) {
+      db.exec('ALTER TABLE iptv_sources ADD COLUMN schedule TEXT; ALTER TABLE iptv_health_policies ADD COLUMN schedule TEXT');
+      db.prepare('INSERT INTO migrations VALUES(22)').run();
+    }
   })();
   return db;
 }

@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
 import type { CleanupHold, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
 import type { PlexGrant } from '../providers/plex.js';
-import { lastDue } from './artwork-schedule.js';
+import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
 
 // Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
@@ -115,7 +115,7 @@ export class CleanupEngine {
     if (missing.length) throw new AppError('CLEANUP_NOT_READY', missing[0]!, 409);
     const dry = preview || this.store.settings().dryRun, args = preview ? ['--dry-run'] : [];
     if (this.pending()) throw new AppError('CLEANUP_BUSY', 'A clean up is already running or waiting.', 409);
-    const id = this.store.addJob(actor, `${scheduled ? 'Nightly: ' : ''}${dry ? 'Preview: what would be deleted' : 'Clean up: delete what is due'}`, args);
+    const id = this.store.addJob(actor, `${scheduled ? 'Scheduled: ' : ''}${dry ? 'Preview: what would be deleted' : 'Clean up: delete what is due'}`, args);
     this.queue.push({ id, args, token }); void this.next();
     return this.store.job(id);
   }
@@ -150,14 +150,13 @@ export class CleanupEngine {
   scheduleState() { return this.store.state<{ lastRun?: number; note?: string }>('schedule') ?? {}; }
   start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); }
   close() { clearInterval(this.timer); this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
-  // Once a day at the chosen server-local time, or up to two hours late if tk.box was down then.
+  // On its schedule (server local time), or up to two hours late if tk.box was down then.
   async tick(now = new Date()) {
     if (this.ticking) return; this.ticking = true;
     try {
       const { schedule } = this.store.settings();
       if (!schedule.enabled) return;
-      const due = lastDue(schedule.time, now);
-      if ((this.scheduleState().lastRun ?? 0) >= due || now.getTime() - due >= LATE_MS) return;
+      if (dueAt(schedule.schedule, this.scheduleState().lastRun, now.getTime(), LATE_MS) === undefined) return;
       const grant = await this.adminGrant().catch(() => undefined);
       if (!grant) { this.store.setState('schedule', { ...this.scheduleState(), note: WAITING }); return; }
       let note = 'Queued.';

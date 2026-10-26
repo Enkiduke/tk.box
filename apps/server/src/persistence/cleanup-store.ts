@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
+import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 
 // Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its Tautulli and Sonarr
 // connections and its job history. The script reads none of this directly: before each run tk.box writes its JSON
@@ -25,8 +26,8 @@ export const cleanupSettings = z.object({
   exemptIfInCollection: z.boolean(),
   seasons: z.object({ enabled: z.boolean(), protectLatest: z.boolean(), protectSpecials: z.boolean() }).strict(),
   leavingSoon: z.object({ enabled: z.boolean(), name: label.pipe(z.string().min(1)), days: z.number().int().min(1).max(365), poster: z.boolean() }).strict(),
-  // Each day at a server-local time.
-  schedule: z.object({ enabled: z.boolean(), time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/) }).strict()
+  // On its schedule, server local time, at most hourly.
+  schedule: scheduled(60)
 }).strict();
 export type CleanupSettings = z.infer<typeof cleanupSettings>;
 export const cleanupConnectionsInput = z.object({ tautulliUrl: origin, sonarrUrl: origin, tautulliKey: key.optional(), sonarrKey: key.optional() }).strict();
@@ -35,7 +36,7 @@ type Connections = { tautulliUrl: string; sonarrUrl: string; tautulliKey?: strin
 const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromRadarr: false, deleteFromSonarr: false, deleteFromSeerr: false,
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
   seasons: { enabled: true, protectLatest: true, protectSpecials: true }, leavingSoon: { enabled: false, name: 'Leaving Soon', days: 7, poster: true },
-  schedule: { enabled: false, time: '03:30' } };
+  schedule: { enabled: false, schedule: { kind: 'times', times: ['03:30'], days: [] } } };
 export const holdKey = z.string().regex(/^(?:movie|tv):\d{1,10}(?::\d{1,4})?$/);
 export type CleanupHold = { until: number; by: string; at: number };
 export type CleanupJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
@@ -57,7 +58,9 @@ export class CleanupStore {
   }
   settings(): CleanupSettings & { revision: number } {
     const row = this.row<Partial<CleanupSettings>>('settings');
-    return { ...defaults, ...row?.value, revision: row?.revision ?? 0 };
+    const value = { ...defaults, ...row?.value };
+    // A schedule saved as a daily time reads as a schedule.
+    return { ...value, schedule: toScheduled(value.schedule) as Scheduled, revision: row?.revision ?? 0 };
   }
   update(actor: string, expectedRevision: number, input: CleanupSettings, now = Date.now()) {
     const value = cleanupSettings.parse(input);

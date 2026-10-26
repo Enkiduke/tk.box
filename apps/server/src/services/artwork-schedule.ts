@@ -3,39 +3,33 @@ import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import type { ArtworkEngine } from './artwork-engine.js';
 import { PlexNotifications, type Finished } from './plex-notifications.js';
 import { WAITING } from './plex-background.js';
+import { dueAt, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 
-// Artwork's and collections' schedules, run by tk.box instead of cron and a Tautulli hook. Each daily task runs once a
-// day at its server-local time (or within two hours after, if tk.box was down then). Newly added titles are checked for
-// as soon as Plex says it finished adding something to a watched library (its notification feed, once things settle),
-// and every N minutes as well for anything a dropped feed missed. A check reads each library's recently added list back
+// Artwork's and collections' schedules, run by tk.box instead of cron and a Tautulli hook. Each task runs on its
+// schedule, server local time (a missed time within two hours after, if tk.box was down then). Newly added titles are
+// checked for as soon as Plex says it finished adding something to a watched library (its notification feed, once things
+// settle), and on their own schedule as well for anything a dropped feed missed. A check reads each library's recently added list back
 // to a watermark, oldest first, and moves the watermark only past what it handled, so nothing is missed and nothing old
 // is made again. Plex is read with the Plex admin token (services/plex-background.ts); without a working one, they wait.
-// The nightly full collections run, which also builds Discover's index, waits while anyone is streaming, up to
-// DEFER_MS after its time; newly added movies join that index every few minutes in one small job.
-// Daily tasks by the name their state is kept under: artwork's, then the collections' (prefixed "collections-").
-export const DAILY = {
-  scrub: { label: 'Nightly: update changed titles', script: 'artwork', args: ['--changed-only'], upload: false },
-  'collections-custom': { label: 'Nightly: custom and seasonal collections', script: 'collections', args: ['custom', 'apply'], upload: true },
-  'collections-all': { label: 'Nightly: update every collection', script: 'collections', args: ['all', 'apply'], upload: true }
+// The full collections run, which also builds Discover's index, waits while anyone is streaming, up to DEFER_MS after
+// its time; newly added movies join that index every few minutes in one small job.
+// Full runs by the name their state is kept under: artwork's, then the collections' (prefixed "collections-").
+export const TASKS = {
+  scrub: { label: 'Scheduled: update changed titles', script: 'artwork', args: ['--changed-only'], upload: false },
+  'collections-custom': { label: 'Scheduled: custom and seasonal collections', script: 'collections', args: ['custom', 'apply'], upload: true },
+  'collections-all': { label: 'Scheduled: update every collection', script: 'collections', args: ['all', 'apply'], upload: true }
 } as const;
-type Daily = keyof typeof DAILY;
+type Task = keyof typeof TASKS;
 type StateName = ScheduleName | `collections-${CollectionScheduleName}` | 'index-added';
 type AddedItem = { id: string; title: string; showTitle?: string; addedAt?: number };
 export type ScheduleState = { lastRun?: number; note?: string };
 const LATE_MS = 2 * 3600000, DEFER_MS = 4 * 3600000, INDEX_EVERY_MS = 15 * 60000;
-// Daily tasks that wait while anyone is streaming (in tk.box or any Plex app).
-const DEFERRED: readonly Daily[] = ['collections-all'];
+// Full runs that wait while anyone is streaming (in tk.box or any Plex app).
+const DEFERRED: readonly Task[] = ['collections-all'];
 // A check waits this long after Plex's last finished title, so a season or a scan arrives whole, but no longer than
 // SETTLE_MAX_MS after the first. Each check queues at most MAX_QUEUED jobs; the rest wait for the next.
 const SETTLE_MS = 30000, SETTLE_MAX_MS = 3 * 60000, MAX_QUEUED = 50;
 
-// When a daily task at `time` (HH:MM, local) last fell due at or before `now`.
-export function lastDue(time: string, now: Date) {
-  const [hour, minute] = time.split(':').map(Number) as [number, number];
-  const due = new Date(now); due.setHours(hour, minute, 0, 0);
-  if (due.getTime() > now.getTime()) due.setDate(due.getDate() - 1);
-  return due.getTime();
-}
 // Plex gives addedAt in seconds.
 const addedMs = (addedAt?: number) => addedAt === undefined ? 0 : addedAt < 1e11 ? addedAt * 1000 : addedAt;
 
@@ -88,14 +82,15 @@ export class ArtworkSchedule {
     this.ticking = true;
     try {
       const settings = this.store.settings(), collections = this.store.collections(), schedules = settings.schedules, own = collections.schedules;
-      const daily = { scrub: schedules.scrub, 'collections-custom': own.custom, 'collections-all': own.all };
-      const dueDaily = (Object.keys(DAILY) as Daily[]).filter(name => {
-        if (!daily[name].enabled) return false;
-        const due = lastDue(daily[name].time, now);
-        return (this.state(name).lastRun ?? 0) < due && now.getTime() - due < (DEFERRED.includes(name) ? DEFER_MS + LATE_MS : LATE_MS);
-      });
-      const every = (name: StateName, value: { enabled: boolean; minutes: number }) => value.enabled && (soon || now.getTime() - (this.state(name).lastRun ?? 0) >= value.minutes * 60000);
-      const added = every('added', schedules.added), collectionsAdded = every('collections-added', own.added);
+      const tasks = { scrub: schedules.scrub, 'collections-custom': own.custom, 'collections-all': own.all };
+      // When each task that is on last fell due, if it hasn't run since.
+      const dueTimes = new Map((Object.keys(TASKS) as Task[]).flatMap(name => {
+        const due = tasks[name].enabled ? dueAt(tasks[name].schedule, this.state(name).lastRun, now.getTime(), DEFERRED.includes(name) ? DEFER_MS + LATE_MS : LATE_MS) : undefined;
+        return due === undefined ? [] : [[name, due] as const];
+      }));
+      const dueDaily = [...dueTimes.keys()];
+      const checks = (name: StateName, value: Scheduled) => value.enabled && (soon || dueAt(value.schedule, this.state(name).lastRun, now.getTime(), LATE_MS) !== undefined);
+      const added = checks('added', schedules.added), collectionsAdded = checks('collections-added', own.added);
       const indexAdded = soon || now.getTime() - (this.state('index-added').lastRun ?? 0) >= INDEX_EVERY_MS;
       if (!dueDaily.length && !added && !collectionsAdded && !indexAdded) return;
       const grant = await this.adminGrant().catch(() => undefined);
@@ -105,19 +100,19 @@ export class ArtworkSchedule {
       }
       const run = { token: grant.serverToken, libraries: grant.libraries };
       // Within DEFER_MS of its time, a deferred task waits for the streams to end; after that it runs anyway.
-      const waiting = dueDaily.filter(name => DEFERRED.includes(name) && now.getTime() - lastDue(daily[name].time, now) < DEFER_MS);
+      const waiting = dueDaily.filter(name => DEFERRED.includes(name) && now.getTime() - dueTimes.get(name)! < DEFER_MS);
       const streams = waiting.length ? await this.streaming(grant).catch(() => 0) : 0;
       for (const name of dueDaily) {
-        const task = DAILY[name];
+        const task = TASKS[name];
         if (streams && waiting.includes(name)) {
-          const by = new Date(lastDue(daily[name].time, now) + DEFER_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const by = new Date(dueTimes.get(name)! + DEFER_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           this.note(name, `Waiting: ${streams} stream${streams === 1 ? ' is' : 's are'} playing. Runs when they stop, or at ${by}.`);
           continue;
         }
         this.store.setState(`schedule:${name}`, { lastRun: now.getTime(), note: task.upload && !settings.upload ? 'Skipped: Send results to Plex is off.' : 'Queued.' });
         // The full run builds the Discover index too; without it, the index is still built.
         const args = task.upload && !settings.upload ? name === 'collections-all' ? ['index', 'build'] : undefined : [...task.args];
-        if (args && !this.engine.pending(args, task.script)) this.engine.enqueue('system:schedule', args[0] === 'index' ? 'Nightly: Discover index' : task.label, args, run, { script: task.script });
+        if (args && !this.engine.pending(args, task.script)) this.engine.enqueue('system:schedule', args[0] === 'index' ? 'Scheduled: Discover index' : task.label, args, run, { script: task.script });
       }
       // Collections first, so a title joins its collections before its artwork is made. They check the libraries the
       // custom collections that are on use.

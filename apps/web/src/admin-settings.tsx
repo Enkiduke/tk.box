@@ -1,12 +1,14 @@
-// The IPTV, Live Sports and server playback sections of the Admin console.
+// The IPTV, Live Events and server playback sections of the Admin console.
 import {useEffect,useState} from 'react';
 import type {PlaybackSettings} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
+import {SchedulePicker,scheduleProblem} from './schedule-picker.js';
+import {describeSchedule,type Schedule} from '../../../packages/contracts/src/schedule.js';
 import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remember,remembered,useDragOrder,useMutation} from './settings-ui.js';
 
-type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;remote:boolean;allowPrivateStreams:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
+type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;schedule:Schedule;remote:boolean;allowPrivateStreams:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
 type ListingState='listed'|'always'|'hidden'|'missing'|'conflict'|'no_event'|'failing'|'unverified'|'no_guide';
 type Channel={id:string;name:string;tvgId:string;group:string;stack:string|null;stackKey:string;quality:string|null;listing:Listing;state:ListingState;event:boolean;guideExempt:boolean;present:boolean;conflict:boolean;number:number|null;position:number|null;firstSeen:number;lastSeen:number;missingSince:number|null};
@@ -121,7 +123,7 @@ function EditChannel({source,channel,onClose,changed}:{source:Source;channel:Cha
 }
 
 type Health={status:'unchecked'|'online'|'offline'|'placeholder';reason:string|null;checkedAt:number|null;lastOnline:number|null;failures:number;queued:boolean;still:boolean;video?:{codec:string;width?:number;height?:number};thumbnail:boolean;fingerprint:boolean;checking:boolean};
-type HealthView={policy:{intervalHours:number;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;channels:Record<string,Health>};
+type HealthView={policy:{intervalHours:number;schedule:Schedule|null;hideFailing:boolean};summary:{online:number;offline:number;placeholder:number;unchecked:number;hidden:number;due:number;confirming:number;lastChecked:number|null;lastOnline:number|null;slates:number};checking:number;channels:Record<string,Health>};
 const reasons:Record<string,string>={OK:'Playing',STILL_PICTURE:'Still picture with sound',LIVE_RELAY:'Playing for a viewer',FROZEN_SILENT:'Frozen picture with no sound',SILENT_AUDIO:'No sound',PLACEHOLDER_FILE:'Provider placeholder video',KNOWN_SLATE:'Matches a marked offline screen',SHARED_SLATE:'Same frozen screen as other channels',HTTP_NOT_FOUND:'Not found (HTTP 404)',HTTP_FORBIDDEN:'Access denied by provider',HTTP_SERVER_ERROR:'Provider server error',HTTP_ERROR:'Provider HTTP error',DNS_FAILED:'Stream host not found',CONNECTION_REFUSED:'Connection refused',TIMEOUT:'Timed out',INVALID_STREAM:'Not a playable stream',CONNECTION_LOST:'Connection dropped',STREAM_ENDED:'Stream stopped early',NO_MEDIA:'No video or audio'};
 const failing=(h?:Health)=>h?.status==='offline'||h?.status==='placeholder';
 function HealthBadge({health}:{health?:Health}) {
@@ -132,8 +134,8 @@ function HealthBadge({health}:{health?:Health}) {
   return <><span className={`dot-label ${tone}`}>{label}</span>{health&&(health.status!=='unchecked'||rechecking)&&health.reason&&<small>{reasons[health.reason]??code(health.reason)}</small>}{health?.checkedAt&&<small>Checked {date(health.checkedAt)}</small>}</>;
 }
 function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<typeof useApi<HealthView>>;changed:()=>void}) {
-  const data=health.data,[interval,setInterval]=useState(24),[hide,setHide]=useState(true),[saved,setSaved]=useState(false),mutation=useMutation(()=>{health.reload();changed();});
-  useEffect(()=>{if(data){setInterval(data.policy.intervalHours);setHide(data.policy.hideFailing);}},[data?.policy.intervalHours,data?.policy.hideFailing]);
+  const data=health.data,[hide,setHide]=useState(true),[saved,setSaved]=useState(false),mutation=useMutation(()=>{health.reload();changed();});
+  useEffect(()=>{if(data)setHide(data.policy.hideFailing);},[data?.policy.hideFailing]);
   const s=data?.summary,busy=!!data&&(data.checking>0||data.summary.due>0);
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
@@ -144,11 +146,8 @@ function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<ty
         {s.lastChecked&&(!s.lastOnline||s.lastOnline<Date.now()-12*3600000)&&<div className="notice"><span>No channel from this provider has played in the last 12 hours, so failures are not being applied. The provider may be down or refusing this server.</span></div>}
       </Card>
       <Card title="Check settings">
-        <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{intervalHours:interval,hideFailing:hide});setSaved(true);});}}>
+        <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{schedule:data!.policy.schedule,hideFailing:hide});setSaved(true);});}}>
           <Switch label="Hide channels that fail checks" description="Off keeps them listed, still checked." checked={hide} onChange={v=>{setHide(v);setSaved(false);}}/>
-          <div className="form-columns">
-            <label>Check every (hours)<input type="number" min="0" max="168" required value={interval} onChange={e=>{setInterval(Number(e.target.value));setSaved(false);}}/><small>0 = manual only</small></label>
-          </div>
           <div className="button-row"><button className="primary" disabled={mutation.busy}>Save check settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
         </form>
       </Card>
@@ -208,9 +207,8 @@ function RemoveSource({source,sources,changed,removed,onClose}:{source:Source;so
   </Modal>;
 }
 function GuidePanel({source,guide,changed}:{source:Source;guide?:Source;changed:()=>void}) {
-  const [url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[interval,setInterval]=useState(guide?.intervalHours??6),[remove,setRemove]=useState(false),[saved,setSaved]=useState(false);
+  const [url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[remove,setRemove]=useState(false),[saved,setSaved]=useState(false);
   const mutation=useMutation(changed),busy=mutation.busy||!!guide?.running;
-  useEffect(()=>{setInterval(guide?.intervalHours??6);},[guide?.id,guide?.intervalHours]);
   useEffect(()=>{if(!guide?.running)return;const timer=window.setInterval(changed,3000);return()=>window.clearInterval(timer);},[guide?.running]);
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}{saved&&<p className="success" role="status">EPG saved.</p>}
@@ -222,17 +220,16 @@ function GuidePanel({source,guide,changed}:{source:Source;guide?:Source;changed:
         if(!url.trim()&&(headers.trim()||insecure))throw new Error('Enter the EPG URL to replace its provider request options.');
         let requestHeaders:unknown={};
         if(headers.trim()){try{requestHeaders=JSON.parse(headers);}catch{throw new Error('Headers must be a JSON object.');}}
-        const result=await api<{source:Source;guide:Source}>(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:source.revision,intervalHours:interval,...(url.trim()?{endpoint:{url:url.trim(),headers:requestHeaders,allowInsecureHttp:insecure}}:{})});
+        const result=await api<{source:Source;guide:Source}>(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:source.revision,...(url.trim()?{endpoint:{url:url.trim(),headers:requestHeaders,allowInsecureHttp:insecure}}:{})});
         setUrl('');setHeaders('');setInsecure(false);
         if(result.guide.remote)try{await api(`/admin/iptv/sources/${result.guide.id}/refresh`,'POST',{});}catch{throw new Error('The EPG was saved for this source, but its import failed. Use Refresh EPG to retry, or enter a replacement EPG URL.');}
         setSaved(true);
       });}}>
         <label>{guide?'Replacement EPG URL':'EPG URL'}<input type="url" value={url} onChange={e=>setUrl(e.target.value)} required={!guide} disabled={busy} autoComplete="off" spellCheck={false} placeholder="https://provider.example/guide.xml.gz"/><small>{guide?'Blank keeps the current guide · ':''}XML or .gz</small></label>
-        <label className="narrow">Refresh every (hours)<input type="number" min="1" max="168" required value={interval} disabled={busy} onChange={e=>setInterval(Number(e.target.value))}/></label>
         <details><summary>Provider request options</summary><div className="form-stack"><label>Request headers (JSON)<textarea value={headers} disabled={busy} onChange={e=>setHeaders(e.target.value)} autoComplete="off" placeholder={'{"User-Agent":"tk.box"}'}/></label><label className="checkbox-label"><input type="checkbox" checked={insecure} disabled={busy} onChange={e=>setInsecure(e.target.checked)}/>This provider requires unencrypted HTTP</label></div></details>
         {guide&&!guide.remote&&<label>Replacement guide file<input type="file" accept=".xml" disabled={busy} onChange={e=>{const input=e.currentTarget,file=input.files?.[0];if(file)void mutation.run(async()=>{
           if(file.size>16*1024*1024)throw new Error('File exceeds the 16 MiB import limit.');
-          const text=await file.text(),result=await api<{guide:Source}>(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:source.revision,intervalHours:interval});
+          const text=await file.text(),result=await api<{guide:Source}>(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:source.revision});
           await api(`/admin/iptv/sources/${result.guide.id}/upload`,'POST',{expectedRevision:result.guide.revision,text});input.value='';
         });}}/></label>}
         <div className="button-row"><button className="primary" disabled={busy}>{mutation.busy?'Saving EPG…':guide?'Save EPG':'Add EPG'}</button></div>
@@ -344,19 +341,13 @@ function OverviewPanel({source,guide,summary,total,openChannels,openTab,review}:
   </>;
 }
 function ConnectionPanel({source,sources,changed,removed}:{source:Source;sources:Source[];changed:()=>void;removed:()=>void}) {
-  const [interval,setInterval]=useState(source.intervalHours),[replacement,setReplacement]=useState(''),[insecure,setInsecure]=useState(false),[providerHeaders,setProviderHeaders]=useState(''),[remove,setRemove]=useState(false),[saved,setSaved]=useState('');
+  const [replacement,setReplacement]=useState(''),[insecure,setInsecure]=useState(false),[providerHeaders,setProviderHeaders]=useState(''),[remove,setRemove]=useState(false),[saved,setSaved]=useState('');
   const [lan,setLan]=useState(source.allowPrivateStreams),mutation=useMutation(changed);
-  useEffect(()=>{setInterval(source.intervalHours);setLan(source.allowPrivateStreams);},[source.revision]);
+  useEffect(()=>{setLan(source.allowPrivateStreams);},[source.revision]);
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}{saved&&<p className="success" role="status">{saved}</p>}
-    <Card title="Refresh">
-      <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,intervalHours:interval});setSaved('Refresh interval saved.');});}}>
-        <label>Refresh the playlist every (hours)<input type="number" min="1" max="168" required value={interval} disabled={!source.remote} onChange={e=>setInterval(Number(e.target.value))}/>{!source.remote&&<small>Uploaded playlists don’t refresh.</small>}</label>
-        <button disabled={mutation.busy||!source.remote}>Save</button>
-      </form>
-    </Card>
     <Card title="Local network streams" description="Channels play only from internet addresses, so a playlist can’t point tk.box at devices on your network. Allow it for a tuner or server on your own network, such as an HDHomeRun.">
-      <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,intervalHours:source.intervalHours,allowPrivateStreams:lan});setSaved(lan?'Local network streams allowed.':'Local network streams blocked.');});}}>
+      <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,allowPrivateStreams:lan});setSaved(lan?'Local network streams allowed.':'Local network streams blocked.');});}}>
         <label className="checkbox-label"><input type="checkbox" checked={lan} onChange={e=>setLan(e.target.checked)}/>Allow streams on my local network</label>
         <button disabled={mutation.busy||lan===source.allowPrivateStreams}>Save</button>
       </form>
@@ -374,7 +365,37 @@ function ConnectionPanel({source,sources,changed,removed}:{source:Source;sources
     {remove&&<RemoveSource source={source} sources={sources} changed={changed} removed={removed} onClose={()=>setRemove(false)}/>}
   </>;
 }
-const sourceTabs=[['overview','Overview'],['channels','Channels'],['listing','Listing'],['guide','Guide'],['checks','Checks'],['sports','Sports'],['connection','Connection']] as const;
+// Every schedule of a source in one place: the playlist's refresh, its guide's refresh and the channel checks. Save sends
+// only those that changed, the playlist first since the guide's save expects the source's new revision.
+function SchedulesPanel({source,guide,health,changed}:{source:Source;guide?:Source;health:ReturnType<typeof useApi<HealthView>>;changed:()=>void}) {
+  const policy=health.data?.policy,[playlist,setPlaylist]=useState(source.schedule),[epg,setEpg]=useState(guide?.schedule),[checks,setChecks]=useState<Schedule|null|undefined>(policy?.schedule),[saved,setSaved]=useState(false);
+  const mutation=useMutation(()=>{health.reload();changed();});
+  useEffect(()=>setPlaylist(source.schedule),[source.revision]);
+  useEffect(()=>setEpg(guide?.schedule),[guide?.id,guide?.revision]);
+  useEffect(()=>setChecks(policy?.schedule),[JSON.stringify(policy?.schedule)]);
+  const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b),edit=<T,>(set:(v:T)=>void)=>(v:T)=>{setSaved(false);set(v);};
+  const dirty=!same(playlist,source.schedule)||!!guide&&!same(epg,guide.schedule)||!!policy&&checks!==undefined&&!same(checks,policy.schedule);
+  const problem=!!scheduleProblem(playlist,60)||!!epg&&!!scheduleProblem(epg,60)||!!checks&&!!scheduleProblem(checks,60);
+  const save=()=>void mutation.run(async()=>{
+    let revision=source.revision;
+    if(source.remote&&!same(playlist,source.schedule))revision=(await api<Source>(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:revision,schedule:playlist})).revision;
+    if(guide?.remote&&epg&&!same(epg,guide.schedule))await api(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:revision,schedule:epg});
+    if(policy&&checks!==undefined&&!same(checks,policy.schedule))await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{schedule:checks,hideFailing:policy.hideFailing});
+    setSaved(true);
+  });
+  return <>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    <Card title="Schedules" description="Server local time.">
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
+        {source.remote?<div className="field">Refresh the playlist<SchedulePicker value={playlist} min={60} set={edit((v:Schedule|null)=>v&&setPlaylist(v))}/></div>:<p className="muted small">Uploaded playlists don’t refresh.</p>}
+        {!guide?<p className="muted small">No EPG yet. Add one in the Guide tab.</p>:guide.remote&&epg?<div className="field">Refresh the guide<SchedulePicker value={epg} min={60} disabled={!!guide.running} set={edit((v:Schedule|null)=>v&&setEpg(v))}/></div>:<p className="muted small">Uploaded guides don’t refresh.</p>}
+        {health.loading&&!policy?<Loading/>:health.error?<ErrorNotice message={health.error.message} retry={health.reload}/>:checks!==undefined&&<div className="field">Check each channel again<SchedulePicker value={checks} min={60} off="Manual only" set={edit(setChecks)}/></div>}
+        <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty||problem}>Save schedules</button>{saved&&!dirty&&<span className="success" role="status">Saved.</span>}</div>
+      </form>
+    </Card>
+  </>;
+}
+const sourceTabs=[['overview','Overview'],['channels','Channels'],['listing','Listing'],['guide','Guide'],['checks','Checks'],['sports','Events'],['schedules','Schedules'],['connection','Connection']] as const;
 function SourceDetail({source,sources,changed,removed,back}:{source:Source;sources:Source[];changed:()=>void;removed:()=>void;back:()=>void}) {
   const [tab,setTabState]=useState(()=>remembered('sourceTab','overview')),[filter,setFilter]=useState('all'),[candidate,setCandidate]=useState(false);
   const setTab=(t:string)=>{setTabState(t);remember('sourceTab',t);};
@@ -389,7 +410,7 @@ function SourceDetail({source,sources,changed,removed,back}:{source:Source;sourc
   return <section className="source-detail">
     <button className="back-link" onClick={back}><Icon name="back" size={16}/>All sources</button>
     <div className="source-head">
-      <div className="source-title"><span className={`status-dot ${source.lastError?'danger':source.lastSuccess?'ok':''}`} aria-hidden="true"/><div><h2>{source.name}</h2><p className="muted small">{source.remote?`Remote playlist · refreshes every ${source.intervalHours}h`:'Uploaded playlist'} · {channels.data?`${listedCount(summary)} of ${plural(total,'channel')} listed`:'Loading channels…'}</p></div></div>
+      <div className="source-title"><span className={`status-dot ${source.lastError?'danger':source.lastSuccess?'ok':''}`} aria-hidden="true"/><div><h2>{source.name}</h2><p className="muted small">{source.remote?`Remote playlist · refreshes: ${describeSchedule(source.schedule)}`:'Uploaded playlist'} · {channels.data?`${listedCount(summary)} of ${plural(total,'channel')} listed`:'Loading channels…'}</p></div></div>
       {source.remote&&<div className="button-row"><button disabled={source.running||mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/refresh`,'POST',{}))}><Icon name="restart" size={16}/>{source.running?'Refreshing…':'Refresh now'}</button></div>}
     </div>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
@@ -401,6 +422,7 @@ function SourceDetail({source,sources,changed,removed,back}:{source:Source;sourc
       {tab==='guide'&&<GuidePanel source={source} guide={guide} changed={refreshAll}/>}
       {tab==='checks'&&<ChecksPanel source={source} health={health} changed={refreshAll}/>}
       {tab==='sports'&&<SportsPanel source={source} changed={refreshAll}/>}
+      {tab==='schedules'&&<SchedulesPanel source={source} guide={guide} health={health} changed={refreshAll}/>}
       {tab==='connection'&&<ConnectionPanel source={source} sources={sources} changed={changed} removed={removed}/>}
     </div>
     {candidate&&<Candidate source={source} changed={refreshAll} onClose={()=>setCandidate(false)}/>}
@@ -438,7 +460,7 @@ export function SourceSettings() {
     {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}{ordering.error&&<ErrorNotice message={ordering.error}/>}
     {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:playlists.length?<ul className="source-rows">{playlists.map((s,i)=>{const guide=sources.data!.sources.find(g=>g.id===s.feedId),attention=!!s.lastError||!!s.candidateDigest||!!guide?.lastError;return <li key={s.id} className="source-item" {...drag('sources',i,reorder,playlists.length>1&&!ordering.busy)}>{playlists.length>1&&<MoveButtons name={s.name} index={i} count={playlists.length} disabled={ordering.busy} onMove={to=>reorder(i,to)}/>}<button className="source-row" onClick={()=>choose(s.id)}>
       <span className={`status-dot ${attention?'danger':s.lastSuccess?'ok':''}`} aria-hidden="true"/>
-      <span className="source-row-main"><strong>{s.name}</strong><small>{s.remote?`Remote · every ${s.intervalHours}h`:'File upload'} · {s.lastSuccess?`Imported ${date(s.lastSuccess)}`:'Waiting for import'}</small></span>
+      <span className="source-row-main"><strong>{s.name}</strong><small>{s.remote?`Remote · ${describeSchedule(s.schedule)}`:'File upload'} · {s.lastSuccess?`Imported ${date(s.lastSuccess)}`:'Waiting for import'}</small></span>
       <span className="source-row-tags">{s.candidateDigest&&<span className="badge warning">Review needed</span>}{s.lastError&&<span className="badge danger">{code(s.lastError)}</span>}<span className={`badge ${guide?guide.lastError?'danger':'ok':''}`}>{guide?guide.lastError?'EPG error':'EPG':'No EPG'}</span></span>
       <Icon name="next" size={18}/>
     </button></li>;})}</ul>:<Empty title="No sources yet">Add an M3U playlist to get started.</Empty>}
