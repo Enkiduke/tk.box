@@ -94,7 +94,7 @@ export class Seerr {
   private index?: { key: string; until: number; value: Promise<Map<string, ExploreStatus>> };
   constructor(private connection: () => SeerrConnection | undefined, private transport: typeof fetch = fetch) {}
   configured() { return !!this.connection(); }
-  // Statuses on Plex and Trakt titles need the media list, which only the API key may read.
+  // Statuses on Plex titles need the media list, which only the API key may read.
   hasKey() { return !!this.connection()?.apiKey; }
   private url(base: string, path: string, query: Record<string, string | number> = {}) {
     const url = new URL(`${base}/api/v1${path}`);

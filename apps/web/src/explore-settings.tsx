@@ -1,41 +1,66 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useState} from 'react';
 import type {ExploreLayout,ExploreRowInfo,ExploreSeerrAccount,ExploreSource,ExploreSources} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Loading} from './components.js';
 import {Card,MoveButtons,SectionHead,moveTo,useDragOrder,useMutation} from './settings-ui.js';
+import {rowKey,setExplorePrefs,defaultExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs} from './explore-prefs.js';
 import './explore.css';
 
-type Settings={revision:number;seerrUrl:string;seerrKeySet:boolean;traktClientId:string;traktSecretSet:boolean};
-type Link={userCode:string;verificationUrl:string;interval:number;expiresIn:number};
+type Settings={revision:number;seerrUrl:string;seerrKeySet:boolean};
 type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreSource;configured:boolean;rows:ExploreRowInfo[];error?:string}[]};
-const sourceNames:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr',trakt:'Trakt'};
+const sourceNames:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr'};
 
-// Explore's catalog sources: the administrator orders them in Admin › Explore and connects Seerr and Trakt in Admin › Connections;
-// each viewer links their own Trakt here.
+// Explore's catalog sources: the administrator orders them and picks the rows on offer in Admin › Explore, and connects
+// Seerr in Admin › Connections; each viewer switches off what they don't want from those here.
 export function ExploreSettings({admin}:{admin:boolean}) {
   const sources=useApi<ExploreSources>('/explore/sources');
-  return <><SectionHead title="Explore" description="Your Seerr access and Trakt account for the Explore page."/>
+  return <><SectionHead title="Explore"/>
     {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:sources.data&&<>
+      <ExploreRowPrefs sources={sources.data}/>
       <SeerrAccount sources={sources.data} admin={admin}/>
-      <TraktLink sources={sources.data} changed={()=>{sources.reload();invalidate('/explore/trakt');}}/>
     </>}
   </>;
 }
-// Checking signs the viewer in to Seerr, as requesting would; nothing signs them in just by opening this page.
-function SeerrAccount({sources,admin}:{sources:ExploreSources;admin:boolean}) {
-  const [account,setAccount]=useState<ExploreSeerrAccount>(),mutation=useMutation(()=>{});
-  const can=account&&[account.canRequest.movie&&'movies',account.canRequest.show&&'shows'].filter(Boolean);
-  return <Card title="Seerr" description="When you first request a title you are signed in to Seerr with your Plex account, so requests are made as your Seerr user.">
-    {!sources.seerr.configured?<p className="muted small">{admin?<>Add your Seerr address in <a href="#admin?section=connections">Admin › Connections</a> to turn on requests.</>:'Seerr is not set up on this server.'}</p>
-      :account?<p className="small">Signed in{account.user?<> as <strong>{account.user}</strong></>:''}. {can?.length?`You can request ${can.join(' and ')}${account.fourK.movie||account.fourK.show?', including 4K':''}.`:'Your Seerr account can’t make requests.'}</p>
-      :<div className="button-row"><button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>setAccount(await api<ExploreSeerrAccount>('/explore/seerr/account')))}>Check my Seerr access</button></div>}
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+// The sources and rows the administrator offers, each on until the viewer switches it off.
+function ExploreRowPrefs({sources}:{sources:ExploreSources}) {
+  const prefs=useExplorePrefs(),offered=sources.order.filter(s=>s==='plex'?sources.plex:sources[s].configured);
+  return <Card title="Sources and rows"
+    actions={<button type="button" disabled={!prefs.hidden.length&&!prefs.hiddenRows.length} onClick={()=>setExplorePrefs(defaultExplorePrefs)}>Show everything</button>}>
+    {offered.length?<ol className="sports-order">{offered.map(s=><SourcePrefs key={s} source={s}/>)}</ol>:<p className="muted small">Explore has no sources right now.</p>}
   </Card>;
 }
-// Admin › Explore: what Explore shows and in what order. Seerr and Trakt are connected in Admin › Connections.
+function SourcePrefs({source}:{source:ExploreSource}) {
+  const prefs=useExplorePrefs(),rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`),[open,setOpen]=useState(false);
+  const list=rows.data?.rows??[],on=!prefs.hidden.includes(source),expanded=open&&list.length>0;
+  const shown=list.filter(r=>!prefs.hiddenRows.includes(rowKey(source,r.id))).length;
+  return <li className="sports-sport">
+    <div className="sports-row sports-sport-head">
+      <button type="button" className="sports-expand" aria-expanded={expanded} disabled={!list.length} onClick={()=>setOpen(o=>!o)}><strong>{sourceNames[source]}</strong>
+        <small className="muted">{rows.error?rows.error.message:!rows.data?'Loading rows…':on?`${shown} of ${list.length} rows shown`:'Off'}</small></button>
+      <input type="checkbox" role="switch" className="switch" aria-label={`Show ${sourceNames[source]} on Explore`} checked={on} onChange={e=>showExploreSource(source,e.target.checked)}/>
+    </div>
+    {expanded&&<ol className="sports-leagues">
+      <li className="sports-row sports-bulk"><button type="button" disabled={!on||shown===list.length} onClick={()=>showExploreRows(list.map(r=>rowKey(source,r.id)),true)}>Show all</button><button type="button" disabled={!on||!shown} onClick={()=>showExploreRows(list.map(r=>rowKey(source,r.id)),false)}>Hide all</button></li>
+      {list.map(r=>{const key=rowKey(source,r.id);return <li key={key} className="sports-row">
+        <label className="checkbox-label grow"><input type="checkbox" disabled={!on} checked={!prefs.hiddenRows.includes(key)} onChange={e=>showExploreRows([key],e.target.checked)}/>{r.title}</label>
+      </li>;})}
+    </ol>}
+  </li>;
+}
+// Seerr access is checked as the card opens, which signs the viewer in to Seerr as requesting would.
+function SeerrAccount({sources,admin}:{sources:ExploreSources;admin:boolean}) {
+  const account=useApi<ExploreSeerrAccount>(sources.seerr.configured?'/explore/seerr/account':undefined),a=account.data;
+  const can=!!a&&(a.canRequest.movie||a.canRequest.show);
+  const status=!sources.seerr.configured?<span className="dot-label">{admin?<a href="#admin?section=connections">Not set up</a>:'Not set up'}</span>
+    :account.error?<span className="dot-label danger" title={account.error.message}>Not connected</span>
+    :!a?<span className="dot-label">Checking…</span>
+    :<span className={`dot-label ${can?'ok':'danger'}`}>{can?a.user??'Connected':'Can’t request'}</span>;
+  return <Card title="Seerr" actions={status}/>;
+}
+// Admin › Explore: what Explore shows and in what order. Seerr is connected in Admin › Connections.
 export function ExploreAdmin() {
-  return <><SectionHead title="Explore" description={<>Server-wide: every viewer sees Explore this way. Seerr and Trakt are connected in <a href="#admin?section=connections">Admin › Connections</a>.</>}/><ExploreLayoutSettings/></>;
+  return <><SectionHead title="Explore" description={<>What Explore offers every viewer, in order. Seerr is connected in <a href="#admin?section=connections">Admin › Connections</a>.</>}/><ExploreLayoutSettings/></>;
 }
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {
@@ -73,51 +98,24 @@ function ExploreLayoutSettings() {
     </form>
   </Card>;
 }
-// Seerr and Trakt, in Admin › Connections.
+// Seerr, in Admin › Connections.
 export function ServerExploreSettings() {
-  const data=useApi<Settings>('/admin/explore/settings'),[seerrUrl,setSeerrUrl]=useState(''),[seerrKey,setSeerrKey]=useState(''),[clientId,setClientId]=useState(''),[secret,setSecret]=useState(''),[saved,setSaved]=useState(false);
+  const data=useApi<Settings>('/admin/explore/settings'),[seerrUrl,setSeerrUrl]=useState(''),[seerrKey,setSeerrKey]=useState(''),[saved,setSaved]=useState(false);
   const mutation=useMutation(data.reload);
-  useEffect(()=>{if(data.data){setSeerrUrl(data.data.seerrUrl);setSeerrKey('');setClientId(data.data.traktClientId);setSecret('');}},[data.data?.revision]);
+  useEffect(()=>{if(data.data){setSeerrUrl(data.data.seerrUrl);setSeerrKey('');}},[data.data?.revision]);
   if(data.loading&&!data.data)return <Loading/>;
   if(data.error)return <ErrorNotice message={data.error.message} retry={data.reload}/>;
   if(!data.data)return null;
   const current=data.data;
-  return <Card title="Seerr and Trakt" description="Requests and Trakt on Explore.">
+  return <Card title="Seerr" description="Requests on Explore.">
     <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{
-      await api('/admin/explore/settings','PUT',{expectedRevision:current.revision,seerrUrl:seerrUrl.trim(),...(seerrKey.trim()||!seerrUrl.trim()?{seerrApiKey:seerrUrl.trim()?seerrKey.trim():''}:{}),traktClientId:clientId.trim(),...(secret.trim()||!clientId.trim()?{traktClientSecret:clientId.trim()?secret.trim():''}:{})});
+      await api('/admin/explore/settings','PUT',{expectedRevision:current.revision,seerrUrl:seerrUrl.trim(),...(seerrKey.trim()||!seerrUrl.trim()?{seerrApiKey:seerrUrl.trim()?seerrKey.trim():''}:{})});
       invalidate('/explore/');setSaved(true);
     });}}>
       <label>Seerr address<input type="url" placeholder="https://requests.example.com" value={seerrUrl} maxLength={300} onChange={e=>{setSeerrUrl(e.target.value);setSaved(false);}}/><small>Empty turns requests off.</small></label>
       <label>Seerr API key<input type="password" autoComplete="off" value={seerrKey} maxLength={200} placeholder={current.seerrKeySet?'Saved — enter a new one to replace it':''} onChange={e=>{setSeerrKey(e.target.value);setSaved(false);}}/><small>Seerr › Settings › General</small></label>
-      <label>Trakt client ID<input value={clientId} maxLength={100} spellCheck={false} onChange={e=>{setClientId(e.target.value);setSaved(false);}}/></label>
-      <label>Trakt client secret<input type="password" autoComplete="off" value={secret} maxLength={100} placeholder={current.traktSecretSet?'Saved — enter a new one to replace it':''} onChange={e=>{setSecret(e.target.value);setSaved(false);}}/>
-        <small><a href="https://trakt.tv/oauth/applications/new" target="_blank" rel="noreferrer">Create a Trakt app</a> with redirect <code>urn:ietf:wg:oauth:2.0:oob</code>. Changing the ID unlinks all viewers.</small></label>
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Seerr and Trakt</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
+      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Seerr</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
     </form>
-  </Card>;
-}
-function TraktLink({sources,changed}:{sources:ExploreSources;changed:()=>void}) {
-  const [link,setLink]=useState<Link>(),[message,setMessage]=useState(''),mutation=useMutation(()=>{}),polling=useRef(false);
-  // Polls Trakt at the interval it asked for while the code is shown.
-  useEffect(()=>{
-    if(!link)return;let active=true;
-    const timer=window.setInterval(()=>{
-      if(polling.current)return;polling.current=true;
-      void api<{status:string;user?:string}>('/explore/trakt/link/poll','POST').then(r=>{
-        if(!active)return;
-        if(r.status==='linked'){setLink(undefined);setMessage(`Connected${r.user?` as ${r.user}`:''}.`);changed();}
-        else if(r.status!=='pending'){setLink(undefined);setMessage(r.status==='denied'?'Trakt sign-in was declined.':'The code expired. Start again.');}
-      },e=>{if(active){setLink(undefined);setMessage((e as Error).message);}}).finally(()=>{polling.current=false;});
-    },Math.max(2,link.interval)*1000);
-    return()=>{active=false;clearInterval(timer);};
-  },[link]);
-  if(!sources.trakt.configured)return <Card title="Trakt"><p className="muted small">Trakt is not set up on this server.</p></Card>;
-  return <Card title="Trakt" description="Link your Trakt account for your Trakt watchlist and recommendations on Explore.">
-    {sources.trakt.linked?<div className="button-row"><span className="small grow">Connected as <strong>{sources.trakt.user}</strong>.</span><button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await api('/explore/trakt/link','DELETE');setMessage('');changed();})}>Disconnect</button></div>
-      :link?<div className="form-stack"><p className="small">Go to <a href={link.verificationUrl} target="_blank" rel="noreferrer">{link.verificationUrl}</a> and enter this code:</p><p className="trakt-code"><strong>{link.userCode}</strong></p><div className="button-row"><span className="spinner small-spinner" aria-hidden="true"/><span className="muted small">Waiting for Trakt…</span><button type="button" onClick={()=>setLink(undefined)}>Cancel</button></div></div>
-      :<div className="button-row"><button className="primary" disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{setMessage('');setLink(await api<Link>('/explore/trakt/link','POST'));})}>Connect Trakt</button></div>}
-    {message&&<p className="small" role="status">{message}</p>}
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
   </Card>;
 }

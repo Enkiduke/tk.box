@@ -2,13 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {Seerr,matchPerson,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrStatus,statusIndex} from '../apps/server/src/providers/seerr.js';
-import {traktItems} from '../apps/server/src/providers/trakt.js';
 import {discoverIds,discoverItem} from '../apps/server/src/providers/plex-discover.js';
 import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {ExploreCache,exploreFilter,interleave,lacking,passes,rowShown,shownSources} from '../apps/server/src/explore-api.js';
+import {ExploreCache,SHARED,exploreFilter,interleave,lacking,passes,rowKeep,rowShown,shownSources} from '../apps/server/src/explore-api.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);
@@ -60,15 +59,6 @@ test('Seerr renews an expired session with the Plex token and retries once',asyn
     return Response.json({message:'You do not have permission to make 4K requests.'},{status:403});}) as typeof fetch);
   await assert.rejects(denied.request('1','plex-token','movie',603,undefined,true),{code:'SEERR_FORBIDDEN',message:'You do not have permission to make 4K requests.'});
 });
-test('Trakt lists keep whole movies and shows only',()=>{
-  const items=traktItems([{type:'movie',movie:{title:'Heat',year:1995,ids:{trakt:1,tmdb:949},images:{poster:['walter-r2.trakt.tv/images/movies/p.jpg.webp']}}},
-    {type:'season',show:{title:'Lost',ids:{trakt:2,tmdb:4607}}},{type:'show',show:{title:'Lost',ids:{trakt:2,tmdb:4607},aired_episodes:121}},{type:'movie',movie:{title:'No ids',ids:{}}}]);
-  assert.deepEqual(items.map(i=>i.key),['movie:tmdb:949','show:tmdb:4607']);
-  assert.equal(items[0]!.posterUrl,imagePath('https://walter-r2.trakt.tv/images/movies/p.jpg.webp'));
-  assert.equal(items[1]!.episodeCount,121);
-  // Popular and recommendation lists are bare media of the row's kind.
-  assert.equal(traktItems([{title:'Dune',year:2021,ids:{tmdb:438631}}],'movie')[0]?.kind,'movie');
-});
 test('Plex Discover titles carry their external ids and only proxy catalog hosts',()=>{
   const m={ratingKey:'5d77',guid:'plex://movie/5d77',type:'movie',title:'Emma.',year:2020,thumb:'https://metadata-static.plex.tv/a.jpg',Guid:[{id:'imdb://tt9214832'},{id:'tmdb://556678'},{id:'tvdb://x'}]};
   assert.deepEqual(discoverIds(m),{plex:'5d77',plexGuid:'plex://movie/5d77',imdb:'tt9214832',tmdb:556678});
@@ -78,21 +68,21 @@ test('Plex Discover titles carry their external ids and only proxy catalog hosts
   assert.equal(imagePath('http://image.tmdb.org/a.jpg'),undefined);
   assert.ok(imagePath('https://images.plex.tv/photo?url=x'));
 });
-test('Explore settings keep the Trakt secret sealed and unlink viewers when the app changes',()=>{
-  const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
-  db.prepare('INSERT INTO users(account_id) VALUES(?)').run('1');
-  let view=store.update('1',0,{seerrUrl:'https://seerr.test/',traktClientId:'abc',traktClientSecret:'shh'});
-  assert.deepEqual(view,{revision:1,seerrUrl:'https://seerr.test',seerrKeySet:false,traktClientId:'abc',traktSecretSet:true});
+test('Explore settings keep the Seerr key sealed and drop the Trakt connection saved before Trakt was removed',()=>{
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));new ExploreStore(db,vault);
+  db.prepare('INSERT INTO explore_settings VALUES(1,1,?)').run(JSON.stringify({seerrUrl:'https://seerr.test',traktClientId:'abc',traktSecret:'sealed'}));
+  db.exec('CREATE TABLE explore_trakt_links(account_id TEXT PRIMARY KEY)');
+  const store=new ExploreStore(db,vault);
+  assert.deepEqual(JSON.parse((db.prepare('SELECT value FROM explore_settings').get() as {value:string}).value),{seerrUrl:'https://seerr.test'});
+  assert.equal(db.prepare(`SELECT name FROM sqlite_master WHERE name='explore_trakt_links'`).get(),undefined);
+  let view=store.update('1',1,{seerrUrl:'https://seerr.test/',seerrApiKey:'shh'});
+  assert.deepEqual(view,{revision:2,seerrUrl:'https://seerr.test',seerrKeySet:true});
   assert.ok(!JSON.stringify(db.prepare('SELECT value FROM explore_settings').get()).includes('shh'));
-  assert.deepEqual(store.trakt(),{clientId:'abc',secret:'shh'});
-  store.saveTraktLink('1',{access:'a',refresh:'r',expires:1},'viewer');
-  // Saving without a secret keeps it; the same client keeps viewers linked.
-  view=store.update('1',1,{seerrUrl:'',traktClientId:'abc'});
-  assert.equal(view.traktSecretSet,true);assert.equal(store.traktLink('1')?.username,'viewer');
-  store.update('1',2,{seerrUrl:'',traktClientId:'other'});
-  assert.equal(store.traktLink('1'),undefined);
-  assert.throws(()=>store.update('1',2,{seerrUrl:'',traktClientId:'x'}),{code:'REVISION_CONFLICT'});
-  assert.throws(()=>store.update('1',3,{seerrUrl:'https://user:pw@seerr.test',traktClientId:''}));
+  // Saving without a key keeps it.
+  view=store.update('1',2,{seerrUrl:'https://seerr.test'});
+  assert.equal(store.seerrKey(),'shh');
+  assert.throws(()=>store.update('1',2,{seerrUrl:''}),{code:'REVISION_CONFLICT'});
+  assert.throws(()=>store.update('1',3,{seerrUrl:'https://user:pw@seerr.test'}));
 });
 test('With the API key, browsing reads Seerr without signing anyone in and lists statuses by title',async()=>{
   const calls:string[]=[];
@@ -154,6 +144,12 @@ test('Explore reads are kept per viewer until they expire or are forgotten, and 
   await assert.rejects(cache.get('a','bad',1000,async()=>{throw new Error('down');},1200));
   assert.equal(await cache.get('a','bad',1000,read,1300),6);
 });
+test('Public Explore rows are kept 12 hours, Seerr ones for every viewer, and the watchlist stays short',()=>{
+  const day=12*3600000,short=10*60000;
+  assert.deepEqual(rowKeep('seerr','trending','a'),{account:SHARED,ttl:day});
+  assert.deepEqual(rowKeep('plex','hub.abc','a'),{account:'a',ttl:day});
+  assert.deepEqual(rowKeep('plex','watchlist','a'),{account:'a',ttl:short});
+});
 test('Explore filters read languages, a year range and a minimum score, and leave out titles that lack what a filter needs',()=>{
   const f=exploreFilter({lang:'en, JA,xx1,en',from:1990,to:2005,min:7});
   assert.deepEqual(f,{languages:['en','ja'],from:1990,to:2005,min:7});
@@ -170,25 +166,26 @@ test('Explore filters read languages, a year range and a minimum score, and leav
   assert.equal(passes(item,exploreFilter({})),true);
 });
 test('Explore search interleaves sources best first and lists a title once with what each source adds',()=>{
-  const t=(key:string,source:'plex'|'seerr'|'trakt',extra={})=>({key,source,kind:'movie' as const,title:key,ids:{},...extra});
+  const t=(key:string,source:'plex'|'seerr',extra={})=>({key,source,kind:'movie' as const,title:key,ids:{},...extra});
   const merged=interleave([
     [t('a','plex',{ids:{plex:'p1'},posterUrl:undefined}),t('b','plex')],
-    [t('c','seerr'),t('a','seerr',{ids:{tmdb:1},posterUrl:'/x.jpg',status:'available',language:'en'}),t('d','seerr')],
-    [t('e','trakt')]]);
-  assert.deepEqual(merged.map(i=>i.key),['a','c','e','b','d']);
+    [t('c','seerr'),t('a','seerr',{ids:{tmdb:1},posterUrl:'/x.jpg',status:'available',language:'en'}),t('d','seerr')]]);
+  assert.deepEqual(merged.map(i=>i.key),['a','c','b','d']);
   const a=merged[0]!;
   assert.equal(a.source,'plex');assert.equal(a.posterUrl,'/x.jpg');assert.equal(a.status,'available');assert.equal(a.language,'en');
   assert.deepEqual(a.ids,{tmdb:1,plex:'p1'});
 });
 test('Explore layout keeps the administrator order, lists missing sources last and hides sources and single rows',()=>{
-  assert.deepEqual(exploreLayout(undefined),{order:['plex','seerr','trakt'],hidden:[],hiddenRows:[]});
-  assert.deepEqual(exploreLayout({order:['trakt']}).order,['trakt','plex','seerr']);
+  assert.deepEqual(exploreLayout(undefined),{order:['plex','seerr'],hidden:[],hiddenRows:[]});
+  assert.deepEqual(exploreLayout({order:['seerr']}).order,['seerr','plex']);
+  // Trakt, saved before it was removed, is dropped and the rest kept.
+  assert.deepEqual(exploreLayout({order:['trakt','seerr','plex'],hidden:['trakt','plex'],hiddenRows:['trakt:watchlist','seerr:trending']} as never),{order:['seerr','plex'],hidden:['plex'],hiddenRows:['seerr:trending']});
   // A damaged saved value falls back to the default.
-  assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['plex','seerr','trakt']);
+  assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['plex','seerr']);
   const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
-  const saved=store.updateLayout('1',0,{order:['seerr','plex','trakt'],hidden:['trakt'],hiddenRows:['seerr:upcoming-shows']});
+  const saved=store.updateLayout('1',0,{order:['seerr','plex'],hidden:['plex'],hiddenRows:['seerr:upcoming-shows']});
   assert.equal(saved.revision,1);
-  assert.deepEqual(shownSources(saved),['seerr','plex']);
-  assert.equal(rowShown(saved,'seerr','upcoming-shows'),false);assert.equal(rowShown(saved,'seerr','trending'),true);assert.equal(rowShown(saved,'trakt','trending-movies'),false);
-  assert.throws(()=>store.updateLayout('1',0,{order:['plex','seerr','trakt'],hidden:[],hiddenRows:[]}),/Settings changed/);
+  assert.deepEqual(shownSources(saved),['seerr']);
+  assert.equal(rowShown(saved,'seerr','upcoming-shows'),false);assert.equal(rowShown(saved,'seerr','trending'),true);assert.equal(rowShown(saved,'plex','watchlist'),false);
+  assert.throws(()=>store.updateLayout('1',0,{order:['plex','seerr'],hidden:[],hiddenRows:[]}),/Settings changed/);
 });

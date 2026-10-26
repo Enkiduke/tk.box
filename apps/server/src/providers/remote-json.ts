@@ -1,8 +1,8 @@
 import { AppError } from '../errors.js';
 
 export type RemoteResponse = { status: number; data: unknown; headers: Headers };
-// One JSON request to a catalog service outside Plex (Seerr, Trakt). Any status is returned to the caller;
-// only an unreachable service, a redirect or an oversized body throws. A User-Agent is sent: Trakt's firewall refuses requests without one.
+// One JSON request to a catalog service outside Plex (Seerr). Any status is returned to the caller;
+// only an unreachable service, a redirect or an oversized body throws. A User-Agent is sent, as some services refuse requests without one.
 export async function remoteJson(url: URL, init: { method?: string; headers?: Record<string, string>; body?: unknown }, service: string, transport: typeof fetch = fetch, timeoutMs = 15000, maxBytes = 4 * 1024 * 1024): Promise<RemoteResponse> {
   let response: Response;
   try {

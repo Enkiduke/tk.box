@@ -45,7 +45,7 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
       ...(radarr.qualityProfileId ? { quality_profile_id: radarr.qualityProfileId } : {}) } } : {})
   };
 }
-export type EngineSecrets = ArtworkKeys & { radarr?: string; traktClientId?: string };
+export type EngineSecrets = ArtworkKeys & { radarr?: string };
 // Only what Python needs, plus the credentials for this run; never the server's own environment.
 export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
@@ -53,7 +53,7 @@ export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   Object.assign(env, { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' });
   if (run) env.PLEX_TOKEN = run.token;
   for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY'], ['mdblist', 'MDBLIST_API_KEY'],
-    ['radarr', 'RADARR_API_KEY'], ['traktClientId', 'TRAKT_CLIENT_ID']] as const) if (keys[name]) env[variable] = keys[name];
+    ['radarr', 'RADARR_API_KEY']] as const) if (keys[name]) env[variable] = keys[name];
   return env;
 }
 const redact = (line: string, secrets: string[]) => secrets.reduce((text, secret) => secret.length >= 6 ? text.replaceAll(secret, '•••') : text, line);
@@ -68,8 +68,7 @@ export class ArtworkEngine {
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
-  // `traktClientId` is Explore's Trakt app, which the collection providers can also use.
-  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private traktClientId: () => string | undefined = () => undefined) {
+  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
     this.renameFiles();
@@ -94,7 +93,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
-  secrets(): EngineSecrets { const radarr = this.store.collectionsConfig().radarrKey, trakt = this.traktClientId(); return { ...this.store.keys(), ...(radarr ? { radarr } : {}), ...(trakt ? { traktClientId: trakt } : {}) }; }
+  secrets(): EngineSecrets { const radarr = this.store.collectionsConfig().radarrKey; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
   // Whether Python and the engine's packages are installed. Asked again at most once a minute unless forced.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);

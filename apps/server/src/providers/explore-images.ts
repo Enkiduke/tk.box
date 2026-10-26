@@ -1,9 +1,9 @@
 import { ArtworkCache } from './artwork-cache.js';
 import { AppError, requireThat } from '../errors.js';
 
-// Explore artwork comes from TMDB, Plex's metadata hosts and Trakt. The page may load images only from this server,
+// Explore artwork comes from TMDB, Plex's metadata hosts. The page may load images only from this server,
 // so they are proxied, and only from these hosts.
-const allowed = (host: string) => host === 'image.tmdb.org' || host === 'flagcdn.com' || host.endsWith('.plex.tv') || host === 'plex.tv' || host.endsWith('.trakt.tv');
+const allowed = (host: string) => host === 'image.tmdb.org' || host === 'flagcdn.com' || host.endsWith('.plex.tv') || host === 'plex.tv';
 export const imagePath = (url: string | undefined) => {
   if (!url) return undefined;
   try { const u = new URL(url); return u.protocol === 'https:' && allowed(u.hostname) ? `/api/v1/explore/image?u=${encodeURIComponent(u.href)}` : undefined; } catch { return undefined; }
