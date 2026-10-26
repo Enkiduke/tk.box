@@ -57,7 +57,7 @@ function Hero({libraries,onOpen,onPlay,busy}:BrowseProps&PlayProps) {
       <p className="hero-meta">{[meta(item),item.genres.slice(0,2).join(' · ')].filter(Boolean).join(' · ')}</p>
       {item.summary&&<p className="hero-summary">{item.summary}</p>}
       <div className="button-row" onPointerEnter={()=>setPaused(true)} onPointerLeave={()=>setPaused(false)}>
-        {playable(item)?<button className="primary large" disabled={busy} onClick={()=>onPlay(item)}><Icon name="play"/>{item.viewOffsetMs>0?'Resume':'Play'}</button>:<button className="primary large" onClick={()=>onOpen(item.id)}><Icon name="play"/>Episodes</button>}
+        {playable(item)?<button className="primary large" disabled={busy} onClick={()=>onPlay(item,item.viewOffsetMs>0?'resume':undefined)}><Icon name="play"/>{item.viewOffsetMs>0?'Resume':'Play'}</button>:<button className="primary large" onClick={()=>onOpen(item.id)}><Icon name="play"/>Episodes</button>}
         <button className="secondary large" onClick={()=>onOpen(item.id)}><Icon name="info"/>More info</button>
       </div>
     </div>
@@ -260,7 +260,7 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
     {progress!==undefined&&<p className="detail-progress"><span className="detail-progress-bar"><span style={{width:`${progress*100}%`}}/></span>{media.watchedEpisodeCount??0} of {media.episodeCount} episodes watched</p>}
     {error&&<ErrorNotice message={error}/>}
     <div className="button-row">
-      <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
+      <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target,target.viewOffsetMs>0?'resume':undefined)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
       {target&&target.viewOffsetMs>0&&<button className="secondary large" disabled={busy} onClick={()=>onPlay(target,'beginning')}>Start over</button>}
       {admin&&artworkKey(media)&&<button className="secondary large" onClick={()=>editArtwork(artworkKey(media)!)}><Icon name="image"/>Edit artwork</button>}
       {actions.trigger}{actions.menu}

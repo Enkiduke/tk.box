@@ -7,6 +7,7 @@ import {readPreference} from './storage.js';
 import {CaptionCue,subtitleScale,subtitleSizes,updateSubtitleStyle,useSubtitleStyle,type SubtitleStyle} from './subtitle-style.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
+import {pickSubtitle,subtitleChoice,updatePlayerPreferences,usePlayerPreferences} from './player-preferences.js';
 import {qualityTiers,type CatalogItem,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
 // Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
@@ -37,20 +38,10 @@ const lighter=(current:Quality,options:QualityOption[]|undefined,sourceKbps?:num
 };
 const speeds=[.5,.75,1,1.25,1.5,2];
 type Panel='subtitles'|'settings'|'channels'|'queue';
-// Viewer conveniences only; Plex's own track selection is the default.
-const stored=(key:string)=>{try{return readPreference(localStorage,`tk.box.player.${key}`);}catch{return null;}};
-const store=(key:string,value:string)=>{try{localStorage.setItem(`tk.box.player.${key}`,value);}catch{/* storage unavailable */}};
 const resolution=(source?:SourceInfo)=>{const h=source?.height,w=source?.width;if(!h)return undefined;return w&&w>=3200||h>=2000?'4K':h>=1000?'1080p':h>=700?'720p':`${h}p`;};
 const codec=(name?:string)=>name?({h264:'H.264',hevc:'HEVC',h265:'HEVC',av1:'AV1',vp9:'VP9',aac:'AAC',ac3:'Dolby Digital',eac3:'Dolby Digital+',truehd:'TrueHD',dca:'DTS',dts:'DTS',flac:'FLAC',opus:'Opus',mp3:'MP3'}[name.toLowerCase()]??name.toUpperCase()):undefined;
-function initialSubtitle(tracks:SubtitleTrack[]) {
-  const usable=tracks.filter(t=>t.supported),preference=stored('subtitles');
-  if(preference==='off')return null;
-  if(preference)return (usable.find(t=>t.language===preference&&!t.forced)??usable.find(t=>t.language===preference))?.id??null;
-  return usable.find(t=>t.selected)?.id??null;
-}
 export type Feed={id:string;label:string;quality?:string};
 export type QueueState={title:string;items:CatalogItem[];index:number};
-const countdownSeconds=10;
 const queueArt=(item:CatalogItem)=>item.type==='episode'?item.posterUrl??item.backdropUrl:item.posterUrl;
 const queueLabel=(item:CatalogItem)=>item.type==='episode'?`S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} · ${item.title}`:item.title;
 const queueDetail=(item:CatalogItem)=>item.type==='episode'?item.showTitle:item.year?String(item.year):undefined;
@@ -65,12 +56,12 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const [shifted,setShifted]=useState<TimeshiftState>(),[generationKey,setGenerationKey]=useState(0),hlsRef=useRef<Hls|undefined>(undefined),timeshiftRef=useRef(timeshift);timeshiftRef.current=timeshift;
   useEffect(()=>{setShifted(undefined);},[url]);
   // At the end of a title the next one in the queue comes up, and plays after a countdown while Autoplay is on.
-  const next=queue?.items[queue.index+1],previous=queue&&queue.index>0?queue.items[queue.index-1]:undefined;
-  const [ended,setEnded]=useState(false),[countdown,setCountdown]=useState<number>(),[autoplay,setAutoplay]=useState(()=>stored('autoplay')!=='off');
+  const next=queue?.items[queue.index+1],previous=queue&&queue.index>0?queue.items[queue.index-1]:undefined,prefs=usePlayerPreferences(),{autoplay,countdownSeconds}=prefs;
+  const [ended,setEnded]=useState(false),[countdown,setCountdown]=useState<number>();
   const endedRef=useRef(()=>{});endedRef.current=()=>setEnded(true);
   const pickQueued=(index:number,from:'resume'|'beginning')=>{setEnded(false);setCountdown(undefined);onQueuePick?.(index,from);};
   const pickRef=useRef(pickQueued);pickRef.current=pickQueued;
-  const chooseAutoplay=(on:boolean)=>{setAutoplay(on);store('autoplay',on?'on':'off');if(!on)setCountdown(undefined);};
+  const chooseAutoplay=(on:boolean)=>{updatePlayerPreferences({autoplay:on});if(!on)setCountdown(undefined);};
   useEffect(()=>{setEnded(false);setCountdown(undefined);},[url]);
   useEffect(()=>{if(ended&&next&&autoplay)setCountdown(countdownSeconds);},[ended,!!next]);
   useEffect(()=>{
@@ -151,7 +142,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   // are unique per server, so a restart of the same title (an audio switch) keeps the current subtitles.
   useEffect(()=>{
     const keep=subtitleId!==null&&subtitleTracks.some(t=>t.id===subtitleId);
-    const id=!url?null:keep?subtitleId:initialSubtitle(subtitleTracks);setSubtitleId(id);if(!keep)lastSubtitle.current=id;
+    const id=!url?null:keep?subtitleId:pickSubtitle(subtitleTracks,prefs);setSubtitleId(id);if(!keep)lastSubtitle.current=id;
   },[url,program?.id]);
   useEffect(()=>setPanel(undefined),[url]);
   useEffect(()=>{if(ref.current)ref.current.playbackRate=rate;},[rate,url]);
@@ -168,7 +159,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const audio=tracks?.audio.find(t=>t.selected)??tracks?.audio[0];
   const chooseSubtitle=(id:string|null)=>{
     setSubtitleId(id);if(id)lastSubtitle.current=id;
-    const track=subtitleTracks.find(t=>t.id===id);store('subtitles',track?.language??(id?'':'off'));
+    updatePlayerPreferences(subtitleChoice(subtitleTracks.find(t=>t.id===id)));
   };
   const chooseAudio=(id:string)=>{
     if(id===audio?.id||switching||!onAudioChange)return;
@@ -211,10 +202,9 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const behind=!!shifted&&shifted.state!=='LIVE';
   const seek=(delta:number)=>{const video=ref.current!;video.currentTime=Math.max(0,Math.min(Number.isFinite(video.duration)?video.duration:Infinity,video.currentTime+delta));showFlash(delta<0?'rewind':'forward',`${delta<0?'−':'+'}${Math.abs(delta)}s`);};
   const changeRate=(next:number)=>{setRate(next);showFlash('speed',`${next}×`);};
-  // Plex's intro and credits markers, in media time: a Skip button while one plays, and with Auto-skip on,
+  // Plex's intro and credits markers, in media time: a Skip button while one plays, and with auto-skip on for its kind,
   // a jump past each marker once per title, so seeking back into one leaves it playing.
-  const [autoSkip,setAutoSkip]=useState(()=>stored('autoskip')==='on'),autoSkipped=useRef(new Set<string>());
-  const chooseAutoSkip=(on:boolean)=>{setAutoSkip(on);store('autoskip',on?'on':'off');};
+  const autoSkipped=useRef(new Set<string>()),autoSkip=(m:SkipMarker)=>m.type==='intro'?prefs.skipIntros:prefs.skipCredits;
   useEffect(()=>{autoSkipped.current.clear();},[url]);
   const mediaMs=(view.time+shift)*1000,marker=live?undefined:markers?.find(m=>mediaMs>=m.startMs&&mediaMs<m.endMs-1000);
   const skipMarker=(m:SkipMarker)=>{
@@ -222,9 +212,9 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
     showFlash('skip-next',m.type==='intro'?'Skipped intro':'Skipped credits');
   };
   useEffect(()=>{
-    if(!marker||!autoSkip||!view.playing)return;const key=`${marker.type}:${marker.startMs}`;
+    if(!marker||!autoSkip(marker)||!view.playing)return;const key=`${marker.type}:${marker.startMs}`;
     if(!autoSkipped.current.has(key)){autoSkipped.current.add(key);skipMarker(marker);}
-  },[marker?.startMs,autoSkip,view.playing]);
+  },[marker?.startMs,prefs.skipIntros,prefs.skipCredits,view.playing]);
   const toggleFullscreen=()=>{if(document.fullscreenElement)void document.exitFullscreen();else void shell.current?.requestFullscreen?.().catch(()=>{});};
   useEffect(()=>{const changed=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener('fullscreenchange',changed);return()=>document.removeEventListener('fullscreenchange',changed);},[]);
   useEffect(()=>{if(docked){setPanel(undefined);if(document.fullscreenElement)void document.exitFullscreen();}},[docked]);
@@ -271,7 +261,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
       </div>
       {flash&&<div key={flash.key} className="player-flash" aria-hidden="true"><span><Icon name={flash.icon} size={34}/></span>{flash.label&&<em>{flash.label}</em>}</div>}
-      {ended&&next&&<UpNext item={next} countdown={countdown} onPlay={()=>pickQueued(queue!.index+1,'beginning')} onCancel={()=>setCountdown(undefined)}/>}
+      {ended&&next&&<UpNext item={next} countdown={countdown} countdownSeconds={countdownSeconds} onPlay={()=>pickQueued(queue!.index+1,'beginning')} onCancel={()=>setCountdown(undefined)}/>}
       {marker&&!(ended&&next)&&!panel&&<button key={`${marker.type}:${marker.startMs}`} className="player-skip" onClick={()=>skipMarker(marker)}>{marker.type==='intro'?'Skip Intro':'Skip Credits'}<Icon name="skip-next" size={18}/></button>}
       {!view.playing&&!view.waiting&&!liveSwitching&&!tuning&&!loading&&!(ended&&next)&&shifted?.state!=='EXPIRED'&&<button className="player-center" onClick={toggle} aria-label="Play"><Icon name="play" size={40}/></button>}
       {subtitleId&&subtitleStatus==='loading'&&<div className="player-status" role="status"><span className="spinner"/>Preparing subtitles…</div>}
@@ -283,7 +273,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       {shifted?.state==='EXPIRED'&&<div className="player-expired" role="alert"><strong>Buffer expired</strong><span>You were paused longer than this channel keeps, so that part is gone.</span><button className="primary" disabled={shiftBusy} onClick={goLive}>Go Live</button></div>}
       {subtitleId&&subtitleStatus==='failed'&&<div className="player-status warning" role="status">Subtitles couldn't be loaded for this track.</div>}
       {panel&&<div className={`player-panel ${panel}`} role="dialog" aria-label={panel==='subtitles'?'Subtitles':panel==='channels'?'Channels':panel==='queue'?'Playlist':'Playback settings'} onPointerDown={e=>e.stopPropagation()}>
-        {panel==='queue'?queue&&<QueuePanel queue={queue} autoplay={autoplay} onAutoplay={chooseAutoplay} onPick={index=>{setPanel(undefined);pickQueued(index,'resume');}}/>:panel==='channels'?channels:panel==='subtitles'?<>
+        {panel==='queue'?queue&&<QueuePanel queue={queue} autoplay={autoplay} onAutoplay={chooseAutoplay} onPick={index=>{setPanel(undefined);pickQueued(index,prefs.startFrom);}}/>:panel==='channels'?channels:panel==='subtitles'?<>
           <PanelSection title="Subtitles"><div role="radiogroup" aria-label="Subtitle track" className="choices">
             <Choice selected={!subtitleId} onSelect={()=>chooseSubtitle(null)}>Off</Choice>
             {subtitleTracks.map(t=><Choice key={t.id} selected={t.id===subtitleId} disabled={!t.supported} onSelect={()=>chooseSubtitle(t.id)}
@@ -300,7 +290,10 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
             {feeds.map(f=><Choice key={f.id} selected={f.id===feed} detail={f.quality} onSelect={()=>{if(f.id!==feed)onFeed(f.id);}}>{f.label}</Choice>)}
           </div></PanelSection>}
           {!live&&<PanelSection title="Playback speed"><div className="segmented">{speeds.map(value=><button key={value} aria-pressed={rate===value} onClick={()=>setRate(value)}>{value===1?'Normal':`${value}×`}</button>)}</div></PanelSection>}
-          {!live&&<section className="panel-section"><label className="panel-switch">Auto-skip intros and credits<input type="checkbox" role="switch" checked={autoSkip} onChange={e=>chooseAutoSkip(e.target.checked)}/></label></section>}
+          {!live&&<section className="panel-section">
+            <label className="panel-switch">Skip intros automatically<input type="checkbox" role="switch" checked={prefs.skipIntros} onChange={e=>updatePlayerPreferences({skipIntros:e.target.checked})}/></label>
+            <label className="panel-switch">Skip credits automatically<input type="checkbox" role="switch" checked={prefs.skipCredits} onChange={e=>updatePlayerPreferences({skipCredits:e.target.checked})}/></label>
+          </section>}
           <PanelSection title="Stream">
             <dl className="stream-info">
               <div><dt>Mode</dt><dd>{deliveryLabel[delivery]}<small>{(live&&liveDetail[delivery])||deliveryDetail[delivery]}</small></dd></div>
@@ -398,7 +391,7 @@ function QueuePanel({queue,autoplay,onAutoplay,onPick}:{queue:QueueState;autopla
   </>;
 }
 // The next title's art when one ends, with the Autoplay countdown on Play Now.
-function UpNext({item,countdown,onPlay,onCancel}:{item:CatalogItem;countdown?:number;onPlay:()=>void;onCancel:()=>void}) {
+function UpNext({item,countdown,countdownSeconds,onPlay,onCancel}:{item:CatalogItem;countdown?:number;countdownSeconds:number;onPlay:()=>void;onCancel:()=>void}) {
   const art=queueArt(item),detail=queueDetail(item);
   return <div className={`up-next${item.type==='episode'?' wide':''}`} role="dialog" aria-label="Up next" onClick={e=>e.stopPropagation()} onPointerDown={e=>e.stopPropagation()}>
     <span className="up-next-art">{art&&<img src={art} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}</span>
