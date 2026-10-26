@@ -5,7 +5,7 @@ type Speed='slow'|'normal'|'fast';
 export type HomeSettings={liveRow:boolean;liveCount:number;liveShuffle:boolean;liveScroll:boolean;liveSpeed:Speed;
   collectionRows:boolean;collectionShuffle:boolean;collectionScroll:boolean;collectionSpeed:Speed};
 export const defaultHomeSettings:HomeSettings={liveRow:true,liveCount:24,liveShuffle:true,liveScroll:true,liveSpeed:'slow',
-  collectionRows:true,collectionShuffle:false,collectionScroll:false,collectionSpeed:'slow'};
+  collectionRows:true,collectionShuffle:true,collectionScroll:true,collectionSpeed:'normal'};
 // The guide serves at most 60 channels a page.
 export const liveCounts=[12,24,36,48,60] as const;
 export const liveSpeeds=[['slow','Slow'],['normal','Normal'],['fast','Fast']] as const;
