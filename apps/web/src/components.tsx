@@ -223,7 +223,7 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
       {(looping||!edges.start)&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
       <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}><div className="row-track" ref={track}>
         {/* Identical sets: the view rests in the second and jumps back by one set width, which looks seamless. The drift can
-            carry it up to one more set past wherever it rests, so two copies follow. */}
+            carry it up to one more set past wherever it rests (one back when reversed), so two copies follow. */}
         {looping?<><RowCopy>{children}</RowCopy><div className="row-set">{children}</div><RowCopy>{children}</RowCopy><RowCopy>{children}</RowCopy></>:children}
       </div></div>
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
@@ -276,6 +276,7 @@ function RowCopy({children}:{children:ReactNode}) {
 // preference on purpose: Settings › Home turns it off, and Windows reports reduced motion whenever animation effects are off.
 // The drift is one transform animation on the track, which the browser runs on the compositor: it stays smooth and
 // sub-pixel while the page is busy, and costs no script or layout per frame. Hand scrolling moves the scroll position as usual.
+// A row right below another drifting row drifts the other way, so back-to-back rows move in opposite directions.
 function useEndless(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElement|null},on:boolean,speed:number) {
   const held=useRef({hover:false,focus:false}),sync=useRef<()=>void>(()=>{});
   const sets=()=>Array.from(track.current?.children??[]).filter(c=>c.classList.contains('row-set')).map(c=>c.firstElementChild as HTMLElement|null);
@@ -286,7 +287,10 @@ function useEndless(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElem
   useEffect(()=>{
     const el=ref.current,tr=track.current;if(!on||!el||!tr)return;
     let animation:Animation|undefined,width=0,visible=true;
-    const offset=()=>(animation?.effect?.getComputedTiming().progress??0)*width;
+    const rows=Array.from(el.closest('.rows')?.querySelectorAll<HTMLElement>('.row-scroll')??[]),reverse=rows[rows.indexOf(el)-1]?.dataset.drift==='forward';
+    el.dataset.drift=reverse?'reverse':'forward';
+    // How far the drift has carried the view to the right of the scroll position (left, below zero, when reversed).
+    const offset=()=>(animation?.effect?.getComputedTiming().progress??0)*width*(reverse?-1:1);
     // Moves what the drift has covered into the scroll position, so hand scrolling starts from what is on screen.
     const bake=()=>{if(!animation)return;const moved=offset();animation.pause();animation.currentTime=0;el.scrollLeft=wrap(Math.round(el.scrollLeft+moved));};
     sync.current=()=>{
@@ -301,7 +305,7 @@ function useEndless(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElem
       if(width<=el.clientWidth)return;
       if(el.scrollLeft<width||el.scrollLeft>=width*2)el.scrollLeft=wrap(el.scrollLeft||width);
       const duration=width/speed*1000;
-      animation=tr.animate([{transform:'translateX(0)'},{transform:`translateX(${-width}px)`}],{duration,iterations:Infinity});
+      animation=tr.animate([{transform:'translateX(0)'},{transform:`translateX(${reverse?width:-width}px)`}],{duration,iterations:Infinity});
       animation.currentTime=progress*duration;sync.current();
     };
     build();
@@ -310,7 +314,7 @@ function useEndless(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElem
     // A hand scroll that runs into an outer set is moved back to the matching spot in the middle one.
     const settle=()=>{const x=wrap(el.scrollLeft);if(Math.abs(x-el.scrollLeft)>1)el.scrollLeft=x;};
     el.addEventListener('scrollend',settle);
-    return()=>{animation?.cancel();resize.disconnect();seen.disconnect();el.removeEventListener('scrollend',settle);sync.current=()=>{};};
+    return()=>{animation?.cancel();delete el.dataset.drift;resize.disconnect();seen.disconnect();el.removeEventListener('scrollend',settle);sync.current=()=>{};};
   },[on,speed]);
   const handlers={
     onPointerEnter:(e:ReactPointerEvent<HTMLElement>)=>{if(e.pointerType==='mouse'){held.current.hover=true;sync.current();}},
