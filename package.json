@@ -9,11 +9,13 @@
   },
   "scripts": {
     "dev": "tsx watch apps/server/src/index.ts",
+    "dev:readonly": "tsx watch apps/server/src/index.ts --read-only",
     "dev:web": "vite --config apps/web/vite.config.ts",
     "preview:ui": "tsx scripts/preview-ui.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts",
     "start": "node dist/apps/server/src/index.js",
+    "start:readonly": "node dist/apps/server/src/index.js --read-only",
     "test": "tsx --test tests/*.test.ts",
     "spike:media": "tsx scripts/media-spike.ts",
     "doctor": "node --env-file-if-exists=.env --import tsx scripts/doctor.ts",

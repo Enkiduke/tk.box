@@ -48,7 +48,7 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
 export type EngineSecrets = ArtworkKeys & { radarr?: string; traktClientId?: string };
 // Only what Python needs, plus the credentials for this run; never the server's own environment.
 export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
-  const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV'];
+  const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
   const env: NodeJS.ProcessEnv = Object.fromEntries(pass.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
   Object.assign(env, { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' });
   if (run) env.PLEX_TOKEN = run.token;

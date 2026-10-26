@@ -1,5 +1,5 @@
 import type { ExploreDetails, ExploreItem, ExploreRequestExtras, ExploreSeerrAccount, ExploreSeerrOptions, ExploreSeerrUser, ExplorePage, ExploreSeason, ExploreStatus, ExternalRating } from '../../../../packages/contracts/src/index.js';
-import { AppError, requireThat } from '../errors.js';
+import { AppError, requireThat, requireWritable } from '../errors.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import { flagImage, tmdbImage } from './explore-images.js';
 
@@ -152,6 +152,7 @@ export class Seerr {
   }
   // As the viewer. An expired Seerr session is renewed with the Plex token and the request is sent once more.
   async call(accountId: string, plexToken: string, method: string, path: string, query: Record<string, string | number> = {}, body?: unknown) {
+    if (method !== 'GET') requireWritable();
     const base = this.current().url;
     for (let attempt = 0; ; attempt++) {
       const session = await this.session(base, accountId, plexToken, attempt > 0);

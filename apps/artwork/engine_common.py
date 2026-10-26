@@ -31,6 +31,9 @@ TMDB = "https://api.themoviedb.org/3"
 TVDB = "https://api4.thetvdb.com/v4"
 FANART = "https://webservice.fanart.tv/v3"
 IMAGE_BASE = "https://image.tmdb.org/t/p/original"
+# TKBOX_READ_ONLY=1: requests that would change something (anything but GET) are skipped; these POSTs only read.
+READ_ONLY = os.environ.get("TKBOX_READ_ONLY") == "1"
+READ_POSTS = {TVDB + "/login", "https://api.graphql.imdb.com/"}
 
 RESOLUTIONS = ("480p", "576p", "720p", "1080p", "4k")  # ascending
 PLEX_RESOLUTIONS = {"sd": "480p", "480": "480p", "576": "576p", "720": "720p", "1080": "1080p", "4k": "4k"}
@@ -237,6 +240,11 @@ class HTTP:
         return self.local.session
 
     def request(self, method, url, **kwargs):
+        if READ_ONLY and method != "GET" and url not in READ_POSTS:
+            print(f"READ-ONLY: skipped {method} {urlparse(url).hostname}{urlparse(url).path}", flush=True)
+            skipped = requests.Response()
+            skipped.status_code, skipped._content, skipped.url = 200, b"<MediaContainer/>", url
+            return skipped
         # Exception strings from requests can contain API keys in query strings.
         try:
             response = self.session().request(method, url, timeout=(10, 30), **kwargs)

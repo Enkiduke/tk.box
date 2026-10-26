@@ -1,5 +1,7 @@
 """Small API clients with explicit failures and one reusable HTTP session."""
 
+import os
+
 import requests
 
 from .config import Service
@@ -55,6 +57,8 @@ class HttpClient:
         self.timeout = timeout
 
     def request(self, method, url, *, decode=False, **kwargs):
+        if method != "GET" and os.environ.get("TKBOX_READ_ONLY") == "1":
+            raise ApiError(f"{method} {url}: refused in read-only mode")
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
             response.raise_for_status()

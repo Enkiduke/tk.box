@@ -266,7 +266,7 @@ def main(argv=None):
     configure_logging()
     try:
         config = json.loads(args.config.read_text(encoding="utf-8"))
-        settings = Settings.from_config(config, os.environ, dry_run=args.dry_run)
+        settings = Settings.from_config(config, os.environ, dry_run=args.dry_run or os.environ.get("TKBOX_READ_ONLY") == "1")
     except (ConfigError, OSError, ValueError) as exc:
         logger.error("Cannot start purge: %s", exc)
         return 1

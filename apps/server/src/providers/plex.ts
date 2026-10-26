@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
-import { AppError, requireThat } from '../errors.js';
+import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
 
@@ -286,6 +286,7 @@ export class PlexAdapter {
   // Viewer-requested watch state changes, written with the viewer's own server token so
   // they land in that account's Plex history. Never reachable from a playback session.
   async catalogWatchState(grant:PlexGrant,id:string,action:CatalogAction) {
+    requireWritable();
     const {node}=await this.catalogNode(grant,id);
     requireThat(action!=='removeContinue'||node.type==='movie'||node.type==='episode','INVALID_MEDIA','Only movies and episodes appear in Continue Watching.');
     const url=new URL(action==='removeContinue'?'/actions/removeFromContinueWatching':action==='watched'?'/:/scrobble':'/:/unscrobble',this.config.PLEX_URL);
@@ -634,6 +635,7 @@ export class PlexAdapter {
   // Plex's transcoder uses the part's selected audio stream, which Plex stores per
   // account and shares with that account's other Plex clients, exactly as Plex Web does.
   async selectAudioStream(grant: PlexGrant, item: PlexMetadata, streamId: string) {
+    if (readOnly()) return;
     const part = item.Media[0]?.Part[0], partId = part?.key.match(/^\/library\/parts\/(\d+)\//)?.[1];
     requireThat(partId && /^\d+$/.test(streamId) && part?.Stream?.some(s => s.streamType === 2 && s.id === streamId), 'INVALID_AUDIO', 'Audio track is not part of this media.');
     const url = new URL(`/library/parts/${partId}`, this.config.PLEX_URL); url.searchParams.set('audioStreamID', streamId); url.searchParams.set('allParts', '1');
@@ -660,6 +662,7 @@ export class PlexAdapter {
     return data.MediaContainer.Metadata.filter(m => m.Player?.machineIdentifier !== this.clientId);
   }
   async terminateSession(grant: PlexGrant, sessionId: string, reason: string) {
+    requireWritable();
     const url = new URL('/status/sessions/terminate', this.config.PLEX_URL);
     url.searchParams.set('sessionId', sessionId); url.searchParams.set('reason', reason);
     const r = await this.transport(url, { headers: this.headers(grant.serverToken), redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => undefined);
@@ -673,6 +676,7 @@ export class PlexAdapter {
     await r.body?.cancel(); requireThat(r.ok, 'PLEX_STREAM_FAILED', 'Plex transcoder is unavailable.', 502);
   }
   async reportVod(grant: PlexGrant, ratingKey: string, timeMs: number, state: 'playing' | 'paused' | 'stopped', durationMs: number) {
+    if (readOnly()) return;  // Watch progress is a write too
     const url = new URL('/:/timeline', this.config.PLEX_URL);
     for (const [k, v] of Object.entries({ ratingKey, key: `/library/metadata/${ratingKey}`, time: Math.round(timeMs), state, duration: Math.round(durationMs) })) url.searchParams.set(k, String(v));
     // Only the VOD service can call this, after loading immutable session mode and ownership.

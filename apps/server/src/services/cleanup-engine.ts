@@ -77,7 +77,7 @@ export function cleanupMissing(settings: CleanupSettings, services: CleanupServi
 }
 // Only what Python needs, plus this run's credentials; never the server's own environment.
 function childEnv(secrets: Record<string, string | undefined> = {}) {
-  const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV'];
+  const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
   const env: NodeJS.ProcessEnv = Object.fromEntries(pass.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
   Object.assign(env, { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' });
   for (const [name, value] of Object.entries(secrets)) if (value) env[name] = value;
