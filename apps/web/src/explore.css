@@ -1,4 +1,4 @@
-/* Explore: catalog rows from Plex Discover, Seerr and Trakt, and the title dialog with Seerr requests. */
+/* Explore: catalog rows from Plex Discover and Seerr, and the title dialog with Seerr requests. */
 .explore-page{padding-bottom:64px}
 .explore-search{max-width:none}
 .explore-note{margin:0 0 18px;font-size:14px}
@@ -89,7 +89,6 @@
 .explore-status.open{color:var(--muted)}
 .request-foot{display:flex;justify-content:flex-end;gap:10px;padding-top:4px}
 @media(max-width:760px){.explore-body{grid-template-columns:1fr}}
-.trakt-code{margin:0;font-size:28px;letter-spacing:.18em;font-variant-numeric:tabular-nums;color:var(--accent)}
 /* A hairline in the label's colour around titles that are available or requested; hover keeps the usual outline. */
 .explore-card.is-available .poster-art:after{box-shadow:inset 0 0 0 1px #7fd8a0}
 .explore-card.is-partial .poster-art:after{box-shadow:inset 0 0 0 1px #b8e07a}

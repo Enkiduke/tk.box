@@ -47,8 +47,8 @@ export type CatalogItem = {
 export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};
 
-// Explore: titles from catalog sources outside the Plex server (Plex Discover, Seerr, Trakt).
-export type ExploreSource = 'plex' | 'seerr' | 'trakt';
+// Explore: titles from catalog sources outside the Plex server (Plex Discover, Seerr).
+export type ExploreSource = 'plex' | 'seerr';
 // Seerr's view of a title on the media server: available, partly available, or requested (including being downloaded).
 export type ExploreStatus = 'available' | 'partial' | 'requested';
 export type ExploreItem = {
@@ -57,7 +57,7 @@ export type ExploreItem = {
   // Original language (ISO 639-1, TMDB's codes). Plex Discover does not send it.
   language?: string;
   // `plex` is the Plex Discover rating key (not this server's), `plexGuid` the plex:// guid both share.
-  ids: { tmdb?: number; imdb?: string; tvdb?: number; trakt?: number; plex?: string; plexGuid?: string };
+  ids: { tmdb?: number; imdb?: string; tvdb?: number; plex?: string; plexGuid?: string };
   status?: ExploreStatus;
 };
 export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number };
@@ -71,16 +71,15 @@ export type ExploreSources = {
   plex: boolean;
   // Sources shown, in the administrator's order (whether or not each is set up).
   order: ExploreSource[];
-  // `statuses`: Plex and Trakt titles carry Seerr's labels (needs the Seerr API key).
+  // `statuses`: Plex titles carry Seerr's labels (needs the Seerr API key).
   seerr: { configured: boolean; statuses: boolean };
-  trakt: { configured: boolean; linked: boolean; user?: string };
 };
 export type ExploreDetails = {
   item: ExploreItem; genres: string[]; tagline?: string; cast: string[]; network?: string; contentRating?: string;
   // The facts Seerr lists beside a title. `status` is TMDB's (Ended, Returning Series, Released…), dates are YYYY-MM-DD.
   status?: string; released?: string; language?: string; countries: { code?: string; name: string; flagUrl?: string }[]; studios: string[];
   ratings: ExternalRating[]; providers: { name: string; logoUrl?: string }[];
-  links: { site: 'tmdb' | 'tvdb' | 'imdb' | 'rottentomatoes' | 'trakt'; url: string }[];
+  links: { site: 'tmdb' | 'tvdb' | 'imdb' | 'rottentomatoes'; url: string }[];
   // This server's library copy, when the viewer can open it.
   libraryId?: string;
   // Plex Discover watchlist state; undefined when Discover does not know the title.
