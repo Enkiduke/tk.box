@@ -33,6 +33,11 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
       z.object({key:holdKey,action:z.literal('clear')}).strict()]).parse(request.body);
     return engine.hold(grant.accountId,body.key,body);
   });
+  // Keep: tag the title in Radarr or Sonarr with the first protected tag, so no run deletes it.
+  app.post('/api/v1/admin/cleanup/keep',async request=>{
+    const {grant}=await admin(request),{key}=z.object({key:holdKey}).strict().parse(request.body);
+    return engine.keep(grant.accountId,key);
+  });
   app.get('/api/v1/admin/cleanup/jobs',async request=>{await admin(request);return {jobs:store.jobs(30)};});
   app.post('/api/v1/admin/cleanup/jobs',{config:{rateLimit:{max:10,timeWindow:60000}}},async request=>{
     const {grant}=await admin(request),{preview}=z.object({preview:z.boolean()}).strict().parse(request.body);
