@@ -3,8 +3,7 @@ import type Hls from 'hls.js';
 import {Icon} from './components.js';
 import {duration,timecode} from './hooks.js';
 import {activeCaptions,parseVtt,timelineShift,type Caption} from './captions.js';
-import {readPreference} from './storage.js';
-import {CaptionCue,subtitleScale,subtitleSizes,updateSubtitleStyle,useSubtitleStyle,type SubtitleStyle} from './subtitle-style.js';
+import {CaptionCue,captionBox,subtitleFontSize,subtitleSizes,updateSubtitleStyle,useSubtitleStyle,type SubtitleStyle} from './subtitle-style.js';
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
 import {pickSubtitle,subtitleChoice,updatePlayerPreferences,usePlayerPreferences} from './player-preferences.js';
@@ -47,7 +46,7 @@ const queueLabel=(item:CatalogItem)=>item.type==='episode'?`S${item.seasonNumber
 const queueDetail=(item:CatalogItem)=>item.type==='episode'?item.showTitle:item.year?String(item.year):undefined;
 type Props={url?:string;queue?:QueueState;onQueuePick?:(index:number,from:'resume'|'beginning')=>void;loading?:boolean;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
 export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,queue,onQueuePick,loading,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,markers,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,tuning,timeshift,onAudioChange,docked,title,subtitle,onStop,onRestore,onBack,onProgress,onError},handle) {
-  const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
+  const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),topRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
   const [subtitleId,setSubtitleId]=useState<string|null>(null),[subtitleStatus,setSubtitleStatus]=useState<'loading'|'ready'|'failed'>(),[captions,setCaptions]=useState<Caption[]>(),[shift,setShift]=useState(0),lastSubtitle=useRef<string|null>(null);
@@ -244,7 +243,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const videoInfo=[resolution(source),codec(source?.videoCodec)].filter(Boolean).join(' · ');
   return <aside ref={shell} className={`player ${docked?'docked':'immersive'} ${shown?'':'idle'}`} hidden={!url&&!tuning&&!loading} aria-label="Media player" onPointerMove={wake} onPointerDown={wake}>
     <video ref={ref} playsInline onClick={docked?onRestore:()=>{if(panel)setPanel(undefined);else toggle();}} onDoubleClick={docked?undefined:toggleFullscreen}/>
-    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?bottomRef:undefined} language={activeTrack?.language}/>}
+    {url&&subtitleId&&captions&&<Captions video={ref} cues={captions} time={captionTime} subtitleStyle={subtitleStyle} docked={docked} controls={shown&&!docked?{bottom:bottomRef,top:topRef}:undefined} forced={!!activeTrack?.forced} language={activeTrack?.language}/>}
     {(view.waiting||liveSwitching||tuning||loading)&&<span className="player-spinner spinner" role="status" aria-label={liveSwitching?'Switching to a backup feed':tuning?'Tuning channel':loading?'Starting':'Buffering'}/>}
     {docked?<>
       <div className="mini-controls">
@@ -255,7 +254,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
       </div>
       <button className="icon-button mini-close" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={16}/></button>
     </>:<>
-      <div className="player-top">
+      <div className="player-top" ref={topRef}>
         <button className="player-round" onClick={onBack} aria-label="Back to browsing" title="Keep playing in a mini player"><Icon name="back" size={22}/></button>
         <div className="player-heading"><strong>{title??'Now playing'}</strong>{subtitle&&<span>{subtitle}</span>}</div>
         <button className="player-round" onClick={onStop} aria-label="Stop playback" title="Stop playback"><Icon name="close" size={20}/></button>
@@ -339,7 +338,7 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   </aside>;
 });
 // Draws the cues active at the media time (from `time`) over the picture, above the controls while they show.
-function Captions({video,cues,time,subtitleStyle,docked,controls,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];time:()=>number;subtitleStyle:SubtitleStyle;docked:boolean;controls?:RefObject<HTMLDivElement|null>;language?:string}) {
+function Captions({video,cues,time,subtitleStyle,docked,controls,forced,language}:{video:RefObject<HTMLVideoElement|null>;cues:Caption[];time:()=>number;subtitleStyle:SubtitleStyle;docked:boolean;controls?:{bottom:RefObject<HTMLDivElement|null>;top:RefObject<HTMLDivElement|null>};forced:boolean;language?:string}) {
   const [active,setActive]=useState<number[]>([]),[box,setBox]=useState({height:0,inset:0});
   useEffect(()=>{
     const element=video.current;if(!element)return;let frame=0,key='';
@@ -355,9 +354,11 @@ function Captions({video,cues,time,subtitleStyle,docked,controls,language}:{vide
     measure();update();loop();
     return()=>{cancelAnimationFrame(frame);observer.disconnect();for(const name of events)element.removeEventListener(name,name==='loadedmetadata'||name==='resize'?measure:update);};
   },[video,cues,time]);
-  const [scale,minimum]=docked?[.05,11]:subtitleScale[subtitleStyle.size],fontSize=Math.max(minimum,box.height*scale);
-  const bottom=Math.max(box.inset+box.height*(docked?5:subtitleStyle.position)/100,controls?.current?(controls.current.offsetHeight+8):0);
-  return <div className="player-captions" lang={language} style={{bottom,fontSize}} aria-hidden="true">
+  // The mini player keeps a fixed small size at the bottom; elsewhere cues clear whichever controls are on their side.
+  const fontSize=docked?Math.max(11,box.height*.05):subtitleFontSize(subtitleStyle,box.height);
+  const top=!docked&&(subtitleStyle.anchor==='top'||forced&&subtitleStyle.forcedTop),bar=controls&&(top?controls.top:controls.bottom).current;
+  const offset=Math.max(box.inset+box.height*(docked?5:subtitleStyle.position)/100,bar?bar.offsetHeight+8:0);
+  return <div className="player-captions" lang={language} style={{...captionBox(subtitleStyle),...(top?{top:offset}:{bottom:offset}),fontSize}} aria-hidden="true">
     {active.map(i=><CaptionCue key={i} lines={cues[i]!.lines} style={subtitleStyle}/>)}
   </div>;
 }
