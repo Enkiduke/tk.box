@@ -30,7 +30,7 @@ import zipfile
 from PIL import Image
 
 from engine_common import (HTTP, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE, SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUES, Plex, local_path,
-                           option, read_config, run_lock)
+                           READ_ONLY, option, read_config, run_lock)
 
 
 IN_USE_FIELDS = (("user_thumb_url", True), ("user_art_url", True), ("user_banner_url", False),
@@ -117,6 +117,9 @@ def remove_superseded_posters(plex, metadata, uploaded):
         return {urlparse(p.get("ratingKey")).path.split("/")[-1] for p in photos
                 if (p.get("ratingKey") or "").startswith("upload://") and p.get("selected") != "1"}
     keys = list(uploaded)
+    if READ_ONLY:
+        print("READ-ONLY: old posters in Plex's Metadata folder stay", flush=True)
+        return 0
     with ThreadPoolExecutor(8) as pool:
         names = {key: found for key, found in zip(keys, pool.map(unselected, keys)) if found}
     if not names:
@@ -179,6 +182,11 @@ def engine_orphans(metadata, in_use, min_age_seconds, scope="ours"):
 def cleanup(config_path, mode="report"):
     """Find (report), set aside (move), delete (remove) or bring back (restore) unused tk.box posters."""
     config = read_config(config_path)
+    if READ_ONLY and mode != "report":
+        print(f"READ-ONLY: {mode} skipped; reporting only", flush=True)
+        if mode == "restore":
+            return 0
+        mode = "report"
     plex = config.get("plex", {})
     base = config_path.resolve().parent
     data_dir = metadata_folder(config, base)

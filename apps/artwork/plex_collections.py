@@ -31,7 +31,7 @@ from urllib.parse import quote, unquote, urljoin, urlparse
 import xml.etree.ElementTree as ET
 
 from engine_common import (CHARTS, DEFAULTS, HTTP, Metadata, atomic_write, collection_key, local_path, option, read_config,
-                           run_lock, secret, select_item, streaming_services, web_download)
+                           READ_ONLY, run_lock, secret, select_item, streaming_services, web_download)
 
 
 def create_collection(plex, params):
@@ -674,6 +674,9 @@ def collection_members(entry, items):
 def seasonal_radarr(artwork, definitions, items, apply, today):
     """Only a successful add recorded here AND its private Radarr tag grant cleanup ownership."""
     if not any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
+        return
+    if READ_ONLY:
+        print("READ-ONLY: Radarr acquisition and cleanup skipped", flush=True)
         return
     settings = artwork.config["radarr"]
     url = settings["url"].rstrip("/")

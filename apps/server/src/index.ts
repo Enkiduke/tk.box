@@ -10,6 +10,8 @@ import { AppError } from './errors.js';
 import { PlexAdapter } from './providers/plex.js';
 import { buildApp } from './app.js';
 
+if (process.argv.includes('--read-only')) process.env.TKBOX_READ_ONLY = '1';
+
 // Startup reports the step that failed and why: setting names, an error code or the key problem, never setting values.
 let step = 'settings';
 try {
@@ -22,6 +24,7 @@ try {
   if (!existsSync(idFile)) writeFileSync(idFile, randomUUID(), {flag: 'wx', mode: 0o600});
   const app = await buildApp(config, db, vault, new PlexAdapter(config, readFileSync(idFile, 'utf8')));
   if (!['127.0.0.1', '::1', 'localhost'].includes(config.APP_HOST)) app.log.warn('Listener is reachable beyond loopback. Firewall this port and permit only your existing reverse proxy.');
+  if (process.env.TKBOX_READ_ONLY === '1') app.log.warn('READ-ONLY MODE: nothing is changed in Plex, Seerr, Radarr or library files.');
   app.addHook('onClose', async () => { db.close(); });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { void app.close(); });
   step = 'listener'; await app.listen({host: config.APP_HOST, port: config.APP_PORT});
