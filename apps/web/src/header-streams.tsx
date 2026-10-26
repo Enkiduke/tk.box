@@ -46,7 +46,7 @@ export function HeaderStreams() {
         return <li key={s.id}>
           <div className={`streams-poster${s.media?.posterId?'':' logo'}`}>{poster?<img src={poster} alt="" loading="lazy" onError={e=>{e.currentTarget.style.visibility='hidden';}}/>:<Icon name={s.kind==='vod'?'movies':'live'} size={20}/>}</div>
           <div className="streams-info">
-            <strong><Icon name={s.state==='paused'?'pause':'play'} size={12}/>{s.user}</strong>
+            <strong><Icon name={s.state==='paused'?'pause':'play'} size={12}/>{s.user}{s.kind!=='plex'&&<span className="badge tkbox">tk.box</span>}</strong>
             <span title={[titleOf(s),detail].filter(Boolean).join(' · ')}>{titleOf(s)}{detail&&<em> · {detail}</em>}</span>
             <small>{[kindOf(s),delivery[s.delivery]].filter(Boolean).join(' · ')}</small>
             {progress!==undefined&&<div className="streams-progress"><span className="streams-bar"><span style={{width:`${progress*100}%`}}/></span><small>{clock(s.positionMs!)} / {clock(s.durationMs!)}</small></div>}

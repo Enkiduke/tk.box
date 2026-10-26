@@ -68,6 +68,8 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .button-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .badge{display:inline-flex;align-items:center;max-width:100%;font-size:11px;font-weight:600;letter-spacing:.02em;padding:3px 8px;border-radius:4px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
 .badge.warning{color:#f2cf7a;border-color:#6b5420;background:#2d240c}
+/* Marks a stream watched in tk.box, in Admin › Activity and the header's list of streams. */
+.badge.tkbox{border-radius:999px;border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:var(--accent-tint);color:var(--accent)}
 /* A ring that fades in as the accent orange, stays orange for most of its length and turns white at the head; --ring sets its thickness. */
 .spinner{--ring:3px;display:inline-block;flex:none;width:34px;height:34px;border-radius:50%;background:conic-gradient(from 90deg,transparent 0 8%,var(--accent) 30% 78%,#fff);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));mask:radial-gradient(farthest-side,transparent calc(100% - var(--ring) - .5px),#000 calc(100% - var(--ring)));animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -132,6 +134,7 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .streams-info>*{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .streams-info strong{display:flex;align-items:center;gap:6px;font-size:15px}
 .streams-info strong svg{flex:none;color:var(--accent)}
+.streams-info strong .badge{margin-left:2px;padding:1px 8px;font-size:10.5px}
 .streams-info>span{font-size:13px;color:#cfcfd6}
 .streams-info>span em{font-style:normal;color:var(--muted)}
 .streams-info>small{color:var(--dim);font-size:12px}
