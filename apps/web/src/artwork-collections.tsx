@@ -9,6 +9,7 @@ import {exportCollection,plexOnly,readCollections,type Definition,type ListFilte
 import {chooseTitles,type Candidate,type LeftOut} from './list-choice.js';
 import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
 import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
+import {hidesFromRecent} from '../../../packages/contracts/src/collections.js';
 
 // Admin › Collections: every Plex collection the engine keeps, in one grid. Franchise and streaming collections come
 // from TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public
@@ -317,7 +318,7 @@ function EditDefinition({value,libraries,onClose,save,remove,check,found}:{value
   const chosen=refreshed&&list?.rows?chooseTitles(list.rows,d.source!,size,exclude):undefined;
   const out=new Set(exclude.map(memberText)),shown=chosen?chosen.kept.map(r=>r.member):members.filter(m=>!out.has(memberText(m)));
   // The collection as it stands in the editor, as Done saves it and Export copies it.
-  const finished=()=>{const next:Definition={...d,members:shown,exclude};if(!exclude.length)delete next.exclude;if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup&&next.cleanup!=='keep')delete next.cleanup;}if(next.cleanup==='rotate'&&!refreshed)delete next.cleanup;return next;};
+  const finished=()=>{const next:Definition={...d,members:shown,exclude};if(!exclude.length)delete next.exclude;if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;delete next.hide_recent;if(next.cleanup&&next.cleanup!=='keep')delete next.cleanup;}if(next.cleanup==='rotate'&&!refreshed)delete next.cleanup;return next;};
   return <Modal title={d.name||'Collection'} onClose={onClose}>
     <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next=finished();const wrong=check?.(next);if(wrong){setProblem(wrong);return;}save(next);}}>
       <div className="collection-editor-head">
@@ -365,6 +366,7 @@ function EditDefinition({value,libraries,onClose,save,remove,check,found}:{value
           <Switch label="Download missing movies" description={found?`Radarr adds the ${(found.total??0)-(found.owned??0)} missing while the collection is on.`:'Needs Radarr and TMDb IDs.'} checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
           {d.acquire&&<label>Downloaded movies<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as NonNullable<Definition['cleanup']>})}><option value="keep">Keep them</option><option value="remove-delete">Delete them when the season ends</option>{refreshed&&<option value="rotate">Delete each once it leaves the list</option>}</select></label>}
           {d.acquire&&d.cleanup==='rotate'&&<p className="muted small">None goes while someone is watching it. Movies you already had are never deleted.</p>}
+          {d.acquire&&<Switch label="Hide downloads from Recently added" checked={hidesFromRecent(d)} onChange={v=>set({hide_recent:v})}/>}
         </section>}
       </div>
       {exporting&&<ExportBox definition={finished()}/>}

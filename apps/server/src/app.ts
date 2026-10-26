@@ -211,7 +211,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     return reply.type('video/mp2t').header('content-length', String(segment.size)).send(segment.body);
   });
   app.delete<{Params: {id: string}}>('/api/v1/live/sessions/:id', async req => { const {hash} = await auth(req); live.stop(req.params.id, hash); customTv.stop(req.params.id, hash); if (activity.get(req.params.id)?.hash === hash) activity.close(req.params.id); return {status: 'stopped'}; });
-  registerCatalog(app,plex,auth);
+  // Asked per request, by which time the artwork engine below exists.
+  registerCatalog(app,plex,auth,() => artwork.hiddenFromRecent());
   // Open pages hear when artwork or cleanup jobs change the library, and reload what they show.
   const events = new ClientEvents();
   registerEvents(app, events, auth);

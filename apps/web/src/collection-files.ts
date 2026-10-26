@@ -5,7 +5,7 @@ export type Member={rating_key?:string;tmdb_id?:number;imdb_id?:string;title?:st
 export type Visibility={home?:boolean;shared?:boolean;recommended?:boolean};
 export type Definition={name:string;library:string;type:'movie'|'tv';enabled?:boolean;schedule?:string;members?:Member[];
   rules?:{genres?:string[];year_from?:number;year_to?:number;title_contains?:string};visibility?:Visibility;
-  acquire?:boolean;cleanup?:'keep'|'remove-delete'|'rotate';source?:Source;exclude?:Member[]};
+  acquire?:boolean;cleanup?:'keep'|'remove-delete'|'rotate';hide_recent?:boolean;source?:Source;exclude?:Member[]};
 // Which of a list's titles a collection keeps: filtered, sorted, then cut to `limit`.
 // Genres and ratings name what's left out, so one a list gains later is in; languages name what's kept.
 export type ListFilter={year_from?:number;year_to?:number;min_rating?:number;max_rating?:number;languages?:string[];exclude_genres?:string[];exclude_certifications?:string[]};
@@ -49,7 +49,7 @@ function definition(v:unknown,at:number):Definition {
   const exclude=members(v.exclude);
   return tidy<Definition>({name,library,type:v.type,enabled:flag(v.enabled),schedule:text(v.schedule),
     members:members(v.members)??[],rules:rules&&Object.keys(rules).length?rules:undefined,visibility,
-    acquire:flag(v.acquire),cleanup:v.cleanup==='keep'||v.cleanup==='remove-delete'||v.cleanup==='rotate'?v.cleanup:undefined,source,exclude:exclude?.length?exclude:undefined});
+    acquire:flag(v.acquire),cleanup:v.cleanup==='keep'||v.cleanup==='remove-delete'||v.cleanup==='rotate'?v.cleanup:undefined,hide_recent:flag(v.hide_recent),source,exclude:exclude?.length?exclude:undefined});
 }
 
 // Reads one collection or a list of them (or {"collections": [...]}), inside a ```json fence or not, as an AI may give it.

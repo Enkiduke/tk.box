@@ -679,7 +679,7 @@ def validate_collections(config):
         raise ValueError("collections must be a list")
     seen = set()
     for entry in definitions:
-        if not isinstance(entry, dict) or set(entry) - {"name", "library", "type", "enabled", "schedule", "sync", "members", "rules", "visibility", "acquire", "cleanup", "source", "exclude"}:
+        if not isinstance(entry, dict) or set(entry) - {"name", "library", "type", "enabled", "schedule", "sync", "members", "rules", "visibility", "acquire", "cleanup", "hide_recent", "source", "exclude"}:
             raise ValueError("Each collection must be a mapping with supported collection settings")
         for field in ("name", "library"):
             value = entry.get(field)
@@ -691,7 +691,8 @@ def validate_collections(config):
         seen.add(identity)
         if entry.get("type") not in ("movie", "tv"):
             raise ValueError("Collection type must be movie or tv")
-        for field in ("enabled", "acquire"):
+        # hide_recent only matters to tk.box, which keeps the movies this collection downloads off Recently added.
+        for field in ("enabled", "acquire", "hide_recent"):
             if field in entry and type(entry[field]) is not bool:
                 raise ValueError(f"Collection {field} must be true or false")
         # Older settings name a membership mode; a custom collection now always matches its titles, so it's ignored.
