@@ -77,7 +77,6 @@ DEFAULTS = {"assets_dir": "assets", "cache_dir": ".cache", "workers": 2, "qualit
               {'title': 'Casper', 'year': 1995},
               {'title': 'E.T. the Extra-Terrestrial', 'year': 1982},
               {'title': 'Coraline', 'year': 2009}],
-  'sync': 'append',
   'visibility': {'home': True, 'shared': True, 'recommended': True},
   'acquire': False,
   'cleanup': 'keep'},
@@ -113,7 +112,6 @@ DEFAULTS = {"assets_dir": "assets", "cache_dir": ".cache", "workers": 2, "qualit
               {'title': 'Pumpkin Pie Wars', 'year': 2016},
               {'title': 'An Old Fashioned Thanksgiving', 'year': 2008},
               {'title': 'The Thanksgiving House', 'year': 2013}],
-  'sync': 'append',
   'visibility': {'home': True, 'shared': True, 'recommended': True},
   'acquire': False,
   'cleanup': 'keep'},
@@ -152,7 +150,6 @@ DEFAULTS = {"assets_dir": "assets", "cache_dir": ".cache", "workers": 2, "qualit
               {'title': 'Jingle All the Way', 'year': 1996},
               {'title': 'Scrooged', 'year': 1988},
               {'title': 'The Christmas Chronicles', 'year': 2018}],
-  'sync': 'append',
   'visibility': {'home': True, 'shared': True, 'recommended': True},
   'acquire': False,
   'cleanup': 'keep'}], "search": False, "collection_source_limit": 50, "collection_source_refresh": True}
@@ -707,7 +704,7 @@ def read_config(path):
     for name in ("api", "plex", "overrides"):
         if not isinstance(config.get(name, {}), dict):
             raise ValueError(f"{name} must be a mapping")
-    for name, keys in (("api", {"tmdb_key", "tvdb_key", "tvdb_pin", "fanart_key", "fanart_client_key", "trakt_client_id", "mdblist_key"}),
+    for name, keys in (("api", {"tmdb_key", "tvdb_key", "tvdb_pin", "fanart_key", "fanart_client_key", "mdblist_key"}),
                        ("plex", {"url", "token", "libraries", "upload", "include_seasons", "include_episodes", "include_collections", "sync_collections", "franchise_collections", "collection_min_items", "collection_sync", "collection_streaming", "collection_region", "recent_collections", "recent_movie_days", "recent_episode_days", "completion_label", "data_dir", "cleanup_min_age_minutes", "upload_logo"})):
         unknown = set(config.get(name, {})) - keys
         if unknown:

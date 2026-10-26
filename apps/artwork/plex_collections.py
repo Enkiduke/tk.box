@@ -73,8 +73,8 @@ def members_of(plex, rating_key):
 
 COLLECTION_PROVIDERS = {
     "tmdb": ("TMDb", "www.themoviedb.org"), "imdb": ("IMDb", "www.imdb.com"),
-    "trakt": ("Trakt", "trakt.tv"), "letterboxd": ("Letterboxd", "letterboxd.com"),
-    "mdblist": ("MDBList", "mdblist.com"), "flixpatrol": ("FlixPatrol", "flixpatrol.com")}
+    "letterboxd": ("Letterboxd", "letterboxd.com"),
+    "mdblist": ("MDBList", "mdblist.com"), "flixpatrol": ("FlixPatrol", "flixpatrol.com"), "plex": ("Plex", "watch.plex.tv")}
 COLLECTION_RECOMMENDATIONS = (
     ("TMDb Trending Movies", "https://www.themoviedb.org/trending/movie/week", "This week's trending movies", "movie"),
     ("TMDb Trending TV", "https://www.themoviedb.org/trending/tv/week", "This week's trending shows", "tv"),
@@ -82,12 +82,11 @@ COLLECTION_RECOMMENDATIONS = (
     ("IMDb Top 250", "https://www.imdb.com/chart/top/", "Classic and contemporary audience favorites", "movie"),
     ("IMDb Popular Movies", "https://www.imdb.com/chart/moviemeter/", "Movies attracting attention on IMDb", "movie"),
     ("IMDb Top Rated TV", "https://www.imdb.com/chart/toptv/", "Highly rated television", "tv"),
-    ("Trakt Trending Movies", "https://trakt.tv/movies/trending", "Movies being watched now", "movie"),
-    ("Trakt Trending Shows", "https://trakt.tv/shows/trending", "Shows being watched now", "tv"),
     ("Letterboxd Top 250", "https://letterboxd.com/xobl/list/official-top-250-narrative-feature-films/", "Community-rated narrative features", "movie"),
     ("Netflix Top 10", "https://flixpatrol.com/top10/netflix/world/", "Netflix's worldwide movie and TV charts", "movie"),
     ("Disney+ Top 10", "https://flixpatrol.com/top10/disney/world/", "Disney+ worldwide movie and TV charts", "movie"),
-    ("Prime Video Top 10", "https://flixpatrol.com/top10/amazon-prime/world/", "Prime Video worldwide charts", "movie"))
+    ("Prime Video Top 10", "https://flixpatrol.com/top10/amazon-prime/world/", "Prime Video worldwide charts", "movie"),
+    ("Released This Week in History", "https://watch.plex.tv/discover/list/historical-week", "Plex's movies released this week in years past; it changes every week", "movie"))
 
 
 # Membership sources: github.com/Kometa-Team/Kometa/blob/master/defaults/both/universe.yml
@@ -122,15 +121,17 @@ def collection_source(url):
         raise ValueError("Use an HTTPS collection URL without credentials or a custom port")
     provider = next((key for key, (_, host) in COLLECTION_PROVIDERS.items() if parsed.hostname in (host, host.removeprefix("www."))), None)
     path = parsed.path.rstrip("/")
+    if provider == "plex":
+        path = re.sub(r"^/me(?=/)", "", path)  # watch.plex.tv/me/discover/... is the signed-in view of the same list
     patterns = {
         "tmdb": r"/(?:collection/\d+(?:-[\w-]+)?|list/\d+(?:-[\w-]+)?|trending/(?:movie|tv)/(?:day|week)|(?:movie|tv)/(?:popular|top-rated))",
         "imdb": r"/(?:list/ls\d+|chart/(?:top|toptv|moviemeter|tvmeter))",
-        "trakt": r"/(?:users/[\w-]+/lists/[\w-]+|lists/\d+|(?:movies|shows)/(?:trending|popular))",
         "letterboxd": r"/[\w-]+/list/[\w-]+",
         "mdblist": r"/lists/(?:\d+|[\w-]+/[\w-]+|[\w-]+/external/\d+)",
-        "flixpatrol": r"/top10/[\w-]+/[\w-]+(?:/\d{4}-\d{2}-\d{2})?"}
+        "flixpatrol": r"/top10/[\w-]+/[\w-]+(?:/\d{4}-\d{2}-\d{2})?",
+        "plex": r"/discover/list/[\w-]+"}
     if provider is None or not re.fullmatch(patterns[provider], path):
-        raise ValueError("Unsupported list URL. Use a TMDb list/collection/chart, IMDb list/chart, Trakt list/chart, Letterboxd list, MDBList list or FlixPatrol Top 10 URL")
+        raise ValueError("Unsupported list URL. Use a TMDb list/collection/chart, IMDb list/chart, Letterboxd list, MDBList list, FlixPatrol Top 10 or Plex Discover list URL")
     return provider, "https://" + COLLECTION_PROVIDERS[provider][1] + path + "/"
 
 
@@ -206,9 +207,6 @@ class CollectionSources:
             if not self.artwork.keys.get("tmdb_key"):
                 raise ValueError("Set TMDB_API_KEY to use TMDb collections")
             return self.artwork.tmdb(path, **params)
-        if provider == "trakt":
-            headers = {"trakt-api-version": "2", "trakt-api-key": self.key("trakt_client_id", "TRAKT_CLIENT_ID")}
-            return self.http.json("https://api.trakt.tv" + path, headers=headers, params=params)
         params["apikey"] = self.key("mdblist_key", "MDBLIST_API_KEY")
         return self.http.json("https://api.mdblist.com" + path, params=params)
 
@@ -240,6 +238,28 @@ class CollectionSources:
                 raise ValueError("IMDb did not return the list (" + (errors[0] if errors else "empty answer") + ")")
             data = self.http.remember(key, data["data"])
         return data
+
+    def plex_discover(self, path, **params):
+        """Plex's Discover catalog (its online lists), read with tk.box's Plex token and never cached, so a list that
+        changes every week is read as it is now. Redirects are followed only on Discover's own host."""
+        plex = self.artwork.plex
+        plex.require("Reading Plex Discover lists")
+        headers = {**plex.headers, "Accept": "application/json", "X-Plex-Product": "tk.box", "X-Plex-Client-Identifier": "tk.box-collections"}
+        url = "https://discover.provider.plex.tv" + path
+        for _ in range(4):
+            try:
+                with self.http.request("GET", url, params=params, headers=headers, allow_redirects=False) as response:
+                    if not response.is_redirect:
+                        return (response.json() or {}).get("MediaContainer") or {}
+                    target = urljoin(url, response.headers.get("location", ""))
+            except RuntimeError as error:
+                if str(error).endswith(("HTTP 401", "HTTP 403")):
+                    raise ValueError("Plex Discover refused tk.box's Plex token, so its lists can't be read") from None
+                raise
+            if urlparse(target).hostname != "discover.provider.plex.tv":
+                raise ValueError("Plex Discover redirected elsewhere; the list was not read")
+            url, params = target, {}
+        raise ValueError("Plex Discover redirected too many times")
 
     @staticmethod
     def objects(value):
@@ -288,11 +308,6 @@ class CollectionSources:
                 return self.recommendations(provider)
             for row in self.api("tmdb", "/search/collection", query=query, page=1).get("results", [])[:20]:
                 rows.append({"name": row["name"], "url": f"https://www.themoviedb.org/collection/{row['id']}/", "description": row.get("overview", ""), "type": "movie", "provider": provider})
-        elif provider == "trakt":
-            results = self.api("trakt", "/search/list", query=query, limit=20) if query else self.api("trakt", "/lists/popular", limit=20)
-            for row in results:
-                info = row.get("list", row)
-                rows.append({"name": info["name"], "url": f"https://trakt.tv/lists/{info['ids']['trakt']}/", "description": info.get("description") or "Public Trakt list", "type": "movie", "provider": provider})
         elif provider == "mdblist":
             results = self.api("mdblist", "/lists/search", query=query) if query else self.api("mdblist", "/lists/top")
             for row in results[:20]:
@@ -308,17 +323,44 @@ class CollectionSources:
             rows = rows[:20]
             if not rows and not query:
                 raise ValueError("Letterboxd did not return readable public lists; try a specific list URL")
-        elif provider in ("imdb", "flixpatrol"):
+        elif provider in ("imdb", "flixpatrol", "plex"):
             rows = self.recommendations(provider, query)
         else:
             raise ValueError("Choose a provider to browse")
         return rows
 
-    def fetch(self, url, kind="movie", limit=None, resolve=True):
+    def details(self, kind, tmdb_id):
+        """What filters and sorts read about one title: its year, TMDb rating, genres, original language and
+        certification (in the collections region), from TMDb's details (cached)."""
+        region = option(self.config.get("plex", {}), "collection_region")
+        if kind == "movie":
+            found = self.api("tmdb", f"/movie/{tmdb_id}", append_to_response="release_dates")
+            dated = found.get("release_date")
+            ratings = [c.get("certification") for r in (found.get("release_dates") or {}).get("results", []) if r.get("iso_3166_1") == region
+                       for c in r.get("release_dates", [])]
+        else:
+            found = self.api("tmdb", f"/tv/{tmdb_id}", append_to_response="content_ratings")
+            dated = found.get("first_air_date")
+            ratings = [r.get("rating") for r in (found.get("content_ratings") or {}).get("results", []) if r.get("iso_3166_1") == region]
+        year = str(dated or "")[:4]
+        return {"year": int(year) if year.isdigit() else None, "rating": found.get("vote_average") or None, "language": found.get("original_language") or None,
+                "genres": [g["name"] for g in found.get("genres", []) if g.get("name")], "certification": next((r for r in ratings if r), None)}
+
+    def fetch(self, url, kind="movie", limit=None, resolve=True, choose=None, exclude=(), candidates=False):
+        """A list's titles. With `choose` ({"filter", "sort"}, as a collection's source holds them) or titles to
+        `exclude`, the whole list is read, the excluded titles taken out, the rest filtered and sorted, and only then
+        cut to `limit`; what was left out comes back in "left_out" with why. With `candidates`, every title of the
+        whole list also comes back, with its TMDb details (None without a TMDb key), for the editor to choose from."""
         provider, url = collection_source(url)
         limit = option({}, "collection_source_limit") if limit is None else limit
         if type(limit) is not int or not 1 <= limit <= 250 or kind not in ("movie", "tv"):
             raise ValueError("Choose movies or TV and a source limit from 1 to 250")
+        choose, exclude = source_choice(choose or {}), list(exclude or [])
+        wanted = limit
+        if choose and not self.artwork.keys.get("tmdb_key") and not candidates:
+            raise ValueError("Filtering or sorting a list needs a TMDb API key")
+        if choose or exclude or candidates:
+            limit, resolve = 250, True
         path = urlparse(url).path.rstrip("/")
         name = next((r[0] for r in COLLECTION_RECOMMENDATIONS if collection_source(r[1])[1] == url), path.split("/")[-1].replace("-", " "))
         rows = []
@@ -357,19 +399,6 @@ class CollectionSources:
                         break
                 else:
                     raise ValueError("Too many source pages; choose a smaller collection limit")
-        elif provider == "trakt":
-            chart = path.startswith(("/movies/", "/shows/"))
-            endpoint = path if chart else path + "/items/" + ("movies" if kind == "movie" else "shows")
-            if not chart:
-                name = self.api(provider, path).get("name", name)
-            for page in range(1, 26):
-                batch = self.api(provider, endpoint, page=page, limit=100)
-                for row in batch:
-                    add(row.get("movie", row.get("show", row)), "tv" if "show" in row or path.startswith("/shows/") else "movie")
-                if len(rows) >= limit or len(batch) < 100:
-                    break
-            else:
-                raise ValueError("Too many source pages; choose a smaller collection limit")
         elif provider == "mdblist":
             external = re.fullmatch(r"/lists/[\w-]+/external/(\d+)", path)
             endpoint = "/external/lists/" + external[1] if external else path
@@ -409,6 +438,35 @@ class CollectionSources:
                 after = result["pageInfo"]["endCursor"]
             else:
                 raise ValueError("Too many source pages; choose a smaller collection limit")
+        elif provider == "plex":
+            # The list is one of Discover's home shelves; its slug is in the shelf's key or identifier.
+            slug = path.split("/")[-1]
+            hubs = self.plex_discover("/hubs/sections/home", includeMeta=1).get("Hub") or []
+            hub = next((h for h in hubs if re.search(rf"(?<![\w-]){re.escape(slug)}(?![\w-])", " ".join(str(h.get(k) or "") for k in ("key", "hubKey", "hubIdentifier", "context")))
+                        or (h.get("title") or "").casefold() == name.casefold()), None)
+            if hub is None or not str(hub.get("key") or hub.get("hubKey") or "").startswith("/"):
+                offered = ", ".join(h["title"] for h in hubs if h.get("title")) or "none"
+                raise ValueError(f"Plex Discover doesn't offer the {slug} list to this account. It offers: {offered}")
+            name = hub.get("title") or name
+            found = self.plex_discover(hub.get("key") or hub["hubKey"], limit=min(limit * 2, 250), includeGuids=1, includeMeta=1, excludeElements="Media,Image")
+            entries = found.get("Metadata") or ((found.get("Hub") or [{}])[0].get("Metadata")) or []
+            entries = [m for m in entries if m.get("type") == ("show" if kind == "tv" else "movie")]
+            # Discover's shelves often leave out the external IDs; one read per 20 titles fills them in.
+            guids = {}
+            missing = [m["ratingKey"] for m in entries if m.get("ratingKey") and not m.get("Guid") and re.fullmatch(r"[\w-]{1,64}", m["ratingKey"])]
+            for start in range(0, len(missing), 20):
+                chunk = missing[start:start + 20]
+                for m in self.plex_discover("/library/metadata/" + ",".join(chunk), includeGuids=1, excludeElements="Media,Image").get("Metadata") or []:
+                    guids[m.get("ratingKey")] = m.get("Guid") or []
+            for m in entries:
+                ids = {}
+                for guid in m.get("Guid") or guids.get(m.get("ratingKey")) or []:
+                    found_id = re.fullmatch(r"(tmdb|imdb)://(\w+)", str(guid.get("id") or ""))
+                    if found_id and found_id[1] not in ids and (found_id[1] == "imdb" or found_id[2].isdigit()):
+                        ids[found_id[1]] = found_id[2]
+                add({"title": m.get("title"), "year": str(m.get("year") or ""), "ids": ids}, "tv" if m["type"] == "show" else "movie")
+                if len(rows) >= limit:
+                    break
         else:
             page = self.page(url)
             name = page.title.split(" • ")[0].strip() or name
@@ -489,7 +547,107 @@ class CollectionSources:
                     match = matches[0]
                     row.update(member={"tmdb_id": match["id"]}, title=match.get("title") or match.get("name") or row["title"],
                                year=str(match.get("release_date") or match.get("first_air_date") or row["year"])[:4])
-        return {"provider": provider, "url": url, "name": name, "type": kind, "limit": limit, "items": rows}
+        left_out, everything = [], None
+        if choose or exclude or candidates:
+            found = [None] * len(rows)
+            if (choose or candidates) and self.artwork.keys.get("tmdb_key"):
+                ids = [row["member"].get("tmdb_id") for row in rows]
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    found = list(pool.map(lambda tmdb_id: self.details(kind, tmdb_id) if tmdb_id else None, ids))
+            everything = [{**row, "details": details} for row, details in zip(rows, found)]
+            rows, left_out = choose_titles(everything, choose, wanted, exclude=exclude)
+        return {"provider": provider, "url": url, "name": name, "type": kind, "limit": wanted, "items": rows, "left_out": left_out,
+                **({"candidates": everything, "details": bool(self.artwork.keys.get("tmdb_key"))} if candidates else {})}
+
+
+LIST_SORTS = ("list", "rating", "oldest", "newest", "anniversary", "random")
+# Genres and certifications name what's left out, so one a list gains later is in; languages name what's kept, so
+# "only English" stays only English.
+LIST_FILTERS = {"year_from", "year_to", "min_rating", "max_rating", "languages", "exclude_genres", "exclude_certifications"}
+
+
+def source_choice(source):
+    """A source's filter and sort, checked: {} when it keeps the list as it is (no filter, list order)."""
+    found, sort = source.get("filter") or {}, source.get("sort", "list")
+    if not isinstance(found, dict) or set(found) - LIST_FILTERS:
+        raise ValueError("A list filter supports " + ", ".join(sorted(LIST_FILTERS)))
+    if sort not in LIST_SORTS:
+        raise ValueError("A list sort is one of " + ", ".join(LIST_SORTS))
+    for key in ("year_from", "year_to"):
+        if key in found and (type(found[key]) is not int or not 0 <= found[key] <= 9999):
+            raise ValueError(f"Filter {key} must be a year")
+    for key in ("min_rating", "max_rating"):
+        if key in found and (type(found[key]) not in (int, float) or not 0 <= found[key] <= 10):
+            raise ValueError(f"Filter {key} must be from 0 to 10")
+    for key in ("languages", "exclude_genres", "exclude_certifications"):
+        if key in found and (not isinstance(found[key], list) or any(not isinstance(v, str) or not v.strip() for v in found[key])):
+            raise ValueError(f"Filter {key} must be a list of names")
+    if found.get("year_from", 0) > found.get("year_to", 9999):
+        raise ValueError("Filter year_from must not exceed year_to")
+    if found.get("min_rating", 0) > found.get("max_rating", 10):
+        raise ValueError("Filter min_rating must not exceed max_rating")
+    found = {key: value for key, value in found.items() if value != []}
+    return {**({"filter": found} if found else {}), **({"sort": sort} if sort != "list" else {})}
+
+
+def round_anniversary(age):
+    return age > 0 and (age % 10 == 0 or age % 25 == 0)
+
+
+def week_hash(week, member):
+    """FNV-1a of the week and a member, the order "random" sorts by. The editor sorts by the same (list-choice.ts)."""
+    value = 0x811C9DC5
+    for byte in (week + "|" + "&".join(f"{key}={member[key]}" for key in sorted(member))).encode():
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+def choose_titles(rows, choose, limit, today=None, exclude=()):
+    """The rows a filtered, sorted list keeps (at most `limit`; each row carries its TMDb "details", which come off),
+    and the rest as {"title", "year", "why"}. Titles in `exclude` are taken out first, so they don't use up the limit.
+    Sorting is stable, so ties keep the list's order; "random" is the same all week, so a nightly run doesn't swap
+    titles. The collection editor chooses the same way as you change these (list-choice.ts)."""
+    today = today or date.today()
+    found, sort, kept, left = choose.get("filter", {}), choose.get("sort", "list"), [], []
+    fold = lambda names: {name.strip().casefold() for name in names}
+    for row in rows:
+        if row["member"] in exclude:
+            continue
+        d, why = row.get("details"), None
+        if d is None:
+            why = "no TMDb details" if found else None
+        elif ("year_from" in found or "year_to" in found) and not d["year"]:
+            why = "no release year"
+        elif d["year"] and d["year"] < found.get("year_from", 0):
+            why = f"released before {found['year_from']}"
+        elif d["year"] and d["year"] > found.get("year_to", 9999):
+            why = f"released after {found['year_to']}"
+        elif "min_rating" in found and (d["rating"] or 0) < found["min_rating"]:
+            why = f"rated below {found['min_rating']:g} on TMDb"
+        elif "max_rating" in found and (d["rating"] or 0) > found["max_rating"]:
+            why = f"rated above {found['max_rating']:g} on TMDb"
+        elif found.get("languages") and (d["language"] or "").casefold() not in fold(found["languages"]):
+            why = "in a language left out"
+        elif fold(found.get("exclude_genres", [])) & fold(d["genres"]):
+            why = "in a genre left out"
+        elif (d["certification"] or "NR").casefold() in fold(found.get("exclude_certifications", [])):
+            why = f"rated {d['certification'] or 'NR'}"
+        if why:
+            left.append({"title": row["title"], "year": row.get("year"), "why": why})
+        else:
+            kept.append(row)
+    year = lambda row: (row.get("details") or {}).get("year")
+    week = "%d-%02d" % today.isocalendar()[:2]
+    keys = {
+        "rating": lambda row: -((row.get("details") or {}).get("rating") or 0),
+        "oldest": lambda row: year(row) or 9999,
+        "newest": lambda row: -(year(row) or 0),
+        "anniversary": lambda row: not (year(row) and round_anniversary(today.year - year(row))),
+        "random": lambda row: week_hash(week, row["member"])}
+    if sort in keys:
+        kept.sort(key=keys[sort])
+    left.extend({"title": row["title"], "year": row.get("year"), "why": "beyond the collection size"} for row in kept[limit:])
+    return [{key: value for key, value in row.items() if key != "details"} for row in kept[:limit]], left
 
 
 def owned_members(members, items):
@@ -536,13 +694,15 @@ def validate_collections(config):
         for field in ("enabled", "acquire"):
             if field in entry and type(entry[field]) is not bool:
                 raise ValueError(f"Collection {field} must be true or false")
+        # Older settings name a membership mode; a custom collection now always matches its titles, so it's ignored.
         if entry.get("sync", "append") not in ("sync", "append"):
             raise ValueError("Collection sync must be sync or append")
         collection_active(entry.get("schedule"))
         source = entry.get("source")
         if source is not None:
-            if not isinstance(source, dict) or set(source) - {"url", "limit", "refresh"}:
-                raise ValueError("Collection source supports url, limit and refresh")
+            if not isinstance(source, dict) or set(source) - {"url", "limit", "refresh", "filter", "sort"}:
+                raise ValueError("Collection source supports url, limit, refresh, filter and sort")
+            source_choice(source)
             collection_source(source.get("url"))
             if type(source.get("limit", option({}, "collection_source_limit"))) is not int or not 1 <= source.get("limit", option({}, "collection_source_limit")) <= 250:
                 raise ValueError("Source limit must be an integer from 1 to 250")
@@ -580,14 +740,17 @@ def validate_collections(config):
         visibility = entry.get("visibility", {})
         if not isinstance(visibility, dict) or set(visibility) - {"home", "shared", "recommended"} or any(type(v) is not bool for v in visibility.values()):
             raise ValueError("visibility accepts home, shared and recommended booleans")
-        if entry.get("cleanup", "keep") not in ("keep", "remove-delete"):
-            raise ValueError("Collection cleanup must be keep or remove-delete")
+        if entry.get("cleanup", "keep") not in ("keep", "remove-delete", "rotate"):
+            raise ValueError("Collection cleanup must be keep, remove-delete or rotate")
         if entry.get("acquire") and entry["type"] != "movie":
             raise ValueError(f"{entry['name']}: only movie collections can download through Radarr")
         if enabled and entry.get("acquire") and not (source or any("tmdb_id" in m for m in members)):
             raise ValueError(f"{entry['name']}: Radarr downloads need titles with TMDb IDs (tmdb:123) or a list")
         if entry.get("cleanup") == "remove-delete" and (not entry.get("schedule") or not entry.get("acquire")):
             raise ValueError("remove-delete requires a seasonal collection with acquire: true")
+        # Rotating deletes what leaves the list, so the list must be read on every run.
+        if entry.get("cleanup") == "rotate" and (not entry.get("acquire") or not source or not source.get("refresh", option({}, "collection_source_refresh"))):
+            raise ValueError("rotate requires acquire: true and a list that is refreshed on every run")
     radarr = config.get("radarr", {})
     if not isinstance(radarr, dict) or set(radarr) - {"url", "api_key", "root_folder", "quality_profile_id", "search"}:
         raise ValueError("Unsupported radarr settings")
@@ -649,9 +812,11 @@ def show_in(plex, apply, prefix, section_key, name, library, rating_key, visibil
 
 
 def collection_members(entry, items):
-    selected, missing = set(), []
+    """The Plex titles a collection holds, the members it couldn't find, and how many of those matched more than one title."""
+    selected, missing, ambiguous = set(), [], 0
     for member in entry.get("members", []):
         matches = [item for item in items if all(str(item.get(k, "")).casefold() == str(v).casefold() for k, v in member.items())]
+        ambiguous += len(matches) > 1
         if len(matches) != 1:
             if matches or not entry.get("source"):
                 missing.append(member)
@@ -668,11 +833,13 @@ def collection_members(entry, items):
             if rules.get("title_contains", "").casefold() not in item["title"].casefold():
                 continue
             selected.add(item["rating_key"])
-    return [item["rating_key"] for item in items if item["rating_key"] in selected], missing
+    return [item["rating_key"] for item in items if item["rating_key"] in selected], missing, ambiguous
 
 
 def seasonal_radarr(artwork, definitions, items, apply, today):
-    """Only a successful add recorded here AND its private Radarr tag grant cleanup ownership."""
+    """Only a successful add recorded here AND its private Radarr tag grant cleanup ownership. A seasonal collection
+    (remove-delete) deletes the movies it downloaded once its season ends; a rotating one (rotate) deletes each once it
+    leaves the list, but not while someone is watching it, nor on a run where the list came back less than half as long as last time."""
     if not any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
         return
     if READ_ONLY:
@@ -711,7 +878,7 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
             continue
         ids = {m["tmdb_id"] for m in entry.get("members", []) if "tmdb_id" in m}
         candidates = [i for i in items if i["library"] == entry["library"] and i["type"] == entry["type"]]
-        keys, _ = collection_members(entry, candidates)
+        keys = collection_members(entry, candidates)[0]
         ids.update(i["tmdb_id"] for i in candidates if i["rating_key"] in keys and i.get("tmdb_id"))
         if entry["type"] == "movie":
             active_ids.update(ids)
@@ -754,6 +921,24 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
             state["movies"][str(tmdb_id)] = {"id": added["id"], "path": added.get("path"), "owners": [identity(e) for e in definitions
                 if e.get("enabled", True) and e.get("acquire") and collection_active(e.get("schedule"), today) and {"tmdb_id": tmdb_id} in e.get("members", [])]}
             save()
+    # A list that suddenly shrank is more likely a bad answer than a new week: nothing leaves it on this run.
+    lists, held = state.setdefault("lists", {}), set()
+    for entry in definitions:
+        if entry.get("enabled", True) and entry.get("cleanup") == "rotate":
+            owner, count = identity(entry), sum("tmdb_id" in m for m in entry.get("members", []))
+            if count < lists.get(owner, 0) / 2:
+                held.add(owner)
+                print(f"WARN {entry['name']} [{entry['library']}]: the list has {count} movies, down from {lists[owner]}; none are removed this run", flush=True)
+            if apply and lists.get(owner) != count:
+                lists[owner] = count
+                save()
+    def releases(entry):
+        if entry is None or not entry.get("enabled", True):
+            return False
+        if entry.get("cleanup") == "rotate":
+            return identity(entry) not in held
+        return entry.get("cleanup", "keep") == "remove-delete" and not collection_active(entry.get("schedule"), today)
+    playing = None
     for key, record in list(state["movies"].items()):
         tmdb_id = int(key)
         if tmdb_id in active_ids:
@@ -764,11 +949,18 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
                 save()
             continue
         responsible = [owners.get(owner) for owner in record["owners"]]
-        if not responsible or any(e is None or not e.get("enabled", True) or e.get("cleanup", "keep") != "remove-delete" or collection_active(e.get("schedule"), today) for e in responsible):
+        if not responsible or not all(map(releases, responsible)):
             continue
         movie = existing.get(tmdb_id)
         if movie is None or tag is None or tag not in movie.get("tags", []) or movie["id"] != record["id"] or not record.get("path") or movie.get("path") != record["path"]:
             continue
+        if any(e.get("cleanup") == "rotate" for e in responsible):
+            if playing is None:
+                playing = now_playing(artwork.plex, items)
+            if playing is False or tmdb_id in playing:
+                print(f"KEEP {movie['title']} (tmdb:{tmdb_id}): left the list, but "
+                      + ("Plex didn't say what is playing" if playing is False else "someone is watching it"), flush=True)
+                continue
         print(f"{' ' if apply else 'PLAN '}RADARR REMOVE + DELETE FILES {movie['title']} (tmdb:{tmdb_id}; added by tk.box)", flush=True)
         if apply:
             fresh = request("GET", f"movie/{record['id']}")
@@ -777,6 +969,15 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
             request("DELETE", f"movie/{record['id']}", params={"deleteFiles": "true", "addImportExclusion": "false"})
             del state["movies"][key]
             save()
+
+
+def now_playing(plex, items):
+    """The TMDb IDs of the movies someone is watching now, or False if Plex didn't say."""
+    try:
+        keys = {e.get("ratingKey") for e in plex.xml("/status/sessions") if e.tag == "Video"}
+    except (RuntimeError, ET.ParseError):
+        return False
+    return {item["tmdb_id"] for item in items if item["rating_key"] in keys and item.get("tmdb_id")}
 
 
 def custom_collections(artwork, apply=False, today=None, added_item=None, kept=None, earlier=()):
@@ -795,7 +996,7 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
     for entry in definitions:
         source = entry.get("source")
         if entry.get("enabled", True) and source and source.get("refresh", option({}, "collection_source_refresh")):
-            result = sources.fetch(source["url"], entry["type"], source.get("limit"))
+            result = sources.fetch(source["url"], entry["type"], source.get("limit"), choose=source, exclude=entry.get("exclude"))
             entry["members"] = [row["member"] for row in result["items"]]
     # Titles the admin removed stay out, whether they were picked or came from a list.
     for entry in definitions:
@@ -839,7 +1040,7 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
         keys = []
         try:
             candidates = [item for item in items if item["library"] == library and item["type"] == entry["type"]]
-            keys, missing = collection_members(entry, candidates)
+            keys, missing, ambiguous = collection_members(entry, candidates)
             dropped = collection_members({"members": entry.get("exclude", [])}, candidates)[0]
             keys = [key for key in keys if key not in dropped]
             if active:
@@ -848,13 +1049,17 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
                     if not keys:
                         continue
                 print(f"{'PLAN ' if not apply else ''}MATCH {name} [{library}]: {len(keys)} existing Plex {'shows' if entry['type'] == 'tv' else 'movies'}; enabled", flush=True)
-                if missing:
-                    print(f"WARN {name} [{library}]: {len(missing)} missing or ambiguous members; no members removed", flush=True)
+                # A title missing from Plex can't be in the collection, but one that matches several might be: nothing
+                # comes out while any is unclear.
+                if ambiguous:
+                    print(f"WARN {name} [{library}]: {ambiguous} members match more than one title; no members removed", flush=True)
+                elif missing:
+                    print(f"NOTE {name} [{library}]: {len(missing)} members not in Plex", flush=True)
                 if not keys:
                     print(f"SKIP {name} [{library}]: no matching titles; membership left alone", flush=True)
                 else:
                     builder.groups({(library, "custom"): {"name": name, "type": 2 if entry["type"] == "tv" else 1, "keys": keys, "drop": dropped}},
-                                   {item["rating_key"]: item["title"] for item in candidates}, sections, 1, added_item is None and entry.get("sync", "append") == "sync" and not missing)
+                                   {item["rating_key"]: item["title"] for item in candidates}, sections, 1, added_item is None and not ambiguous)
                     if current is None and apply:
                         current = next((c for c in plex.collections("show" if entry["type"] == "tv" else "movie")
                                         if c["library"] == library and collection_key(c["title"]) == collection_key(name)), None)
@@ -1416,7 +1621,8 @@ def discover(config_path, data):
             preset = next((row for row in COLLECTION_UNIVERSES if row[0] == universe), None) if universe else None
             if universe and (preset is None or data.get("type", "movie") not in preset[3]):
                 raise ValueError("Unknown universe or unsupported media type")
-            result = sources.fetch(preset[2] if preset else data.get("url"), data.get("type", "movie"), data.get("limit"))
+            result = sources.fetch(preset[2] if preset else data.get("url"), data.get("type", "movie"), data.get("limit"),
+                                   choose={key: data[key] for key in ("filter", "sort") if key in data}, candidates=data.get("candidates") is True)
             if preset:
                 result["name"] = preset[1]
             return result

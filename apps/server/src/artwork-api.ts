@@ -244,8 +244,9 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     return {configured:titles.configured(),items:titles.configured()?await titles.lookup(input.type,input.members):input.members.map(()=>null)};
   });
   app.post('/api/v1/admin/artwork/collections/discover',async request=>{
-    const input=z.object({mode:z.enum(['recommendations','browse','universes','partial','franchises','preview']),provider:z.enum(['all','tmdb','trakt','mdblist','imdb','letterboxd','flixpatrol']).optional(),
-      query:z.string().max(200).optional(),type:z.enum(['movie','tv']).optional(),universe:z.string().max(60).optional(),url:link.optional(),limit:z.number().int().min(1).max(250).optional()}).strict().parse(request.body);
+    const input=z.object({mode:z.enum(['recommendations','browse','universes','partial','franchises','preview']),provider:z.enum(['all','tmdb','mdblist','imdb','letterboxd','flixpatrol','plex']).optional(),
+      query:z.string().max(200).optional(),type:z.enum(['movie','tv']).optional(),universe:z.string().max(60).optional(),url:link.optional(),limit:z.number().int().min(1).max(250).optional(),
+      filter:z.record(z.string().max(40),z.unknown()).optional(),sort:z.string().max(20).optional(),candidates:z.boolean().optional()}).strict().parse(request.body);
     const {grant}=await admin(request);return engine.discover(runOf(grant),input);
   });
   // Builds the Discover index now, in the background, instead of waiting for the nightly run.

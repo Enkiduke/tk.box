@@ -1361,6 +1361,23 @@ class ArtworkTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(pc.custom_collections(self.artwork, True), 0)
         self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
+        # It always matches its titles: one in Plex's collection it doesn't list comes out, though a member isn't in Plex.
+        self.config["collections"] = [{"name": "Picks", "library": "Movies", "type": "movie", "members": [{"title": "Alien"}, {"title": "Not Here"}]}]
+        calls.clear()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
+        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
+        # One that matches two titles might be the one held, so nothing comes out.
+        library = self.http.replies[plex + "/library/sections/1/all"]
+        self.http.replies[plex + "/library/sections/1/all"] = container(video(1, "Alien", 10), video(3, "Heat", 20), video(6, "Solo", 31), video(5, "Solo", 30), totalSize=4)
+        self.config["collections"][0]["members"].append({"title": "Solo"})
+        calls.clear()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
+        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"})])
+        self.assertIn("WARN Picks [Movies]: 1 members match more than one title; no members removed", output.getvalue())
+        self.http.replies[plex + "/library/sections/1/all"] = library
 
         # A custom collection named like a franchise one keeps it: the franchise side neither trims nor deletes it.
         # Without the claim, minimum=3 would make the earlier franchise "Alien" no longer qualify, and delete it.
@@ -1406,6 +1423,121 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(rows[0]["url"], "https://www.imdb.com/list/ls539646485/")
         with patch.object(self.artwork.plex, "scan", side_effect=AssertionError("no index, no Plex scan")):
             self.assertTrue(all("owned" not in r for r in sources.universes(index=pc.empty_index())))
+
+    def test_plex_discover_lists_are_read_from_their_shelf_with_ids_filled_in(self):
+        url = "https://watch.plex.tv/discover/list/historical-week/"
+        self.assertEqual(pc.collection_source("https://watch.plex.tv/me/discover/list/historical-week")[1], url)
+        hubs = {"Hub": [{"title": "Trending", "key": "/hubs/trending"}, {"title": "Released This Week in History", "key": "/hubs/sections/home/historical-week"}]}
+        replies = {"/hubs/sections/home": hubs,
+                   "/hubs/sections/home/historical-week": {"Metadata": [
+                       {"type": "movie", "ratingKey": "a", "title": "The Terminator", "year": 1984},
+                       {"type": "show", "ratingKey": "b", "title": "White Collar", "year": 2009},
+                       {"type": "movie", "ratingKey": "c", "title": "Coco", "year": 2017, "Guid": [{"id": "imdb://tt2380307"}]}]},
+                   "/library/metadata/a": {"Metadata": [{"ratingKey": "a", "Guid": [{"id": "imdb://tt0088247"}, {"id": "tmdb://218"}]}]}}
+        sources = pc.CollectionSources(self.artwork)
+        with patch.object(sources, "plex_discover", side_effect=lambda path, **_: replies[path]) as asked:
+            result = sources.fetch(url, "movie", resolve=False)
+        self.assertEqual([row["member"] for row in result["items"]], [{"tmdb_id": 218}, {"imdb_id": "tt2380307"}])  # Shows are left out
+        self.assertEqual(result["name"], "Released This Week in History")
+        self.assertNotIn("/library/metadata/b", [call.args[0] for call in asked.call_args_list])  # Only movies without IDs are looked up
+        replies["/hubs/sections/home"] = {"Hub": hubs["Hub"][:1]}
+        with patch.object(sources, "plex_discover", side_effect=lambda path, **_: replies[path]), self.assertRaisesRegex(ValueError, "It offers: Trending"):
+            sources.fetch(url, "movie", resolve=False)
+        rotate = {"name": "Week", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "rotate"}
+        with self.assertRaisesRegex(ValueError, "rotate requires"):
+            pc.validate_collections({"collections": [{**rotate, "members": [{"tmdb_id": 1}]}]})
+        with self.assertRaisesRegex(ValueError, "rotate requires"):
+            pc.validate_collections({"collections": [{**rotate, "source": {"url": url, "refresh": False}}]})
+        pc.validate_collections({"collections": [{**rotate, "source": {"url": url}}],
+                                 "radarr": {"url": "http://radarr.invalid", "api_key": "key", "root_folder": "/movies"}})
+
+    def test_a_list_is_filtered_and_sorted_before_the_collection_size_cuts_it(self):
+        def row(tmdb_id, year, rating=7.0, genres=("Drama",), certification="R", language="en"):
+            return {"title": f"Movie {tmdb_id}", "year": str(year), "member": {"tmdb_id": tmdb_id},
+                    "details": {"year": year, "rating": rating, "genres": list(genres), "certification": certification, "language": language}}
+        today = date(2026, 10, 25)
+        rows = [row(1, 2024), row(2, 1984, 8.1), row(3, 2006, 5.0), row(4, 1976, genres=("Horror",)), row(5, 1996, certification=None),
+                {"title": "Unknown", "year": "", "member": {"imdb_id": "tt1"}, "details": None}, row(6, 1990, language="fr"), row(7, 1999, 9.5)]
+        choose = pc.source_choice({"filter": {"year_to": 2021, "min_rating": 6, "max_rating": 9, "languages": ["en"], "exclude_genres": ["horror"],
+                                              "exclude_certifications": ["NR"]}, "sort": "anniversary"})
+        kept, left = pc.choose_titles(rows, choose, 1, today)
+        self.assertEqual([r["member"] for r in kept], [{"tmdb_id": 2}])  # 42 years isn't round, but it's the only one left
+        self.assertNotIn("details", kept[0])
+        self.assertEqual({l["title"]: l["why"] for l in left}, {
+            "Movie 1": "released after 2021", "Movie 3": "rated below 6 on TMDb", "Movie 4": "in a genre left out",
+            "Movie 5": "rated NR", "Unknown": "no TMDb details", "Movie 6": "in a language left out", "Movie 7": "rated above 9 on TMDb"})
+        kept, left = pc.choose_titles(rows[:5], {"sort": "anniversary"}, 2, today)
+        self.assertEqual([r["member"]["tmdb_id"] for r in kept], [3, 4])  # 20 and 50 years, then the rest in list order
+        self.assertEqual([l["why"] for l in left], ["beyond the collection size"] * 3)
+        kept, left = pc.choose_titles(rows[:5], {"sort": "anniversary"}, 2, today, exclude=[{"tmdb_id": 3}])
+        self.assertEqual([r["member"]["tmdb_id"] for r in kept], [4, 5])  # A removed title doesn't use up the size
+        self.assertEqual(len(left), 2)
+        # The editor (list-choice.ts) sorts "random" by the same hash; tests/list-choice.test.ts checks these values.
+        self.assertEqual((pc.week_hash("2026-43", {"tmdb_id": 218}), pc.week_hash("2026-43", {"title": "Amélie", "year": 2001})), (2508485222, 773514683))
+        self.assertEqual([r["member"]["tmdb_id"] for r in pc.choose_titles(rows[:5], {"sort": "rating"}, 5, today)[0]], [2, 1, 4, 5, 3])
+        week = [r["member"] for r in pc.choose_titles(rows[:5], {"sort": "random"}, 5, today)[0]]
+        self.assertEqual(week, [r["member"] for r in pc.choose_titles(rows[:5], {"sort": "random"}, 5, date(2026, 10, 21))[0]])  # Same week, same order
+        self.assertEqual(pc.source_choice({"url": "x", "filter": {"exclude_genres": []}, "sort": "list"}), {})
+        with self.assertRaisesRegex(ValueError, "list sort"):
+            pc.source_choice({"sort": "best"})
+        # Reading a list to choose from asks for the whole list, then cuts it.
+        sources = pc.CollectionSources(self.artwork)
+        listed = {"items": [{"title": f"Movie {i}", "year": "2000", "member": {"tmdb_id": i}} for i in range(1, 5)]}
+        with patch.object(sources, "plex_discover", side_effect=lambda path, **params: {"Hub": [{"title": "Released This Week in History", "key": "/hubs/historical-week"}]} if path == "/hubs/sections/home"
+                          else {"Metadata": [{"type": "movie", "ratingKey": str(i), "title": f"Movie {i}", "year": 2000, "Guid": [{"id": f"tmdb://{i}"}]} for i in range(1, 5)]}) as asked, \
+             patch.object(sources, "details", side_effect=lambda kind, tmdb_id: {"year": 2000, "rating": tmdb_id, "genres": [], "certification": "PG", "language": "en"}):
+            result = sources.fetch("https://watch.plex.tv/discover/list/historical-week", "movie", 2, choose={"sort": "rating"})
+        self.assertEqual(asked.call_args_list[1].kwargs["limit"], 250)
+        self.assertEqual([r["member"]["tmdb_id"] for r in result["items"]], [4, 3])
+        self.assertEqual((result["limit"], len(result["left_out"])), (2, 2))
+
+    def test_a_rotating_collection_deletes_downloads_that_left_its_list_unless_watched(self):
+        radarr = "http://radarr.invalid:7878"
+        self.config["radarr"] = {"url": radarr, "api_key": "radarr-key", "root_folder": "/movies"}
+        owner = "Movies:" + pc.collection_key("Week")
+        def record(key):
+            return {"id": key, "path": f"/movies/{key}", "owners": [owner]}
+        state_path = self.artwork.base / "collections-state.json"
+        def start(listed):
+            state_path.write_text(json.dumps({"version": 1, "server": radarr, "tag": "tkbox-test", "lists": {owner: listed},
+                                              "movies": {"2": record(22), "3": record(33), "4": record(44)}}))
+        calls = []
+        class Reply:
+            def __init__(self, data):
+                self.data, self.content = data, b"x" if data is not None else b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def json(self):
+                return self.data
+        movies = [{"id": key, "tmdbId": key // 11, "title": f"Movie {key}", "path": f"/movies/{key}", "tags": [7]} for key in (22, 33, 44)]
+        def request(method, url, **kwargs):
+            path = url.removeprefix(radarr + "/api/v3/")
+            calls.append((method, path))
+            replies = {"movie": movies, "tag": [{"id": 7, "label": "tkbox-test"}], **{f"movie/{m['id']}": m for m in movies}}
+            return Reply(None if method == "DELETE" else replies[path])
+        # This week's list holds movie 1, which is in Plex; 2, 3 and 4 left it, and 4 is playing.
+        self.http.replies[self.artwork.plex.url + "/status/sessions"] = b'<MediaContainer><Video ratingKey="400"/></MediaContainer>'
+        items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}},
+                 {"type": "movie", "tmdb_id": 4, "rating_key": "400", "library": "Movies", "title": "Movie 44", "year": "2000", "genres": [], "media": {}}]
+        week = [{"name": "Week", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "rotate",
+                 "source": {"url": "https://watch.plex.tv/discover/list/historical-week/"}, "members": [{"tmdb_id": 1}]}]
+        start(1)
+        output = io.StringIO()
+        with patch.object(self.artwork.http, "request", side_effect=request), redirect_stdout(output):
+            pc.seasonal_radarr(self.artwork, week, items, True, date.today())
+        self.assertEqual([c for c in calls if c[0] == "DELETE"], [("DELETE", "movie/22"), ("DELETE", "movie/33")])
+        self.assertEqual(sorted(json.loads(state_path.read_text())["movies"]), ["4"])
+        self.assertIn("someone is watching it", output.getvalue())
+        # A list that came back less than half as long as last time removes nothing.
+        start(10)
+        calls.clear()
+        with patch.object(self.artwork.http, "request", side_effect=request), redirect_stdout(io.StringIO()) as warned:
+            pc.seasonal_radarr(self.artwork, week, items, True, date.today())
+        self.assertFalse([c for c in calls if c[0] == "DELETE"])
+        self.assertIn("down from 10", warned.getvalue())
+        self.assertEqual(json.loads(state_path.read_text())["lists"][owner], 1)
 
     def test_partly_owned_reads_the_discover_index_which_runs_and_newly_added_movies_keep(self):
         plex = "http://plex.invalid:32400"
