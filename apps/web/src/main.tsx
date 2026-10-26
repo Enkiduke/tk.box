@@ -11,6 +11,8 @@ import {LiveFailover,type LiveSession} from './live-failover.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
 import {HeaderStreams} from './header-streams.js';
+import {openPlexPopup} from './plex-popup.js';
+import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 // Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
@@ -33,16 +35,8 @@ type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOf
 type Session=VodSession|LiveSession;
 const fetchPage=(path:string)=>api<CatalogPage>(path);
 const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['explore','Explore'],['live','Live TV']] as const;
-// Opens synchronously in the click so popup blockers allow it; the caller points it at Plex once the auth URL arrives.
-function openPlexPopup(url='') {
-  const width=520,height=720,left=Math.round(window.screenX+(window.outerWidth-width)/2),top=Math.round(window.screenY+(window.outerHeight-height)/2);
-  const popup=window.open(url,'tkbox-plex-auth',`popup,width=${width},height=${height},left=${left},top=${top}`);
-  if(popup)popup.opener=null;
-  return popup;
-}
-
 function App() {
-  const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean}>('/setup'),scrolled=useScrolled();
+  const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean;plexUrl?:string}>('/setup'),scrolled=useScrolled();
   // Only a 401 means signed out. A 403 is Plex refusing a check, which the server has already retried; the viewer stays
   // signed in with what they're watching, and the next check tries again.
   const me=identity.error?.status===401?undefined:identity.data;
@@ -216,10 +210,11 @@ function App() {
   const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item??loadingNext;
   const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
   const subtitle=channel?channel.program:item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
-  const signIn=<section className="sign-in"><div className="sign-in-card"><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p>
+  const signIn=setup.data&&!setup.data.plexConfigured?<section className="sign-in"><FirstRun plexUrl={setup.data.plexUrl} onDone={()=>{setup.reload();identity.reload();catalog.reload();}}/></section>
+    :<section className="sign-in"><div className="sign-in-card"><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p>
     {setup.error?<ErrorNotice message={setup.error.message} retry={setup.reload}/>:setup.data?.plexConfigured?<><button className="primary large" disabled={busy} onClick={()=>{if(locking.current)return;const popup=openPlexPopup();plexPopup.current=popup;void action(async()=>{try{const result=await api<{authUrl:string}>('/auth/plex/start','POST');setAuthUrl(result.authUrl);if(popup&&!popup.closed)popup.location.href=result.authUrl;else plexPopup.current=openPlexPopup(result.authUrl)??(window.open(result.authUrl,'_blank','noopener,noreferrer'),null);}catch(e){popup?.close();throw e;}});}}>Sign in with Plex</button>
       {authUrl&&<div className="linking"><span className="spinner"/><p>Finish signing in in the Plex window. tk.box connects automatically.</p><a href={authUrl} target="_blank" rel="noreferrer" onClick={event=>{const popup=openPlexPopup(authUrl);if(popup){event.preventDefault();plexPopup.current=popup;}}}>Reopen Plex sign-in</a><button className="text-button" disabled={busy} onClick={()=>void action(checkAuth)}>I've signed in</button></div>}</>
-    :<p>Set up your Plex server in the local configuration to enable sign-in.</p>}<small className="muted">Your Plex password stays with Plex.</small></div></section>;
+    :<Loading/>}<small className="muted">Your Plex password stays with Plex.</small></div></section>;
   const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>

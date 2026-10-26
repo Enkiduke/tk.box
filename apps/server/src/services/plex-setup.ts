@@ -5,6 +5,7 @@ import {digest} from '../security/vault.js';
 import {requireThat} from '../errors.js';
 import type {PlexAdapter} from '../providers/plex.js';
 import {loadConfig} from '../config.js';
+import {setEnvValues} from './env-file.js';
 
 type Discovery=Awaited<ReturnType<PlexAdapter['discoverOwner']>>;
 // A local operator may repair a username/other invalid owner setting, but only
@@ -23,13 +24,7 @@ export async function savePlexConfiguration(path:string,originalDigest:string,ex
   requireThat(!env.PLEX_OWNER_ACCOUNT_ID||!/^\d+$/.test(env.PLEX_OWNER_ACCOUNT_ID)||env.PLEX_OWNER_ACCOUNT_ID===discovery.ownerAccountId,'PLEX_OWNER_MISMATCH','Setup cannot replace an already configured numeric owner.',403);
   const ids={PLEX_OWNER_ACCOUNT_ID:discovery.ownerAccountId,PLEX_MACHINE_ID:discovery.machineId,PLEX_REQUIRED_LIBRARY_IDS:discovery.requiredLibraryIds.join(',')};
   requireThat(/^\d+$/.test(ids.PLEX_OWNER_ACCOUNT_ID)&&discovery.requiredLibraryIds.length>0&&discovery.requiredLibraryIds.every(id=>/^\d+$/.test(id))&&/^[A-Za-z0-9_.:-]{1,128}$/.test(ids.PLEX_MACHINE_ID),'PLEX_INVALID_ID','Plex returned unsupported configuration identifiers.');
-  const newline=original.includes('\r\n')?'\r\n':'\n';let next=original;
-  for(const [key,value] of Object.entries(ids)) {
-    const pattern=new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=.*$`,'gm'),matches=[...next.matchAll(pattern)];
-    requireThat(matches.length<=1,'SETUP_CONFIG_AMBIGUOUS','Remove duplicate Plex configuration fields before setup.');
-    const line=`${key}=${JSON.stringify(value)}`;
-    next=matches.length?next.replace(pattern,()=>line):`${next.endsWith('\n')?next:next+newline}${line}${newline}`;
-  }
+  const next=setEnvValues(original,ids);
   const temporary=`${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary,next,{flag:'wx',mode:0o600});

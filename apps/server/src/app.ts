@@ -7,6 +7,7 @@ import { readdir } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { resolve, join, extname } from 'node:path';
 import { z, ZodError } from 'zod';
+import { registerSetup } from './setup-api.js';
 import type { Config } from './config.js';
 import type { Db } from './persistence/database.js';
 import { SettingsStore } from './persistence/database.js';
@@ -235,14 +236,14 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     const {radarr, radarrKey} = artworkStore.collectionsConfig(), own = cleanupStore.connections();
     return {seerr: exploreStore.seerr(), radarr: {url: radarr.url, key: radarrKey}, tautulli: {url: own.tautulliUrl, key: own.tautulliKey}, sonarr: {url: own.sonarrUrl, key: own.sonarrKey}};
   };
-  const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, plexUrl: config.PLEX_URL},
+  const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; }},
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
   cleanup.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   app.addHook('onReady', async () => { cleanup.start(); });
   app.addHook('onClose', async () => { cleanup.close(); });
   app.get('/health', async () => ({status: 'ok'}));
-  app.get('/api/v1/setup', async () => ({plexConfigured: config.plexConfigured, milestone: 0}));
+  registerSetup(app, config, plex, identity, {setup: `${cookieNamespace}_setup`, session: sessionCookie, options: cookieOpts, sessionAge: sessionCookieAge});
   app.post('/api/v1/auth/plex/start', { config: {rateLimit: {max: 10, timeWindow: 60000}} }, async (_req, reply) => {
     requireThat(config.plexConfigured, 'SETUP_REQUIRED', 'Configure Plex owner, machine and library IDs.', 503);
     const start = await identity.start(); reply.setCookie(linkCookie, start.binding, {...cookieOpts, maxAge: 600}); return {authUrl: start.authUrl};

@@ -31,11 +31,17 @@ export class IdentityService {
     this.db.prepare('UPDATE auth_challenges SET last_poll=? WHERE hash=?').run(now, hash);
     const accountToken = await this.plex.pollPin(challenge.pin_id, challenge.code);
     if (!accountToken) return undefined;
+    return this.signIn(accountToken, now, () => {
+      const claimed = this.db.prepare('DELETE FROM auth_challenges WHERE hash=?').run(hash);
+      requireThat(claimed.changes === 1, 'AUTH_EXPIRED', 'Sign-in challenge was already consumed.', 401);
+    });
+  }
+  // Opens a session for a Plex account token that has just been linked: by finish() above, or by first-run setup.
+  async signIn(accountToken: string, now = Date.now(), claim = () => {}) {
     const grant = await this.plex.authorize(accountToken);
     const cookie = opaque(), sessionHash = digest(cookie), expires = now + SESSION_IDLE_MS;
     this.db.transaction(() => {
-      const claimed = this.db.prepare('DELETE FROM auth_challenges WHERE hash=?').run(hash);
-      requireThat(claimed.changes === 1, 'AUTH_EXPIRED', 'Sign-in challenge was already consumed.', 401);
+      claim();
       this.db.prepare('INSERT OR IGNORE INTO users(account_id) VALUES(?)').run(grant.accountId);
       const user = this.db.prepare('SELECT allowed FROM users WHERE account_id=?').get(grant.accountId) as {allowed: number};
       requireThat(user.allowed, 'ACCESS_DENIED', 'Account access is disabled.', 403);
