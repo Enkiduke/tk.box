@@ -1,0 +1,59 @@
+/* Subtitle studio: a large window like the poster studio, with layers, preview and settings side by side. */
+dialog:has(.subtitle-studio){width:calc(100% - 48px);max-width:1680px;height:calc(100vh - 48px);max-height:none;margin:24px auto;overflow:hidden}
+dialog:has(.subtitle-studio) .modal-content{height:100%;padding:18px 22px 20px}
+.subtitle-studio{display:flex;flex-direction:column;gap:12px;height:100%;min-height:0}
+.sub-head{display:flex;align-items:center;gap:24px;margin-right:44px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.sub-head h3{margin:0;font-size:17px}
+.sub-head-group{display:flex;align-items:center;gap:10px;min-width:0}
+.sub-head-group.grow{flex:1 1 0}
+.sub-head-end{justify-content:flex-end}
+.sub-head :is(select,button){height:38px;margin:0;padding-top:0;padding-bottom:0}
+.sub-head select{width:240px}
+.sub-head .sub-unsaved{margin:0;padding:4px 10px;font-size:12px}
+.sub-body{flex:1;min-height:0;display:grid;grid-template-columns:260px minmax(0,1fr) 460px;gap:18px}
+.sub-layers,.sub-inspector{min-height:0;overflow:auto;scrollbar-width:thin}
+
+.sub-layers{display:flex;flex-direction:column;gap:4px}
+.sub-layers>h4:first-child{margin-top:4px}
+.sub-layers h4{margin:10px 0 2px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.sub-layers ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.sub-layers li{display:flex;align-items:center;gap:2px}
+.sub-layer{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:8px 10px;border:0;border-radius:8px;background:transparent;font-size:13px;text-align:left;color:var(--text)}
+.sub-layer:hover{background:var(--surface-2)}
+.sub-layer.active{background:var(--surface-3);font-weight:600}
+.sub-layer.off{color:var(--dim)}
+.sub-layer .count,.sub-section summary .count{padding:1px 7px;border-radius:9px;background:var(--accent-tint);color:var(--accent);font-size:11px;font-weight:600}
+.sub-dot{flex:none;width:14px;height:14px;border:1px solid rgba(255,255,255,.35);border-radius:50%}
+.sub-eye{padding:6px;color:var(--muted)}
+.sub-eye[aria-pressed]{background:transparent;border-color:transparent;color:var(--muted)}
+.sub-eye[aria-pressed=false]{color:var(--dim)}
+.sub-eye:hover{color:var(--text)}
+.sub-save{display:flex;flex-direction:column;gap:6px;margin-top:auto;padding-top:14px;border-top:1px solid var(--line)}
+.sub-save-row{display:flex;gap:6px}
+.sub-save-row button{padding-inline:12px}
+
+.sub-canvas{min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--bg)}
+.sub-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;container-type:size}
+.subtitle-preview-wrap.studio{width:min(100cqw,calc((100cqh - 40px) * 16 / 9))}
+.sub-sample{display:flex;flex-direction:column;gap:4px}
+.sub-sample textarea{resize:vertical;min-height:44px;font-size:13px}
+.sub-canvas>p{margin:0;text-align:center}
+
+.sub-inspector{display:flex;flex-direction:column;gap:10px;padding-right:4px}
+.sub-inspector>p{margin:0}
+.sub-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sub-inspector-head h3{display:flex;align-items:center;gap:8px;margin:0;font-size:16px}
+.sub-inspector-head button{padding:6px 12px;font-size:13px}
+.sub-section{border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.sub-section summary{display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:650;cursor:pointer}
+.sub-field{display:grid;grid-template-columns:128px minmax(0,1fr) auto;align-items:center;gap:10px;padding:6px 12px;border-top:1px solid var(--line)}
+.sub-field label{font-size:13px;font-weight:550}
+.sub-field.changed label{color:var(--accent)}
+.sub-field .toggle-group{flex-wrap:wrap;align-self:auto}
+.sub-field .icon-button{padding:4px}
+.sub-field select,.sub-field input[type=text]{padding:6px 10px;font-size:13px}
+.sub-range,.sub-color{display:flex;align-items:center;gap:10px}
+.sub-range input[type=range]{flex:1;min-width:0;padding:0;border:0;background:none;accent-color:var(--accent);cursor:pointer}
+.sub-number{width:72px;padding:5px 8px;font-size:13px;font-variant-numeric:tabular-nums}
+.sub-unit{min-width:52px;color:var(--dim);font-size:11px;white-space:nowrap}
+.sub-color input[type=color]{width:40px;height:32px;padding:2px;cursor:pointer}
