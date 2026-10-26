@@ -24,6 +24,8 @@ export const cleanupSettings = z.object({
   exemptUserIds: z.array(z.number().int().positive().max(2 ** 53)).max(100),
   exemptArrTags: z.array(label.pipe(z.string().min(1))).max(50),
   exemptIfInCollection: z.boolean(),
+  // Which collections protect a title: tk.box's own by kind (Admin › Collections), and any other Plex collection.
+  collectionKinds: z.object({ franchise: z.boolean(), streaming: z.boolean(), custom: z.boolean(), seasonal: z.boolean(), other: z.boolean() }).strict(),
   seasons: z.object({ enabled: z.boolean(), protectLatest: z.boolean(), protectSpecials: z.boolean() }).strict(),
   leavingSoon: z.object({ enabled: z.boolean(), name: label.pipe(z.string().min(1)), days: z.number().int().min(1).max(365), poster: z.boolean() }).strict(),
   // On its schedule, server local time, at most hourly.
@@ -35,6 +37,8 @@ type Connections = { tautulliUrl: string; sonarrUrl: string; tautulliKey?: strin
 // Nothing is deleted until an administrator turns previews off; the retention days are the script's own defaults.
 const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromRadarr: false, deleteFromSonarr: false, deleteFromSeerr: false,
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
+  // Streaming collections hold shows by service, not ones anyone chose to keep.
+  collectionKinds: { franchise: true, streaming: false, custom: true, seasonal: true, other: true },
   seasons: { enabled: true, protectLatest: true, protectSpecials: true }, leavingSoon: { enabled: false, name: 'Leaving Soon', days: 7, poster: true },
   schedule: { enabled: false, schedule: { kind: 'times', times: ['03:30'], days: [] } } };
 export const holdKey = z.string().regex(/^(?:movie|tv):\d{1,10}(?::\d{1,4})?$/);

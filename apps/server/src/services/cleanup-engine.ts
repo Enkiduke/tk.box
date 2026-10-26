@@ -8,6 +8,8 @@ import type { CleanupHold, CleanupSettings, CleanupStore } from '../persistence/
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
+import { collectionKey } from './hidden-downloads.js';
+import type { KeptCollections } from './artwork-engine.js';
 
 // Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
 // a time. tk.box writes the script's JSON config from its settings and passes the Plex token and service keys in the
@@ -47,8 +49,16 @@ export function holdUntil(item: CleanupTitle, settings: CleanupSettings, now = D
   return now + (settings[setting] as number) * DAY;
 }
 
+// tk.box's own collections, by kind, so the script can tell which of a title's collections protect it. A custom
+// collection with a Shown from–to range is seasonal; any collection not listed here is "other".
+export type CleanupCollection = { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom' | 'seasonal' };
+export function cleanupCollections(kept: KeptCollections['collections'], definitions: Record<string, unknown>[] | null): CleanupCollection[] {
+  const seasonal = new Set((definitions ?? []).filter(d => d.schedule && typeof d.name === 'string' && typeof d.library === 'string').map(d => `${d.library as string}:${collectionKey(d.name as string)}`));
+  return kept.map(({ name, library, kind }) => ({ name, library, kind: kind === 'custom' && seasonal.has(`${library}:${collectionKey(name)}`) ? 'seasonal' : kind }));
+}
+
 // The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}) {
+export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = []) {
   return {
     plex: { url: paths.plexUrl }, seerr: { url: services.seerr?.url ?? '' }, tautulli: { url: services.tautulli.url }, radarr: { url: services.radarr.url }, sonarr: { url: services.sonarr.url },
     movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
@@ -56,6 +66,7 @@ export function cleanupConfig(settings: CleanupSettings, services: CleanupServic
     days_after_watched: settings.daysAfterWatched, days_after_unwatched: settings.daysAfterUnwatched,
     days_after_any_watch_exempt: settings.daysAfterAnyWatchExempt, days_after_exempt_watch: settings.daysAfterExemptWatch,
     exempt_user_ids: settings.exemptUserIds, exempt_arr_tags: settings.exemptArrTags, exempt_if_in_collection: settings.exemptIfInCollection,
+    protecting_collection_kinds: Object.entries(settings.collectionKinds).filter(([, on]) => on).map(([kind]) => kind), tkbox_collections: collections,
     enable_season_retention: settings.seasons.enabled, protect_latest_season: settings.seasons.protectLatest, protect_specials_season: settings.seasons.protectSpecials,
     create_leaving_soon_collection: settings.leavingSoon.enabled, leaving_soon_name: settings.leavingSoon.name, leaving_soon_days: settings.leavingSoon.days,
     leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
@@ -95,6 +106,8 @@ export class CleanupEngine {
   readonly workDir: string;
   // Called after each job that ran: it may have removed titles or changed their posters in Plex.
   finished?: () => void;
+  // tk.box's own collections, read as each run starts.
+  collections: () => CleanupCollection[] = () => [];
   constructor(private store: CleanupStore, readonly paths: Paths, private services: () => CleanupServices, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
@@ -194,7 +207,7 @@ export class CleanupEngine {
   private writeConfig(settings: CleanupSettings, services: CleanupServices) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds()), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections()), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

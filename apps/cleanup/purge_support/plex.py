@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from plexapi.exceptions import NotFound
 
 from .api import ApiError, positive_id
+from .config import COLLECTION_KINDS, collection_key
 
 logger = logging.getLogger(__name__)
 LEAVING_SOON_SORT_TITLE = "!011_Leaving Soon"
@@ -66,11 +67,15 @@ def find_plex_item(plex, media_type, library_keys, tmdb_id=None, tvdb_id=None, t
     return None
 
 
-def protected_collections(item, leaving_soon_name):
+def protected_collections(item, leaving_soon_name, kinds=frozenset(COLLECTION_KINDS), tkbox=None):
+    """The item's collections that protect it: tk.box's own (`tkbox`, see config.tkbox_collections) when their kind is
+    in `kinds`, any other when "other" is. Leaving Soon never does."""
     item.reload()
     collections = item.collections() if callable(item.collections) else item.collections
     titles = {getattr(collection, "tag", None) or getattr(collection, "title", "") for collection in collections}
-    return sorted(title for title in titles if title and title.strip().casefold() != leaving_soon_name.strip().casefold())
+    library = str(getattr(item, "librarySectionTitle", "") or "").strip().casefold()
+    return sorted(title for title in titles if title and title.strip().casefold() != leaving_soon_name.strip().casefold()
+                  and (tkbox or {}).get((library, collection_key(title)), "other") in kinds)
 
 
 def matching_arr_tags(item, tag_names, exempt_names):

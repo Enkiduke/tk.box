@@ -152,7 +152,8 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
             add_status(report, item, kind, "protected", reason=f"Tagged {', '.join(matches)}", key=hold)
             return
     if settings.exempt_if_in_collection:
-        collections = protected_collections(item, settings.leaving_soon_name)
+        collections = protected_collections(item, settings.leaving_soon_name, settings.protecting_collection_kinds,
+                                           settings.tkbox_collections)
         if collections:
             logger.info("Keeping '%s': protected by collections %s", item.title, ", ".join(collections))
             report.protected += 1

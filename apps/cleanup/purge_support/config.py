@@ -4,6 +4,7 @@ tk.box keeps the settings (Admin > Server > Clean Up) and writes them out as a J
 the Plex token are never in that file: they arrive in the environment for that run only.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,31 @@ def holds(config):
             for key, until in parsed.items()}
 
 
+COLLECTION_KINDS = ("franchise", "streaming", "custom", "seasonal", "other")
+
+
+def collection_key(name):
+    """Collection names compare as the collections engine compares them: case, punctuation and a trailing "Collection" ignored."""
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"\s+collection$", "", str(name or "").strip().casefold()))
+
+
+def collection_kinds(config):
+    value = config.get("protecting_collection_kinds", list(COLLECTION_KINDS))
+    if not isinstance(value, list) or not all(kind in COLLECTION_KINDS for kind in value):
+        raise ConfigError(f"protecting_collection_kinds must list some of {', '.join(COLLECTION_KINDS)}")
+    return frozenset(value)
+
+
+def tkbox_collections(config):
+    """tk.box's own collections: (library name, collection key) to kind. Any other collection is "other"."""
+    value = config.get("tkbox_collections", [])
+    if not isinstance(value, list) or not all(
+            isinstance(row, Mapping) and isinstance(row.get("name"), str) and isinstance(row.get("library"), str)
+            and row.get("kind") in COLLECTION_KINDS[:-1] for row in value):
+        raise ConfigError("tkbox_collections must list each collection's name, library and kind")
+    return {(row["library"].strip().casefold(), collection_key(row["name"])): row["kind"] for row in value}
+
+
 @dataclass(frozen=True)
 class Service:
     url: str = ""
@@ -95,6 +121,9 @@ class Settings:
     exempt_user_ids: frozenset[int] = frozenset()
     exempt_arr_tags: frozenset[str] = frozenset()
     exempt_if_in_collection: bool = False
+    # Which collections protect a title, and tk.box's own collections by kind (see tkbox_collections).
+    protecting_collection_kinds: frozenset[str] = frozenset(COLLECTION_KINDS)
+    tkbox_collections: Mapping[tuple[str, str], str] = field(default_factory=dict)
     enable_season_retention: bool = True
     protect_latest_season: bool = True
     protect_specials_season: bool = True
@@ -146,6 +175,8 @@ class Settings:
             exempt_user_ids=frozenset(ids),
             exempt_arr_tags=frozenset(tag.casefold() for tag in text_list(config, "exempt_arr_tags")),
             exempt_if_in_collection=boolean(config, "exempt_if_in_collection"),
+            protecting_collection_kinds=collection_kinds(config),
+            tkbox_collections=tkbox_collections(config),
             enable_season_retention=boolean(config, "enable_season_retention", default=True),
             protect_latest_season=boolean(config, "protect_latest_season", default=True),
             protect_specials_season=boolean(config, "protect_specials_season", default=True),

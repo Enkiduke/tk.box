@@ -53,7 +53,7 @@ import { ArtworkWorker } from './services/artwork-worker.js';
 import { ArtworkSchedule } from './services/artwork-schedule.js';
 import { registerArtwork } from './artwork-api.js';
 import { CleanupStore } from './persistence/cleanup-store.js';
-import { CleanupEngine, type CleanupServices } from './services/cleanup-engine.js';
+import { CleanupEngine, cleanupCollections, type CleanupServices } from './services/cleanup-engine.js';
 import { registerCleanup } from './cleanup-api.js';
 import { Activity } from './services/activity.js';
 import { registerActivity } from './activity-api.js';
@@ -241,6 +241,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
   cleanup.finished = () => { plex.forgetMetadata(); events.publish('library'); };
+  cleanup.collections = () => cleanupCollections(artwork.keptCollections().collections, artworkStore.collections().definitions);
   app.addHook('onReady', async () => { cleanup.start(); });
   app.addHook('onClose', async () => { cleanup.close(); });
   app.get('/health', async () => ({status: 'ok'}));
