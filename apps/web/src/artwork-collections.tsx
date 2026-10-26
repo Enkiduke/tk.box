@@ -129,7 +129,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)}
       save={value=>{setDefinition(editing,value);setEditing(undefined);}} remove={()=>{setDefinition(editing,null);setEditing(undefined);}}/>}
     {open&&<AutomaticCollection tile={open} setting={draft.automatic.find(a=>idOf(a)===open.id)} onClose={()=>setOpened(undefined)} save={patch=>{setAutomatic(open,patch);setOpened(undefined);}}/>}
-    {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);setEditing(draft.definitions.length);}}/>}
+    {discover&&<Discover libraries={libraries} existing={draft.definitions} onClose={()=>setDiscover(false)} add={entry=>{change({definitions:[...draft.definitions,entry]});setDiscover(false);}}/>}
   </div>;
 }
 // The grid's tiles: the franchise and streaming collections the last run found (for the kinds that are on; off ones
@@ -280,8 +280,10 @@ function TitleSearch({type,members,add}:{type:Definition['type'];members:Member[
 // One switch for where a collection shows: everyone's Home screen and the library's Recommended tab, together.
 const homeHint='On everyone’s Home screen and in the library’s Recommended tab.';
 const onHome=(v?:Visibility)=>!!v&&Object.values(v).some(Boolean),everywhere=(on:boolean)=>({home:on,shared:on,recommended:on});
-function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void;remove:()=>void}) {
-  const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[exclude,setExclude]=useState(value.exclude??[]),[paste,setPaste]=useState<string>();
+// Without `remove`, it's a collection found in Discover that isn't added yet: Add checks it with `check` (a problem
+// keeps it open), and `found` is the partly owned TMDb collection it came from, if any.
+function EditDefinition({value,libraries,onClose,save,remove,check,found}:{value:Definition;libraries:Library[];onClose:()=>void;save:(value:Definition)=>void;remove?:()=>void;check?:(value:Definition)=>string|undefined;found?:Row}) {
+  const [d,setD]=useState(value),[members,setMembers]=useState(value.members??[]),[exclude,setExclude]=useState(value.exclude??[]),[paste,setPaste]=useState<string>(),[problem,setProblem]=useState('');
   const set=(patch:Partial<Definition>)=>setD(x=>({...x,...patch}));
   const refreshed=!!d.source&&d.source.refresh!==false,visibility=d.visibility??{};
   const add=(more:Member[])=>{
@@ -292,7 +294,7 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
   const drop=(gone:Member[])=>{const keys=new Set(gone.map(memberText));setMembers(list=>list.filter(m=>!keys.has(memberText(m))));setExclude(list=>[...list.filter(m=>!keys.has(memberText(m))),...gone]);};
   const out=new Set(exclude.map(memberText)),shown=members.filter(m=>!out.has(memberText(m)));
   return <Modal title={d.name||'Collection'} onClose={onClose}>
-    <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members:shown,exclude};if(!exclude.length)delete next.exclude;if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}save(next);}}>
+    <form className="collection-editor" onSubmit={e=>{e.preventDefault();const next:Definition={...d,members:shown,exclude};if(!exclude.length)delete next.exclude;if(next.rules&&!Object.keys(next.rules).length)delete next.rules;if(!next.schedule)delete next.schedule;if(!next.acquire){delete next.acquire;if(next.cleanup==='remove-delete')delete next.cleanup;}const wrong=check?.(next);if(wrong){setProblem(wrong);return;}save(next);}}>
       <div className="collection-editor-head">
         <input className="collection-editor-name" aria-label="Name" placeholder="Collection name" required maxLength={120} value={d.name} onChange={e=>set({name:e.target.value})}/>
         <Switch label={d.enabled!==false?'On':'Off'} checked={d.enabled!==false} onChange={v=>set({enabled:v})}/>
@@ -302,6 +304,7 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
         <label>Membership<select value={d.sync??'append'} onChange={e=>set({sync:e.target.value as 'sync'|'append'})}><option value="append">Only add new members</option><option value="sync">Add and remove to match</option></select></label>
         <label>Shown from–to<input placeholder="All year, or 10/01-10/31" pattern="\d{2}/\d{2}-\d{2}/\d{2}" title="MM/DD-MM/DD" value={d.schedule??''} onChange={e=>set({schedule:e.target.value.trim()})}/></label>
       </div>
+      {found&&keyOf(d.name)===keyOf(found.name)&&d.library===found.library&&<p className="muted small">Named like its franchise collection, it takes that collection over in Plex.</p>}
       {d.source&&<section className="collection-editor-panel">
         <div className="collection-editor-source">
           <label className="grow">List address<input type="url" value={d.source.url} onChange={e=>set({source:{...d.source!,url:e.target.value}})}/></label>
@@ -333,12 +336,13 @@ function EditDefinition({value,libraries,onClose,save,remove}:{value:Definition;
         </section>
         {d.type==='movie'&&<section className="collection-editor-panel">
           <h3>Radarr</h3>
-          <Switch label="Download missing movies" description="Needs Radarr and TMDb IDs." checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
+          <Switch label="Download missing movies" description={found?`Radarr adds the ${(found.total??0)-(found.owned??0)} missing while the collection is on.`:'Needs Radarr and TMDb IDs.'} checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
           {d.acquire&&<label>After the season ends<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as 'keep'|'remove-delete'})}><option value="keep">Keep downloaded movies</option><option value="remove-delete">Delete the movies it downloaded</option></select></label>}
         </section>}
       </div>
-      <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span>
-        <button type="button" className="danger collection-editor-remove" onClick={remove}>Remove collection</button></div>
+      {problem&&<p className="danger small">{problem}</p>}
+      <div className="button-row collection-editor-foot"><button className="primary">{remove?'Done':'Add collection'}</button><button type="button" onClick={onClose}>{remove?'Cancel':'Back'}</button><span className="muted small">Save collections to keep this.</span>
+        {remove&&<button type="button" className="danger collection-editor-remove" onClick={remove}>Remove collection</button>}</div>
     </form>
   </Modal>;
 }
@@ -354,13 +358,12 @@ type Preview={name:string;url:string;type:'movie'|'tv';limit:number;provider:str
 const providers=[['all','Every source'],['tmdb','TMDb'],['trakt','Trakt'],['mdblist','MDBList'],['imdb','IMDb'],['letterboxd','Letterboxd'],['flixpatrol','FlixPatrol']] as const;
 function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing:Definition[];onClose:()=>void;add:(entry:Definition)=>void}) {
   const [mode,setMode]=useState<'recommendations'|'universes'|'partial'|'browse'|'url'>('universes'),[type,setType]=useState<'movie'|'tv'>('movie'),[provider,setProvider]=useState('all'),[query,setQuery]=useState('');
-  const [rows,setRows]=useState<Row[]>(),[preview,setPreview]=useState<Preview>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
-  const [name,setName]=useState(''),[library,setLibrary]=useState(''),[refresh,setRefresh]=useState(true),[problem,setProblem]=useState(''),[dropped,setDropped]=useState<Member[]>([]);
-  const [index,setIndex]=useState<DiscoverIndex>(),[building,setBuilding]=useState(false),[owned,setOwned]=useState<Row>(),[acquire,setAcquire]=useState(false);
+  const [rows,setRows]=useState<Row[]>(),[url,setUrl]=useState(''),[limit,setLimit]=useState(50),mutation=useMutation(()=>{});
+  const [index,setIndex]=useState<DiscoverIndex>(),[building,setBuilding]=useState(false),[found,setFound]=useState<{value:Definition;row?:Row}>();
   // Partly owned and Universes read the Discover index (built by the nightly full run, joined by newly added movies).
   const indexed=mode==='partial'||mode==='universes';
   const ask=()=>api<{results:Row[];index?:DiscoverIndex}>('/admin/artwork/collections/discover','POST',{mode,provider,query,type});
-  const find=()=>void mutation.run(async()=>{setPreview(undefined);const r=await ask();setRows(r.results);setIndex(r.index);});
+  const find=()=>void mutation.run(async()=>{const r=await ask();setRows(r.results);setIndex(r.index);});
   const build=()=>void mutation.run(async()=>{await api('/admin/artwork/collections/index','POST');setBuilding(true);});
   // While the index builds in the background, look again every 15 seconds (for up to 30 minutes) until it's newer.
   useEffect(()=>{
@@ -368,44 +371,32 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
     let tries=0;const timer=setInterval(()=>void ask().then(r=>{if(r.index?.built!==index?.built){setRows(r.results);setIndex(r.index);setBuilding(false);}else if(++tries>=120)setBuilding(false);},()=>{}),15000);
     return ()=>clearInterval(timer);
   },[building,mode,type,index?.built]);
-  const open=(body:object,row?:Row)=>void mutation.run(async()=>{const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});setPreview(r);setDropped([]);setName(row?.library?row.name:r.name);setLibrary(row?.library??libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'');setOwned(row?.library?row:undefined);setAcquire(false);setProblem('');});
+  // Reads the list, then opens the collection editor filled in from it; Add puts it with the others.
+  const open=(body:object,row?:Row)=>void mutation.run(async()=>{
+    const r=await api<Preview>('/admin/artwork/collections/discover','POST',{mode:'preview',...body});
+    setFound({value:{name:row?.library?row.name:r.name,library:row?.library??libraries.find(l=>(l.type==='show'?'tv':'movie')===r.type)?.title??'',type:r.type,enabled:true,sync:'append',visibility:hidden,members:r.items.map(i=>i.member),source:{url:r.url,limit:r.limit,refresh:true}},row:row?.library?row:undefined});
+  });
+  const taken=(d:Definition)=>existing.some(x=>x.library===d.library&&(keyOf(x.name)===keyOf(d.name)||x.source?.url===d.source?.url))?'This name or list is already in that library. Edit that collection instead.':undefined;
   // A partly owned collection is added for its library; a universe in any library of its type is added, and isn't offered.
   const added=(r:Row)=>!!r.library&&existing.some(x=>x.library===r.library&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name)));
   const shown=rows?.filter(r=>!r.key||!existing.some(x=>x.type===r.type&&(x.source?.url===r.url||keyOf(x.name)===keyOf(r.name))));
   useEffect(()=>{if(mode==='universes'||mode==='recommendations'||mode==='partial')find();},[mode,type]);
-  // Titles taken out of the preview stay out of the collection, and out of the list when it's kept up to date.
-  const out=new Set(dropped.map(memberText)),kept=preview?.items.map(i=>i.member).filter(m=>!out.has(memberText(m)))??[];
+  if(found)return <EditDefinition value={found.value} found={found.row} libraries={libraries.filter(l=>(l.type==='show'?'tv':'movie')===found.value.type)} onClose={()=>setFound(undefined)} check={taken} save={add}/>;
   return <Modal title="Discover collections" onClose={onClose}>
     <div className="form-stack artwork-discover">
-      <div className="toggle-group" role="radiogroup" aria-label="Find collections">{([['universes','Universes'],['partial','Partly owned'],['recommendations','Recommended'],['browse','Search lists'],['url','Import a list']] as const).map(([m,label])=><button key={m} type="button" role="radio" aria-checked={mode===m} onClick={()=>{setMode(m);setRows(undefined);setPreview(undefined);setQuery('');}}>{label}</button>)}</div>
-      {!preview&&(mode==='url'?<form className="setting-line" onSubmit={e=>{e.preventDefault();open({url,type,limit});}}><input className="grow" type="url" required placeholder="A public TMDb, IMDb, Trakt, Letterboxd, MDBList or FlixPatrol list" value={url} onChange={e=>setUrl(e.target.value)}/>
-          <select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select><input aria-label="Most titles" type="number" min="1" max="250" value={limit} onChange={e=>setLimit(Number(e.target.value))}/><button className="primary" disabled={mutation.busy}>Preview</button></form>
+      <div className="toggle-group" role="radiogroup" aria-label="Find collections">{([['universes','Universes'],['partial','Partly owned'],['recommendations','Recommended'],['browse','Search lists'],['url','Import a list']] as const).map(([m,label])=><button key={m} type="button" role="radio" aria-checked={mode===m} onClick={()=>{setMode(m);setRows(undefined);setQuery('');}}>{label}</button>)}</div>
+      {mode==='url'?<form className="setting-line" onSubmit={e=>{e.preventDefault();open({url,type,limit});}}><input className="grow" type="url" required placeholder="A public TMDb, IMDb, Trakt, Letterboxd, MDBList or FlixPatrol list" value={url} onChange={e=>setUrl(e.target.value)}/>
+          <select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select><input aria-label="Most titles" type="number" min="1" max="250" value={limit} onChange={e=>setLimit(Number(e.target.value))}/><button className="primary" disabled={mutation.busy}>Set up</button></form>
         :<form className="setting-line" onSubmit={e=>{e.preventDefault();find();}}>
           {mode==='partial'?null:mode==='universes'?<select aria-label="Movies or TV" value={type} onChange={e=>setType(e.target.value as 'movie'|'tv')}><option value="movie">Movies</option><option value="tv">TV</option></select>
             :<select aria-label="Source" value={provider} onChange={e=>setProvider(e.target.value)}>{providers.filter(([p])=>mode!=='browse'||p!=='all').map(([p,label])=><option key={p} value={p}>{label}</option>)}</select>}
-          <input className="grow" type="search" placeholder="Search" value={query} onChange={e=>setQuery(e.target.value)}/><button disabled={mutation.busy||(mode==='browse'&&provider==='all')}>Search</button></form>)}
-      {mutation.busy&&<Loading/>}{indexed&&index&&!preview&&<p className="muted small">{building?'Building the index in the background. This list updates when it’s done.'
+          <input className="grow" type="search" placeholder="Search" value={query} onChange={e=>setQuery(e.target.value)}/><button disabled={mutation.busy||(mode==='browse'&&provider==='all')}>Search</button></form>}
+      {mutation.busy&&<Loading/>}{indexed&&index&&<p className="muted small">{building?'Building the index in the background. This list updates when it’s done.'
         :index.built===null?<>These counts come from an index built each night with the full collections run. It hasn’t been built yet. <button type="button" className="link-button" disabled={mutation.busy} onClick={build}>Build it now</button></>
         :<>Updated {when(index.built*1000)}{index.unread?` · ${plural(index.unread,'movie')} not read yet`:''} · <button type="button" className="link-button" disabled={mutation.busy} onClick={build}>Refresh</button></>}</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      {preview?<div className="form-stack">
-        <button className="back-link" onClick={()=>setPreview(undefined)}><Icon name="back" size={16}/>Back</button>
-        <h3>{preview.name} <small className="muted">{kept.length} {preview.type==='tv'?'shows':'movies'}</small></h3>
-        <div className="collection-editor-grid"><TitleGrid type={preview.type} members={kept} remove={i=>setDropped(d=>[...d,kept[i]!])}/></div>
-        <Removed count={dropped.length} restore={()=>setDropped([])}/>
-        <form className="form-stack" onSubmit={e=>{e.preventDefault();
-          if(existing.some(x=>x.library===library&&(keyOf(x.name)===keyOf(name)||x.source?.url===preview.url))){setProblem('This name or list is already in that library. Edit that collection instead.');return;}
-          add({name:name.trim(),library,type:preview.type,enabled:false,sync:'append',visibility:hidden,members:kept,...(dropped.length?{exclude:dropped}:{}),source:{url:preview.url,limit:preview.limit,refresh},...(owned&&acquire?{acquire:true}:{})});}}>
-          <div className="form-columns"><label>Name<input required value={name} onChange={e=>setName(e.target.value)}/></label>
-            <label>Plex library<select required value={library} onChange={e=>setLibrary(e.target.value)}><option value="">Choose a library</option>{libraries.filter(l=>(l.type==='show'?'tv':'movie')===preview.type).map(l=><option key={l.key} value={l.title}>{l.title}</option>)}</select></label></div>
-          {owned&&keyOf(name)===keyOf(owned.name)&&library===owned.library&&<p className="muted small">Named like its franchise collection, it takes that collection over in Plex.</p>}
-          <Switch label="Keep this list up to date" description="Each collection run uses the list as it is then." checked={refresh} onChange={setRefresh}/>
-          {owned&&<Switch label="Download missing movies" description={`Radarr adds the ${(owned.total??0)-(owned.owned??0)} missing once you turn the collection on and save.`} checked={acquire} onChange={setAcquire}/>}
-          {problem&&<p className="danger small">{problem}</p>}
-          <div className="button-row"><button className="primary">Add collection</button><span className="muted small">It starts off; review it, turn it on and save.</span></div>
-        </form></div>
-      :shown&&(shown.length?<ul className="artwork-discover-rows">{shown.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
-          {added(r)?<span className="muted small">In your collections</span>:r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:r.library?250:50}),type:r.type},r)}>Preview titles</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
+      {shown&&(shown.length?<ul className="artwork-discover-rows">{shown.map((r,i)=><li key={i}><span className="grow"><strong>{r.name}</strong><small className="muted">{r.description||'Public list'} · {r.type==='tv'?'TV':'Movies'}</small></span>
+          {added(r)?<span className="muted small">In your collections</span>:r.url?<button disabled={mutation.busy} onClick={()=>open({...(r.key?{universe:r.key,limit:250}:{url:r.url,limit:r.library?250:50}),type:r.type},r)}>Set up</button>:<button onClick={()=>{setMode('browse');setProvider(r.provider);setRows(undefined);}}>Browse lists</button>}</li>)}</ul>
         :mode==='universes'&&!query&&rows?.length?<Empty title="Every universe is added">Edit them in your collections.</Empty>
         :mode==='partial'?<Empty title="Nothing partly owned">{query?'Try another search.':index?.built===null?'Build the index to see them.':'Every TMDb collection in your movie libraries is complete.'}</Empty>
         :<Empty title="No collections found">Try another search, or import a list by its address.</Empty>)}
