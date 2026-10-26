@@ -11,7 +11,7 @@ import { registerSetup } from './setup-api.js';
 import type { Config } from './config.js';
 import type { Db } from './persistence/database.js';
 import { SettingsStore } from './persistence/database.js';
-import { PlexAdapter, audioStreams, mediaMarkers, mediaTracks } from './providers/plex.js';
+import { PlexAdapter, audioForLanguage, audioStreams, mediaMarkers, mediaTracks } from './providers/plex.js';
 import { LocalMedia, byteRange, type LocalPart } from './providers/local-media.js';
 import { IdentityService } from './services/identity.js';
 import { PlaybackService } from './services/playback.js';
@@ -278,12 +278,13 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const caps = z.object({videoCodecs: z.array(z.string().max(40)).max(20), audioCodecs: z.array(z.string().max(40)).max(20), containers: z.array(z.string().max(40)).max(20)}).strict();
   app.post('/api/v1/playback/sessions', {config: {rateLimit: {max: 20, timeWindow: 60000}}}, async req => {
     // startAtMs with audioStreamId or quality restarts a title at the current position with another track or quality.
+    // audioLanguage is the viewer's preferred language, used when no track is named.
     const input = z.object({mode: z.literal('plex_vod'), ratingKey: z.string().regex(/^\d+$/), capabilities: caps,startFrom:z.enum(['resume','beginning']).default('resume'),
-      startAtMs: z.number().int().nonnegative().optional(), audioStreamId: z.string().regex(/^\d+$/).max(20).optional(), quality: quality.default('auto')}).strict().parse(req.body);
+      startAtMs: z.number().int().nonnegative().optional(), audioStreamId: z.string().regex(/^\d+$/).max(20).optional(), audioLanguage: z.string().regex(/^[a-z]{2,3}$/i).optional(), quality: quality.default('auto')}).strict().parse(req.body);
     const {hash, grant} = await auth(req), item = await plex.metadata(grant, input.ratingKey, {markers: true}), media = item.Media[0];
     requireThat(media, 'SOURCE_INCOMPATIBLE', 'No playable media.', 422);
     const video = media.Part[0]?.Stream?.find(s => s.streamType === 1), {audio, fileDefault, plexSelected} = audioStreams(item);
-    const requested = input.audioStreamId === undefined ? undefined : audio.find(s => s.id === input.audioStreamId);
+    const requested = input.audioStreamId !== undefined ? audio.find(s => s.id === input.audioStreamId) : input.audioLanguage ? audioForLanguage(item, input.audioLanguage) : undefined;
     requireThat(input.audioStreamId === undefined || requested, 'INVALID_AUDIO', 'Audio track is not part of this media.');
     // Browsers play only the file's default audio, so any other track needs Plex HLS.
     const target = requested ?? plexSelected ?? fileDefault, otherTrack = !!target && target.id !== fileDefault?.id;

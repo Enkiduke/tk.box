@@ -4,7 +4,7 @@ import {ArtworkCache} from './artwork-cache.js';
 import type { Config } from '../config.js';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
-import type {CatalogItem,CatalogPage} from '../../../../packages/contracts/src/index.js';
+import {languageKey,type CatalogItem,type CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
@@ -49,6 +49,14 @@ export const subtitleInputFormat = (codec?: string) => codec ? textSubtitleForma
 export function audioStreams(item: PlexMetadata) {
   const audio = (item.Media[0]?.Part[0]?.Stream ?? []).filter(s => s.streamType === 2);
   return { audio, fileDefault: audio.find(s => s.default) ?? audio[0], plexSelected: audio.find(s => s.selected) };
+}
+// The track for a viewer's preferred audio language, when the one that would play is in another language:
+// the file's default among that language's tracks, else the first. Undefined keeps the usual choice.
+export function audioForLanguage(item: PlexMetadata, language: string) {
+  const { audio, fileDefault, plexSelected } = audioStreams(item), wanted = languageKey(language), current = plexSelected ?? fileDefault;
+  if (!current || languageKey(current.languageCode) === wanted) return undefined;
+  const matching = audio.filter(s => languageKey(s.languageCode) === wanted);
+  return matching.find(s => s.default) ?? matching[0];
 }
 // The FFmpeg map for a custom channel's audio: English (the file's default English track first), else the file's
 // default, else the first track. Plex's stream index is the file's stream index.

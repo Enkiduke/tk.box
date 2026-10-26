@@ -14,6 +14,7 @@ import {HeaderStreams} from './header-streams.js';
 import {openPlexPopup} from './plex-popup.js';
 import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
+import {getPlayerPreferences} from './player-preferences.js';
 // Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
@@ -96,10 +97,15 @@ function App() {
     finally {refreshCatalog();await api(`/playback/sessions/${active.id}`,'DELETE');}
   }
   // Moving on to a queued item keeps Back pointing where the queue was started.
+  // A title starts in the viewer's preferred audio language and default quality; a default quality
+  // this title or browser cannot use, or that needs an encoder none is free for, falls back to Auto.
   async function start(item:CatalogItem,from:'resume'|'beginning',keepReturn=false) {
     await stop();
     if(!keepReturn){const {page,params}=routeRef.current,old=new URLSearchParams(params);old.delete('item');returnTo.current=link(page==='watch'?'home':page,Object.fromEntries(old));}
-    const created=await api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',{mode:'plex_vod',ratingKey:item.id,capabilities:browserCapabilities(),startFrom:from});
+    const {quality,audioLanguage}=getPlayerPreferences(),create=(quality:Quality)=>api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',{mode:'plex_vod',ratingKey:item.id,capabilities:browserCapabilities(),startFrom:from,quality,...(audioLanguage?{audioLanguage}:{})});
+    let created:Omit<VodSession,'item'|'kind'>;
+    try {created=await create(quality);}
+    catch(e) {if(quality==='auto'||!(e instanceof ApiClientError&&['SOURCE_INCOMPATIBLE','QUALITY_NOT_PERMITTED','TRANSCODE_CAPACITY_REACHED'].includes(e.code)))throw e;created=await create('auto');}
     // A queued title plays wherever the player is, so a mini player stays docked.
     setSession({...created,kind:'vod',item});if(!keepReturn)window.location.hash='watch';
   }
@@ -107,7 +113,7 @@ function App() {
   // place in it is found by id, so audio and quality restarts keep it.
   const [queue,setQueue]=useState<PlayQueue>(),queueToken=useRef<object>(undefined);
   const clearQueue=()=>{queueToken.current=undefined;setQueue(undefined);};
-  const play=useCallback((media:CatalogItem,from:'resume'|'beginning'='resume')=>void action(async()=>{
+  const play=useCallback((media:CatalogItem,from:'resume'|'beginning'=getPlayerPreferences().startFrom)=>void action(async()=>{
     clearQueue();const item=await playableOf(media);if(!item)throw new Error('Nothing to play yet.');
     await start(item,from);
     // Playback never waits for the queue; an episode's show is listed while it starts.
@@ -175,8 +181,8 @@ function App() {
   // each change keeps the other choice.
   const restart=(change:{audioStreamId?:string;quality?:Quality},timeMs:number)=>void action(async()=>{
     const current=sessionRef.current;if(current?.kind!=='vod')return;
-    const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto';
-    const body={mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:{})};
+    const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto',{audioLanguage}=getPlayerPreferences();
+    const body={mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:audioLanguage?{audioLanguage}:{})};
     const release=()=>api(`/playback/sessions/${current.id}`,'DELETE').catch(()=>{});let released=false;
     setSwitching(change.quality?'quality':'audio');
     try {

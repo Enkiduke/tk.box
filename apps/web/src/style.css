@@ -941,6 +941,19 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .settings .narrow{max-width:380px}
 .settings details summary{margin-bottom:14px}
 
+/* Playback preferences: one setting per row, its control on the right */
+.pref-list{display:flex;flex-direction:column;margin:-4px 0 -8px}
+.pref-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:32px;padding:16px 0;border-top:1px solid var(--line);color:var(--text)}
+.pref-row:first-child{border-top:0;padding-top:4px}
+label.pref-row{cursor:pointer}
+.pref-row.nested{padding-left:20px;border-top-style:dashed}
+.pref-text{display:flex;flex-direction:column;gap:4px}
+.pref-text strong{font-size:14px;font-weight:600}
+.pref-text small{color:var(--muted);font-size:12.5px;line-height:1.55;max-width:62ch}
+.pref-control{display:flex;justify-content:flex-end}
+.pref-control select{width:240px}
+.pref-control .toggle-group{align-self:auto}
+
 /* Subtitle style */
 .subtitle-settings{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr);gap:28px;align-items:start}
 .subtitle-preview-col{position:sticky;top:84px;display:flex;flex-direction:column;gap:18px}

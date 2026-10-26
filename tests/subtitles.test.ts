@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {customAudioMap,mediaMarkers,mediaTracks,type PlexAdapter,type PlexGrant,type PlexMetadata} from '../apps/server/src/providers/plex.js';
+import {audioForLanguage,customAudioMap,mediaMarkers,mediaTracks,type PlexAdapter,type PlexGrant,type PlexMetadata} from '../apps/server/src/providers/plex.js';
 import {SubtitleService} from '../apps/server/src/services/subtitles.js';
 import {matroskaTextTrack} from '../apps/server/src/services/matroska-subtitles.js';
 
@@ -23,6 +23,18 @@ test('custom channels map English audio, else the file default, else the first t
   assert.equal(customAudioMap(withAudio({id:'2',streamType:2,languageCode:'eng',index:1},{id:'3',streamType:2,languageCode:'eng',index:2,default:true})),'0:2');
   assert.equal(customAudioMap(withAudio({id:'2',streamType:2,languageCode:'fra',index:1},{id:'3',streamType:2,languageCode:'deu',index:2,default:true})),'0:2');
   assert.equal(customAudioMap(withAudio({id:'2',streamType:2,languageCode:'eng'})),'0:a:0?');
+});
+
+test('a preferred audio language picks its track only when another language would play',()=>{
+  const withAudio=(...audio:object[])=>({...item,Media:[{...item.Media[0]!,Part:[{key:'/p',Stream:[{id:'1',streamType:1},...audio]}]}]}) as PlexMetadata;
+  const dubbed=withAudio({id:'2',streamType:2,languageCode:'jpn',default:true},{id:'3',streamType:2,languageCode:'eng'},{id:'4',streamType:2,languageCode:'eng',default:true});
+  assert.equal(audioForLanguage(dubbed,'eng')?.id,'4');
+  assert.equal(audioForLanguage(dubbed,'en')?.id,'4');
+  assert.equal(audioForLanguage(dubbed,'jpn'),undefined);
+  assert.equal(audioForLanguage(dubbed,'fra'),undefined);
+  // Plex's own selection counts as what would play, and /B codes match /T ones.
+  assert.equal(audioForLanguage(withAudio({id:'2',streamType:2,languageCode:'eng',default:true},{id:'3',streamType:2,languageCode:'fre',selected:true}),'fra'),undefined);
+  assert.equal(audioForLanguage(withAudio({id:'2',streamType:2,languageCode:'eng',default:true},{id:'3',streamType:2,languageCode:'ger'}),'deu')?.id,'3');
 });
 
 test('media tracks describe audio and subtitle choices, marking image subtitles unsupported',()=>{
