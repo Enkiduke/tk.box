@@ -64,7 +64,8 @@ function StreamCard({stream:s,ended,failed}:{stream:Stream;ended:()=>void;failed
     ['Location',`${s.local?'LAN':'WAN'}: ${s.ip}`],
     ['Bandwidth',s.state==='paused'&&!s.rateKbps?'Paused':`${s.delivery==='direct'&&s.kind!=='plex'?'~':''}${mbps(s.rateKbps)}`]
   ];
-  return <article className="activity-card">
+  // Streams watched in tk.box stand out from those in other Plex apps.
+  return <article className={`activity-card${s.kind==='plex'?'':' tkbox'}`}>
     <div className="activity-body">
       <div className={`activity-poster ${m?.posterId?'':'logo'}`}>{poster?<img src={poster} alt="" loading="lazy" onError={e=>{e.currentTarget.style.visibility='hidden';}}/>:<Icon name={s.kind==='live'||s.kind==='custom'||s.live?'live':'movies'} size={32}/>}</div>
       <dl className="activity-details">{rows.filter(([,v])=>v).map(([k,v])=><div key={k}><dt>{k}</dt><dd title={v}>{v}</dd></div>)}</dl>
@@ -73,7 +74,7 @@ function StreamCard({stream:s,ended,failed}:{stream:Stream;ended:()=>void;failed
     <div className="activity-progress" aria-hidden="true">{progress!==undefined&&<span style={{width:`${progress*100}%`}}/>}</div>
     <footer className="activity-foot">
       <div className="activity-title"><strong><Icon name={s.state==='paused'?'pause':'play'} size={14}/>{title}</strong><small>{[detail,(s.kind==='live'||s.kind==='custom')&&m?name:undefined].filter(Boolean).join(' · ')||kinds[s.kind]}</small></div>
-      <div className="activity-who"><strong>{s.user}</strong><small>{s.positionMs!==undefined&&s.durationMs?`${clock(s.positionMs)} / ${clock(s.durationMs)}`:s.startedAt?`Watching ${clock(Date.now()-s.startedAt)}`:s.state==='buffering'?'Buffering':s.live?'Live':''}</small></div>
+      <div className="activity-who"><strong>{s.kind!=='plex'&&<span className="badge tkbox">tk.box</span>}{s.user}</strong><small>{s.positionMs!==undefined&&s.durationMs?`${clock(s.positionMs)} / ${clock(s.durationMs)}`:s.startedAt?`Watching ${clock(Date.now()-s.startedAt)}`:s.state==='buffering'?'Buffering':s.live?'Live':''}</small></div>
     </footer>
   </article>;
 }

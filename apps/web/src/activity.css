@@ -17,5 +17,6 @@
 .activity-foot{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 16px}
 .activity-title,.activity-who{display:flex;flex-direction:column;gap:3px;min-width:0}
 .activity-who{align-items:flex-end;text-align:right;flex:none}
-.activity-title strong{display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-who strong{display:flex;align-items:center;gap:8px}
+.activity-card.tkbox{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));box-shadow:inset 3px 0 0 var(--accent)}.activity-title strong{display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .activity-title small,.activity-who small{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
