@@ -582,6 +582,37 @@ dialog::backdrop{background:rgba(0,0,0,.76)}
 .linking .spinner{width:26px;height:26px}
 .linking p{margin:0;color:var(--muted)}
 .linking a{color:var(--accent);font-weight:600}
+.first-run{width:min(560px,100%)}
+.first-run>h1{font-size:clamp(28px,4vw,36px);margin:14px 0 8px}
+.first-run>p{font-size:16px;margin-bottom:28px}
+.first-run-steps{display:flex;gap:22px;list-style:none;margin:0 0 22px;padding:0;font-size:13px;color:var(--dim)}
+.first-run-steps li{display:flex;align-items:center;gap:8px}
+.first-run-steps li.current{color:var(--text);font-weight:600}
+.first-run-steps li.done{color:var(--muted)}
+.first-run-dot{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1px solid var(--line-strong);font-size:12px}
+.first-run-steps li.current .first-run-dot{border-color:var(--accent);color:var(--accent)}
+.first-run-steps li.done .first-run-dot{background:var(--accent);border-color:var(--accent);color:#111}
+.first-run-panel{display:flex;flex-direction:column;gap:16px;padding:24px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.first-run-panel h2{font-size:19px;margin:0}
+.first-run-panel p{margin:0}
+.first-run-panel form{display:flex;flex-direction:column;gap:16px}
+.first-run-panel .text-button{align-self:flex-start}
+.first-run-panel .linking{margin-top:0;background:var(--surface-2)}
+.first-run-status{display:flex;align-items:center;gap:14px;color:var(--muted)}
+.first-run-status .spinner{width:24px;height:24px}
+.first-run-found{display:flex;align-items:center;gap:8px;color:#9fd8a8;font-size:14px}
+.first-run-libraries{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.first-run-libraries fieldset{margin:0;padding:0;border:0;min-width:0}
+.first-run-libraries legend{margin-bottom:4px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.first-run-tools{display:flex;flex-direction:column;gap:10px}
+.first-run-tool{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2)}
+.first-run-tool small{font-size:12px;color:var(--dim)}
+.first-run-tool-head{display:flex;align-items:center;gap:10px;min-width:0}
+.first-run-tool-head span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.first-run-tool.ok .first-run-tool-head svg{color:#9fd8a8}
+.first-run-tool.missing{border-color:#6b5420}
+.first-run-tool.missing .first-run-tool-head svg{color:#f2cf7a}
+.first-run-note{font-size:12px}
 
 /* Live TV guide */
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:20px 0}

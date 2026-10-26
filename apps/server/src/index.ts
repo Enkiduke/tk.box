@@ -15,6 +15,8 @@ if (process.argv.includes('--read-only')) process.env.TKBOX_READ_ONLY = '1';
 // Startup reports the step that failed and why: setting names, an error code or the key problem, never setting values.
 let step = 'settings';
 try {
+  // Settings come from .env when there is one (first-run setup writes it); values already in the environment win.
+  if (existsSync('.env')) process.loadEnvFile('.env');
   const config = loadConfig();
   step = 'database'; const db = openDatabase(join(config.DATA_DIR, 'tk.box.sqlite'));
   // Only the default key path is created on first run, and a key that doesn't open this database stops here.
