@@ -1,6 +1,6 @@
 # tk.box
 
-A self-hosted media app for your Plex library and IPTV channels. One web UI for browsing and watching Plex movies and shows, discovering new titles, a unified live TV guide, and custom always-on channels built from your Plex library.
+A self-hosted media app for your Plex server and IPTV channels. One web UI for watching your Plex movies and shows, discovering new titles, live TV, and always-on channels built from your library, plus admin tools for artwork, collections and cleanup.
 
 > **Status:** early and in active development. Not production ready.
 
@@ -12,43 +12,57 @@ A self-hosted media app for your Plex library and IPTV channels. One web UI for 
 
 ## Features
 
-- **Plex sign-in** with the official Plex PIN flow
-- **Library browsing** — Home with featured titles and promoted collections, grid/list views, filters, sorting and an A–Z jump rail
-- **Explore** — discover and search titles from Plex Discover, Seerr and Trakt, manage your Plex watchlist and request movies and shows through Seerr
-- **Playback with resume** — Direct Play when the browser supports the file, otherwise Plex-transcoded HLS
-- **Live TV** — import M3U/XMLTV sources, approve channels and watch through an FFmpeg relay, with a searchable guide and favorites
-- **Plex Channels** — looping channels made from Plex movies, shows and collections, shared on one wall clock, with Pause, Resume and Go Live
+- **Plex sign-in.** Your friends and Plex Home members sign in with their own Plex accounts and see the libraries you share with them.
+- **Library.** Home, Movies and TV Shows with filters, sorting, collections and resume.
+- **Playback.** Direct Play when the browser can play the file, otherwise Plex transcodes it.
+- **Explore.** Plex Discover and Seerr on one page: search, add to your watchlist, request titles.
+- **Live TV.** M3U/XMLTV sources with a guide and favorites, and live sports events with their own channels.
+- **Plex Channels.** Looping channels made from your movies, shows and collections, with Pause and Go Live.
+- **Admin.**
+  - Artwork: custom posters and title cards, sent to Plex.
+  - Collections: franchise, streaming, chart and custom collections kept in Plex.
+  - Clean Up: deletes requested titles once they've been watched.
+  - Activity: shows every stream, in tk.box and other Plex apps.
+  - Admins: lets the owner make other people admins.
 
-## Explore
-
-Browse every source's discovery shelves on one page, search them all at once, narrow shelves and results by language, release year and rating, and open title details to watch a local copy, add it to your Plex watchlist or request it through Seerr. Availability badges show which titles are available, partly available or already requested.
-
-Plex Discover is available with Plex sign-in. Add optional Seerr and Trakt connections in **Admin → Connections**, and set which sources and rows Explore shows, and in what order, in **Admin → Explore**. A Seerr API key enables availability badges on Plex and Trakt titles; viewers request through their own Plex-linked Seerr accounts. Connect your own Trakt account for your watchlist and recommendations.
-
-![Explore with Plex discovery shelves and availability badges](docs/screenshots/explore.png)
+![Explore](docs/screenshots/explore.png)
 
 ## Requirements
 
-- Node.js 22 LTS or 24 LTS
-- FFmpeg and ffprobe (with `libx264`, AAC and HLS support)
-- A Plex Media Server with Movies and TV libraries
+- Node.js 22 or 24 LTS
+- FFmpeg and FFprobe
+- A Plex Media Server with at least one Movies and one TV library
+- Python 3.10+ for Artwork, Collections and Clean Up (optional)
 
 ## Getting started
 
 ```sh
 npm ci
-cp .env.example .env        # set PLEX_URL and other settings
-npm run setup:plex -- start # sign in at the printed Plex link
-npm run setup:plex -- finish
-node --env-file=.env --import tsx scripts/migrate.ts
-node --env-file=.env --import tsx scripts/doctor.ts
 npm run build
-node --env-file=.env dist/apps/server/src/index.js
+npm start
 ```
 
-`setup:plex` verifies your server and writes its owner, machine and library IDs to `.env`. Your Plex token is never saved. `doctor` checks your configuration and FFmpeg.
+Open `http://127.0.0.1:3000`. On first run tk.box walks you through setup:
 
-Then open the configured address (`APP_HOST`:`APP_PORT`) and sign in with Plex.
+1. It finds your Plex server, or asks for its address.
+2. You sign in with the Plex account that owns the server.
+3. You choose your Movies and TV libraries.
+4. It checks that FFmpeg, FFprobe and Python can be found.
+
+It saves your settings to `.env` and signs you in. Your Plex token is never saved.
+
+Setup only answers this computer and your home network. To change the address or port tk.box listens on, copy `.env.example` to `.env` and edit it before you start tk.box. It reads `.env` on its own.
+
+For Artwork, Collections and Clean Up, install their Python packages into a virtual environment:
+
+```sh
+python -m venv .venv
+.venv/bin/pip install -r apps/artwork/requirements.txt -r apps/cleanup/requirements.txt
+```
+
+On Windows the pip path is `.venv\Scripts\pip`. Then enter that environment's `python` in the setup screen's Python field, or set `PYTHON_PATH` in `.env`.
+
+Seerr, Radarr, Sonarr, Tautulli and the artwork providers are set up later in **Admin › Connections**.
 
 ## Development
 
@@ -59,16 +73,18 @@ npm run typecheck
 npm test
 ```
 
-`npm run build && npm run preview:ui` serves a self-contained UI preview with synthetic data at `http://127.0.0.1:3011/__preview`.
+`npm run doctor` checks your configuration and FFmpeg. `npm run build && npm run preview:ui` serves a UI preview with made-up data at `http://127.0.0.1:3011/__preview`.
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
-| `apps/server` | Fastify backend: Plex and IPTV providers, scheduling, streaming, SQLite persistence |
+| `apps/server` | Fastify backend: Plex, IPTV, streaming, scheduling, SQLite |
 | `apps/web` | React frontend |
+| `apps/artwork` | Python artwork and collections engines |
+| `apps/cleanup` | Python Clean Up script |
 | `packages/contracts` | Shared types and settings |
-| `scripts` | Setup, migrations, diagnostics and media experiments |
+| `scripts` | Setup, diagnostics and media experiments |
 | `tests` | Test suite |
 | `deploy` | Example systemd unit |
 | `docs` | Design notes and guides |
@@ -76,9 +92,10 @@ npm test
 ## Docs
 
 - [Deployment](docs/DEPLOYMENT.md)
-- [IPTV ingestion and playback](docs/IPTV_INGESTION.md)
+- [IPTV](docs/IPTV_INGESTION.md)
 - [Plex Channels](docs/CUSTOM_CHANNELS.md)
-- [Live Plex checks](docs/LIVE_PLEX_CHECKS.md)
+- [Artwork and Collections](docs/ARTWORK.md)
+- [Clean Up](docs/CLEANUP.md)
 - [Implementation status](docs/IMPLEMENTATION_STATUS.md)
 
 ## License
