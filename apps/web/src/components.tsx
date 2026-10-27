@@ -205,9 +205,9 @@ export function ActionNotice() {
 export function Row({title,href,children,className='',drift=0}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number}) {
   const ref=useRef<HTMLDivElement>(null),track=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
   // Only re-renders when an edge changes.
-  const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
+  const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;atStart.current=start;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
   useEffect(()=>{update();const el=ref.current;if(!el)return;const resize=new ResizeObserver(update);resize.observe(el);return()=>resize.disconnect();},[]);
-  const looping=drift>0&&loops,endless=useEndless(ref,track,looping,drift);
+  const looping=drift>0&&loops,endless=useEndless(ref,track,looping,drift),atStart=useBump(ref,track,!looping,children);
   // Loop only when the cards overflow; a short row stays still and is not repeated.
   useEffect(()=>{
     if(!drift){setLoops(false);return;}const el=ref.current;if(!el)return;
@@ -229,6 +229,28 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
       {(looping||!edges.end)&&<button className="row-arrow right" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(1)}><Icon name="next" size={28}/></button>}
     </div>
   </section>;
+}
+// New cards at the front of a row resting at its start slide in and bump the rest along, each card animating from where
+// it was (FLIP). Without this the browser re-snaps to the card that was first, leaving the new ones off screen to the left.
+// A row scrolled away from its start keeps the cards in view where they are. Snap is off while the cards move.
+function useBump(ref:{current:HTMLDivElement|null},track:{current:HTMLDivElement|null},enabled:boolean,children:ReactNode) {
+  const seen=useRef(new Map<Element,number>()),atStart=useRef(true);
+  const measure=()=>{const tr=track.current;seen.current=new Map(tr?Array.from(tr.children,c=>[c,(c as HTMLElement).offsetLeft]):[]);};
+  useEffect(()=>{const tr=track.current;if(!tr)return;const resize=new ResizeObserver(measure);resize.observe(tr);return()=>resize.disconnect();},[]);
+  useLayoutEffect(()=>{
+    const before=seen.current;measure();const el=ref.current,tr=track.current;
+    if(!el||!tr||!enabled||!before.size||!atStart.current)return;
+    const cards=Array.from(tr.children) as HTMLElement[];if(cards.every(c=>before.has(c)))return;
+    el.style.scrollSnapType='none';el.scrollLeft=0;
+    const timing={duration:480,easing:'cubic-bezier(.4,0,.2,1)'};
+    const runs=cards.map(c=>{
+      const from=before.get(c);
+      if(from===undefined)return c.animate([{opacity:0,transform:'scale(.9)'},{opacity:1,transform:'none'}],timing).finished;
+      return from!==c.offsetLeft?c.animate([{transform:`translateX(${from-c.offsetLeft}px)`},{transform:'none'}],timing).finished:undefined;
+    });
+    void Promise.allSettled(runs).then(()=>{el.style.scrollSnapType='';});
+  },[children]);
+  return atStart;
 }
 // Animates a row's arrow scroll. The browser's own smooth scroll turns instant whenever Windows animation effects are
 // off, so like the drift it does not follow the reduced-motion preference. Like the drift, it is a transform animation on
