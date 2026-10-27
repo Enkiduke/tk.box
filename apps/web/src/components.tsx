@@ -110,7 +110,8 @@ export const artworkKey=(item:CatalogItem)=>item.type==='episode'?item.showId:it
 function menuGroups(item:CatalogItem,context:MenuContext,onOpen:(id:string)=>void,onPlay?:PlayFn):MenuEntry[][] {
   const playable=item.type==='movie'||item.type==='episode',resumable=playable&&item.viewOffsetMs>0,play:MenuEntry[]=[],state:MenuEntry[]=[],go:MenuEntry[]=[];
   if(onPlay&&context!=='detail'){play.push({label:resumable?'Resume':'Play',icon:'play',run:()=>onPlay(item,resumable?'resume':undefined)});if(resumable)play.push({label:'Play from beginning',icon:'restart',run:()=>onPlay(item,'beginning')});}
-  if(!fullyWatched(item))state.push({label:'Mark as watched',icon:'check',run:()=>void updateWatchState(item,'watched')});
+  // A rewatch still counts as watched in Plex, but its resume point can be finished off.
+  if(!fullyWatched(item)||resumable)state.push({label:'Mark as watched',icon:'check',run:()=>void updateWatchState(item,'watched')});
   if(partlyWatched(item))state.push({label:'Mark as unwatched',icon:'unwatched',run:()=>void updateWatchState(item,'unwatched')});
   if(playable&&(context==='continue'||(context==='detail'&&resumable)))state.push({label:'Remove from Continue Watching',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
   if(playable&&context==='upnext')state.push({label:'Remove from Recommended For You',icon:'close',run:()=>void updateWatchState(item,'removeContinue')});
