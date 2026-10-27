@@ -190,6 +190,8 @@ export const WideCard=memo(function WideCard({item:source,context='continue',onO
   return <div className={`wide-card${actions.open?' menu-open':''}`} onContextMenu={actions.onContextMenu}>
     <div className="card-frame"><button className="wide-art" onClick={()=>onOpen(item.id)} aria-label={`Open ${item.title}`}>
       <Artwork priority={priority} src={item.type==='episode'?item.posterUrl??item.backdropUrl:item.backdropUrl??item.posterUrl} fallback={<Icon name={item.type==='movie'?'movies':'shows'}/>}/>
+      {/* Movie backdrops are usually textless, so the clearLogo names the title; a missing one just hides. */}
+      {item.type==='movie'&&item.backdropUrl&&item.logoUrl&&<img className="wide-logo" src={item.logoUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}
       <Progress item={item}/>
     </button><PlayOverlay item={item} onPlay={onPlay}/>{actions.trigger}</div>
     <div className="wide-info"><CardText item={item} onOpen={onOpen} detail={left?`${duration(left)} left`:subtitle(item)} titleClass="wide-title" metaClass="wide-meta"/></div>
