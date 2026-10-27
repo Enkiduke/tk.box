@@ -322,7 +322,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     for (const h of ['content-type', 'content-length']) if (response.headers.has(h)) reply.header(h, response.headers.get(h)!);
     return reply.send(response.body ? Readable.fromWeb(response.body as import('node:stream/web').ReadableStream) : null);
   });
-  app.get<{Params: {id: string}}>('/api/v1/playback/sessions/:id/file', async (req, reply) => {
+  // Every seek is a new range request, so the file route gets the stream routes' allowance, not the API's.
+  app.get<{Params: {id: string}}>('/api/v1/playback/sessions/:id/file', {config: {rateLimit: {max: 1200, timeWindow: 60000}}}, async (req, reply) => {
     const {hash, grant} = await auth(req), session = playback.owned(req.params.id, hash);
     requireThat(session.mode === 'plex_vod', 'INVALID_MODE', 'This endpoint only serves on-demand media.', 403);
     if (req.headers.range) requireThat(/^bytes=\d*-\d*$/.test(req.headers.range), 'INVALID_RANGE', 'Only a single byte range is supported.');
@@ -330,7 +331,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     activity.touch(session.id);
     requireThat([...streams].filter(s => s.hash === hash).length < 20, 'STREAM_LIMIT', 'Too many open media requests.', 429);
     streams.add(running);
-    const timer = setInterval(() => {void auth(req).then(a => plex.metadata(a.grant, session.rating_key)).then(() => playback.owned(session.id, hash)).catch(() => running.abort.abort());}, 15000); timer.unref();
+    // Access loss ends delivery; a slow or briefly unreachable Plex does not cut the stream mid-play.
+    const timer = setInterval(() => {void auth(req).then(a => plex.metadata(a.grant, session.rating_key)).then(() => playback.owned(session.id, hash)).catch(e => {if (e instanceof AppError && [401, 403, 404].includes(e.status)) running.abort.abort();});}, 15000); timer.unref();
     const cleanup = () => {clearInterval(timer); running.abort.abort(); streams.delete(running);};
     reply.raw.once('close', cleanup);
     // Same-host mode: serve the authorized part from disk, else proxy Plex below.
