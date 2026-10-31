@@ -52,6 +52,10 @@ test('stale listings are rejected: a written date that contradicts the event, or
   assert.equal(cleanTitle('Men | Arnhem (149.2km): Eneco Tour | Stage 5'), 'Men | Arnhem (149.2km): Eneco Tour | Stage 5');
   // A date-only fight card takes its start from the channel name.
   assert.equal(win('Boxing 2: Smith vs Puello 7PM ET')?.start, Date.parse('2026-10-18T23:00:00Z'));
+  // Prelims written before a timed card start then; a later written time keeps the card's start.
+  assert.equal(win('PPV 5: UFC 333 Early Prelims 4PM ET')?.start, Date.parse('2026-10-18T20:00:00Z'));
+  assert.equal(win('PPV 5: UFC 333 Early Prelims 10/18 4PM ET')?.start, Date.parse('2026-10-18T20:00:00Z'));
+  assert.equal(win('PPV 6: UFC 333 Main Card 8PM ET')?.start, ufc[0]!.start);
 });
 
 test('names and listings: written dates, EPG events and provider placeholders', () => {
