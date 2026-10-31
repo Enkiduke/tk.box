@@ -20,25 +20,30 @@ const SPLIT = /\s+(?:vs\.?|v\.?|versus|at|@)\s+/i;
 // "No event", "Off air", "Next game: …" and replays are what providers show between live events.
 export const PLACEHOLDER = /\b(no (live )?(event|game|match|programming)s?|off ?air|sign ?off|tba|tbd|to be (announced|determined)|coming soon|not scheduled|no information|event (has )?ended|stay tuned|(next|upcoming) (game|event|match|fight)s?|replays?|re-?airs?|reruns?|encore|highlights)\b/i;
 
-// Last significant word of each side of "A vs. B": surnames for fighters, nicknames for teams.
-function versusPair(title: string) {
+// Significant words of each side of "A vs. B".
+function versusSides(title: string) {
   const parts = title.replace(/^[^:]*:\s*/, m => /\bvs?\.?\b|@/i.test(m) ? m : '').split(SPLIT);
   if (parts.length !== 2) return undefined;
-  const last = (s: string) => norm(s.replace(/\(.*?\)|\[.*?\]/g, '')).trim().split(' ').filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w)).pop();
-  const a = last(parts[0]!), b = last(parts[1]!);
+  return parts.map(s => norm(s.replace(/\(.*?\)|\[.*?\]/g, '')).trim().split(' ').filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w)));
+}
+// Last significant word of each side: surnames for fighters, nicknames for teams.
+function versusPair(title: string) {
+  const [a, b] = (versusSides(title) ?? []).map(side => side.at(-1));
   return a && b && a !== b ? [a, b] as const : undefined;
 }
 const sportWords: Record<string, string[]> = { football: ['football', 'nfl', 'ncaaf', 'cfb'], basketball: ['basketball', 'nba', 'wnba', 'ncaab'], baseball: ['baseball', 'mlb'], hockey: ['hockey', 'nhl'], soccer: ['soccer', 'football', 'futbol'], mma: ['mma', 'ufc'], boxing: ['boxing', 'fight'], wrestling: ['wwe', 'aew', 'wrestling'], golf: ['golf', 'pga', 'lpga'], racing: ['racing', 'f1', 'formula', 'nascar', 'indycar'] };
 const contextWords = (e: SportsEvent) => [...norm(e.league).trim().split(' '), ...(sportWords[e.sport] ?? [e.sport])].filter(w => w.length > 1);
 
 // A rematch scores every channel against every event, so what depends on the event alone is worked out once.
-const facts = new WeakMap<SportsEvent, { pair: ReturnType<typeof versusPair>; numbered?: string; words: string[]; context: string[]; abbreviations?: RegExp }>();
+const facts = new WeakMap<SportsEvent, { pair: ReturnType<typeof versusPair>; names?: string[][]; numbered?: string; words: string[]; context: string[]; abbreviations?: RegExp }>();
 function eventFacts(e: SportsEvent) {
   let f = facts.get(e);
   if (f) return f;
   const title = norm(e.title), context = contextWords(e), numbered = title.match(/ ([a-z]{2,}) (\d{2,4}) /);
   const [a, b] = e.abbreviations.map(x => x.toLowerCase());
-  f = { pair: versusPair(e.title), ...(numbered ? { numbered: `${numbered[1]} ${numbered[2]}` } : {}), context,
+  const pair = versusPair(e.title);
+  // Fighters only: a club's first word ("Manchester") names other clubs.
+  f = { pair, ...(pair && (e.sport === 'boxing' || e.sport === 'mma') ? { names: versusSides(e.title)! } : {}), ...(numbered ? { numbered: `${numbered[1]} ${numbered[2]}` } : {}), context,
     words: title.trim().split(' ').filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w) && !context.includes(w)),
     ...(e.abbreviations.length === 2 ? { abbreviations: new RegExp(` (?:${a} (?:vs?|at) ${b}|${b} (?:vs?|at) ${a}) `) } : {}) };
   facts.set(e, f);
@@ -50,11 +55,14 @@ const normText = (text: string) => text === lastText ? lastNorm : (lastText = te
 
 // How strongly a text names an event: 0 none, higher is more specific.
 export function eventScore(text: string, e: SportsEvent) {
-  const t = normText(text), { pair, numbered, words, context, abbreviations } = eventFacts(e);
+  const t = normText(text), { pair, names, numbered, words, context, abbreviations } = eventFacts(e);
   let score = 0;
   if (e.sides.length === 2 && e.sides.every(side => side.some(alias => has(t, alias)))) score = 4;
   else if (abbreviations?.test(t)) score = 3;
   if (!score && pair && has(t, pair[0]) && has(t, pair[1])) score = 3;
+  // A fighter known by a first name or ring name ("Canelo vs. Mbilli" for "Canelo Álvarez vs Christian Mbilli"):
+  // one surname plus any name of the other side.
+  else if (!score && pair && names && (has(t, pair[0]) || has(t, pair[1])) && names.every(side => side.some(w => has(t, w)))) score = 2.5;
   // Numbered cards: "UFC 333", "Bellator 312".
   if (!score && numbered && has(t, numbered)) score = 3;
   // Titled shows and tournaments ("WWE Raw", "Butterfield Bermuda Championship"): every distinctive
