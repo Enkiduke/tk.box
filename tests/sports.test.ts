@@ -58,6 +58,16 @@ test('stale listings are rejected: a written date that contradicts the event, or
   assert.equal(win('PPV 6: UFC 333 Main Card 8PM ET')?.start, ufc[0]!.start);
 });
 
+test('a fighter known by a first or ring name still matches, with the other fighter named', () => {
+  const canelo = tsdbEvents({ events: [{ idEvent: '2', strEvent: 'Canelo Álvarez vs Christian Mbilli', strSport: 'Fighting', strLeague: 'Boxing', strTimestamp: '2026-10-18T19:00:00', strStatus: null }] });
+  const match = (name: string) => channelWindow({ id: 'x', name, group: 'PPV', programs: [] }, canelo, now, opts);
+  const prelims = match('PPV EVENT 07: PRELIMS Canelo vs. Mbilli (10.18 2:00 PM ET)');
+  assert.deepEqual([prelims?.eventId, prelims?.start], ['tsdb:2', Date.parse('2026-10-18T18:00:00Z')]);
+  assert.equal(match('PPV 2: Canelo vs Crawford')?.eventId, undefined, 'a surname of neither side');
+  const clubs = tsdbEvents({ events: [{ idEvent: '3', strEvent: 'Manchester United vs Chelsea', strSport: 'Soccer', strLeague: 'English Premier League', strTimestamp: '2026-10-18T19:00:00', strStatus: null }] });
+  assert.equal(channelWindow({ id: 'x', name: 'Manchester City vs Chelsea', group: '', programs: [] }, clubs, now, opts)?.eventId, undefined, 'clubs need both names');
+});
+
 test('names and listings: written dates, EPG events and provider placeholders', () => {
   assert.equal(nameTime('Oct 18 @ 20:00 UK', now)?.at, Date.parse('2026-10-18T19:00:00Z'));
   assert.equal(nameTime('2026-10-19 13:00', now)?.at, Date.parse('2026-10-19T17:00:00Z'));
