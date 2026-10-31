@@ -169,9 +169,11 @@ export function channelWindow(c: ChannelInput, events: SportsEvent[], now: numbe
   const text = `${c.name} ${c.group}`, candidates: Window[] = [], zone = options.zones?.get(family(c.name)) ?? options.zone;
   const named = bestEvent(c.name, events, now, zone) ?? (c.group ? bestEvent(text, events, now, zone) : undefined);
   if (named) {
-    // A date-only listing (common for boxing) takes its time from the channel name when it has one.
-    const written = named.timeKnown ? undefined : nameTime(c.name, now, zone);
-    const start = written?.hour !== undefined ? zonedTime(...ymd(named.start, written.zone), written.hour, written.minute, written.zone) : named.start;
+    // A date-only listing (common for boxing) takes its time from the channel name when it has one. A channel that
+    // starts up to four hours before a timed event (prelims and undercards under the main event's time) starts then.
+    const written = nameTime(c.name, now, zone);
+    const at = written?.hour === undefined ? undefined : written.at !== undefined && named.timeKnown ? written.at : zonedTime(...ymd(named.start, written.zone), written.hour, written.minute, written.zone);
+    const start = at === undefined ? named.start : !named.timeKnown ? at : at < named.start && named.start - at <= 4 * HOUR ? at : named.start;
     candidates.push({ ...fromEvent(named, 'event'), start, end: Math.max(named.end, start + (named.end - named.start)) });
   }
   for (const p of c.programs) {
