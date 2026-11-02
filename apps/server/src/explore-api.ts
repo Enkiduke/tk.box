@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import type {ExploreDetails,ExploreItem,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
@@ -12,9 +12,10 @@ import {requireThat} from './errors.js';
 type Viewer={hash:string;grant:PlexGrant};
 const source=z.enum(['plex','seerr']);
 const kind=z.enum(['movie','show']);
-// Explore's filters, sent with every row page and search: original languages, a release year range and a minimum score.
+// Explore's filters, sent with every row page and search: original languages, genres, a release year range, a minimum
+// score and Seerr labels to leave out.
 const filterQuery={lang:z.string().max(200).optional(),from:z.coerce.number().int().min(1870).max(2100).optional(),to:z.coerce.number().int().min(1870).max(2100).optional(),
-  min:z.coerce.number().min(0).max(10).optional()};
+  min:z.coerce.number().min(0).max(10).optional(),hide:z.string().max(40).optional(),genre:z.string().max(300).optional()};
 const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1),...filterQuery}).strict();
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
@@ -47,15 +48,21 @@ export function rowKeep(from:ExploreSource,row:string,account:string):{account:s
   return {account,ttl:row!=='watchlist'?PUBLIC_MS:PAGE_MS};
 }
 
-export type ExploreFilter={languages:string[];from?:number;to?:number;min?:number};
-export function exploreFilter(input:{lang?:string;from?:number;to?:number;min?:number}):ExploreFilter {
+// `genres`: a title passes with any of them. `hide`: titles Seerr labels requested or (fully) available; partly
+// available shows can still be requested, so they stay.
+export type ExploreFilter={languages:string[];genres?:ExploreGenre[];from?:number;to?:number;min?:number;hide?:ExploreStatus[]};
+export function exploreFilter(input:{lang?:string;genre?:string;from?:number;to?:number;min?:number;hide?:string}):ExploreFilter {
   const languages=[...new Set((input.lang??'').split(',').map(l=>l.trim().toLowerCase()).filter(l=>/^[a-z]{2,3}$/.test(l)))].slice(0,30);
-  return {languages,...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{})};
+  const hide=(['requested','available'] as const).filter(s=>(input.hide??'').split(',').includes(s));
+  const genres=exploreGenres.filter(g=>(input.genre??'').split(',').includes(g));
+  return {languages,...(genres.length?{genres}:{}),...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{}),...(hide.length?{hide}:{})};
 }
-export const filtering=(f:ExploreFilter)=>f.languages.length>0||f.from!==undefined||f.to!==undefined||f.min!==undefined;
+export const filtering=(f:ExploreFilter)=>f.languages.length>0||f.from!==undefined||f.to!==undefined||f.min!==undefined||!!f.hide||!!f.genres;
 // What a filter needs that the title does not say. Such titles are looked up; still unknown, they are left out.
-export const lacking=(item:ExploreItem,f:ExploreFilter)=>(f.languages.length>0&&!item.language)||((f.from!==undefined||f.to!==undefined)&&!item.year)||(f.min!==undefined&&item.rating===undefined);
+export const lacking=(item:ExploreItem,f:ExploreFilter)=>(f.languages.length>0&&!item.language)||(!!f.genres&&!item.genres?.length)||((f.from!==undefined||f.to!==undefined)&&!item.year)||(f.min!==undefined&&item.rating===undefined);
 export function passes(item:ExploreItem,f:ExploreFilter) {
+  if(item.status&&f.hide?.includes(item.status))return false;
+  if(f.genres&&!item.genres?.some(g=>f.genres!.includes(g)))return false;
   if(f.languages.length&&(!item.language||!f.languages.includes(item.language)))return false;
   if(f.from!==undefined||f.to!==undefined){if(!item.year||f.from!==undefined&&item.year<f.from||f.to!==undefined&&item.year>f.to)return false;}
   return f.min===undefined||item.rating!==undefined&&item.rating>=f.min;
@@ -202,14 +209,14 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     if(from==='plex')return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));
     requireThat(seerr.configured(),'SEERR_NOT_CONFIGURED','Seerr is not set up.',409);return seerrRows.map(({id,title,icon})=>({id,title,icon}));
   }
-  // Titles that pass the filter. Language, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
+  // Titles that pass the filter. Language, genres, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
   // known; these are public facts, so they are kept a day for every viewer.
   async function filtered(items:ExploreItem[],filter:ExploreFilter,account:string,token:string) {
     const filled=await Promise.all(items.map(async item=>{
       if(!lacking(item,filter)||!item.ids.tmdb||!seerr.configured())return item;
       const tmdb=item.ids.tmdb,facts=await cache.get('',`facts:${item.kind}:${tmdb}`,PERSON_MS,()=>lookups(()=>seerr.details(account,token,item.kind,tmdb))
-        .then(info=>{const found=seerrItem(info,item.kind==='show'?'tv':'movie');return {language:found?.language,year:found?.year,rating:found?.rating};})).catch(()=>undefined);
-      return facts?{...item,language:item.language??facts.language,year:item.year??facts.year,rating:item.rating??facts.rating}:item;
+        .then(info=>{const found=seerrItem(info,item.kind==='show'?'tv':'movie');return {language:found?.language,genres:found?.genres,year:found?.year,rating:found?.rating};})).catch(()=>undefined);
+      return facts?{...item,language:item.language??facts.language,genres:item.genres?.length?item.genres:facts.genres,year:item.year??facts.year,rating:item.rating??facts.rating}:item;
     }));
     return filled.filter(item=>passes(item,filter));
   }

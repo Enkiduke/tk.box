@@ -2,6 +2,7 @@ import type { ExploreItem, ExplorePage, ExploreRowInfo } from '../../../../packa
 import type { PlexAdapter } from './plex.js';
 import { requireThat } from '../errors.js';
 import { plexPhoto } from './explore-images.js';
+import { exploreGenresOf } from './explore-genres.js';
 
 // Plex Discover: the viewer's universal watchlist and the shelves Plex shows on its own Discover page.
 type Tag = { tag?: string };
@@ -29,11 +30,11 @@ export function discoverIds(m: DiscoverMetadata) {
 export function discoverItem(m: DiscoverMetadata): ExploreItem | undefined {
   const kind = m.type === 'movie' ? 'movie' : m.type === 'show' ? 'show' : undefined;
   if (!kind || !m.title || !m.ratingKey) return undefined;
-  const ids = discoverIds(m), rating = m.audienceRating ?? m.rating;
+  const ids = discoverIds(m), rating = m.audienceRating ?? m.rating, genres = exploreGenresOf((m.Genre ?? []).map(g => g.tag));
   return { key: ids.tmdb ? `${kind}:tmdb:${ids.tmdb}` : `${kind}:plex:${m.ratingKey}`, source: 'plex', kind, title: m.title,
     ...(m.year ? { year: m.year } : {}), ...(m.summary ? { summary: m.summary } : {}),
     posterUrl: plexPhoto(m.thumb, 300, 450), backdropUrl: plexPhoto(m.art, 1280, 720), ...(rating ? { rating } : {}),
-    ...(m.duration ? { durationMs: m.duration } : {}), ...(kind === 'show' && m.leafCount ? { episodeCount: m.leafCount } : {}), ids };
+    ...(m.duration ? { durationMs: m.duration } : {}), ...(kind === 'show' && m.leafCount ? { episodeCount: m.leafCount } : {}), ...(genres.length ? { genres } : {}), ids };
 }
 const items = (list: DiscoverMetadata[] = []) => { const seen = new Set<string>(); return list.flatMap(m => { const item = discoverItem(m); if (!item || seen.has(item.key)) return []; seen.add(item.key); return [item]; }); };
 // Shelf keys are Discover paths, carried in the row id.

@@ -8,6 +8,7 @@ import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {ExploreCache,SHARED,exploreFilter,interleave,lacking,passes,rowKeep,rowShown,shownSources} from '../apps/server/src/explore-api.js';
+import {exploreGenresOf,tmdbGenres} from '../apps/server/src/providers/explore-genres.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);
@@ -164,6 +165,24 @@ test('Explore filters read languages, a year range and a minimum score, and leav
   assert.equal(passes({...item,year:1999,rating:7},f),false);
   assert.equal(passes(item,exploreFilter({from:2000})),false);
   assert.equal(passes(item,exploreFilter({})),true);
+});
+test('Explore filters can leave out requested and available titles, keeping partly available ones',()=>{
+  const f=exploreFilter({hide:'requested,available,partial,x'}),item={key:'movie:tmdb:1',source:'seerr' as const,kind:'movie' as const,title:'A',ids:{tmdb:1}};
+  assert.deepEqual(f,{languages:[],hide:['requested','available']});
+  assert.equal(passes({...item,status:'requested'},f),false);
+  assert.equal(passes({...item,status:'available'},f),false);
+  assert.equal(passes({...item,status:'partial'},f),true);
+  assert.equal(passes(item,f),true);
+  assert.equal(passes({...item,status:'requested'},exploreFilter({hide:'available'})),true);
+});
+test('Explore genres merge TMDB and Plex names, and a genre filter passes titles with any chosen genre',()=>{
+  assert.deepEqual(tmdbGenres([10765,10759,10767]),['Action','Adventure','Fantasy','Sci-Fi']);
+  assert.deepEqual(exploreGenresOf(['Science Fiction','Children','Talk']),['Kids','Sci-Fi']);
+  const f=exploreFilter({genre:'Comedy,Sci-Fi,Nope'}),item={key:'movie:tmdb:1',source:'seerr' as const,kind:'movie' as const,title:'A',ids:{tmdb:1}};
+  assert.deepEqual(f.genres,['Comedy','Sci-Fi']);
+  assert.equal(passes({...item,genres:['Drama','Sci-Fi']},f),true);
+  assert.equal(passes({...item,genres:['Drama']},f),false);
+  assert.equal(lacking(item,f),true);
 });
 test('Explore search interleaves sources best first and lists a title once with what each source adds',()=>{
   const t=(key:string,source:'plex'|'seerr',extra={})=>({key,source,kind:'movie' as const,title:key,ids:{},...extra});

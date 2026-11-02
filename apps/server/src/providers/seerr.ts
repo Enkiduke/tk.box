@@ -2,6 +2,7 @@ import type { ExploreDetails, ExploreItem, ExploreRequestExtras, ExploreSeerrAcc
 import { AppError, requireThat, requireWritable } from '../errors.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import { flagImage, tmdbImage } from './explore-images.js';
+import { exploreGenresOf, tmdbGenres } from './explore-genres.js';
 
 // Seerr (Overseerr, Jellyseerr): TMDB-backed discovery rows and media requests. Each viewer signs in to Seerr with
 // their own Plex account token, so requests are made as, and limited to, their Seerr user.
@@ -9,7 +10,7 @@ type Info = { status?: number; status4k?: number; tvdbId?: number; ratingKey?: s
   seasons?: { seasonNumber: number; status?: number; status4k?: number }[];
   requests?: { status?: number; is4k?: boolean; seasons?: { seasonNumber: number }[] }[] };
 type Media = { id: number; mediaType?: string; title?: string; name?: string; originalTitle?: string; originalName?: string; overview?: string;
-  posterPath?: string | null; backdropPath?: string | null; releaseDate?: string; firstAirDate?: string; voteAverage?: number; originalLanguage?: string; mediaInfo?: Info };
+  posterPath?: string | null; backdropPath?: string | null; releaseDate?: string; firstAirDate?: string; voteAverage?: number; originalLanguage?: string; genreIds?: number[]; mediaInfo?: Info };
 type Details = Media & { runtime?: number; episodeRunTime?: number[]; genres?: { name: string }[]; tagline?: string; numberOfEpisodes?: number;
   networks?: { name: string }[]; externalIds?: { imdbId?: string; tvdbId?: number }; imdbId?: string;
   seasons?: { seasonNumber: number; name?: string; episodeCount?: number; airDate?: string | null }[];
@@ -58,9 +59,11 @@ export function seerrItem(m: Media, type?: 'movie' | 'tv'): ExploreItem | undefi
   const mediaType = m.mediaType ?? type, title = m.title || m.name || m.originalTitle || m.originalName;
   if ((mediaType !== 'movie' && mediaType !== 'tv') || !title || !Number.isInteger(m.id)) return undefined;
   const kind = mediaType === 'tv' ? 'show' : 'movie', released = year(m.releaseDate || m.firstAirDate), status = seerrStatus(m.mediaInfo);
+  // Lists send genre ids; a title's details send the genres themselves.
+  const genres = m.genreIds ? tmdbGenres(m.genreIds) : exploreGenresOf(((m as Details).genres ?? []).map(g => g.name));
   return { key: `${kind}:tmdb:${m.id}`, source: 'seerr', kind, title, ...(released ? { year: released } : {}), ...(m.overview ? { summary: m.overview } : {}),
     posterUrl: tmdbImage(m.posterPath, 'w342'), backdropUrl: tmdbImage(m.backdropPath, 'w1280'), ...(m.voteAverage ? { rating: m.voteAverage } : {}),
-    ...(m.originalLanguage ? { language: m.originalLanguage } : {}), ids: { tmdb: m.id, ...(m.mediaInfo?.tvdbId ? { tvdb: m.mediaInfo.tvdbId } : {}) }, ...(status ? { status } : {}) };
+    ...(m.originalLanguage ? { language: m.originalLanguage } : {}), ...(genres.length ? { genres } : {}), ids: { tmdb: m.id, ...(m.mediaInfo?.tvdbId ? { tvdb: m.mediaInfo.tvdbId } : {}) }, ...(status ? { status } : {}) };
 }
 type Tracked = { mediaType?: string; tmdbId?: number; status?: number; status4k?: number };
 // Seerr's media list as a status for each title, keyed like Explore items (`movie:tmdb:603`). A title with no standard

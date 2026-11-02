@@ -67,11 +67,17 @@ export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; 
 export type ExploreSource = 'plex' | 'seerr';
 // Seerr's view of a title on the media server: available, partly available, or requested (including being downloaded).
 export type ExploreStatus = 'available' | 'partial' | 'requested';
+// The genres Explore filters on: TMDB's movie and TV genres and Plex's, merged into one list.
+export const exploreGenres = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Kids',
+  'Music', 'Mystery', 'Reality', 'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western'] as const;
+export type ExploreGenre = typeof exploreGenres[number];
 export type ExploreItem = {
   key: string; source: ExploreSource; kind: 'movie' | 'show'; title: string; year?: number; summary?: string;
   posterUrl?: string; backdropUrl?: string; rating?: number; durationMs?: number; episodeCount?: number;
   // Original language (ISO 639-1, TMDB's codes). Plex Discover does not send it.
   language?: string;
+  // Genres in Explore's own names (`exploreGenres`), whatever each source calls them.
+  genres?: ExploreGenre[];
   // `plex` is the Plex Discover rating key (not this server's), `plexGuid` the plex:// guid both share.
   ids: { tmdb?: number; imdb?: string; tvdb?: number; plex?: string; plexGuid?: string };
   status?: ExploreStatus;
