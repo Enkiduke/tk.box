@@ -20,9 +20,9 @@ const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.L
 
 // Filters: original languages, genres, a release year range, a minimum score and Seerr labels to hide, kept in this browser.
 type Filters={languages:string[];genres:ExploreGenre[];from:string;to:string;min:string;hide:Hideable[]};
-type Hideable='requested'|'available';
+type Hideable=ExploreStatus;
 const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]},FILTERS_KEY='tk.box.explore.filters';
-const hideable:Hideable[]=['requested','available'];
+const hideable:Hideable[]=['requested','partial','available'];
 // TMDB's codes; `cn` is its code for Cantonese.
 const languageCodes=['en','es','fr','de','it','pt','ja','ko','zh','cn','hi','ta','te','ml','ru','sv','da','no','fi','nl','pl','tr','th','ar','he','id','tl'];
 const minScores=['5','6','7','8'];

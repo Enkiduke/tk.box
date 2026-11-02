@@ -166,12 +166,13 @@ test('Explore filters read languages, a year range and a minimum score, and leav
   assert.equal(passes(item,exploreFilter({from:2000})),false);
   assert.equal(passes(item,exploreFilter({})),true);
 });
-test('Explore filters can leave out requested and available titles, keeping partly available ones',()=>{
-  const f=exploreFilter({hide:'requested,available,partial,x'}),item={key:'movie:tmdb:1',source:'seerr' as const,kind:'movie' as const,title:'A',ids:{tmdb:1}};
+test('Explore filters can leave out requested, partly available and available titles',()=>{
+  const f=exploreFilter({hide:'requested,available,x'}),item={key:'movie:tmdb:1',source:'seerr' as const,kind:'movie' as const,title:'A',ids:{tmdb:1}};
   assert.deepEqual(f,{languages:[],hide:['requested','available']});
   assert.equal(passes({...item,status:'requested'},f),false);
   assert.equal(passes({...item,status:'available'},f),false);
   assert.equal(passes({...item,status:'partial'},f),true);
+  assert.equal(passes({...item,status:'partial'},exploreFilter({hide:'partial'})),false);
   assert.equal(passes(item,f),true);
   assert.equal(passes({...item,status:'requested'},exploreFilter({hide:'available'})),true);
 });
