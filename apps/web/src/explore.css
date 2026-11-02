@@ -107,5 +107,5 @@
 .explore-pick details>div{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:2;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 12px;max-height:260px;padding:8px 12px;overflow-y:auto;scrollbar-width:thin;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-2);box-shadow:0 12px 30px rgba(0,0,0,.5)}
 .explore-pick label,.explore-hide label{display:flex;flex-direction:row;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer}
 .explore-pick input,.explore-hide input{width:auto;padding:0;accent-color:var(--accent)}
-.explore-hide{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.explore-hide{display:flex;flex-direction:column}
 .explore-years{display:grid;grid-template-columns:1fr 1fr;gap:12px}

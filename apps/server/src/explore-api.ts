@@ -48,12 +48,11 @@ export function rowKeep(from:ExploreSource,row:string,account:string):{account:s
   return {account,ttl:row!=='watchlist'?PUBLIC_MS:PAGE_MS};
 }
 
-// `genres`: a title passes with any of them. `hide`: titles Seerr labels requested or (fully) available; partly
-// available shows can still be requested, so they stay.
+// `genres`: a title passes with any of them. `hide`: titles with these Seerr labels.
 export type ExploreFilter={languages:string[];genres?:ExploreGenre[];from?:number;to?:number;min?:number;hide?:ExploreStatus[]};
 export function exploreFilter(input:{lang?:string;genre?:string;from?:number;to?:number;min?:number;hide?:string}):ExploreFilter {
   const languages=[...new Set((input.lang??'').split(',').map(l=>l.trim().toLowerCase()).filter(l=>/^[a-z]{2,3}$/.test(l)))].slice(0,30);
-  const hide=(['requested','available'] as const).filter(s=>(input.hide??'').split(',').includes(s));
+  const hide=(['requested','partial','available'] as const).filter(s=>(input.hide??'').split(',').includes(s));
   const genres=exploreGenres.filter(g=>(input.genre??'').split(',').includes(g));
   return {languages,...(genres.length?{genres}:{}),...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{}),...(hide.length?{hide}:{})};
 }
