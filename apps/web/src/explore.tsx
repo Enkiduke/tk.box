@@ -1,5 +1,5 @@
 import {memo,useEffect,useRef,useState,type ReactNode} from 'react';
-import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,People,Row,RowSkeleton} from './components.js';
@@ -16,11 +16,13 @@ const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'P
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
-const listed=(parts:string[])=>new Intl.ListFormat(undefined,{type:'conjunction'}).format(parts);
+const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.ListFormat(undefined,{type}).format(parts);
 
-// Filters: original languages, a release year range and a minimum score, kept in this browser.
-type Filters={languages:string[];from:string;to:string;min:string};
-const noFilters:Filters={languages:[],from:'',to:'',min:''},FILTERS_KEY='tk.box.explore.filters';
+// Filters: original languages, genres, a release year range, a minimum score and Seerr labels to hide, kept in this browser.
+type Filters={languages:string[];genres:ExploreGenre[];from:string;to:string;min:string;hide:Hideable[]};
+type Hideable='requested'|'available';
+const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]},FILTERS_KEY='tk.box.explore.filters';
+const hideable:Hideable[]=['requested','available'];
 // TMDB's codes; `cn` is its code for Cantonese.
 const languageCodes=['en','es','fr','de','it','pt','ja','ko','zh','cn','hi','ta','te','ml','ru','sv','da','no','fi','nl','pl','tr','th','ar','he','id','tl'];
 const minScores=['5','6','7','8'];
@@ -29,12 +31,14 @@ const yearText=(value:unknown)=>typeof value==='string'&&/^\d{4}$/.test(value)&&
 function cleanFilters(value:Partial<Record<keyof Filters,unknown>>):Filters {
   const languages=Array.isArray(value.languages)?value.languages.filter((l):l is string=>typeof l==='string'&&languageCodes.includes(l)):[];
   let from=yearText(value.from),to=yearText(value.to);if(from&&to&&from>to)[from,to]=[to,from];
-  return {languages,from,to,min:typeof value.min==='string'&&minScores.includes(value.min)?value.min:''};
+  const hide=Array.isArray(value.hide)?hideable.filter(h=>(value.hide as unknown[]).includes(h)):[];
+  const genres=Array.isArray(value.genres)?exploreGenres.filter(g=>(value.genres as unknown[]).includes(g)):[];
+  return {languages,genres,from,to,min:typeof value.min==='string'&&minScores.includes(value.min)?value.min:'',hide};
 }
 const loadFilters=():Filters=>{try{return cleanFilters(JSON.parse(localStorage.getItem(FILTERS_KEY)??'{}'));}catch{return noFilters;}};
 const saveFilters=(f:Filters)=>{try{localStorage.setItem(FILTERS_KEY,JSON.stringify(f));}catch{/* storage unavailable; applies until reload */}};
 function filterQuery(f:Filters) {
-  const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);
+  const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.genres.length)q.set('genre',f.genres.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);if(f.hide.length)q.set('hide',f.hide.join(','));
   const text=q.toString();return text?`&${text}`:'';
 }
 const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f.to}`):f.from?`${f.from} or later`:`${f.to} or earlier`;
@@ -86,36 +90,49 @@ function ExploreSearch({q,sources,fq,onSelect}:{q:string;sources:ExploreSource[]
   </section>;
 }
 
-function FilterMenu({filters,onChange}:{filters:Filters;onChange:(next:Filters)=>void}) {
+// A select-like dropdown of checkboxes; its list opens over the rest of the menu.
+function Checklist<T extends string>({label,empty,options,name,chosen,join='conjunction',onChange}:{label:string;empty:string;options:readonly T[];name:(option:T)=>string;chosen:T[];join?:Intl.ListFormatType;onChange:(next:T[])=>void}) {
+  return <div className="explore-pick"><span>{label}</span>
+    <details><summary aria-label={label}>{chosen.length?listed(chosen.map(name),join):empty}</summary>
+      <div>{options.map(option=><label key={option}><input type="checkbox" checked={chosen.includes(option)} onChange={e=>onChange(options.filter(o=>o===option?e.target.checked:chosen.includes(o)))}/>{name(option)}</label>)}</div>
+    </details>
+  </div>;
+}
+function FilterMenu({filters,labels,onChange}:{filters:Filters;labels:boolean;onChange:(next:Filters)=>void}) {
   const popup=useRef<HTMLDetailsElement>(null),[draft,setDraft]=useState(filters);
   const close=()=>{if(popup.current?.open){popup.current.open=false;popup.current.querySelector('summary')?.focus();}};
   useEffect(()=>{
-    const outside=(event:PointerEvent)=>{if(popup.current&&!popup.current.contains(event.target as Node))popup.current.open=false;};
+    const outside=(event:PointerEvent)=>{
+      if(popup.current&&!popup.current.contains(event.target as Node))popup.current.open=false;
+      popup.current?.querySelectorAll<HTMLDetailsElement>('.explore-pick details[open]').forEach(pick=>{if(!pick.contains(event.target as Node))pick.open=false;});
+    };
     const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')close();};
     document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
     return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
   },[]);
-  const count=Number(filters.languages.length>0)+Number(!!(filters.from||filters.to))+Number(!!filters.min);
-  const toggle=(code:string,on:boolean)=>setDraft(d=>({...d,languages:on?[...d.languages,code]:d.languages.filter(l=>l!==code)}));
+  const count=Number(filters.languages.length>0)+Number(filters.genres.length>0)+Number(!!(filters.from||filters.to))+Number(!!filters.min)+filters.hide.length;
+  const toggleHide=(status:Hideable,on:boolean)=>setDraft(d=>({...d,hide:hideable.filter(h=>h===status?on:d.hide.includes(h))}));
   return <details ref={popup} className="browse-popup" onToggle={e=>{if(e.currentTarget.open)setDraft(filters);}}>
     <summary role="button" aria-label="Filter Explore"><Icon name="filter"/><span>Filters</span>{count>0&&<b>{count}</b>}</summary>
     <form className="browse-menu filter-menu explore-filter-menu" onSubmit={e=>{e.preventDefault();onChange(cleanFilters(draft));close();}}>
-      <fieldset className="explore-languages"><legend>Language</legend>
-        <div>{languageCodes.map(code=><label key={code}><input type="checkbox" checked={draft.languages.includes(code)} onChange={e=>toggle(code,e.target.checked)}/>{languageName(code)}</label>)}</div>
-      </fieldset>
+      <Checklist label="Language" empty="Any language" options={languageCodes} name={languageName} chosen={draft.languages} join="disjunction" onChange={languages=>setDraft(d=>({...d,languages}))}/>
+      <Checklist label="Genre" empty="Any genre" options={exploreGenres} name={g=>g} chosen={draft.genres} join="disjunction" onChange={genres=>setDraft(d=>({...d,genres}))}/>
       <div className="explore-years"><label>Released from<input aria-label="Released from year" type="number" min="1870" max="2100" placeholder="Any" value={draft.from} onChange={e=>setDraft(d=>({...d,from:e.target.value}))}/></label>
         <label>to<input aria-label="Released to year" type="number" min="1870" max="2100" placeholder="Any" value={draft.to} onChange={e=>setDraft(d=>({...d,to:e.target.value}))}/></label></div>
       <label>Rating<select aria-label="Minimum rating" value={draft.min} onChange={e=>setDraft(d=>({...d,min:e.target.value}))}><option value="">Any rating</option>{minScores.map(n=><option key={n} value={n}>{n}+ ★</option>)}</select></label>
+      {labels&&<div className="explore-hide">{hideable.map(h=><label key={h}><input type="checkbox" checked={draft.hide.includes(h)} onChange={e=>toggleHide(h,e.target.checked)}/>Hide {statusNames[h].toLowerCase()}</label>)}</div>}
       <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(noFilters);close();}}>Reset</button></div>
     </form>
   </details>;
 }
 function ActiveFilters({filters,onChange}:{filters:Filters;onChange:(next:Filters)=>void}) {
-  if(!filters.languages.length&&!filters.from&&!filters.to&&!filters.min)return null;
+  if(!filters.languages.length&&!filters.genres.length&&!filters.from&&!filters.to&&!filters.min&&!filters.hide.length)return null;
   return <div className="active-filters">
-    {filters.languages.length>0&&<button onClick={()=>onChange({...filters,languages:[]})}>{listed(filters.languages.map(languageName))} ×</button>}
+    {filters.languages.length>0&&<button onClick={()=>onChange({...filters,languages:[]})}>{listed(filters.languages.map(languageName),'disjunction')} ×</button>}
+    {filters.genres.length>0&&<button onClick={()=>onChange({...filters,genres:[]})}>{listed(filters.genres,'disjunction')} ×</button>}
     {(filters.from||filters.to)&&<button onClick={()=>onChange({...filters,from:'',to:''})}>{yearLabel(filters)} ×</button>}
     {filters.min&&<button onClick={()=>onChange({...filters,min:''})}>{filters.min}+ ★ ×</button>}
+    {filters.hide.map(h=><button key={h} onClick={()=>onChange({...filters,hide:filters.hide.filter(x=>x!==h)})}>No {statusNames[h].toLowerCase()} ×</button>)}
     <button onClick={()=>onChange(noFilters)}>Clear</button>
   </div>;
 }
@@ -138,7 +155,7 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   return <div className="page explore-page">
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
-      <FilterMenu filters={filters} onChange={changeFilters}/>
+      <FilterMenu filters={filters} labels={data.seerr.configured} onChange={changeFilters}/>
       <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
     <ActiveFilters filters={filters} onChange={changeFilters}/>
