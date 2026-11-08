@@ -382,9 +382,10 @@ export class PlexAdapter {
     // The first page of recent TV reads episodes, 60 at a time, until its cards are settled: a show past the last card
     // turns up, or Plex runs out.
     if(path==='recentlyAdded'&&library.type==='show'&&query.offset===0) {
-      const items:CatalogItem[]=[],settled=()=>groupRecentEpisodes(items,query.limit+1).length>query.limit;let more=true;
+      const group=()=>groupRecentEpisodes(items,query.limit+1,query.limit);
+      const items:CatalogItem[]=[],settled=()=>group().length>query.limit;let more=true;
       for(let start=0;more&&start<600&&!settled();start+=60){const page=await read(start,60);items.push(...page.items);more=page.more;}
-      const cards=groupRecentEpisodes(items,query.limit+1);
+      const cards=group();
       return {items:await this.withShowSummaries(grant,cards.slice(0,query.limit)),offset:0,limit:query.limit,hasMore:cards.length>query.limit||more};
     }
     // Recent movies leave out the hidden ones (known by their TMDb guid), reading 60 at a time from the newest until the

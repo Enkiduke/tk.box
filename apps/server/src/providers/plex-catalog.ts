@@ -75,15 +75,17 @@ export function catalogDto(node:CatalogNode,libraryId:string):CatalogItem {
     ratings:externalRatings(node),logoUrl:logo?versioned(`/api/v1/catalog/items/${node.ratingKey}/artwork?kind=logo`,logo):undefined,tagline:node.tagline||undefined,airDate:node.originallyAvailableAt,
     studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined,tmdbId:tmdbId(node),imdbId:imdbId(node)};
 }
-// Plex lists recently added TV one episode at a time, newest first. Each show gets one card holding all its episodes in
-// the list, however they arrived: one episode stays itself, one season becomes a season card, several seasons a show card
-// ("2 seasons · 16 episodes"). The card sits where the show's newest episode is. With `limit`, the list is read only until
-// a show past the limit would start a card, so no card takes in episodes older than the row reaches.
-export function groupRecentEpisodes(items:CatalogItem[],limit=Infinity):CatalogItem[] {
+// Plex lists recently added TV one episode at a time, newest first. Each show gets one card holding its episodes among the
+// first `window` in the list (the ones the row would show ungrouped): one episode stays itself, one season becomes a season
+// card, several seasons a show card ("2 seasons · 16 episodes"). The card sits where the show's newest episode is. Past the
+// window an episode of a show already on the row is left out, so a weekly show is just its newest episode; a new show
+// still starts its own card, filling the slots grouping freed. The list is read only until a show past `limit` would
+// start a card.
+export function groupRecentEpisodes(items:CatalogItem[],limit=Infinity,window=limit):CatalogItem[] {
   const shows=new Map<string,CatalogItem[]>(),runs:CatalogItem[][]=[];
-  for(const item of items) {
+  for(const [index,item] of items.entries()) {
     const show=item.type==='episode'?item.showId:undefined,run=show?shows.get(show):undefined;
-    if(run){run.push(item);continue;}
+    if(run){if(index<window)run.push(item);continue;}
     if(runs.length>=limit)break;
     const entry=[item];runs.push(entry);if(show)shows.set(show,entry);
   }
