@@ -41,6 +41,7 @@ export class LiveTv {
   private timer: NodeJS.Timeout;
   observer: LiveObserver = {};
   connections = new ProviderConnections(() => Number.POSITIVE_INFINITY);
+  tuneRetries = 3; tuneRetryMs = 3000;
   // Streams are read through the guard (public addresses only) unless their source allows local-network streams.
   guard?: StreamGuard;
   constructor(private store: IptvStore, private budget: EncoderBudget, cacheDir: string, private ffmpeg = 'ffmpeg', private ffprobe = 'ffprobe',
@@ -61,8 +62,9 @@ export class LiveTv {
       const created = relay;
       created.ready = this.prepare(created);
       created.ready.then(() => this.observer.tuned?.(channelId), error => {
-        this.destroy(created);
-        if (error instanceof AppError && ['LIVE_TUNE_FAILED', 'LIVE_TUNE_TIMEOUT'].includes(error.code)) this.observer.tuneFailed?.(channelId);
+        // A refusal right after a connection was let go says little about the channel; do not recheck it.
+        const recent = created.lease?.recent; this.destroy(created);
+        if (!recent && error instanceof AppError && ['LIVE_TUNE_FAILED', 'LIVE_TUNE_TIMEOUT'].includes(error.code)) this.observer.tuneFailed?.(channelId);
       });
     }
     const viewer: Viewer = { id: opaque(), hash, channelId, seen: Date.now() };
@@ -125,7 +127,7 @@ export class LiveTv {
     if (relay.stopped) { relay.lease.release(); throw new AppError('MEDIA_CANCELLED', 'Live session was stopped.', 409); }
     await mkdir(relay.dir, { recursive: true, mode: 0o700 });
     relay.proxy = relay.allowPrivate ? undefined : await this.guard?.url();
-    this.spawn(relay, false); await this.waitReady(relay);
+    await this.tune(relay);
     const source = await this.probe(relay), video = source.videoCodec;
     relay.source = { videoCodec: video, audioCodec: source.audioCodec, width: source.width, height: source.height };
     if (video && !(video === 'h264' && browserVideo.has(source.pixFmt ?? 'yuv420p'))) {
@@ -136,6 +138,20 @@ export class LiveTv {
       relay.stderr = ''; this.spawn(relay, false); await this.waitReady(relay);
     }
     relay.live = true;
+  }
+  // Right after a check was cancelled for this viewer (or any stream let go), the provider may still
+  // count the old stream and refuse this one. Retry for a few seconds before calling the channel failed.
+  private async tune(relay: Relay) {
+    for (let attempt = 1; ; attempt++) {
+      this.spawn(relay, false);
+      try { return await this.waitReady(relay); } catch (error) {
+        if (!relay.lease?.recent || attempt > this.tuneRetries || !(error instanceof AppError && error.code === 'LIVE_TUNE_FAILED')) throw error;
+      }
+      this.log('live tune retry', { channelId: relay.channelId, attempt });
+      await sleep(this.tuneRetryMs);
+      if (relay.stopped) throw new AppError('MEDIA_CANCELLED', 'Live session was stopped.', 409);
+      relay.stderr = ''; await rm(relay.dir, { recursive: true, force: true, maxRetries: 5 }); await mkdir(relay.dir, { recursive: true, mode: 0o700 });
+    }
   }
   private args(relay: Relay, append: boolean) {
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-protocol_whitelist', protocols(relay.proxy), '-user_agent', userAgent];
