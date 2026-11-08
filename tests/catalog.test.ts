@@ -205,10 +205,12 @@ test('recent TV uses series posters and gives a season one card however its epis
   assert.equal(page.hasMore,false);
 });
 
-test('recent TV stops taking in episodes where the row ends, so a card never reaches past it',()=>{
+test('recent TV groups only the episodes the row would show ungrouped',()=>{
   const ep=(show:string,season:string,id:string)=>({id,libraryId:'20',type:'episode',title:id,summary:'',viewOffsetMs:0,watched:false,genres:[],parentId:season,showId:show,showTitle:show}) as CatalogItem;
-  const cards=groupRecentEpisodes([ep('a','a1','1'),ep('b','b1','2'),ep('a','a1','3'),ep('c','c1','4'),ep('b','b1','5'),ep('a','a2','6')],2);
-  assert.deepEqual(cards.map(c=>[c.type,c.id,c.episodeCount]),[['season','a1',2],['episode','2',undefined]]);
+  const list=[ep('a','a1','1'),ep('b','b1','2'),ep('a','a1','3'),ep('c','c1','4'),ep('b','b1','5'),ep('a','a2','6'),ep('d','d1','7')];
+  assert.deepEqual(groupRecentEpisodes(list,2).map(c=>[c.type,c.id,c.episodeCount]),[['episode','1',undefined],['episode','2',undefined]]);
+  // Within the first three, show a's two episodes become one card; b's later one is left out and c fills the freed slot.
+  assert.deepEqual(groupRecentEpisodes(list,3).map(c=>[c.type,c.id,c.episodeCount]),[['season','a1',2],['episode','2',undefined],['episode','4',undefined]]);
   assert.deepEqual(groupRecentEpisodes([ep('a','a1','1'),ep('b','b1','2'),ep('a','a2','3')]).map(c=>[c.type,c.id,c.seasonCount]),[['show','a',2],['episode','2',undefined]]);
 });
 
