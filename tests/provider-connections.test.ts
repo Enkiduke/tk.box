@@ -57,11 +57,23 @@ test('A waiting viewer gives up when cancelled or when the connection never free
   (await gate.viewer()).release();
 });
 
+test('A viewer lease says whether a connection was let go just before it', async () => {
+  const gate = new ProviderConnections(() => 1, 1000, 60000);
+  const fresh = await gate.viewer(); assert.equal(fresh.recent, false);
+  fresh.release();
+  const check = gate.tryCheck(() => {})!; assert.ok(check);
+  // A viewer that bumps a check, and one tuning soon after any stream ended, may meet a provider still counting it.
+  const bumping = gate.viewer(); await tick(); check.release();
+  assert.equal((await bumping).recent, true);
+  const settled = new ProviderConnections(() => 1, 1000, 0), a = await settled.viewer(); a.release();
+  assert.equal((await settled.viewer()).recent, false, 'past the settle window');
+});
+
 test('The server-wide limit starts from the highest per-source limit set before it existed', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tk-iptv-settings-')), file = join(dir, 'db.sqlite');
   let db = openDatabase(file);
   const store = new IptvStore(db, new Vault(randomBytes(32))), a = store.create('owner', { kind: 'm3u', name: 'A' }), b = store.create('owner', { kind: 'm3u', name: 'B' });
-  db.prepare('INSERT INTO iptv_health_policies VALUES(?,24,2,1),(?,24,3,1)').run(a.id, b.id);
+  db.prepare('INSERT INTO iptv_health_policies(source_id,interval_hours,connections,hide_failing) VALUES(?,24,2,1),(?,24,3,1)').run(a.id, b.id);
   db.exec('DROP TABLE iptv_settings; DELETE FROM migrations WHERE version=10'); db.close();
   db = openDatabase(file);
   try {

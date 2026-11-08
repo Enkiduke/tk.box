@@ -20,8 +20,11 @@ const available = spawnSync(ffmpeg, ['-version']).status === 0 && spawnSync(ffpr
 // Endless generated MPEG-TS per request, like a raw IPTV channel. MPEG-2/AC-3 needs a video encode; H.264/MP2 only audio.
 const profiles: Record<string, string[]> = { '/mpeg2.ts': ['-c:v', 'mpeg2video', '-b:v', '2M', '-c:a', 'ac3'], '/h264.ts': ['-c:v', 'libx264', '-preset', 'ultrafast', '-g', '25', '-c:a', 'mp2'] };
 async function channelServer() {
-  const streams = { open: 0, peak: 0 };
+  // `refuse` turns away that many requests first, like a provider still counting a stream that just closed.
+  const streams = { open: 0, peak: 0, refuse: 0, requests: 0 };
   const server = createServer((req, res) => {
+    streams.requests++;
+    if (streams.refuse > 0) { streams.refuse--; res.writeHead(458).end(); return; }
     const args = profiles[req.url?.split('?')[0] ?? ''];
     if (!args) { res.writeHead(404).end(); return; }
     res.writeHead(200, { 'content-type': 'video/mp2t' });
@@ -79,6 +82,26 @@ test('live relays stay within the provider connection limit and switching waits 
     const b = await live.start('viewer-b', ids[1]!);
     assert.equal(streams.peak, 1, 'never more than one upstream stream');
     live.stop(b.id, 'viewer-b');
+  } finally { live.close(); server.close(); }
+});
+
+test('a viewer that bumped a channel check retries while the provider still counts it, then gives up without a recheck', { skip: !available && 'FFmpeg unavailable', timeout: 120000 }, async () => {
+  const { server, streams, origin } = await channelServer(), cache = mkdtempSync(join(tmpdir(), 'tk.box-live-'));
+  const { store, ids } = lineup([`${origin}/h264.ts`]), failed: string[] = [];
+  const live = new LiveTv(store, new EncoderBudget(() => 1), cache, ffmpeg, ffprobe);
+  live.connections = new ProviderConnections(() => 1, 1000, 60000); live.tuneRetryMs = 50;
+  live.observer = { tuneFailed: id => failed.push(id) };
+  try {
+    const check = live.connections.tryCheck(() => setImmediate(() => check.release()))!;
+    streams.refuse = 2;
+    const tuned = await live.start('viewer', ids[0]!);
+    assert.equal(streams.requests, 3, 'two refusals, then the stream');
+    live.stop(tuned.id, 'viewer'); await new Promise(done => setTimeout(done, 500));
+
+    // Refused every time: the viewer gets the tune failure, and no recheck is queued for the channel.
+    streams.refuse = 100; streams.requests = 0;
+    await assert.rejects(live.start('viewer', ids[0]!), rejects('LIVE_TUNE_FAILED'));
+    assert.equal(streams.requests, live.tuneRetries + 1); assert.deepEqual(failed, []);
   } finally { live.close(); server.close(); }
 });
 

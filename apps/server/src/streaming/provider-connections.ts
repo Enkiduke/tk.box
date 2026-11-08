@@ -1,6 +1,9 @@
 import { AppError } from '../errors.js';
 
-export type ConnectionLease = { release: () => void; closing: () => void };
+// `recent`: a connection was let go shortly before this viewer got one (a check it cancelled, a
+// check that just finished, a channel switch). The provider may still count that stream for a few
+// seconds, so a refusal right after is likely the provider catching up, not a dead channel.
+export type ConnectionLease = { release: () => void; closing: () => void; recent: boolean };
 type Lease = { kind: 'viewer' | 'check'; cancel?: () => void; closing: boolean };
 type Waiter = { grant: () => void };
 
@@ -14,7 +17,8 @@ type Waiter = { grant: () => void };
 export class ProviderConnections {
   private leases = new Set<Lease>();
   private waiters: Waiter[] = [];
-  constructor(private limit: () => number, private waitMs = 15000) {}
+  private releasedAt = Number.NEGATIVE_INFINITY;
+  constructor(private limit: () => number, private waitMs = 15000, private settleMs = 10000) {}
   usage() {
     const held = [...this.leases];
     return { limit: this.limit(), viewers: held.filter(l => l.kind === 'viewer').length, checks: held.filter(l => l.kind === 'check').length };
@@ -49,8 +53,9 @@ export class ProviderConnections {
   private lease(lease: Lease): ConnectionLease {
     this.leases.add(lease);
     return {
+      recent: Date.now() - this.releasedAt < this.settleMs,
       closing: () => { lease.closing = true; },
-      release: () => { if (this.leases.delete(lease)) this.drain(); },
+      release: () => { if (this.leases.delete(lease)) { this.releasedAt = Date.now(); this.drain(); } },
     };
   }
   private drain() { while (this.waiters.length && this.leases.size < this.limit()) this.waiters[0]!.grant(); }
