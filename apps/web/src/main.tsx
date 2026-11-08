@@ -8,6 +8,7 @@ import {Icon,ErrorNotice,Loading,Empty,ActionNotice,setArtworkEditor,setHoldMenu
 import {leavingEntries,loadLeaving} from './cleanup-holds.js';
 import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
+import {ServerWatch} from './server-restart.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
 import {HeaderStreams} from './header-streams.js';
@@ -61,6 +62,8 @@ function App() {
   const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>(),[authUrl,setAuthUrl]=useState('');
   const plexPopup=useRef<Window|null>(null);
   const failover=useRef(new LiveFailover()),[switchingLive,setSwitchingLive]=useState(false);
+  const server=useRef(new ServerWatch()),[reconnecting,setReconnecting]=useState(false),reconnectToken=useRef<object>(undefined),lastRetry=useRef(0);
+  useEffect(()=>{void server.current.remember();},[]);
   // The channel being tuned: the player opens on it with a spinner before the server has a stream.
   const [tuning,setTuning]=useState<{name:string;program?:string}>(),tuningRef=useRef<object>(undefined);
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
@@ -165,9 +168,9 @@ function App() {
     const load=()=>void api<{programs:LiveProgram[]}>(`/live/sessions/${customId}/programs`).then(r=>{if(active)setPrograms(r.programs);},()=>{});
     load();const timer=window.setInterval(load,15000);return()=>{active=false;clearInterval(timer);};
   },[customId]);
-  const playbackError=(message:string)=>{
-    const current=sessionRef.current;
-    if(current?.kind!=='live'||!current.channel.stack){setError(message);return;}
+  // A channel whose feed fails moves to the station's next feed.
+  const liveFailure=(current:LiveSession,message:string)=>{
+    if(!current.channel.stack){setError(message);return;}
     const recovery=failover.current,isCurrent=()=>sessionRef.current===current&&failover.current===recovery;
     player.current?.stop();setSwitchingLive(true);setError('');
     void recovery.recover(current,isCurrent).then(next=>{
@@ -177,12 +180,48 @@ function App() {
     }).catch(e=>{if(isCurrent())setError((e as Error).message);})
       .finally(()=>{if(failover.current===recovery)setSwitchingLive(false);});
   };
+  // A stream that fails because tk.box restarted (an update) picks up again: a title at the same position, a channel on the same feed.
+  // Otherwise a title gets one quiet retry a minute, and a channel goes to failover.
+  const playbackError=(message:string)=>{
+    const current=sessionRef.current;if(!current){setError(message);return;}
+    const token={};reconnectToken.current=token;
+    const isCurrent=()=>sessionRef.current===current&&reconnectToken.current===token;
+    setReconnecting(true);setError('');
+    void server.current.check(isCurrent).then(async state=>{
+      if(!state||!isCurrent())return;
+      if(state==='down'){setError(`${message} tk.box is not responding.`);return;}
+      const retry=state==='restarted'||current.kind==='vod'&&Date.now()-lastRetry.current>60000;
+      if(!retry){if(current.kind==='live')liveFailure(current,message);else setError(message);return;}
+      if(state==='same')lastRetry.current=Date.now();
+      await reopen(current,isCurrent);
+    }).catch(e=>{if(isCurrent())setError((e as Error).message);})
+      .finally(()=>{if(reconnectToken.current===token){reconnectToken.current=undefined;setReconnecting(false);}});
+  };
+  // A new session for what was playing. The old one is released if the server still has it.
+  const reopen=async(current:VodSession|LiveSession,isCurrent:()=>boolean)=>{
+    const position=player.current?.stop();
+    if(current.kind==='live') {
+      void api(`/live/sessions/${current.id}`,'DELETE').catch(()=>{});
+      const recovery=failover.current=new LiveFailover();
+      const next=await recovery.tune(current.channel,current.program,()=>isCurrent()&&failover.current===recovery);
+      if(next&&isCurrent()){sessionRef.current=next;setSession(next);}
+      return;
+    }
+    const {body,audioStreamId}=vodBody(current,position?.started?position.timeMs:current.startOffsetMs);
+    const created=await api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',body);
+    if(!isCurrent()){await api(`/playback/sessions/${created.id}`,'DELETE').catch(()=>{});return;}
+    const next:VodSession={...created,kind:'vod',item:current.item,...(audioStreamId?{audioStreamId}:{})};sessionRef.current=next;setSession(next);
+    void api(`/playback/sessions/${current.id}`,'DELETE').catch(()=>{});
+  };
+  const vodBody=(current:VodSession,timeMs:number,change:{audioStreamId?:string;quality?:Quality}={})=>{
+    const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto',{audioLanguage}=getPlayerPreferences();
+    return {audioStreamId,body:{mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:audioLanguage?{audioLanguage}:{})}};
+  };
   // Another audio track or quality, or a seek Plex never delivered, needs a new playback session resumed at that position;
   // each change keeps the other choice.
   const restart=(change:{audioStreamId?:string;quality?:Quality},timeMs:number)=>void action(async()=>{
     const current=sessionRef.current;if(current?.kind!=='vod')return;
-    const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto',{audioLanguage}=getPlayerPreferences();
-    const body={mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:audioLanguage?{audioLanguage}:{})};
+    const {body,audioStreamId}=vodBody(current,timeMs,change);
     const release=()=>api(`/playback/sessions/${current.id}`,'DELETE').catch(()=>{});let released=false;
     // A stalled seek recovers quietly behind the player's own buffering spinner.
     if(change.quality||change.audioStreamId)setSwitching(change.quality?'quality':'audio');
@@ -213,7 +252,7 @@ function App() {
   };
   const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
   useEffect(()=>{if(identity.error?.status===401){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
-  const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>setError(e.message));};
+  const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>{if(!reconnectToken.current)setError(e.message);});};
   const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item??loadingNext;
   const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
   const subtitle=channel?channel.program:item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
@@ -244,7 +283,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={22}/><span>{label.replace(' TV','').replace('TV ','')}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
+    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} reconnecting={reconnecting} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
     {me&&itemId&&/^\d+$/.test(itemId)&&<Details id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>}
     {artwork&&<Suspense fallback={null}><TitleArtwork key={artwork} ratingKey={artwork} onClose={()=>setArtwork(undefined)}/></Suspense>}
   </div>;
