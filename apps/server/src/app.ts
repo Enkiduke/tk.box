@@ -2,6 +2,7 @@ import Fastify, { LogController } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
+import { randomUUID } from 'node:crypto';
 import { existsSync, createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { Readable } from 'node:stream';
@@ -244,7 +245,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   cleanup.collections = () => cleanupCollections(artwork.keptCollections().collections, artworkStore.collections().definitions);
   app.addHook('onReady', async () => { cleanup.start(); });
   app.addHook('onClose', async () => { cleanup.close(); });
-  app.get('/health', async () => ({status: 'ok'}));
+  // `boot` changes on every start, so open players can tell the server restarted and reconnect.
+  const boot = randomUUID();
+  app.get('/health', async () => ({status: 'ok', boot}));
   registerSetup(app, config, plex, identity, {setup: `${cookieNamespace}_setup`, session: sessionCookie, options: cookieOpts, sessionAge: sessionCookieAge});
   app.post('/api/v1/auth/plex/start', { config: {rateLimit: {max: 10, timeWindow: 60000}} }, async (_req, reply) => {
     requireThat(config.plexConfigured, 'SETUP_REQUIRED', 'Configure Plex owner, machine and library IDs.', 503);
