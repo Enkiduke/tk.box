@@ -153,7 +153,7 @@ export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolea
       <div className="guide-toolbar-content">
         <div className="guide-time-controls" role="group" aria-label="Guide time">
           <button aria-label={browsingAhead?'Return to now':'Previous 4 hours'} title={browsingAhead?'Return to now':'Previous 4 hours'} onClick={()=>setBrowsedStart(browsingAhead?undefined:start-guideSpan)}><Icon name={browsingAhead?'restart':'back'} size={16}/></button>
-          <time className="guide-date" dateTime={new Date(start).toISOString()} title={guideTimeLabel} aria-live="polite">{guideTimeLabel}</time>
+          <time className="guide-date" aria-current={start===slot?'time':undefined} dateTime={new Date(start).toISOString()} title={guideTimeLabel} aria-live="polite">{guideTimeLabel}</time>
           <button aria-label={browsingBehind?'Return to now':'Next 4 hours'} title={browsingBehind?'Return to now':'Next 4 hours'} onClick={()=>setBrowsedStart(browsingBehind?undefined:start+guideSpan)}><Icon name={browsingBehind?'restart':'next'} size={16}/></button>
         </div>
         <div className="tabs" role="group" aria-label="Channel filters">{filters.map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>navigate(value)}>{label}</button>)}</div>

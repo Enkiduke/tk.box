@@ -65,16 +65,17 @@ function MonthPicker({from, active, current, onPick}: {from: string; active: str
   </details>;
 }
 
-function CardArtwork({entries, list}: {entries: CalendarEntry[]; list: boolean}) {
+function CardArtwork({entries, list, layer}: {entries: CalendarEntry[]; list: boolean; layer?: CalendarEntry}) {
   const posters = entries.map(entry => entry.posterUrl), backdrops = entries.map(entry => entry.backdropUrl);
   const stills = entries.map(entry => entry.stillUrl);
-  const ordered = list ? [...posters, ...backdrops, ...stills] : entries.length > 1 ? [...backdrops, ...stills, ...posters] : [...stills, ...backdrops, ...posters];
+  const ordered = list ? [...posters, ...backdrops, ...stills]
+    : entries.length > 1 ? [layer?.stillUrl, layer?.backdropUrl, ...backdrops, ...stills, ...posters] : [...stills, ...backdrops, ...posters];
   const choices = [...new Set(ordered.filter((url): url is string => !!url))];
   const [failed, setFailed] = useState<string[]>([]);
   const src = choices.find(url => !failed.includes(url));
   return src ? <img key={src} className={posters.includes(src) ? 'calendar-portrait' : undefined} src={src} alt="" loading="lazy" decoding="async"
     onError={() => setFailed(previous => [...previous, src])}/>
-    : <span className="calendar-art-placeholder"><Icon name={entries[0]!.kind === 'episode' ? 'shows' : 'movies'} size={28}/></span>;
+    : layer ? null : <span className="calendar-art-placeholder"><Icon name={entries[0]!.kind === 'episode' ? 'shows' : 'movies'} size={28}/></span>;
 }
 
 function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean; onOpen: (entry: CalendarEntry, plexId?: string) => void}) {
@@ -84,20 +85,29 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
   const playable = entries.filter(item => item.plexItemId);
   const available = playable.length === entries.length, unknown = entries.some(item => item.availabilityUnknown);
   const availabilityLabel = available ? 'In Library' : playable.length ? `${playable.length} of ${entries.length} episodes in Library` : 'Not in Library';
-  const label = stacked ? `${entries.length} episodes` : episode ? entry.episodeLabel ? episodeLabels[entry.episodeLabel] : 'New episode' : release;
+  const milestones = [...new Set(entries.flatMap(item => item.episodeLabel ? [episodeLabels[item.episodeLabel]] : []))];
+  const label = episode ? milestones[0] ?? 'New episode' : release;
   const times = [...new Set(entries.map(item => item.airTime ? timeFormat.format(new Date(item.airTime)) : 'All day'))].join(' · ');
-  const milestones = stacked ? [...new Set(entries.flatMap(item => item.episodeLabel ? [episodeLabels[item.episodeLabel]] : []))] : [];
-  const caption = stacked ? [episodeRanges(entries), ...milestones].filter(Boolean).join(' · ') : [release, entry.episodeTitle].filter(Boolean).join(' · ');
+  const caption = stacked ? episodeRanges(entries) : [release, entry.episodeTitle].filter(Boolean).join(' · ');
   return <li>
     <button type="button" className="calendar-entry" data-stack={stacked || undefined}
       onClick={() => onOpen(entry, stacked ? playable.find(item => item.plexShowId)?.plexShowId ?? playable[0]?.plexItemId : entry.plexItemId)}>
+      {!list && entries.slice(1, 3).reverse().map((item, index) => <span className="calendar-stack-layer" key={item.key}
+        data-rear={entries.length > 2 && index === 0 || undefined} aria-hidden="true">
+        <CardArtwork entries={entries} list={false} layer={item}/>
+      </span>)}
       <span className="calendar-art" data-available={available || undefined}>
         <CardArtwork entries={entries} list={list}/>
-        <span className="calendar-card-label">{label}</span>
+        <span className="calendar-card-label" title={milestones.length > 1 ? milestones.join(' · ') : undefined}>{label}
+          {milestones.length > 1 && <span className="sr-only">, {milestones.slice(1).join(', ')}</span>}
+        </span>
         {(playable.length > 0 || !unknown) && <span className="calendar-availability" title={availabilityLabel}>
           <Icon name={available ? 'check' : playable.length ? 'info' : 'close'} size={16}/><span className="sr-only">{availabilityLabel}</span>
         </span>}
         <strong>{entry.title}</strong>
+        {stacked && <span className="calendar-episode-count" title={`${entries.length} episodes`}>
+          {entries.length}<span className="sr-only"> episodes</span>
+        </span>}
       </span>
       <span className="calendar-caption">
         <span className="calendar-airtime">{times}</span>

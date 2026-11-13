@@ -644,6 +644,7 @@ dialog::backdrop{background:rgba(0,0,0,.76)}
 .guide-time-controls{display:flex;align-items:center;flex:none;gap:4px}
 .guide-time-controls button{width:32px;height:36px;padding:0}
 .guide-date{width:180px;padding:0 10px;color:var(--muted);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.guide-date[aria-current=time]{color:var(--accent)}
 .guide-search-controls{display:flex;align-items:center;flex:none;gap:8px;margin-left:auto}
 .guide-toolbar .guide-search{width:clamp(140px,18vw,280px);height:36px}
 .guide-toolbar .guide-search svg{flex:none}
