@@ -8,6 +8,8 @@ const paths:Record<string,ReactNode>={
   grid:<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
   home:<path d="m3 10 9-7 9 7v11h-6v-7H9v7H3z"/>,movies:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M7 5l3 5m4-5 3 5M3 5l3-3h15v3"/></>,
   shows:<><rect x="3" y="7" width="18" height="14" rx="2"/><path d="m8 2 4 5 4-5M8 17h8"/></>,live:<><rect x="3" y="4" width="18" height="14" rx="2"/><path d="m10 8 5 3-5 3zM8 22l4-4 4 4"/></>,
+  film:<><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 3v18M16 3v18M3 9h5m8 0h5M3 15h5m8 0h5"/></>,
+  signal:<><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="M8.5 8.5a5 5 0 0 0 0 7m7-7a5 5 0 0 1 0 7M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></>,
   search:<><circle cx="10.5" cy="10.5" r="7.5"/><path d="m16 16 6 6"/></>,
   play:<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.4-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" fill="currentColor" stroke="none"/>,
   pause:<><rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/></>,
