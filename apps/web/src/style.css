@@ -634,22 +634,23 @@ dialog::backdrop{background:rgba(0,0,0,.76)}
 .tabs button:hover{background:var(--surface-2)}
 .tabs button[aria-selected=true],.tabs button[aria-pressed=true]{background:var(--accent-tint);color:var(--accent);border-color:var(--accent)}
 .tabs button[aria-selected=true]:hover,.tabs button[aria-pressed=true]:hover{background:var(--accent-tint-hover);color:var(--accent-hover);border-color:var(--accent-hover)}
-.guide-filters{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;flex-wrap:wrap}
-.guide-filters .tabs{margin:0}
+.page.live-page{padding-top:calc(var(--nav-h) + 8px)}
+.browse-controls.guide-toolbar{flex-wrap:nowrap;gap:12px}
+.guide-toolbar .tabs{min-width:0;flex-wrap:nowrap;overflow-x:auto;margin:0;padding:2px;scrollbar-width:thin}
+.guide-toolbar .tabs button{flex:none;white-space:nowrap}
+.guide-toolbar .tabs button:focus-visible{outline-offset:-2px}
+.guide-time-controls{display:flex;align-items:center;flex:none;gap:4px}
+.guide-time-controls button{height:36px;padding:0 7px}
+.guide-time-controls .guide-now{gap:7px;padding:0 10px;font-size:13px;white-space:nowrap}
+.guide-now span{color:var(--muted);font-variant-numeric:tabular-nums}
+.guide-search-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.guide-search-row .guide-search{max-width:100%}
+.guide-search-row>button{height:40px;font-size:13px}
 .guide-search{display:flex;flex-direction:row;align-items:center;gap:8px;width:280px;height:40px;padding:0 14px;border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--muted)}
 .guide-search input{border:0;background:transparent;padding:0;font-size:14px}
 .guide-search svg{width:17px;height:17px}
-.guide-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-.guide-toolbar .button-row{gap:6px}
-.guide-toolbar .button-row button{padding:7px 12px;font-size:13px}
-.guide-toolbar select{width:auto;font-size:13px;padding:7px 32px 7px 12px}
-.guide-date{display:flex;align-items:center;gap:14px}
-.guide-date strong{font-size:16px}
-.guide-date input{width:150px;font-size:13px;padding:7px 10px}
-.guide-caption{display:flex;justify-content:space-between;gap:15px;font-size:12px;color:var(--dim);margin:0 0 10px}
-.guide-caption>span:first-child{display:flex;align-items:center;gap:7px}
-.guide-caption i{width:7px;height:7px;background:var(--accent);border-radius:50%}
-.guide-scroll{overflow-x:hidden;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.guide-scroll{--station-width:clamp(150px,14vw,210px);--timeline-min:560px;overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.guide-scroll>:is(.guide-time,.guide-row,.guide-source){min-width:calc(var(--station-width) + var(--timeline-min))}
 .guide-time,.guide-row{display:grid}
 .guide-time{position:sticky;top:0;z-index:4;padding:9px 0;background:var(--surface-2);font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);font-weight:600}
 .guide-time>span{padding-left:20px;font-size:11px;letter-spacing:.08em;position:sticky;left:0;z-index:3;background:var(--surface-2)}
@@ -785,6 +786,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .poster-grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:18px 10px}
   .search-box{height:48px;margin-bottom:24px}.search-box input{font-size:16px}
   .guide-search{width:100%}
+  .guide-search-row .guide-search{flex:1;min-width:0}
   .station-button strong{font-size:13px}
   dialog{width:100%;max-height:100%;margin:0;border-radius:0;height:100%;max-width:100%;border:0}
   .media-dialog{width:100%}
@@ -845,7 +847,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .station-now{max-width:100%;font-size:12.5px;color:#c4c4cc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .channel-item strong{color:#fff}
 /* The guide fits the window: the channel column scales a little with it and the programs take the rest, so it never scrolls sideways. */
-.guide-time,.guide-row{grid-template-columns:clamp(150px,14vw,210px) minmax(0,1fr)}
+.guide-time,.guide-row{grid-template-columns:var(--station-width) minmax(0,1fr)}
 /* Live player channel pop-out */
 .player-panel.channels{width:min(400px,calc(100vw - 32px));max-height:min(72vh,640px)}
 .channel-panel{display:flex;flex-direction:column;gap:8px}
