@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExploreLayout } from '../../../../packages/contracts/src/index.js';
+import { exploreBrowseSources, tmdbExploreRows, type ExploreLayout } from '../../../../packages/contracts/src/index.js';
 import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
@@ -15,21 +15,24 @@ export const exploreSettingsInput = z.object({
   seerrApiKey: z.string().trim().max(200).regex(/^[\w=+/-]*$/).optional()
 }).strict();
 export type ExploreSettingsInput = z.infer<typeof exploreSettingsInput>;
-const exploreSource = z.enum(['plex', 'seerr']);
+const exploreSource = z.enum(exploreBrowseSources);
 export const exploreLayoutInput = z.object({
-  order: z.array(exploreSource).max(2).refine(list => new Set(list).size === list.length, 'List each source once'),
-  hidden: z.array(exploreSource).max(2),
-  hiddenRows: z.array(z.string().max(820).regex(/^(plex|seerr):\S+$/)).max(300)
+  order: z.array(exploreSource).max(exploreBrowseSources.length).refine(list => new Set(list).size === list.length, 'List each source once'),
+  hidden: z.array(exploreSource).max(exploreBrowseSources.length),
+  hiddenRows: z.array(z.string().max(820).regex(/^(plex|tmdb):\S+$/)).max(300),
+  tmdbOrder: z.array(z.enum(tmdbExploreRows)).max(tmdbExploreRows.length).refine(list => new Set(list).size === list.length, 'List each row once').optional(),
+  showPlexStreaming: z.boolean().optional()
 }).strict();
-export const defaultExploreLayout: ExploreLayout = { order: ['plex', 'seerr'], hidden: [], hiddenRows: [] };
-// A saved order missing a source (or none saved) lists the missing ones last, in the default order. Trakt, which
-// Explore no longer reads, is dropped from layouts saved while it did.
+export const defaultExploreLayout: ExploreLayout = { order: ['tmdb', 'plex'], hidden: [], hiddenRows: [] };
+export const tmdbRowOrder = (order: ExploreLayout['tmdbOrder'] = []) => [...order, ...tmdbExploreRows.filter(row => !order.includes(row))];
+// Retire old browse sources while preserving the viewer-facing order and visibility of current rows.
 export function exploreLayout(value: Partial<ExploreLayout> | undefined): ExploreLayout {
-  const drop = (list: unknown) => Array.isArray(list) ? list.filter(s => typeof s !== 'string' || !/^trakt(:|$)/.test(s)) : list;
+  const drop = (list: unknown) => Array.isArray(list) ? list.filter(s => typeof s !== 'string' || !/^(trakt|seerr)(:|$)/.test(s)) : list;
   const saved = { ...defaultExploreLayout, ...value };
-  const parsed = exploreLayoutInput.safeParse({ order: drop(saved.order), hidden: drop(saved.hidden), hiddenRows: drop(saved.hiddenRows) });
+  const parsed = exploreLayoutInput.safeParse({ order: drop(saved.order), hidden: drop(saved.hidden), hiddenRows: drop(saved.hiddenRows), tmdbOrder: saved.tmdbOrder, showPlexStreaming:saved.showPlexStreaming });
   const layout = parsed.success ? parsed.data : defaultExploreLayout;
-  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)] };
+  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)], ...(layout.tmdbOrder && { tmdbOrder: tmdbRowOrder(layout.tmdbOrder) }),
+    ...(layout.showPlexStreaming !== undefined && {showPlexStreaming:layout.showPlexStreaming}) };
 }
 type Stored = { seerrUrl: string; seerrKey?: string };
 
@@ -71,6 +74,7 @@ export class ExploreStore {
     return this.db.transaction(() => {
       const { revision } = this.layout();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
+      if (input.tmdbOrder === undefined) next.tmdbOrder = this.layout().tmdbOrder;
       this.db.prepare('INSERT INTO explore_layout VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(next));
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'explore_layout_changed', now, JSON.stringify(next));
       return this.layout();

@@ -1,15 +1,17 @@
 import {useEffect,useState} from 'react';
-import type {ExploreLayout,ExploreRowInfo,ExploreSeerrAccount,ExploreSource,ExploreSources} from '../../../packages/contracts/src/index.js';
+import {tmdbExploreRows,type ExploreLayout,type ExploreRowInfo,type ExploreSeerrAccount,type ExploreBrowseSource,type ExploreSources} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Loading} from './components.js';
 import {Card,MoveButtons,SectionHead,moveTo,useDragOrder,useMutation} from './settings-ui.js';
-import {rowKey,setExplorePrefs,defaultExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs} from './explore-prefs.js';
+import {rowKey,setExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs,setStreamingProviders,setStreamingRegion} from './explore-prefs.js';
+import {useStreamingCatalog} from './explore-streaming.js';
 import './explore.css';
 
 type Settings={revision:number;seerrUrl:string;seerrKeySet:boolean};
-type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreSource;configured:boolean;rows:ExploreRowInfo[];error?:string}[]};
-const sourceNames:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr'};
+type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreBrowseSource;configured:boolean;rows:ExploreRowInfo[];error?:string}[]};
+const sourceNames:Record<ExploreBrowseSource,string>={plex:'Plex',tmdb:'TMDB'};
+const tmdbLogoUrl=new URL('./assets/ratings/tmdb.svg',import.meta.url).href;
 
 // Explore's catalog sources: the administrator orders them and picks the rows on offer in Admin › Explore, and connects
 // Seerr in Admin › Connections; each viewer switches off what they don't want from those here.
@@ -18,19 +20,48 @@ export function ExploreSettings({admin}:{admin:boolean}) {
   return <><SectionHead title="Explore"/>
     {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:sources.data&&<>
       <ExploreRowPrefs sources={sources.data}/>
+      <StreamingSettings configured={sources.data.tmdb.configured} admin={admin}/>
       <SeerrAccount sources={sources.data} admin={admin}/>
+      <Card title="Credits">
+        <a className="explore-tmdb-credit" href="https://www.themoviedb.org/" target="_blank" rel="noreferrer">
+          <img src={tmdbLogoUrl} alt="TMDB" referrerPolicy="no-referrer"/>
+        </a>
+        <p className="muted small">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+      </Card>
     </>}
   </>;
+}
+function StreamingSettings({configured,admin}:{configured:boolean;admin:boolean}) {
+  const catalog=useStreamingCatalog(configured);
+  const selected=catalog.services.map(p=>p.id);
+  const toggle=(id:number)=>setStreamingProviders(selected.includes(id)?selected.filter(p=>p!==id):[...selected,id]);
+  return <Card title="Streaming services" description="Choose which services appear in the streaming rows on Explore.">
+    {!configured?<p className="muted small">{admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a>.</>:'Ask the server administrator to set up TMDB.'}</p>
+      :catalog.error?<ErrorNotice message={catalog.error.message} retry={catalog.reload}/>
+      :!catalog.data?<Loading/>:<div className="form-stack narrow">
+        <label>Streaming region<select value={catalog.region} onChange={e=>setStreamingRegion(e.target.value)}>
+          {catalog.data.regions.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(region=><option key={region.code} value={region.code}>{region.name}</option>)}
+        </select></label>
+        <label>Add a service<select value="" disabled={selected.length>=12} onChange={e=>{if(e.target.value)toggle(Number(e.target.value));}}>
+          <option value="">Choose a service</option>
+          {catalog.data.providers.filter(provider=>!selected.includes(provider.id)).map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}
+        </select></label>
+        <div className="explore-service-list">{catalog.services.map(service=><button type="button" key={service.id} onClick={()=>toggle(service.id)} aria-label={`Remove ${service.name}`}>
+          {service.logoUrl&&<img src={service.logoUrl} alt=""/>}{service.name} <span aria-hidden="true">×</span>
+        </button>)}</div>
+        <div className="button-row"><button type="button" onClick={()=>setStreamingProviders(undefined)}>Use default services</button></div>
+      </div>}
+  </Card>;
 }
 // The sources and rows the administrator offers, each on until the viewer switches it off.
 function ExploreRowPrefs({sources}:{sources:ExploreSources}) {
   const prefs=useExplorePrefs(),offered=sources.order.filter(s=>s==='plex'?sources.plex:sources[s].configured);
   return <Card title="Sources and rows"
-    actions={<button type="button" disabled={!prefs.hidden.length&&!prefs.hiddenRows.length} onClick={()=>setExplorePrefs(defaultExplorePrefs)}>Show everything</button>}>
+    actions={<button type="button" disabled={!prefs.hidden.length&&!prefs.hiddenRows.length} onClick={()=>setExplorePrefs({...prefs,hidden:[],hiddenRows:[]})}>Show everything</button>}>
     {offered.length?<ol className="sports-order">{offered.map(s=><SourcePrefs key={s} source={s}/>)}</ol>:<p className="muted small">Explore has no sources right now.</p>}
   </Card>;
 }
-function SourcePrefs({source}:{source:ExploreSource}) {
+function SourcePrefs({source}:{source:ExploreBrowseSource}) {
   const prefs=useExplorePrefs(),rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`),[open,setOpen]=useState(false);
   const list=rows.data?.rows??[],on=!prefs.hidden.includes(source),expanded=open&&list.length>0;
   const shown=list.filter(r=>!prefs.hiddenRows.includes(rowKey(source,r.id))).length;
@@ -64,7 +95,7 @@ export function ExploreAdmin() {
 }
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {
-  const view=useApi<LayoutView>('/admin/explore/layout'),[draft,setDraft]=useState<ExploreLayout>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<ExploreSource[]>([]);
+  const view=useApi<LayoutView>('/admin/explore/layout'),[draft,setDraft]=useState<ExploreLayout>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<ExploreBrowseSource[]>([]);
   const mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.layout;setDraft(value);}},[view.data?.layout.revision]);
   if(view.loading&&!view.data)return <Loading/>;
@@ -73,26 +104,35 @@ function ExploreLayoutSettings() {
   const data=view.data;
   const set=(patch:Partial<ExploreLayout>)=>{setSaved(false);setDraft(d=>d&&{...d,...patch});};
   const move=(from:number,to:number)=>set({order:moveTo(draft.order,from,to)});
-  const showSource=(s:ExploreSource,on:boolean)=>set({hidden:on?draft.hidden.filter(h=>h!==s):[...draft.hidden,s]});
+  const showSource=(s:ExploreBrowseSource,on:boolean)=>set({hidden:on?draft.hidden.filter(h=>h!==s):[...draft.hidden,s]});
   const showRow=(key:string,on:boolean)=>set({hiddenRows:on?draft.hiddenRows.filter(r=>r!==key):[...draft.hiddenRows,key]});
-  const toggle=(s:ExploreSource)=>setOpen(o=>o.includes(s)?o.filter(x=>x!==s):[...o,s]);
-  return <Card title="Order and rows" description="Sources are listed on Explore top to bottom in this order. A source switched off is left out of Explore’s rows and search; open one to hide single rows.">
+  const toggle=(s:ExploreBrowseSource)=>setOpen(o=>o.includes(s)?o.filter(x=>x!==s):[...o,s]);
+  return <Card title="Order and rows" description="Move sources to change their order on Explore. Open a source to hide individual rows.">
     <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');setSaved(true);});}}>
       <ol className="sports-order">{draft.order.map((s,i)=>{
-        const info=data.sources.find(x=>x.source===s),rows=info?.rows??[],on=!draft.hidden.includes(s),expanded=open.includes(s)&&rows.length>0;
-        const shown=rows.filter(r=>!draft.hiddenRows.includes(`${s}:${r.id}`)).length;
+        const info=data.sources.find(x=>x.source===s),on=!draft.hidden.includes(s);
+        const order=draft.tmdbOrder??[...tmdbExploreRows];
+        const rows=s==='tmdb'?order.flatMap(id=>info?.rows.find(r=>r.id===id)??[]):info?.rows??[];
+        const expanded=open.includes(s)&&rows.length>0;
+        const shown=rows.filter(r=>!draft.hiddenRows.includes(`${s}:${r.id}`)&&(!r.overlapsStreaming||draft.showPlexStreaming)).length;
         return <li key={s} className="sports-sport" {...drag('explore',i,move)}>
           <div className="sports-row sports-sport-head"><span className="sports-rank">{i+1}</span>
             <button type="button" className="sports-expand" aria-expanded={expanded} disabled={!rows.length} onClick={()=>toggle(s)}><strong>{sourceNames[s]}</strong>
               <small className="muted">{!info?.configured?'Not set up':info.error??(on?`${shown} of ${rows.length} rows shown`:'Off')}</small></button>
             <input type="checkbox" role="switch" className="switch" aria-label={`Show ${sourceNames[s]} on Explore`} checked={on} onChange={e=>showSource(s,e.target.checked)}/>
             <MoveButtons name={sourceNames[s]} index={i} count={draft.order.length} onMove={to=>move(i,to)}/></div>
-          {expanded&&<ol className="sports-leagues">{rows.map(r=>{const key=`${s}:${r.id}`;return <li key={key} className="sports-row">
-            <label className="checkbox-label grow"><input type="checkbox" disabled={!on} checked={!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
+          {expanded&&<ol className="sports-leagues">
+            {s==='plex'&&<li className="sports-row"><label className="checkbox-label grow">
+              <input type="checkbox" checked={draft.showPlexStreaming??false} onChange={e=>set({showPlexStreaming:e.target.checked})}/>
+              Show Plex’s streaming service shelves
+            </label></li>}
+            {rows.map((r,index)=>{const key=`${s}:${r.id}`,off=!!r.overlapsStreaming&&!draft.showPlexStreaming;return <li key={key} className="sports-row">
+            <label className="checkbox-label grow"><input type="checkbox" disabled={!on||off} checked={!off&&!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
             {r.personal&&<small className="muted">Each viewer’s own</small>}
+            {s==='tmdb'&&<MoveButtons name={r.title} index={index} count={rows.length} onMove={to=>set({tmdbOrder:moveTo(order,index,to)})}/>}
           </li>;})}</ol>}
         </li>;})}</ol>
-      {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex rows are the Discover shelves your Plex account sees; a shelf Plex adds later shows until you hide it.</p>}
+      {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the available Discover shelves and their order. Shelves such as Trending on Netflix are off by default.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
     </form>

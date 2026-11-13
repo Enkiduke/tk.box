@@ -24,9 +24,10 @@ const tabs=[['titles','Titles'],['layouts','Layouts'],['schedules','Schedules'],
 
 // `title` is a Plex rating key, from a title's details (Edit artwork).
 export function ArtworkAdmin({params}:{params:URLSearchParams}) {
-  const overview=useApi<Overview>('/admin/artwork'),title=params.get('title')??undefined,[tab,setTabState]=useState(()=>title?'titles':(t=>tabs.some(([id])=>id===t)?t:'titles')(remembered('artworkTab','titles'))),[advanced,setAdvanced]=useState(false);
+  const overview=useApi<Overview>('/admin/artwork'),title=params.get('title')??undefined,requested=params.get('tab');
+  const [tab,setTabState]=useState(()=>title?'titles':requested==='settings'?'settings':(t=>tabs.some(([id])=>id===t)?t:'titles')(remembered('artworkTab','titles'))),[advanced,setAdvanced]=useState(false);
   const setTab=(t:string)=>{setTabState(t);remember('artworkTab',t);};
-  useEffect(()=>{if(title)setTabState('titles');},[title]);
+  useEffect(()=>{if(title)setTabState('titles');else if(requested==='settings')setTabState('settings');},[title,requested]);
   const head=<SectionHead title="Artwork"/>;
   if(overview.loading&&!overview.data)return <>{head}<Loading/></>;
   if(overview.error&&!overview.data)return <>{head}<ErrorNotice message={overview.error.message} retry={overview.reload}/></>;
@@ -79,7 +80,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
   const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});setDone(true);
+    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');setDone(true);
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Libraries">

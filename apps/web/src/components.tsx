@@ -207,7 +207,7 @@ export function ActionNotice() {
   return <div className="action-notice" role="status" aria-live="polite">{notice&&<div key={notice.id} className={`notice${notice.error?' error':''}`}><Icon name={notice.error?'info':'check'} size={18}/><span>{notice.text}</span></div>}</div>;
 }
 // Horizontal, swipeable row with edge arrows that appear on hover (pointer devices only).
-export function Row({title,href,children,className='',drift=0}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number}) {
+export function Row({title,href,children,className='',drift=0,headerActions}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number;headerActions?:ReactNode}) {
   const ref=useRef<HTMLDivElement>(null),track=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
   // Only re-renders when an edge changes.
   const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;atStart.current=start;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
@@ -224,6 +224,7 @@ export function Row({title,href,children,className='',drift=0}:{title:ReactNode;
   const scroll=(direction:number)=>{const el=ref.current;if(el)glide(direction*el.clientWidth*.85,looping);};
   return <section className={`row ${className}`}>
     <div className="row-heading"><h2>{href?<a href={href}>{title}<span className="row-more">See all <Icon name="next" size={14}/></span></a>:title}</h2></div>
+    {headerActions}
     <div className="row-viewport" {...endless.handlers}>
       {(looping||!edges.start)&&<button className="row-arrow left" tabIndex={-1} aria-hidden="true" onClick={()=>scroll(-1)}><Icon name="back" size={28}/></button>}
       <div className={`row-scroll ${looping?'row-endless':''}`} ref={ref} onScroll={update}><div className="row-track" ref={track}>

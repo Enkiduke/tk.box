@@ -1,30 +1,37 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {exploreGenres,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSource,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreRowInfo,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
-import {Seerr,seerrFacts,seerrCertificate,seerrItem,seerrRows,seerrSeasons,seerrStatus,type SeerrDetails} from './providers/seerr.js';
+import {Seerr,seerrFacts,seerrCertificate,seerrItem,seerrSeasons,seerrStatus,type SeerrDetails} from './providers/seerr.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreLayoutInput,exploreSettingsInput} from './persistence/explore-store.js';
+import {ExploreStore,exploreLayoutInput,exploreSettingsInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
+import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
+import type {TmdbTitles} from './providers/tmdb-titles.js';
+import {ExploreRecommendations} from './explore-recommendations.js';
 
 type Viewer={hash:string;grant:PlexGrant};
-const source=z.enum(['plex','seerr']);
+const source=z.enum(exploreBrowseSources);
+const tmdbRow=z.enum(tmdbExploreRows);
 const kind=z.enum(['movie','show']);
 // Explore's filters, sent with every row page and search: original languages, genres, a release year range, a minimum
 // score and Seerr labels to leave out.
 const filterQuery={lang:z.string().max(200).optional(),from:z.coerce.number().int().min(1870).max(2100).optional(),to:z.coerce.number().int().min(1870).max(2100).optional(),
   min:z.coerce.number().min(0).max(10).optional(),hide:z.string().max(40).optional(),genre:z.string().max(300).optional()};
 const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1),...filterQuery}).strict();
+const regionCode=z.string().regex(/^[A-Z]{2}$/);
+const providerId=z.string().regex(/^[1-9]\d{0,9}$/).transform(Number);
+const tmdbPage=page.extend({region:regionCode.optional(),provider:z.union([z.literal('all'),providerId]).optional(),
+  providers:z.string().max(131).regex(/^(?:[1-9]\d{0,9}(?:,[1-9]\d{0,9}){0,11})?$/).transform(value=>value?value.split(',').map(Number):[]).optional()});
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
 
 // Explore reads from Plex Discover and Seerr, kept briefly per viewer so moving around Explore doesn't wait on
 // outside services again. A viewer's own change (watchlist, request, Refresh) drops their copies,
 // and a settings change drops everyone's. Failed reads are not kept.
-// Public rows (Seerr's, Plex's shelves) change about daily, so they are kept 12 hours, and Seerr's once for every
-// viewer; the Plex watchlist can change outside tk.box, so it stays short.
+// Plex shelves change about daily. The watchlist can change outside tk.box, so it stays short.
 const ROWS_MS=12*3600000,PUBLIC_MS=12*3600000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000,PERSON_MS=24*3600000;
 export class ExploreCache {
   private entries=new Map<string,{until:number;value:Promise<unknown>}>();
@@ -40,13 +47,7 @@ ${key}`,hit=this.entries.get(id);if(hit&&hit.until>now)return hit.value as Promi
 `))this.entries.delete(id);}
 }
 
-// Every viewer's copy of the public Seerr rows.
-export const SHARED='*';
-// Where a row's pages are kept and for how long.
-export function rowKeep(from:ExploreSource,row:string,account:string):{account:string;ttl:number} {
-  if(from==='seerr')return {account:SHARED,ttl:PUBLIC_MS};
-  return {account,ttl:row!=='watchlist'?PUBLIC_MS:PAGE_MS};
-}
+export const plexRowTtl=(row:string)=>row==='watchlist'?PAGE_MS:PUBLIC_MS;
 
 // `genres`: a title passes with any of them. `hide`: titles with these Seerr labels.
 export type ExploreFilter={languages:string[];genres?:ExploreGenre[];from?:number;to?:number;min?:number;hide?:ExploreStatus[]};
@@ -91,28 +92,69 @@ function limiter(slots:number) {
 const FILTER_SPAN=3;
 // The sources Explore shows, in the administrator's order, and whether one of a source's rows is hidden.
 export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout.hidden.includes(s));
-export const rowShown=(layout:ExploreLayout,from:ExploreSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
+export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
+const browseRowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:ExploreRowInfo)=>rowShown(layout,from,row.id)&&
+  (from!=='plex'||!row.overlapsStreaming||layout.showPlexStreaming===true);
 
 // Explore: rows, search and details from Plex Discover and Seerr, plus Seerr requests and the Plex watchlist.
-export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string) {
-  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr()),images=new ExploreImages(),cache=new ExploreCache(),lookups=limiter(6);
+export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,transports:{seerr?:typeof fetch; images?:typeof fetch}={}) {
+  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr(),transports.seerr),images=new ExploreImages(transports.images),cache=new ExploreCache(),lookups=limiter(6);
+  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=await auth(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
     await viewer(request);
-    return {plex:true,order:shownSources(store.layout()),seerr:{configured:seerr.configured(),statuses:seerr.hasKey()}} satisfies ExploreSources;
+    return {plex:true,order:shownSources(store.layout()),seerr:{configured:seerr.configured(),statuses:seerr.hasKey()},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
+  });
+  app.get('/api/v1/explore/tmdb/providers',async request=>{
+    await viewer(request);
+    const {region}=z.object({region:regionCode.default('US')}).strict().parse(request.query);
+    return tmdb.providers(region);
   });
   app.get('/api/v1/explore/:source/rows',async request=>{
     const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request),layout=store.layout();
-    return {rows:(await sourceRows(from,account,token)).filter(row=>rowShown(layout,from,row.id))};
+    return {rows:(await sourceRows(from,account,token)).filter(row=>browseRowShown(layout,from,row))};
   });
   app.get('/api/v1/explore/:source/rows/:row',async request=>{
-    const params=z.object({source,row:z.string().max(800)}).parse(request.params),{page:at,...query}=page.parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
-    // Seerr's labels are applied after the cache, so they follow requests and downloads as they happen.
-    const keep=rowKeep(params.source,params.row,account);
+    const params=z.object({source,row:z.string().max(800)}).parse(request.params),{account,token,grant}=await viewer(request);
+    if (params.source==='tmdb') {
+      const parsed=tmdbRow.safeParse(params.row);
+      requireThat(parsed.success&&rowShown(store.layout(),'tmdb',params.row),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
+      const row=parsed.data,def=tmdbRows[row];
+      const {page:at,provider,providers,region,...query}=tmdbPage.parse(request.query);
+      requireThat(def.streaming||(provider===undefined&&providers===undefined&&region===undefined),'INVALID_REQUEST','This row has no streaming selector.',400);
+      requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+      const filter=exploreFilter(query);
+      if (def.personal) {
+        const result=(await personal.get(grant,tmdbClient.credentialGeneration()))[row];
+        if (!result) return {items:[],page:at,hasMore:false} satisfies ExplorePage;
+        const {items}=await labelled({items:result.items.map(c=>c.item)});
+        return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>passes(c.item,filter)),at,result.title);
+      }
+      let streaming:{region:string;ids:number[]}|undefined;
+      if (def.streaming) {
+        const country=region??'US', catalog=await tmdb.providers(country), available=new Set(catalog.providers.map(p=>p.id));
+        const chosen=providers??catalog.defaults;
+        requireThat(chosen.every(id=>available.has(id))&&(typeof provider!=='number'||(available.has(provider)&&(providers===undefined||chosen.includes(provider)))),
+          'INVALID_PROVIDER','Choose a streaming service available in this region.',400);
+        streaming={region:country,ids:typeof provider==='number'?[provider]:[...new Set(chosen)].sort((a,b)=>a-b)};
+      }
+      if (!filtering(filter)) return labelled(await tmdb.page(row,at,streaming));
+      const pages:ExplorePage[]=[];
+      for (let i=0;i<FILTER_SPAN;i++) {
+        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming);
+        pages.push(result);
+        if (!result.hasMore) break;
+      }
+      const {items}=await labelled({items:interleave([pages.flatMap(p=>p.items)])});
+      return {items:items.filter(item=>passes(item,filter)),page:at,hasMore:!!pages.at(-1)?.hasMore} satisfies ExplorePage;
+    }
+    const {page:at,...query}=page.parse(request.query),filter=exploreFilter(query);
+    const layout=store.layout(),definition=(await sourceRows('plex',account,token)).find(row=>row.id===params.row);
+    requireThat(definition&&browseRowShown(layout,'plex',definition),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
     const read=async(n:number):Promise<ExplorePage>=>{
       const key=`row:${params.source}:${params.row}:${n}`;
-      return labelled(await cache.get(keep.account,key,keep.ttl,()=>params.source==='plex'?discover.row(token,params.row,n):seerr.row(account,token,params.row,n)),params.source==='seerr');
+      return labelled(await cache.get(account,key,plexRowTtl(params.row),()=>discover.row(token,params.row,n)));
     };
     if(!filtering(filter))return read(at);
     // Filtered page n covers the source's pages (n-1)*span+1 to n*span; the first says whether the rest exist.
@@ -127,7 +169,8 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const {q,sources:only,...query}=z.object({q:z.string().trim().min(1).max(120),sources:z.string().max(40).optional(),...filterQuery}).strict().parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
     // `sources` narrows the search to the sources the viewer keeps on; without it every source on offer is searched.
     const wanted=only===undefined?undefined:only.split(',');
-    const key=`search:${q.toLowerCase()}`,from=shownSources(store.layout()).filter(s=>(s==='plex'||seerr.configured())&&(!wanted||wanted.includes(s)));
+    const key=`search:${q.toLowerCase()}`,layout=store.layout();
+    const from=(['plex','seerr'] as const).filter(s=>(s==='plex'?shownSources(layout).includes('plex'):seerr.configured())&&(!wanted||wanted.includes(s)));
     const results=await Promise.allSettled(from.map(async s=>s==='plex'?(await labelled({items:await cache.get(account,`plex:${key}`,SEARCH_MS,()=>discover.search(token,q))})).items
       :await cache.get(account,`seerr:${key}`,SEARCH_MS,()=>seerr.search(account,token,q))));
     const failed=from.filter((_,i)=>results[i]!.status==='rejected');
@@ -177,14 +220,14 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const url=seerr.configured()&&input.kind&&input.tmdb?(await cache.get('',`rt:${input.kind}:${input.tmdb}`,PERSON_MS,()=>seerr.ratings(account,token,input.kind!,input.tmdb!)).catch(()=>undefined))?.url:undefined;
     return reply.header('Cache-Control',url?'private, max-age=86400':'no-store').redirect(url??`https://www.rottentomatoes.com/search?search=${encodeURIComponent(input.title)}`);
   });
-  // Explore's Refresh button: the viewer's next reads, and everyone's public rows, go back to the services.
-  app.post('/api/v1/explore/refresh',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);cache.forget(SHARED);return {status:'refreshed'};});
+  // Explore's Refresh button rebuilds the viewer's recommendations and Plex shelves.
+  app.post('/api/v1/explore/refresh',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);personal.forget(account);return {status:'refreshed'};});
   // Admin › Explore: the source order and what is hidden, with every row each source has (Plex's as the administrator sees them).
   app.get('/api/v1/admin/explore/layout',async request=>{
     const {hash,grant}=await admin(request),account=grant.accountId,token=accountToken(hash);
-    const sources=await Promise.all((['plex','seerr'] as const).map(async from=>{
-      const configured=from==='plex'||seerr.configured();
-      const rows=from==='seerr'?seerrRows.map(({id,title,icon})=>({id,title,icon})):await sourceRows('plex',account,token).catch(()=>undefined);
+    const sources=await Promise.all(exploreBrowseSources.map(async from=>{
+      const configured=from==='plex'||tmdbClient.configured();
+      const rows=await sourceRows(from,account,token).catch(()=>undefined);
       return {source:from,configured,rows:rows??[],...(rows?{}:{error:'Plex Discover could not list its rows.'})};
     }));
     return {layout:store.layout(),sources};
@@ -204,9 +247,9 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const saved=store.update(grant.accountId,expectedRevision,value);cache.forget();return saved;
   });
 
-  async function sourceRows(from:ExploreSource,account:string,token:string) {
+  async function sourceRows(from:ExploreBrowseSource,account:string,token:string) {
     if(from==='plex')return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));
-    requireThat(seerr.configured(),'SEERR_NOT_CONFIGURED','Seerr is not set up.',409);return seerrRows.map(({id,title,icon})=>({id,title,icon}));
+    return tmdbRowOrder(store.layout().tmdbOrder).map(id=>tmdbRows[id]);
   }
   // Titles that pass the filter. Language, genres, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
   // known; these are public facts, so they are kept a day for every viewer.
@@ -219,15 +262,12 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     }));
     return filled.filter(item=>passes(item,filter));
   }
-  // Seerr's labels on Plex titles, when the API key lets the server read Seerr's media list. Seerr's own
-  // rows carry the labels they were read with; `replace` swaps those for the current ones.
-  async function labelled<T extends {items:ExploreItem[]}>(page:T,replace=false):Promise<T> {
+  // Seerr's current labels on Plex and TMDB titles, when its API key can read the media list.
+  async function labelled<T extends {items:ExploreItem[]}>(page:T):Promise<T> {
     const index=await seerr.statuses().catch(()=>undefined);if(!index)return page;
     return {...page,items:page.items.map(item=>{
       const status=item.ids.tmdb?index.get(`${item.kind}:tmdb:${item.ids.tmdb}`):undefined;
-      if(status)return {...item,status};
-      if(!replace||!item.status)return item;
-      const {status:_,...rest}=item;return rest;
+      return status?{...item,status}:item;
     })};
   }
   // One title's details from every source that knows it, its copy on this server, its watchlist state and what can be requested.

@@ -1,17 +1,18 @@
-import {memo,useEffect,useRef,useState,type ReactNode} from 'react';
-import {exploreGenres,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
+import {memo,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
+import {exploreGenres,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,People,Row,RowSkeleton} from './components.js';
 import {Ratings} from './library.js';
 import {RequestDialog} from './request-dialog.js';
 import {rowKey,useExplorePrefs} from './explore-prefs.js';
+import {StreamingSelector,StreamingStatus,useStreamingSelection} from './explore-streaming.js';
 import './explore.css';
 
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves), and Seerr, on one page:
 // every source's rows in turn, one search across them all, and filters that narrow both.
 // A title's dialog opens this server's copy when there is one, requests it through Seerr, or watchlists it on Plex.
-const names:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr'};
+const names:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr',tmdb:'TMDB'};
 const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',requested:'Requested'};
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
@@ -57,29 +58,63 @@ const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;on
 const Cards=({items,onSelect}:{items:ExploreItem[];onSelect:(item:ExploreItem)=>void})=><div className="poster-grid">{items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</div>;
 const SourceTag=({source}:{source:ExploreSource})=><span className="explore-source">{names[source]}</span>;
 
-function ExploreRow({source,row,fq,onSelect}:{source:ExploreSource;row:ExploreRowInfo;fq:string;onSelect:(item:ExploreItem)=>void}) {
-  const [ref,near]=useNearViewport<HTMLDivElement>(),data=useApi<ExplorePage>(near?rowPath(source,row.id,1,fq):undefined),page=data.data;
-  const heading=<span className="explore-row-title"><Icon name={row.icon} size={20}/>{row.title}<SourceTag source={source}/>{page?.total!==undefined&&page.total>0&&<span className="explore-count">{results(page.total)}</span>}</span>;
+function ExploreRow({source,row,fq,onSelect}:{source:ExploreBrowseSource;row:ExploreRowInfo;fq:string;onSelect:(item:ExploreItem)=>void}) {
+  const [ref,near]=useNearViewport<HTMLDivElement>();
+  const stream=useStreamingSelection(near&&row.streaming?row.id as StreamingRow:undefined);
+  const data=useApi<ExplorePage>(near&&(!row.streaming||stream.query)?rowPath(source,row.id,1,fq+stream.query):undefined),page=data.data;
+  const cards=useMemo(()=>page?.items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>),[page,onSelect]);
+  const title=page?.title??row.title;
+  const heading=<span className="explore-row-title"><Icon name={row.icon} size={20}/>{title}<SourceTag source={source}/>{page?.total!==undefined&&page.total>0&&<span className="explore-count">{results(page.total)}</span>}</span>;
+  if(row.streaming)return <div ref={ref} className="lazy-row">
+    <Row className="explore-streaming-row" title={heading} href={stream.query?link('explore',{source,row:row.id,provider:stream.selected}):undefined}
+      headerActions={stream.data&&<StreamingSelector title={title} services={stream.services} selected={stream.selected} onSelect={stream.select}/>}>
+      {stream.error||stream.data&&!stream.services.length?<StreamingStatus catalog={stream}/>
+        :data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>
+        :!page?<div className="explore-row-status"><Loading/></div>
+        :page.items.length?cards
+        :<p className="muted small explore-row-status">{fq?'Nothing here matches your filters':'No titles found for this selection'}</p>}
+    </Row>
+  </div>;
   return <div ref={ref} className="lazy-row">{!page?(data.error?<section className="row"><div className="row-heading"><h2>{heading}</h2></div><div className="explore-row-error"><ErrorNotice message={data.error.message} retry={data.reload}/></div></section>:<RowSkeleton title={row.title}/>)
-    :page.items.length?<Row title={heading} href={link('explore',{source,row:row.id})}>{page.items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</Row>:null}</div>;
+    :page.items.length?<Row title={heading} href={link('explore',{source,row:row.id})}>{cards}</Row>:null}</div>;
 }
 // One source's rows, less those the viewer hid in Settings › Explore. A source that fails says so in place and leaves the others.
-function SourceRows({source,hiddenRows,fq,onSelect}:{source:ExploreSource;hiddenRows:string[];fq:string;onSelect:(item:ExploreItem)=>void}) {
+function SourceRows({source,hiddenRows,fq,onSelect}:{source:ExploreBrowseSource;hiddenRows:string[];fq:string;onSelect:(item:ExploreItem)=>void}) {
   const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`);
   if(rows.error)return <div className="explore-row-error"><ErrorNotice message={`${names[source]}: ${rows.error.message}`} retry={rows.reload}/></div>;
   if(!rows.data)return <RowSkeleton title="Loading"/>;
   return <>{rows.data.rows.filter(row=>!hiddenRows.includes(rowKey(source,row.id))).map(row=><ExploreRow key={row.id} source={source} row={row} fq={fq} onSelect={onSelect}/>)}</>;
 }
 // "See all": every page of one row.
-function ExploreGrid({source,row,fq,onSelect}:{source:ExploreSource;row:string;fq:string;onSelect:(item:ExploreItem)=>void}) {
+function ExploreGrid({source,row,fq,provider,onSelect}:{source:ExploreSource;row:string;fq:string;provider:string|null;onSelect:(item:ExploreItem)=>void}) {
   const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`),info=rows.data?.rows.find(r=>r.id===row);
-  const list=useInfinitePages<ExplorePage>(index=>rowPath(source,row,index+1,fq),1,`${source}/${row}${fq}`),first=list.pages[0];
-  const items=list.pages.flatMap(p=>p?.items??[]),unique=items.filter((item,i)=>items.findIndex(other=>other.key===item.key)===i);
+  const stream=useStreamingSelection(info?.streaming?row as StreamingRow:undefined,provider);
+  const heading=info?.title??'';
+  const choose=(selected:number|'all')=>{stream.select(selected);replaceRoute(link('explore',{source,row,provider:selected}));};
+  const selector=info?.streaming&&stream.data&&<StreamingSelector title={heading} services={stream.services} selected={stream.selected} onSelect={choose}/>;
   return <section className="explore-grid">
-    <div className="explore-grid-head"><a className="crumb" href={link('explore')}><Icon name="back" size={14}/>Explore</a><h1>{info?.title??''}<SourceTag source={source}/>{first?.total!==undefined&&<span className="explore-count">{results(first.total)}</span>}</h1></div>
-    {!first&&list.loading?<Loading cards/>:!first?<ErrorNotice message="This row could not be loaded." retry={()=>invalidate(`/explore/${source}/rows/`)}/>:unique.length?<Cards items={unique} onSelect={onSelect}/>:list.more?null:<Empty title={fq?'Nothing here matches your filters':'Nothing here yet'}/>}
-    {list.more&&<div ref={list.sentinel} className="explore-more">{list.loading&&<Loading/>}</div>}
+    <a className="crumb" href={link('explore')}><Icon name="back" size={14}/>Explore</a>
+    {info?.streaming&&<><div className="explore-grid-head"><h1>{heading}<SourceTag source={source}/></h1></div>{selector}</>}
+    {rows.error?<ErrorNotice message={rows.error.message} retry={rows.reload}/>:!rows.data?<Loading cards/>
+      :!info?<Empty title="This row is unavailable"/>
+      :info.streaming&&!stream.query?stream.loading?<Loading cards/>:<StreamingStatus catalog={stream}/>
+      :<ExploreGridPages key={fq+stream.query} source={source} row={row} fq={fq+stream.query} filtered={!!fq} title={info.streaming?undefined:heading} onSelect={onSelect}/>}
   </section>;
+}
+function ExploreGridPages({source,row,fq,filtered,title,onSelect}:{source:ExploreSource;row:string;fq:string;filtered:boolean;title?:string;onSelect:(item:ExploreItem)=>void}) {
+  const list=useInfinitePages<ExplorePage>(index=>rowPath(source,row,index+1,fq),1,`${source}/${row}${fq}`),first=list.pages[0];
+  const seen=new Set<string>();
+  const unique=list.pages.flatMap(p=>p?.items??[]).filter(item=>{
+    if(seen.has(item.key))return false;
+    seen.add(item.key);
+    return true;
+  });
+  return <>
+    {title&&<div className="explore-grid-head"><h1>{first?.title??title}<SourceTag source={source}/>{first?.total!==undefined&&<span className="explore-count">{results(first.total)}</span>}</h1></div>}
+    {unique.length?<Cards items={unique} onSelect={onSelect}/>:list.loading?<Loading cards/>:!list.error&&!list.more?<Empty title={filtered?'Nothing here matches your filters':'Nothing here yet'}/>:null}
+    {list.error?<ErrorNotice message={list.error instanceof Error?list.error.message:'This row could not be loaded.'} retry={list.retry}/>
+      :list.more?<div ref={list.sentinel} className="explore-more"><button type="button" onClick={list.loadMore}>Load more</button></div>:null}
+  </>;
 }
 function ExploreSearch({q,sources,fq,onSelect}:{q:string;sources:ExploreSource[];fq:string;onSelect:(item:ExploreItem)=>void}) {
   const data=useApi<ExploreSearchResult>(`/explore/search?q=${encodeURIComponent(q)}&sources=${sources.join(',')}${fq}`),failed=data.data?.failed??[];
@@ -141,7 +176,7 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,prefs=useExplorePrefs();
   // Sources in the administrator's order, leaving out those switched off (by the administrator or the viewer) or not set up.
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
-  const wanted=params.get('source') as ExploreSource|null,source=wanted&&available.includes(wanted)?wanted:undefined;
+  const source=available.find(s=>s===params.get('source'));
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
   const [filters,setFilters]=useState(loadFilters),fq=filterQuery(filters);
   const [selected,setSelected]=useState<ExploreItem>();
@@ -150,22 +185,26 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   useEffect(()=>{if(q!==query)replaceRoute(link('explore',{q}));},[q]);
   if(sources.error)return <div className="page"><ErrorNotice message={sources.error.message} retry={sources.reload}/></div>;
   if(!data)return <div className="page"><Loading/></div>;
-  if(!available.length)return <div className="page"><Empty title="Nothing to explore">{offered.length?<>You switched off every source in <a href="#settings">Settings › Explore</a>.</>:admin?<>Every source is switched off in <a href="#admin?section=explore">Admin › Explore</a>.</>:'Explore has no sources right now.'}</Empty></div>;
-  const searchLabel=`Search ${listed(available.map(s=>names[s]))}`;
+  const searchable:ExploreSource[]=[...(available.includes('plex')?['plex' as const]:[]),...(data.seerr.configured?['seerr' as const]:[])];
+  const searchLabel=searchable.length?`Search ${listed(searchable.map(s=>names[s]))}`:'Search Explore';
   return <div className="page explore-page">
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
+      <ActiveFilters filters={filters} onChange={changeFilters}/>
       <FilterMenu filters={filters} labels={data.seerr.configured} onChange={changeFilters}/>
       <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
-    <ActiveFilters filters={filters} onChange={changeFilters}/>
+    {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
+      {admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
+    </p>}
     {/* Plex titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
     {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#admin?section=connections">Admin › Connections</a> to show Available and Requested on Plex titles.</p>}
     {/* Plex Discover doesn't say a title's language; Seerr is where it is looked up. */}
     {filters.languages.length>0&&!data.seerr.configured&&<p className="explore-note muted">Plex titles don’t list their language, so they are hidden while a language filter is on.</p>}
-    {query?<ExploreSearch key={`${query}${available.join()}${fq}`} q={query} sources={available} fq={fq} onSelect={setSelected}/>
-      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} onSelect={setSelected}/>
-      :<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={setSelected}/>)}</div>}
+    {query?<ExploreSearch key={`${query}${searchable.join()}${fq}`} q={query} sources={searchable} fq={fq} onSelect={setSelected}/>
+      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={setSelected}/>
+      :available.length?<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={setSelected}/>)}</div>
+      :<Empty title="No browse sources"><a href="#settings?section=explore">Explore settings</a></Empty>}
     {selected&&<ExploreDialog item={selected} seerrOn={data.seerr.configured} onClose={()=>setSelected(undefined)} onOpen={id=>{setSelected(undefined);onOpen(id);}}/>}
   </div>;
 }

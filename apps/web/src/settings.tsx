@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 import type {Principal} from '../../../packages/contracts/src/index.js';
 import {Icon} from './components.js';
 import {Card,SectionHead,remember,remembered} from './settings-ui.js';
@@ -19,8 +19,10 @@ function AccountSettings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
   </>;
 }
 const sections=[['home','Home','home'],['playback','Playback','speed'],['explore','Explore','explore'],['account','Account','info']] as const;
-export function Settings({me,onLogout}:{me:Principal;onLogout:()=>void}) {
-  const admin=me.role==='admin',[section,setSectionState]=useState(()=>remembered('personal','home'));
+export function Settings({me,onLogout,params}:{me:Principal;onLogout:()=>void;params:URLSearchParams}) {
+  const requested=params.get('section');
+  const admin=me.role==='admin',[section,setSectionState]=useState(()=>requested??remembered('personal','home'));
+  useEffect(()=>{if(requested)setSectionState(requested);},[requested]);
   const setSection=(s:string)=>{setSectionState(s);remember('personal',s);};
   const current=sections.some(s=>s[0]===section)?section:'home';
   return <div className="settings">

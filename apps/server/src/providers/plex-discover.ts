@@ -42,6 +42,7 @@ const hubId = (key: string) => `hub.${Buffer.from(key).toString('base64url')}`;
 const hubKey = (id: string) => { const key = Buffer.from(id.slice(4), 'base64url').toString('utf8'); requireThat(/^\/[^/]/.test(key) && key.length < 600, 'NOT_FOUND', 'Unknown row.', 404); return key; };
 // Shelves of categories (genres, decades) and trailers hold nothing to open.
 const unlisted = new Set(['directory', 'clip']);
+const streamingShelf = /^(?:(?:trending|popular|top\s+\d+)\b.*\bon|(?:new|recently released|recently added)\s+(?:on|to))\s+(?:netflix|(?:amazon\s+)?prime video|disney\+|hulu|(?:hbo\s+)?max|apple tv(?:\+| plus)?|paramount(?:\+| plus))$/i;
 const LIMIT = 20, HUB_LIMIT = 50;
 // Discover shelves and search leave out a title's external ids, which Seerr's labels are matched on. One batched
 // metadata read fills them in; ids are public catalog data, so they are kept for every viewer.
@@ -56,7 +57,8 @@ export class PlexDiscover {
     return [{ id: 'watchlist', title: 'Watchlist', icon: 'star', personal: true }, ...hubs.flatMap(hub => {
       const key = hub.key ?? hub.hubKey;
       if (!key || !hub.title || unlisted.has(hub.type ?? '') || !/^\/[^/]/.test(key) || seen.has(key)) return [];
-      seen.add(key); return [{ id: hubId(key), title: hub.title, icon: 'trending' }];
+      seen.add(key);
+      return [{ id: hubId(key), title: hub.title, icon: 'trending', ...(streamingShelf.test(hub.title.trim()) && {overlapsStreaming:true}) }];
     })];
   }
   async row(token: string, id: string, page: number): Promise<ExplorePage> {

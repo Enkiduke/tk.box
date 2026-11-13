@@ -1,10 +1,13 @@
 // Loopback-only UI fixture. Uses isolated in-memory data and never reads .env or real Plex.
 import {randomBytes} from 'node:crypto';
+import assert from 'node:assert/strict';
 import {deflateSync} from 'node:zlib';
 import {buildApp} from '../apps/server/src/app.js';
 import {loadConfig} from '../apps/server/src/config.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
+import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
+import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {PlexAdapter} from '../apps/server/src/providers/plex.js';
 import {IdentityService} from '../apps/server/src/services/identity.js';
@@ -37,8 +40,28 @@ const episodes=shows.flatMap((show,k)=>titles.slice(0,8).map((title,i)=>({...nod
 // Recently added TV: the first show's whole season arrived at once, the others one episode each.
 const recentEpisodes=episodes.filter(e=>e.grandparentRatingKey===shows[0]!.ratingKey||e.index===1);
 const all=[...nodes,...shows,...seasons,...episodes],removed=new Set<string>(),images=Array.from({length:6},(_,i)=>artwork(i));
+for(const [index,node] of [...nodes,...shows].entries()) Object.assign(node,{Guid:[{id:`tmdb://${node.ratingKey}`}],addedAt:1760000000-index*86400});
+const watchlist=new Set<string>();
 const transport=(async(input:string|URL|Request,init?:RequestInit)=>{
   const url=new URL(String(input));
+  if(url.hostname==='discover.provider.plex.tv'){
+    if(url.pathname==='/hubs/sections/home')return Response.json({MediaContainer:{Hub:[
+      {key:'/hubs/preview/picks',title:'Plex Picks',type:'movie'},
+      {key:'/hubs/preview/netflix',title:'Trending on Netflix',type:'movie'}
+    ]}});
+    if(url.pathname.startsWith('/hubs/preview/'))return Response.json({MediaContainer:{Metadata:nodes}});
+    if(url.pathname.startsWith('/actions/')){
+      const id=url.searchParams.get('ratingKey')??'';
+      if(url.pathname.endsWith('/addToWatchlist'))watchlist.add(id);else watchlist.delete(id);
+      return Response.json({MediaContainer:{}});
+    }
+    const state=/^\/library\/metadata\/(\d+)\/userState$/.exec(url.pathname);
+    if(state)return Response.json({MediaContainer:{UserState:{watchlistedAt:watchlist.has(state[1]!)?1:undefined}}});
+    const match=url.searchParams.get('guid')?.match(/^tmdb:\/\/(\d+)$/);
+    const metadata=url.pathname.endsWith('/matches')?all.filter(node=>node.ratingKey===match?.[1])
+      :url.pathname.includes('/watchlist/')?all.filter(node=>watchlist.has(node.ratingKey)):[];
+    return Response.json({MediaContainer:{Metadata:metadata}});
+  }
   if(url.pathname==='/photo/:/transcode')return new Response(images[Number(url.searchParams.get('url')?.split('/')[3]??0)%6],{headers:{'content-type':'image/png'}});
   if(url.pathname.endsWith('/genre'))return Response.json({MediaContainer:{Directory:[{key:'1',title:'Adventure'},{key:'2',title:'Drama'}]}});
   // Watch-state writes mutate the fixture so the UI can be exercised end to end.
@@ -90,8 +113,97 @@ for(const c of store.visible().slice(0,3))store.favorite('1',c.id,true);
 // Waits for channel checks: nothing here is listed until a channel plays.
 const pending=store.create('1',{kind:'m3u',name:'Awaiting checks preview'});
 store.ingest('1',pending.id,0,Buffer.from('#EXTM3U\n'+['Culture One','Culture Two','Arts Daily 24/7','Encore'].map((name,i)=>`#EXTINF:-1 tvg-id="pending${i}" group-title="${i<2?'Culture':'Arts'}",${name}\nhttps://fixture.invalid/pending${i}`).join('\n')));
-const app=await buildApp(config,db,vault,plex,false,namespace);
+const artworkStore=new ArtworkStore(db,vault,'apps/artwork/defaults.json');
+const {revision:artworkRevision,...artworkSettings}=artworkStore.settings();
+await artworkStore.update('1',artworkRevision,{...artworkSettings,tmdbKey:'fixture-tmdb-key'},async()=>{});
+new ExploreStore(db,vault).update('1',0,{seerrUrl:'https://seerr.fixture.invalid',seerrApiKey:'fixture-seerr-key'});
+const requested=new Set<number>();
+const seerr=(async(input:string|URL|Request,init?:RequestInit)=>{
+  const url=new URL(String(input)),path=url.pathname.replace('/api/v1','');
+  if(path==='/settings/public')return Response.json({initialized:true,region:'US'});
+  if(path==='/auth/plex')return Response.json({}, {headers:{'set-cookie':'connect.sid=preview; Path=/'}});
+  if(path==='/auth/me')return Response.json({id:1,displayName:'Preview viewer',permissions:1});
+  if(path==='/media')return Response.json({results:[...requested].map(tmdbId=>({mediaType:'movie',tmdbId,status:2})),pageInfo:{pages:1}});
+  if(path==='/request'&&init?.method==='POST') {
+    const {mediaId}=JSON.parse(String(init.body)) as {mediaId:number};
+    requested.add(mediaId);return Response.json({id:mediaId});
+  }
+  if(path==='/service/radarr'||path==='/service/sonarr')return Response.json([]);
+  const match=/^\/(movie|tv)\/(\d+)$/.exec(path);
+  if(match){
+    const id=Number(match[2]),node=all.find(n=>Number(n.ratingKey)===id);
+    return Response.json({id,[match[1]==='tv'?'name':'title']:node?.title??'Fixture title',
+      mediaInfo:id===42?{status:5,ratingKey:'42'}:requested.has(id)?{status:2}:undefined});
+  }
+  if(/\/\d+\/ratingscombined$/.test(path))return Response.json({});
+  return Response.json({results:[],totalPages:1});
+}) as typeof fetch;
+let failedPage=false;
+const tmdb=(async(input:string|URL|Request)=>{
+  const url=new URL(String(input)),path=url.pathname;
+  if(path.endsWith('/providers/regions'))return Response.json({results:[{iso_3166_1:'US',english_name:'United States'},{iso_3166_1:'GB',english_name:'United Kingdom'}]});
+  if(path.startsWith('/3/watch/providers/'))return Response.json({results:['Netflix','Amazon Prime Video','Disney+','Hulu','Max','Apple TV+','Paramount+'].map((name,index)=>({provider_id:index+1,provider_name:name,logo_path:`/${index}.png`}))});
+  const page=Number(url.searchParams.get('page')??1),providers=url.searchParams.get('with_watch_providers');
+  const selection=providers&&!providers.includes('|')?Number(providers):0;
+  const show=path.includes('/tv'),label=selection?['','Netflix','Prime Video','Disney+','Hulu','Max','Apple TV+','Paramount+'][selection]:'Explore';
+  const sort=url.searchParams.get('sort_by');
+  const release=sort?.endsWith('_date.asc')?url.searchParams.get(`${show?'first_air_date':'primary_release_date'}.gte`):new Date().toISOString().slice(0,10);
+  if(selection===2)await new Promise(resolve=>setTimeout(resolve,450));
+  if(selection===2&&page===2&&!show&&!failedPage){failedPage=true;return Response.json({}, {status:503});}
+  const results=Array.from({length:16},(_,i)=>{
+    const id=path.includes('/discover/')&&page===1&&i===0&&!show?42:1000+selection*1000+page*100+i;
+    const title=id===42?titles[0]:`${label} · ${titles[i%titles.length]} ${show?'TV':'Film'} ${page}`;
+    return {id,[show?'name':'title']:title,[show?'first_air_date':'release_date']:release,
+      overview:'A fixture title for the Explore preview.',poster_path:`/${i}.png`,original_language:'en',genre_ids:[i%2?18:35],vote_average:7.5,vote_count:90,popularity:20-i};
+  });
+  return Response.json({results,total_pages:3});
+}) as typeof fetch;
+const exploreImages=(async(input:string|URL|Request)=>{
+  const index=Number(/\/(\d+)\.png$/.exec(String(input))?.[1]??0)%images.length;
+  return new Response(images[index],{headers:{'content-type':'image/png'}});
+}) as typeof fetch;
+const app=await buildApp(config,db,vault,plex,false,namespace,{tmdb,seerr,images:exploreImages});
 app.get('/__preview',async(_req,reply)=>reply.setCookie(`${namespace}_local`,session.cookie,{httpOnly:true,sameSite:'lax',path:'/'}).redirect('/#home'));
-await app.listen({host:'127.0.0.1',port});
-console.log(`Isolated UI fixture: http://127.0.0.1:${port}/__preview`+' (synthetic media'+(streams.length?`; ${streams.length} live test channel(s)`:'; no real playback')+').');
-for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{void app.close().then(()=>{db.close();process.exit();});});
+if(process.argv.includes('--check-explore')){
+  try{
+    const cookie=(await app.inject('/__preview')).cookies[0];
+    assert.ok(cookie);
+    const api=(url:string,method:'GET'|'POST'|'PUT'='GET',payload?:object)=>app.inject({
+      url:`/api/v1/explore/${url}`,method,payload,headers:{origin:config.browserOrigin},cookies:{[cookie.name]:cookie.value}
+    });
+    const popular='tmdb/rows/popular-streaming';
+    const allServices=(await api(`${popular}?provider=all`)).json();
+    const netflix=(await api(`${popular}?provider=1`)).json();
+    const prime=(await api(`${popular}?provider=2`)).json();
+    assert.match(netflix.items[1].title,/Netflix/);
+    assert.match(prime.items[1].title,/Prime Video/);
+    assert.notEqual(allServices.items[1].key,netflix.items[1].key);
+    const later=`${popular}?provider=2&page=2`;
+    assert.equal((await api(later)).statusCode,502);
+    assert.equal((await api(later)).statusCode,200);
+    const {items}= (await api('tmdb/rows/top-picks')).json();
+    assert.ok(items.length);
+    assert.ok(!items.some((item:{key:string})=>item.key==='movie:tmdb:42'));
+    const details='details?kind=movie&tmdb=42&title=The%20Quiet%20Frontier';
+    const owned=(await api(details)).json();
+    assert.equal(owned.libraryId,'42');
+    const playback=await app.inject({url:'/api/v1/playback/sessions',method:'POST',headers:{origin:config.browserOrigin},
+      cookies:{[cookie.name]:cookie.value},payload:{mode:'plex_vod',ratingKey:owned.libraryId,
+        capabilities:{videoCodecs:['h264:8'],audioCodecs:['aac'],containers:['mp4']}}});
+    assert.equal(playback.statusCode,200,playback.body);
+    assert.equal(playback.json().delivery,'direct');
+    assert.equal(owned.watchlisted,false);
+    assert.equal((await api('watchlist','PUT',{plex:owned.item.ids.plex,add:true})).statusCode,200);
+    assert.equal((await api(details)).json().watchlisted,true);
+    const candidate=netflix.items.find((item:{kind:string;ids:{tmdb:number}})=>item.kind==='movie'&&item.ids.tmdb!==42);
+    const unowned=(await api(`details?kind=movie&tmdb=${candidate.ids.tmdb}&title=${encodeURIComponent(candidate.title)}`)).json();
+    assert.equal(unowned.seerr.requestable,true);
+    assert.equal((await api('request','POST',{kind:'movie',tmdb:candidate.ids.tmdb})).statusCode,200);
+    assert.equal((await api(`${popular}?provider=1`)).json().items.find((item:{key:string})=>item.key===candidate.key).status,'requested');
+    console.log('Explore fixture passed provider changes, page retry, recommendations, Plex playback preparation and watchlist, and Seerr requests.');
+  }finally{await app.close();db.close();}
+}else{
+  await app.listen({host:'127.0.0.1',port});
+  console.log(`Isolated UI fixture: http://127.0.0.1:${port}/__preview`+' (synthetic media'+(streams.length?`; ${streams.length} live test channel(s)`:'; no real playback')+').');
+  for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{void app.close().then(()=>{db.close();process.exit();});});
+}

@@ -61,7 +61,7 @@ import { registerCleanup } from './cleanup-api.js';
 import { Activity } from './services/activity.js';
 import { registerActivity } from './activity-api.js';
 
-export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box') {
+export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box', exploreTransports: {tmdb?:typeof fetch; seerr?:typeof fetch; images?:typeof fetch} = {}) {
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
   const identity = new IdentityService(db, vault, plex, config.PLEX_RECHECK_SECONDS * 1000), playback = new PlaybackService(db, plex), settings = new SettingsStore(db);
   const budget = new EncoderBudget(() => settings.get().maxConcurrentCpuVideoTranscodes);
@@ -220,9 +220,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const events = new ClientEvents();
   registerEvents(app, events, auth);
   const exploreStore = new ExploreStore(db, vault);
-  registerExplore(app, plex, exploreStore, auth, admin, hash => identity.accountToken(hash));
   // Artwork: the engine runs as a separate Python process, apart from every playback path.
   const artworkStore = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
+  const tmdbTitles = new TmdbTitles(() => artworkStore.keys().tmdb, exploreTransports.tmdb);
+  registerExplore(app, plex, exploreStore, auth, admin, hash => identity.accountToken(hash), tmdbTitles, exploreTransports);
   const artwork = new ArtworkEngine(artworkStore, {python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'), dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; }},
     (message, detail) => app.log.info(detail, message));
   const artworkWorker = new ArtworkWorker(artwork, (message, detail) => app.log.warn(detail, message));
@@ -230,7 +231,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
   const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plex.sessions(grant)).length;
   const artworkSchedule = new ArtworkSchedule(artworkStore, artwork, plex, () => background.grant(), (message, detail) => app.log.warn(detail, message), streaming);
-  registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin);
+  registerArtwork(app, artworkStore, artwork, artworkWorker, artworkSchedule, admin, tmdbTitles);
   artwork.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   app.addHook('onReady', async () => { artworkSchedule.start(); });
   app.addHook('onClose', async () => { artworkSchedule.close(); artworkWorker.close(); artwork.close(); });
@@ -243,7 +244,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; }},
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
-  registerCalendar(app, plex, auth, cleanupServices, undefined, new TmdbTitles(() => artworkStore.keys().tmdb));
+  registerCalendar(app, plex, auth, cleanupServices, undefined, tmdbTitles);
   cleanup.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   cleanup.collections = () => cleanupCollections(artwork.keptCollections().collections, artworkStore.collections().definitions);
   app.addHook('onReady', async () => { cleanup.start(); });

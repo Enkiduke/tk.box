@@ -64,7 +64,17 @@ export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};
 
 // Explore: titles from catalog sources outside the Plex server (Plex Discover, Seerr).
-export type ExploreSource = 'plex' | 'seerr';
+export const exploreSources = ['plex', 'seerr', 'tmdb'] as const;
+export type ExploreSource = typeof exploreSources[number];
+export const exploreBrowseSources = ['plex', 'tmdb'] as const;
+export type ExploreBrowseSource = typeof exploreBrowseSources[number];
+export const streamingRows = ['popular-streaming', 'recent-streaming'] as const;
+export type StreamingRow = typeof streamingRows[number];
+export const tmdbExploreRows = [...streamingRows, 'top-picks', 'because-1', 'because-2', 'genre-1', 'genre-2', 'trending', 'acclaimed',
+  'popular-movies', 'popular-shows', 'upcoming-movies', 'upcoming-shows'] as const;
+export type TmdbExploreRow = typeof tmdbExploreRows[number];
+export type ExploreWatchProvider = {id: number; name: string; logoUrl?: string};
+export type ExploreWatchProviders = {regions: {code: string; name: string}[]; providers: ExploreWatchProvider[]; defaults: number[]};
 // Seerr's view of a title on the media server: available, partly available, or requested (including being downloaded).
 export type ExploreStatus = 'available' | 'partial' | 'requested';
 // The genres Explore filters on: TMDB's movie and TV genres and Plex's, merged into one list.
@@ -82,7 +92,7 @@ export type ExploreItem = {
   ids: { tmdb?: number; imdb?: string; tvdb?: number; plex?: string; plexGuid?: string };
   status?: ExploreStatus;
 };
-export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number };
+export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number; title?: string };
 export type CalendarEpisodeLabel = 'series-premiere' | 'season-premiere' | 'season-finale' | 'series-finale';
 export type CalendarEntry = {
   key: string; title: string; day: string; year?: number; airTime?: string;
@@ -98,16 +108,17 @@ export type CalendarPage = {
 };
 // Search across every catalog source; `failed` names sources that could not be searched.
 export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
-export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean };
+export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean; streaming?: boolean; overlapsStreaming?: boolean };
 export type ExploreSeason = { number: number; name: string; episodeCount?: number; airDate?: string; status?: ExploreStatus };
 // Server-wide: the order Explore lists its sources in, sources switched off, and single rows hidden (`source:rowId`).
-export type ExploreLayout = { order: ExploreSource[]; hidden: ExploreSource[]; hiddenRows: string[] };
+export type ExploreLayout = { order: ExploreBrowseSource[]; hidden: ExploreBrowseSource[]; hiddenRows: string[]; tmdbOrder?: TmdbExploreRow[]; showPlexStreaming?: boolean };
 export type ExploreSources = {
   plex: boolean;
   // Sources shown, in the administrator's order (whether or not each is set up).
-  order: ExploreSource[];
+  order: ExploreBrowseSource[];
   // `statuses`: Plex titles carry Seerr's labels (needs the Seerr API key).
   seerr: { configured: boolean; statuses: boolean };
+  tmdb: { configured: boolean };
 };
 export type ExploreDetails = {
   item: ExploreItem; genres: string[]; tagline?: string; cast: string[]; network?: string; contentRating?: string;
