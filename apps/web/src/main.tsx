@@ -21,6 +21,7 @@ const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})))
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
 const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
+const Calendar=lazy(()=>import('./calendar.js').then(m=>({default:m.Calendar})));
 // A deploy replaces the hashed bundles, so a tab opened before it asks for files that are gone. Reload once to pick up
 // the new build; the timestamp stops a loop if the file is still missing after the reload.
 window.addEventListener('vite:preloadError',event=>{
@@ -36,7 +37,7 @@ import './style.css';
 type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;markers?:SkipMarker[];source?:SourceInfo;quality?:Quality;qualityOptions?:QualityOption[];audioStreamId?:string;item:CatalogItem};
 type Session=VodSession|LiveSession;
 const fetchPage=(path:string)=>api<CatalogPage>(path);
-const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['explore','Explore'],['live','Live TV']] as const;
+const navigation=[['home','Home'],['movies','Movies'],['shows','TV Shows'],['explore','Explore'],['calendar','Calendar'],['live','Live TV']] as const;
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean;plexUrl?:string}>('/setup'),scrolled=useScrolled();
   // Only a 401 means signed out. A 403 is Plex refusing a check, which the server has already retried; the viewer stays
@@ -53,8 +54,8 @@ function App() {
   useEffect(()=>{
     if(!signedIn||!('EventSource' in window))return;
     const events=new EventSource('/api/v1/events');let dropped=false;
-    events.addEventListener('library',()=>{invalidate('/catalog');if(admin){invalidate('/admin/cleanup/titles');void loadLeaving();}});
-    events.addEventListener('open',()=>{if(dropped)invalidate('/catalog');dropped=false;});
+    events.addEventListener('library',()=>{invalidate('/catalog');invalidate('/calendar');if(admin){invalidate('/admin/cleanup/titles');void loadLeaving();}});
+    events.addEventListener('open',()=>{if(dropped){invalidate('/catalog');invalidate('/calendar');}dropped=false;});
     events.addEventListener('error',()=>{dropped=true;});
     return()=>events.close();
   },[signedIn,admin]);
@@ -265,6 +266,7 @@ function App() {
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
     :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onOpen={openItem}/></Suspense></div>
+    :route.page==='calendar'?<Suspense fallback={<div className="page"><Loading/></div>}><Calendar key={me.accountId} accountId={me.accountId} params={route.params} onOpen={openItem}/></Suspense>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout}/></Suspense></div>
     :route.page==='admin'?<div className="page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>

@@ -105,6 +105,7 @@ export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: 
   video?: { codec?: string; width?: number; height?: number; container?: string } };
 // `name` is the Plex account's display name, for Admin › Activity.
 export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
+type CalendarMedia = {id: string; posterUrl?: string; season?: number; episode?: number};
 
 // Cache keys name a viewer's server token by digest, never the token itself.
 const tokenScope=(grant:PlexGrant)=>createHash('sha256').update(grant.serverToken).digest('hex');
@@ -231,15 +232,42 @@ export class PlexAdapter {
   }
   // This server's copy of a title the viewer can open: titles with that name whose guid (plex://, imdb://, tmdb://, tvdb://) matches.
   async libraryMatch(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]) {
-    if (!guids.length || !title.trim()) return undefined;
+    return (await this.libraryMatches(grant, kind, title, guids, false))[0];
+  }
+  private async libraryMatches(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[], strict: boolean) {
+    if (!guids.length || !title.trim()) return [];
     const matches = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({ ratingKey: plexId, guid: z.string().optional(), Guid: z.array(z.object({ id: z.string() })).optional() })).default([]) }) });
     const found = await Promise.all(grant.libraries.filter(l => l.type === kind).map(async library => {
       const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
       for (const [key, value] of Object.entries({ type: kind === 'movie' ? '1' : '2', title: title.trim().slice(0, 100), includeGuids: '1', 'X-Plex-Container-Start': '0', 'X-Plex-Container-Size': '50' })) url.searchParams.set(key, value);
-      const items = await this.json(url, grant.serverToken).then(data => matches.parse(data).MediaContainer.Metadata, () => []);
-      return items.find(item => (item.guid && guids.includes(item.guid)) || item.Guid?.some(g => guids.includes(g.id)))?.ratingKey;
+      const items = await this.json(url, grant.serverToken).then(data => matches.parse(data).MediaContainer.Metadata, error => {
+        if (strict) throw error;
+        return [];
+      });
+      return items.filter(item => (item.guid && guids.includes(item.guid)) || item.Guid?.some(g => guids.includes(g.id))).map(item => item.ratingKey);
     }));
-    return found.find(Boolean);
+    return [...new Set(found.flat())];
+  }
+  // Calendar checks titles with a downloaded file using the viewer's own Plex grant.
+  calendarMedia(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]): Promise<CalendarMedia[]> {
+    const scope = grant.libraries.filter(library => library.type === kind).map(library => library.key).sort().join(',');
+    return this.remembered<CalendarMedia[]>(`calendar:${tokenScope(grant)}:${kind}:${scope}:${JSON.stringify([title, guids])}`, async () => {
+      const ids = await this.libraryMatches(grant, kind, title, guids, true);
+      const media: CalendarMedia[] = [];
+      for (const id of ids) {
+        const {node, section} = await this.catalogNode(grant, id);
+        if (node.type !== kind) continue;
+        const posterUrl = catalogDto(node, section).posterUrl;
+        if (kind === 'movie') return [{id, posterUrl}];
+        const episodes = await this.leaves(grant, `/library/metadata/${id}/allLeaves`, section);
+        for (const episode of episodes) {
+          if (episode.type === 'episode' && episode.grandparentRatingKey === id && episode.parentIndex !== undefined && episode.index !== undefined) {
+            media.push({id: episode.ratingKey, posterUrl, season: episode.parentIndex, episode: episode.index});
+          }
+        }
+      }
+      return media;
+    });
   }
   async metadata(grant: PlexGrant, ratingKey: string, options: { markers?: boolean } = {}) {
     requireThat(/^\d+$/.test(ratingKey), 'INVALID_MEDIA', 'Invalid Plex media identifier.');
