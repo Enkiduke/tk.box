@@ -83,6 +83,17 @@ export type ExploreItem = {
   status?: ExploreStatus;
 };
 export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number };
+export type CalendarEntry = {
+  key: string; title: string; day: string; year?: number; airTime?: string;
+  kind: 'theatrical' | 'digital' | 'physical' | 'episode';
+  season?: number; episode?: number; episodeTitle?: string; summary?: string;
+  posterUrl?: string; ids: Pick<ExploreItem['ids'], 'tmdb' | 'tvdb' | 'imdb'>; plexItemId?: string; availabilityUnknown?: boolean;
+};
+export type CalendarPage = {
+  dates: CalendarEntry[];
+  sources: Record<'Radarr' | 'Sonarr', 'ready' | 'disconnected' | 'unavailable'>;
+  plexUnavailable: boolean;
+};
 // Search across every catalog source; `failed` names sources that could not be searched.
 export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
 export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean };

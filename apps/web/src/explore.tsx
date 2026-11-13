@@ -194,7 +194,7 @@ function Facts({item,info}:{item:ExploreItem;info:ExploreDetails}) {
     {info.links.length>0&&<p className="explore-links">{info.links.map(l=><a key={l.site} href={l.url} target="_blank" rel="noreferrer">{siteNames[l.site]}</a>)}</p>}
   </aside>;
 }
-function ExploreDialog({item:start,seerrOn,onClose,onOpen}:{item:ExploreItem;seerrOn:boolean;onClose:()=>void;onOpen:(id:string)=>void}) {
+export function ExploreDialog({item:start,seerrOn=false,onClose,onOpen}:{item:ExploreItem;seerrOn?:boolean;onClose:()=>void;onOpen:(id:string)=>void}) {
   const details=useApi<ExploreDetails>(detailsPath(start)),info=details.data,seerr=info?.seerr;
   // The card's own artwork and text show at once; details fill in what the card lacked.
   const item:ExploreItem={...start,...info?.item,posterUrl:start.posterUrl??info?.item.posterUrl,backdropUrl:info?.item.backdropUrl??start.backdropUrl,summary:info?.item.summary??start.summary,ids:{...start.ids,...info?.item.ids}};

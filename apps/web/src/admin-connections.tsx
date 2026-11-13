@@ -56,13 +56,13 @@ type CollectionsView={revision:number;definitions:unknown[]|null;franchise:Recor
 function RadarrConnection() {
   const view=useApi<CollectionsView>('/admin/artwork/collections'),[draft,setDraft]=useState<Radarr>(),[key,setKey]=useState(''),[done,setDone]=useState(false),mutation=useMutation(view.reload);
   useEffect(()=>{if(view.data){setDraft(view.data.radarr);setKey('');}},[view.data?.revision]);
-  const title='Radarr',description='Optional · seasonal downloads and Clean Up.';
+  const title='Radarr',description='Movie releases for Calendar, seasonal downloads, and Clean Up.';
   if(view.loading&&!view.data)return <Card title={title}><Loading/></Card>;
   if(view.error&&!view.data)return <Card title={title}><ErrorNotice message={view.error.message} retry={view.reload}/></Card>;
   if(!view.data||!draft)return null;
   const data=view.data,set=(patch:Partial<Radarr>)=>{setDone(false);setDraft({...draft,...patch});};
   // Collections are saved as a whole, so their definitions, franchise options, schedules and Radarr download options go back unchanged.
-  const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:{definitions:data.definitions,franchise:data.franchise,radarr:draft,schedules:data.schedules},...(key.trim()?{radarrKey:key.trim()}:{})});invalidate('/admin/artwork/collections');setDone(true);});
+  const save=()=>void mutation.run(async()=>{await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:{definitions:data.definitions,franchise:data.franchise,radarr:draft,schedules:data.schedules},...(key.trim()?{radarrKey:key.trim()}:{})});invalidate('/admin/artwork/collections');invalidate('/calendar');setDone(true);});
   return <Card title={title} description={description}>
     <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
       <div className="form-columns">
@@ -76,7 +76,7 @@ function RadarrConnection() {
   </Card>;
 }
 
-// Tautulli and Sonarr, which only Clean Up uses. Each card saves its own service; the other's goes back unchanged.
+// Tautulli and Sonarr share a settings record. Each card saves its own service.
 type CleanupConnectionsView={revision:number;tautulliUrl:string;sonarrUrl:string;tautulliKeySet:boolean;sonarrKeySet:boolean};
 function CleanupConnections() {
   const view=useApi<CleanupConnectionsView>('/admin/cleanup/connections');
@@ -85,13 +85,13 @@ function CleanupConnections() {
   if(!view.data)return null;
   return <>
     <ServiceConnection service="tautulli" title="Tautulli" description="Watch history for Clean Up." placeholder="http://tautulli:8181" hint="Tautulli › Settings › Web Interface" data={view.data} changed={view.reload}/>
-    <ServiceConnection service="sonarr" title="Sonarr" description="Optional · lets Clean Up delete from Sonarr." placeholder="http://sonarr:8989" hint="Sonarr › Settings › General" data={view.data} changed={view.reload}/>
+    <ServiceConnection service="sonarr" title="Sonarr" description="TV air dates for Calendar and episode management for Clean Up." placeholder="http://sonarr:8989" hint="Sonarr › Settings › General" data={view.data} changed={view.reload}/>
   </>;
 }
 function ServiceConnection({service,title,description,placeholder,hint,data,changed}:{service:'tautulli'|'sonarr';title:string;description:string;placeholder:string;hint:string;data:CleanupConnectionsView;changed:()=>void}) {
   const [url,setUrl]=useState(data[`${service}Url`]),[key,setKey]=useState(''),[done,setDone]=useState(false),mutation=useMutation(changed);
   useEffect(()=>{setUrl(data[`${service}Url`]);setKey('');},[data.revision]);
-  const save=()=>void mutation.run(async()=>{await api('/admin/cleanup/connections','PUT',{expectedRevision:data.revision,tautulliUrl:data.tautulliUrl,sonarrUrl:data.sonarrUrl,[`${service}Url`]:url,...(key.trim()?{[`${service}Key`]:key.trim()}:{})});invalidate('/admin/cleanup');setDone(true);});
+  const save=()=>void mutation.run(async()=>{await api('/admin/cleanup/connections','PUT',{expectedRevision:data.revision,tautulliUrl:data.tautulliUrl,sonarrUrl:data.sonarrUrl,[`${service}Url`]:url,...(key.trim()?{[`${service}Key`]:key.trim()}:{})});invalidate('/admin/cleanup');if(service==='sonarr')invalidate('/calendar');setDone(true);});
   return <Card title={title} description={description}>
     <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
       <div className="form-columns">
