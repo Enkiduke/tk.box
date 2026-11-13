@@ -6,6 +6,7 @@ import type { ArrService } from './providers/arr-tags.js';
 import type { PlexAdapter, PlexGrant } from './providers/plex.js';
 import { imagePath } from './providers/explore-images.js';
 import { remoteJson } from './providers/remote-json.js';
+import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
 
 const day = z.iso.date();
@@ -70,13 +71,14 @@ function episodeEntry(raw: unknown): Scheduled[] {
   if (!release) return [];
   return [{...titleFields(series), key: `episode:${seriesKey}:${seasonNumber}:${episodeNumber}`, kind: 'episode',
     day: release, airTime: airTime?.toISOString(), season: seasonNumber, episode: episodeNumber,
+    episodeLabel: episodeNumber === 1 && seasonNumber > 0 ? seasonNumber === 1 ? 'series-premiere' : 'season-premiere' : undefined,
     stillUrl: cover(result.data.images, ['screenshot', 'still', 'thumb']),
     episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
 }
 
 export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>,
   auth: (request: FastifyRequest) => Promise<{grant: PlexGrant}>, connections: () => {radarr: ArrService; sonarr: ArrService},
-  transport: typeof fetch = fetch) {
+  transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales'>) {
   // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
   const cache = new Map<string, {until: number; rows: Promise<Scheduled[]>}>();
   const read = (source: Source, connection: ArrService, start: string, end: string) => {
@@ -129,7 +131,14 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
       if (!previous || (entry.hasFile && !previous.hasFile)) unique.set(entry.key, {...entry, day: local});
     }
     const groups = new Map<string, Scheduled[]>();
+    const seasons = new Map<string, Scheduled[]>();
     for (const entry of unique.values()) {
+      if (tmdb && entry.kind === 'episode' && entry.season && entry.episode && !entry.episodeLabel) {
+        const key = entry.key.slice(0, entry.key.lastIndexOf(':'));
+        const season = seasons.get(key) ?? [];
+        season.push(entry);
+        seasons.set(key, season);
+      }
       if (entry.hasFile === false) continue;
       const key = entry.kind === 'episode' ? entry.key.split(':').slice(0, -2).join(':') : entry.key;
       const group = groups.get(key) ?? [];
@@ -139,7 +148,7 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     let plexUnavailable = false;
     const pending = groups.values();
     // A season may air together. Match its series once, then find each episode by number.
-    await Promise.all(Array.from({length: Math.min(6, groups.size)}, async () => {
+    const availability = Array.from({length: Math.min(6, groups.size)}, async () => {
       for (const group of pending) {
         const first = group[0]!;
         const guids = Object.entries(first.ids).flatMap(([source, value]) => value ? [`${source}://${value}`] : []);
@@ -158,7 +167,16 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
           for (const entry of group) entry.availabilityUnknown = true;
         }
       }
-    }));
+    });
+    const pendingSeasons = seasons.values();
+    const episodeLabels = Array.from({length: Math.min(6, seasons.size)}, async () => {
+      for (const season of pendingSeasons) {
+        const first = season[0]!;
+        const labels = await tmdb!.episodeFinales(first.ids, first.season!, season.map(entry => entry.episode!)).catch(() => undefined);
+        for (const entry of season) entry.episodeLabel = labels?.get(entry.episode!);
+      }
+    });
+    await Promise.all([...availability, ...episodeLabels]);
     const dates = [...unique.values()].sort((a, b) => a.day.localeCompare(b.day) || (a.airTime ?? '').localeCompare(b.airTime ?? '') ||
       a.title.localeCompare(b.title) || (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0))
       .map(({hasFile: _, ...entry}) => entry);

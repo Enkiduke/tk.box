@@ -17,7 +17,7 @@
 }
 .calendar-range {position:relative}
 .calendar-range>button {width:34px;padding:0;flex:none}
-.calendar-picker summary {list-style:none;color:var(--text);cursor:pointer}
+.calendar-picker summary {list-style:none;margin:0;color:var(--text);cursor:pointer}
 .calendar-picker summary svg {flex:none}
 .calendar-picker summary::-webkit-details-marker {display:none}
 .calendar-month {
@@ -44,6 +44,8 @@
 .calendar-date-stamp {display:grid;justify-items:start;gap:2px;color:var(--muted);font-size:12px}
 .calendar-date-stamp>span:first-child {text-transform:uppercase;letter-spacing:.06em}
 .calendar-date-stamp strong {font-size:clamp(38px,5vw,62px);line-height:1;color:var(--text);letter-spacing:-.05em}
+.calendar-day time[aria-current=date] .calendar-date-stamp,
+.calendar-day time[aria-current=date] .calendar-date-stamp strong {color:var(--accent)}
 .calendar-date-today {display:block;color:var(--accent);font-size:12px;margin-top:6px}
 .calendar-empty-week {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;border-top:1px solid var(--line);margin:0;padding:18px 0;font-size:13px;color:var(--muted)}
 .calendar-empty-week strong {color:var(--text)}
@@ -51,32 +53,44 @@
 .calendar-day ul {list-style:none;display:grid;gap:16px;padding:0;margin:0}
 .calendar-days.cards ul {grid-template-columns:repeat(auto-fill,minmax(min(265px,100%),1fr))}
 .calendar-entry {
+  --calendar-available:#7fd8a0;
   display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:8px;width:100%;padding:0;border:0;border-radius:10px;
   background:transparent;text-align:left;white-space:normal
 }
 .calendar-entry:hover {background:transparent}
 .calendar-art {
   position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;
-  gap:5px;aspect-ratio:16/9;overflow:hidden;padding:14px 16px;border-radius:10px;background:var(--surface-2)
+  aspect-ratio:16/9;overflow:hidden;padding:14px 16px;border-radius:10px;background:var(--surface-2);
+  transition:transform .22s var(--ease),box-shadow .22s var(--ease)
+}
+.calendar-days.cards .calendar-art[data-available] {box-shadow:0 0 0 2px var(--calendar-available)}
+.calendar-days.cards .calendar-entry:is(:hover,:focus-visible) {position:relative;z-index:1}
+.calendar-days.cards .calendar-entry:is(:hover,:focus-visible) .calendar-art {
+  transform:scale(1.03);box-shadow:0 0 0 2px var(--accent),0 14px 30px rgba(0,0,0,.55)
 }
 .calendar-art img,.calendar-art-placeholder,.calendar-art::after {position:absolute;inset:0;width:100%;height:100%;z-index:-2}
-.calendar-art img {object-fit:cover;transition:transform .25s var(--ease)}
+.calendar-art img {object-fit:cover}
 .calendar-art .calendar-portrait {object-position:center 32%}
 .calendar-art-placeholder {display:grid;place-items:center;color:var(--dim);background:linear-gradient(140deg,var(--surface-3),var(--surface))}
 .calendar-art::after {content:'';z-index:-1;background:linear-gradient(transparent 25%,rgba(0,0,0,.85))}
-.calendar-entry:hover .calendar-art img {transform:scale(1.04)}
 .calendar-art strong {font-size:clamp(16px,1.7vw,23px);line-height:1.08;text-wrap:balance;overflow-wrap:anywhere;color:white}
-.calendar-card-label {background:rgba(0,0,0,.66);padding:3px 8px;border-radius:999px;font-size:11px;color:white}
+.calendar-card-label {position:absolute;top:10px;left:10px;background:rgba(0,0,0,.72);padding:3px 8px;border-radius:999px;font-size:11px;color:white}
+.calendar-available {
+  position:absolute;top:10px;right:10px;display:grid;place-items:center;width:24px;height:24px;
+  border-radius:50%;background:rgba(0,0,0,.72);color:var(--calendar-available)
+}
 .calendar-caption {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;color:var(--muted);font-size:12px;font-weight:500}
 .calendar-airtime {color:var(--text);font-weight:650}
 .calendar-episode {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.calendar-status.available {color:#7fd8a0}
 .calendar-days.list ul {gap:4px}
 .calendar-days.list .calendar-entry {grid-template-columns:minmax(180px,1fr) minmax(0,1.6fr);align-items:center;gap:10px;padding:6px 0}
 .calendar-days.list .calendar-art {display:grid;grid-template-columns:44px minmax(0,1fr);grid-template-rows:auto auto;align-items:end;gap:1px 10px;aspect-ratio:auto;overflow:visible;background:transparent;padding:0}
 .calendar-days.list .calendar-art img,.calendar-days.list .calendar-art-placeholder {position:static;grid-column:1;grid-row:1 / 3;width:44px;aspect-ratio:2/3;height:auto;border-radius:5px;z-index:auto}
 .calendar-days.list .calendar-art::after {display:none}
-.calendar-days.list .calendar-card-label {align-self:end;grid-column:2;grid-row:2;background:transparent;color:var(--muted);padding:0}
+.calendar-days.list .calendar-card-label {position:static;align-self:end;grid-column:2;grid-row:2;background:transparent;color:var(--muted);padding:0}
+.calendar-days.list .calendar-available {top:3px;left:24px;right:auto;width:18px;height:18px}
+.calendar-days.list .calendar-available svg {width:13px;height:13px}
+.calendar-days.list .calendar-art[data-available]>:is(img,.calendar-art-placeholder) {box-shadow:0 0 0 1px var(--calendar-available)}
 .calendar-days.list .calendar-art strong {align-self:end;grid-column:2;grid-row:1;font-size:15px;text-wrap:wrap}
 @media(max-width:680px) {
   .calendar-dates,.calendar-options {width:100%}

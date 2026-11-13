@@ -1,5 +1,5 @@
 import {lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
-import type {CalendarEntry, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
+import type {CalendarEntry, CalendarEpisodeLabel, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice, Icon, Loading} from './components.js';
 import {link, useApi} from './hooks.js';
 import './calendar.css';
@@ -22,6 +22,10 @@ const addDays = (day: string, days: number) => {
 const validDay = (value: string | null) => value && /^(?:19|20|21)\d{2}-\d{2}-\d{2}$/.test(value) &&
   Number.isFinite(+dayAt(value)) && isoDay(dayAt(value)) === value ? value : undefined;
 const releaseLabels = {theatrical: 'In theaters', digital: 'Digital release', physical: 'Disc release'};
+const episodeLabels: Record<CalendarEpisodeLabel, string> = {
+  'series-premiere': 'Series premiere', 'season-premiere': 'Season premiere',
+  'season-finale': 'Season finale', 'series-finale': 'Series finale',
+};
 const weekOf = (day: string) => addDays(day, -((dayAt(day).getUTCDay() + 6) % 7));
 const batchDays = 28;
 const matchesFilter = (entry: CalendarEntry, filter: string | null) =>
@@ -73,18 +77,21 @@ function Entry({entry, current, list, onOpen}: {entry: CalendarEntry; current: s
   const episode = entry.kind === 'episode';
   const release = entry.kind === 'episode' ? `S${String(entry.season).padStart(2, '0')}E${String(entry.episode).padStart(2, '0')}` : releaseLabels[entry.kind];
   const upcoming = entry.airTime ? Date.parse(entry.airTime) > Date.now() : entry.day >= current;
-  const status = entry.plexItemId ? 'In Library' : entry.availabilityUnknown ? 'Availability unknown' : upcoming ? '' : 'Not in Library';
+  const available = !!entry.plexItemId;
+  const status = available ? '' : entry.availabilityUnknown ? 'Availability unknown' : upcoming ? '' : 'Not in Library';
+  const label = episode ? entry.episodeLabel ? episodeLabels[entry.episodeLabel] : 'New episode' : release;
   return <li>
     <button type="button" className="calendar-entry" onClick={onOpen}>
-      <span className="calendar-art">
+      <span className="calendar-art" data-available={available || undefined}>
         <CardArtwork entry={entry} list={list}/>
-        <span className="calendar-card-label">{episode ? 'New episode' : release}</span>
+        <span className="calendar-card-label">{label}</span>
+        {available && <span className="calendar-available" title="In Library"><Icon name="check" size={16}/><span className="sr-only">In Library</span></span>}
         <strong>{entry.title}</strong>
       </span>
       <span className="calendar-caption">
         <span className="calendar-airtime">{entry.airTime ? timeFormat.format(new Date(entry.airTime)) : 'All day'}</span>
         {episode && <span className="calendar-episode">{[release, entry.episodeTitle].filter(Boolean).join(' · ')}</span>}
-        {status && <span className={entry.plexItemId ? 'calendar-status available' : 'calendar-status'}>{status}</span>}
+        {status && <span>{status}</span>}
       </span>
     </button>
   </li>;
@@ -268,7 +275,7 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
             {!days.length && <p className="calendar-empty-week"><strong>{shortFormat.formatRange(dayAt(week), dayAt(addDays(end, -1)))}</strong>
               <span>{hasSource(page) ? 'No releases scheduled' : 'Release schedule unavailable'}</span></p>}
             {days.map(day => <section className="calendar-day" key={day} data-day={day} aria-label={dayFormat.format(dayAt(day))}>
-              <h2><time dateTime={day}><span className="sr-only">{dayFormat.format(dayAt(day))}</span>
+              <h2><time dateTime={day} aria-current={day === current ? 'date' : undefined}><span className="sr-only">{dayFormat.format(dayAt(day))}</span>
                 <span aria-hidden="true" className="calendar-date-stamp"><span>{weekdayFormat.format(dayAt(day))}</span><strong>{Number(day.slice(-2))}</strong><span>{monthName.format(dayAt(day))}</span></span>
                 {day === current && <span className="calendar-date-today">Today</span>}</time></h2>
               {dayGroups.has(day) ? <ul>{dayGroups.get(day)!.map(entry => <Entry key={entry.key} entry={entry} current={current} list={view === 'list'} onOpen={() => open(entry)}/>)}</ul>

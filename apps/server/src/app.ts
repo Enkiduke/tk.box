@@ -27,6 +27,7 @@ import { SourceRefresh } from './services/source-refresh.js';
 import { registerIptv } from './iptv-api.js';
 import { registerCatalog } from './catalog-api.js';
 import { registerCalendar } from './calendar-api.js';
+import { TmdbTitles } from './providers/tmdb-titles.js';
 import { ClientEvents, registerEvents } from './events-api.js';
 import { registerExplore } from './explore-api.js';
 import { ExploreStore } from './persistence/explore-store.js';
@@ -242,7 +243,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const cleanup = new CleanupEngine(cleanupStore, {python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'), dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; }},
     cleanupServices, () => background.grant(), (message, detail) => app.log.info(detail, message));
   registerCleanup(app, cleanupStore, cleanup, cleanupServices, admin);
-  registerCalendar(app, plex, auth, cleanupServices);
+  registerCalendar(app, plex, auth, cleanupServices, undefined, new TmdbTitles(() => artworkStore.keys().tmdb));
   cleanup.finished = () => { plex.forgetMetadata(); events.publish('library'); };
   cleanup.collections = () => cleanupCollections(artwork.keptCollections().collections, artworkStore.collections().definitions);
   app.addHook('onReady', async () => { cleanup.start(); });
