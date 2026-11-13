@@ -29,7 +29,6 @@ export function StreamingSelector({title,services,selected,onSelect}:{title:stri
         {service.logoUrl&&<img src={service.logoUrl} alt="" loading="lazy"/>}{service.name}
       </button>)}
     </div>
-    <small className="muted explore-provider-credit">Availability by <a href="https://www.justwatch.com/" target="_blank" rel="noreferrer">JustWatch</a></small>
   </div>;
 }
 

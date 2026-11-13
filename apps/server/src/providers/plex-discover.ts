@@ -45,14 +45,15 @@ const hubKey = (id: string) => { const key = Buffer.from(id.slice(4), 'base64url
 const unlisted = new Set(['directory', 'clip']);
 const serviceTitle = /\byour\s+(?:(?:favorite|favourite|selected|streaming|watch)\s+)*(?:services?|providers?)\b|\b(?:streaming|watch)\s+(?:services?|providers?)\b|\b(?:on|across)\s+streaming\b/i;
 const namedService = /(?:\b(?:on|to|from)\s+|^)(?:netflix|(?:amazon\s+)?prime video|disney\s*(?:\+|plus)|hulu|(?:hbo\s+)?max|apple tv(?:\s*(?:\+|plus))?|paramount\s*(?:\+|plus)|peacock|crunchyroll|discovery\s*(?:\+|plus)|starz|shudder|mubi|tubi|pluto tv|(?:the\s+)?roku channel|britbox|amc\s*(?:\+|plus))(?=$|\s*[:–—(]|[!,]|\s+(?:this|today|now|originals)\b)/i;
-function isServiceShelf(hub: DiscoverHub, title: string) {
+const communityShelf = /\b(?:followers?\s+favou?rites|most\s+watchlisted)\b/i;
+function isExcludedShelf(hub: DiscoverHub, title: string) {
   const label = title.normalize('NFKC').trim().replace(/\s+/g, ' ');
-  if (serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
-  // Plex can change or localize display names. Also look for explicit service markers in shelf identifiers.
+  if (communityShelf.test(label) || serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
+  // Plex can change or localize display names. Also check shelf identifiers.
   return [hub.hubIdentifier, hub.hubKey, hub.key].some(value => {
     if (!value) return false;
     const identifier = value.split('?')[0]!.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._/-]+/g, ' ');
-    return serviceTitle.test(identifier) || /\b(?:services?|streaming)\b/i.test(identifier);
+    return communityShelf.test(identifier) || serviceTitle.test(identifier) || /\b(?:services?|streaming)\b/i.test(identifier);
   });
 }
 const LIMIT = 20, HUB_LIMIT = 50;
@@ -68,7 +69,7 @@ export class PlexDiscover {
     const seen = new Set<string>();
     return [{ id: 'watchlist', title: 'Watchlist', icon: 'star', personal: true }, ...hubs.flatMap(hub => {
       const key = hub.key ?? hub.hubKey;
-      if (!key || !hub.title || unlisted.has(hub.type ?? '') || !/^\/[^/]/.test(key) || seen.has(key) || isServiceShelf(hub, hub.title)) return [];
+      if (!key || !hub.title || unlisted.has(hub.type ?? '') || !/^\/[^/]/.test(key) || seen.has(key) || isExcludedShelf(hub, hub.title)) return [];
       seen.add(key);
       return [{ id: hubId(key), title: hub.title, icon: 'trending' }];
     })];
