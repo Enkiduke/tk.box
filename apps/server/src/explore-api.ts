@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreRowInfo,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
@@ -93,8 +93,6 @@ const FILTER_SPAN=3;
 // The sources Explore shows, in the administrator's order, and whether one of a source's rows is hidden.
 export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout.hidden.includes(s));
 export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
-const browseRowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:ExploreRowInfo)=>rowShown(layout,from,row.id)&&
-  (from!=='plex'||!row.overlapsStreaming||layout.showPlexStreaming===true);
 
 // Explore: rows, search and details from Plex Discover and Seerr, plus Seerr requests and the Plex watchlist.
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,transports:{seerr?:typeof fetch; images?:typeof fetch}={}) {
@@ -113,7 +111,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   });
   app.get('/api/v1/explore/:source/rows',async request=>{
     const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request),layout=store.layout();
-    return {rows:(await sourceRows(from,account,token)).filter(row=>browseRowShown(layout,from,row))};
+    return {rows:(await sourceRows(from,account,token)).filter(row=>rowShown(layout,from,row.id))};
   });
   app.get('/api/v1/explore/:source/rows/:row',async request=>{
     const params=z.object({source,row:z.string().max(800)}).parse(request.params),{account,token,grant}=await viewer(request);
@@ -126,7 +124,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
       requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
       const filter=exploreFilter(query);
       if (def.personal) {
-        const result=(await personal.get(grant,tmdbClient.credentialGeneration()))[row];
+        const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token))[row];
         if (!result) return {items:[],page:at,hasMore:false} satisfies ExplorePage;
         const {items}=await labelled({items:result.items.map(c=>c.item)});
         return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>passes(c.item,filter)),at,result.title);
@@ -151,7 +149,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     }
     const {page:at,...query}=page.parse(request.query),filter=exploreFilter(query);
     const layout=store.layout(),definition=(await sourceRows('plex',account,token)).find(row=>row.id===params.row);
-    requireThat(definition&&browseRowShown(layout,'plex',definition),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
+    requireThat(definition&&rowShown(layout,'plex',definition.id),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
     const read=async(n:number):Promise<ExplorePage>=>{
       const key=`row:${params.source}:${params.row}:${n}`;
       return labelled(await cache.get(account,key,plexRowTtl(params.row),()=>discover.row(token,params.row,n)));

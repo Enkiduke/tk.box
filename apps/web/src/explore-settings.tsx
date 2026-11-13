@@ -114,7 +114,7 @@ function ExploreLayoutSettings() {
         const order=draft.tmdbOrder??[...tmdbExploreRows];
         const rows=s==='tmdb'?order.flatMap(id=>info?.rows.find(r=>r.id===id)??[]):info?.rows??[];
         const expanded=open.includes(s)&&rows.length>0;
-        const shown=rows.filter(r=>!draft.hiddenRows.includes(`${s}:${r.id}`)&&(!r.overlapsStreaming||draft.showPlexStreaming)).length;
+        const shown=rows.filter(r=>!draft.hiddenRows.includes(`${s}:${r.id}`)).length;
         return <li key={s} className="sports-sport" {...drag('explore',i,move)}>
           <div className="sports-row sports-sport-head"><span className="sports-rank">{i+1}</span>
             <button type="button" className="sports-expand" aria-expanded={expanded} disabled={!rows.length} onClick={()=>toggle(s)}><strong>{sourceNames[s]}</strong>
@@ -122,17 +122,13 @@ function ExploreLayoutSettings() {
             <input type="checkbox" role="switch" className="switch" aria-label={`Show ${sourceNames[s]} on Explore`} checked={on} onChange={e=>showSource(s,e.target.checked)}/>
             <MoveButtons name={sourceNames[s]} index={i} count={draft.order.length} onMove={to=>move(i,to)}/></div>
           {expanded&&<ol className="sports-leagues">
-            {s==='plex'&&<li className="sports-row"><label className="checkbox-label grow">
-              <input type="checkbox" checked={draft.showPlexStreaming??false} onChange={e=>set({showPlexStreaming:e.target.checked})}/>
-              Show Plex’s streaming service shelves
-            </label></li>}
-            {rows.map((r,index)=>{const key=`${s}:${r.id}`,off=!!r.overlapsStreaming&&!draft.showPlexStreaming;return <li key={key} className="sports-row">
-            <label className="checkbox-label grow"><input type="checkbox" disabled={!on||off} checked={!off&&!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
+            {rows.map((r,index)=>{const key=`${s}:${r.id}`;return <li key={key} className="sports-row">
+            <label className="checkbox-label grow"><input type="checkbox" disabled={!on} checked={!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
             {r.personal&&<small className="muted">Each viewer’s own</small>}
             {s==='tmdb'&&<MoveButtons name={r.title} index={index} count={rows.length} onMove={to=>set({tmdbOrder:moveTo(order,index,to)})}/>}
           </li>;})}</ol>}
         </li>;})}</ol>
-      {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the available Discover shelves and their order. Shelves such as Trending on Netflix are off by default.</p>}
+      {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the Discover shelves and their order. Streaming-service rows come from TMDB.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
     </form>

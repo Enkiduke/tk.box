@@ -41,6 +41,9 @@ const episodes=shows.flatMap((show,k)=>titles.slice(0,8).map((title,i)=>({...nod
 const recentEpisodes=episodes.filter(e=>e.grandparentRatingKey===shows[0]!.ratingKey||e.index===1);
 const all=[...nodes,...shows,...seasons,...episodes],removed=new Set<string>(),images=Array.from({length:6},(_,i)=>artwork(i));
 for(const [index,node] of [...nodes,...shows].entries()) Object.assign(node,{Guid:[{id:`tmdb://${node.ratingKey}`}],addedAt:1760000000-index*86400});
+const viewedAt=Math.floor(Date.now()/1000);
+Object.assign(nodes[5]!,{lastViewedAt:viewedAt-60});
+Object.assign(episodes[0]!,{viewCount:1,lastViewedAt:viewedAt-120});
 const watchlist=new Set<string>();
 const transport=(async(input:string|URL|Request,init?:RequestInit)=>{
   const url=new URL(String(input));
@@ -80,10 +83,11 @@ const transport=(async(input:string|URL|Request,init?:RequestInit)=>{
   const children=/^\/library\/metadata\/(\d+)\/children$/.exec(url.pathname);
   if(children){const items=[...seasons,...episodes].filter(n=>n.parentRatingKey===children[1]);return Response.json({MediaContainer:{Metadata:items,totalSize:items.length}});}
   if(url.pathname.startsWith('/library/sections/')) {
-    let items=url.pathname.includes('/20/')?shows:nodes;
+    let items=url.pathname.includes('/20/')?url.searchParams.get('type')==='4'?episodes:shows:nodes;
     if(url.pathname.endsWith('/onDeck'))items=(url.pathname.includes('/20/')?episodes:nodes).filter(n=>n.viewOffset>0&&!n.viewCount&&!removed.has(n.ratingKey)).slice(0,url.pathname.includes('/20/')?2:3);
     if(url.pathname==='/library/sections/20/recentlyAdded')items=recentEpisodes;
     if(url.pathname.endsWith('/unwatched')||url.searchParams.get('unwatched')==='1')items=items.filter(n=>!n.viewCount);
+    if(url.searchParams.get('unwatched')==='0')items=items.filter(n=>n.viewCount);
     const q=url.searchParams.get('title')?.toLowerCase();if(q)items=items.filter(n=>n.title.toLowerCase().includes(q));
     const genre=url.searchParams.get('genre');if(genre)items=items.filter(n=>n.Genre[0]!.tag===(genre==='1'?'Adventure':'Drama'));
     const year=url.searchParams.get('year'),rating=url.searchParams.get('contentRating');if(year)items=items.filter(n=>n.year===Number(year));if(rating)items=items.filter(n=>n.contentRating===rating);
@@ -184,6 +188,8 @@ if(process.argv.includes('--check-explore')){
     const {items}= (await api('tmdb/rows/top-picks')).json();
     assert.ok(items.length);
     assert.ok(!items.some((item:{key:string})=>item.key==='movie:tmdb:42'));
+    assert.equal((await api('tmdb/rows/because-1')).json().title,`Because You Watched ${nodes[5]!.title}`);
+    assert.equal((await api('tmdb/rows/because-2')).json().title,`Because You Watched ${shows[0]!.title}`);
     const details='details?kind=movie&tmdb=42&title=The%20Quiet%20Frontier';
     const owned=(await api(details)).json();
     assert.equal(owned.libraryId,'42');

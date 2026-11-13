@@ -10,7 +10,8 @@ export type DiscoverMetadata = { ratingKey?: string; guid?: string; type?: strin
   duration?: number; rating?: number; audienceRating?: number; leafCount?: number; tagline?: string; studio?: string; contentRating?: string;
   Guid?: { id?: string }[]; Genre?: Tag[]; Role?: Tag[]; originallyAvailableAt?: string;
   Rating?: { image: string; value: number; type?: string }[]; ratingImage?: string; audienceRatingImage?: string };
-type Container = { MediaContainer?: { Metadata?: DiscoverMetadata[]; Hub?: { key?: string; hubKey?: string; title?: string; type?: string; Metadata?: DiscoverMetadata[] }[]; totalSize?: number; size?: number;
+type DiscoverHub = { key?: string; hubKey?: string; hubIdentifier?: string; title?: string; type?: string; Metadata?: DiscoverMetadata[] };
+type Container = { MediaContainer?: { Metadata?: DiscoverMetadata[]; Hub?: DiscoverHub[]; totalSize?: number; size?: number;
   SearchResults?: { SearchResult?: { Metadata?: DiscoverMetadata | DiscoverMetadata[] }[] }[]; UserState?: { watchlistedAt?: number } | { watchlistedAt?: number }[] } };
 const container = (data: unknown) => (data as Container | undefined)?.MediaContainer ?? {};
 
@@ -42,7 +43,18 @@ const hubId = (key: string) => `hub.${Buffer.from(key).toString('base64url')}`;
 const hubKey = (id: string) => { const key = Buffer.from(id.slice(4), 'base64url').toString('utf8'); requireThat(/^\/[^/]/.test(key) && key.length < 600, 'NOT_FOUND', 'Unknown row.', 404); return key; };
 // Shelves of categories (genres, decades) and trailers hold nothing to open.
 const unlisted = new Set(['directory', 'clip']);
-const streamingShelf = /^(?:(?:trending|popular|top\s+\d+)\b.*\bon|(?:new|recently released|recently added)\s+(?:on|to))\s+(?:netflix|(?:amazon\s+)?prime video|disney\+|hulu|(?:hbo\s+)?max|apple tv(?:\+| plus)?|paramount(?:\+| plus))$/i;
+const serviceTitle = /\byour\s+(?:(?:favorite|favourite|selected|streaming|watch)\s+)*(?:services?|providers?)\b|\b(?:streaming|watch)\s+(?:services?|providers?)\b|\b(?:on|across)\s+streaming\b/i;
+const namedService = /(?:\b(?:on|to|from)\s+|^)(?:netflix|(?:amazon\s+)?prime video|disney\s*(?:\+|plus)|hulu|(?:hbo\s+)?max|apple tv(?:\s*(?:\+|plus))?|paramount\s*(?:\+|plus)|peacock|crunchyroll|discovery\s*(?:\+|plus)|starz|shudder|mubi|tubi|pluto tv|(?:the\s+)?roku channel|britbox|amc\s*(?:\+|plus))(?=$|\s*[:–—(]|[!,]|\s+(?:this|today|now|originals)\b)/i;
+function isServiceShelf(hub: DiscoverHub, title: string) {
+  const label = title.normalize('NFKC').trim().replace(/\s+/g, ' ');
+  if (serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
+  // Plex can change or localize display names. Also look for explicit service markers in shelf identifiers.
+  return [hub.hubIdentifier, hub.hubKey, hub.key].some(value => {
+    if (!value) return false;
+    const identifier = value.split('?')[0]!.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._/-]+/g, ' ');
+    return serviceTitle.test(identifier) || /\b(?:services?|streaming)\b/i.test(identifier);
+  });
+}
 const LIMIT = 20, HUB_LIMIT = 50;
 // Discover shelves and search leave out a title's external ids, which Seerr's labels are matched on. One batched
 // metadata read fills them in; ids are public catalog data, so they are kept for every viewer.
@@ -56,9 +68,9 @@ export class PlexDiscover {
     const seen = new Set<string>();
     return [{ id: 'watchlist', title: 'Watchlist', icon: 'star', personal: true }, ...hubs.flatMap(hub => {
       const key = hub.key ?? hub.hubKey;
-      if (!key || !hub.title || unlisted.has(hub.type ?? '') || !/^\/[^/]/.test(key) || seen.has(key)) return [];
+      if (!key || !hub.title || unlisted.has(hub.type ?? '') || !/^\/[^/]/.test(key) || seen.has(key) || isServiceShelf(hub, hub.title)) return [];
       seen.add(key);
-      return [{ id: hubId(key), title: hub.title, icon: 'trending', ...(streamingShelf.test(hub.title.trim()) && {overlapsStreaming:true}) }];
+      return [{ id: hubId(key), title: hub.title, icon: 'trending' }];
     })];
   }
   async row(token: string, id: string, page: number): Promise<ExplorePage> {
