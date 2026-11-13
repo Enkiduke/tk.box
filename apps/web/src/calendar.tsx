@@ -2,6 +2,7 @@ import {lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState} f
 import type {CalendarEntry, CalendarEpisodeLabel, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice, Icon, Loading} from './components.js';
 import {link, useApi} from './hooks.js';
+import {episodeRanges, groupCalendarEntries} from './calendar-episodes.js';
 import './calendar.css';
 
 const ExploreDialog = lazy(() => import('./explore.js').then(module => ({default: module.ExploreDialog})));
@@ -64,34 +65,44 @@ function MonthPicker({from, active, current, onPick}: {from: string; active: str
   </details>;
 }
 
-function CardArtwork({entry, list}: {entry: CalendarEntry; list: boolean}) {
-  const choices = [...new Set([list ? entry.posterUrl : entry.stillUrl, entry.backdropUrl, entry.posterUrl].filter((url): url is string => !!url))];
+function CardArtwork({entries, list}: {entries: CalendarEntry[]; list: boolean}) {
+  const posters = entries.map(entry => entry.posterUrl), backdrops = entries.map(entry => entry.backdropUrl);
+  const stills = entries.map(entry => entry.stillUrl);
+  const ordered = list ? [...posters, ...backdrops, ...stills] : entries.length > 1 ? [...backdrops, ...stills, ...posters] : [...stills, ...backdrops, ...posters];
+  const choices = [...new Set(ordered.filter((url): url is string => !!url))];
   const [failed, setFailed] = useState<string[]>([]);
   const src = choices.find(url => !failed.includes(url));
-  return src ? <img key={src} className={src === entry.posterUrl ? 'calendar-portrait' : undefined} src={src} alt="" loading="lazy" decoding="async"
+  return src ? <img key={src} className={posters.includes(src) ? 'calendar-portrait' : undefined} src={src} alt="" loading="lazy" decoding="async"
     onError={() => setFailed(previous => [...previous, src])}/>
-    : <span className="calendar-art-placeholder"><Icon name={entry.kind === 'episode' ? 'shows' : 'movies'} size={28}/></span>;
+    : <span className="calendar-art-placeholder"><Icon name={entries[0]!.kind === 'episode' ? 'shows' : 'movies'} size={28}/></span>;
 }
 
-function Entry({entry, current, list, onOpen}: {entry: CalendarEntry; current: string; list: boolean; onOpen: () => void}) {
+function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean; onOpen: (entry: CalendarEntry, plexId?: string) => void}) {
+  const entry = entries[0]!, stacked = entries.length > 1;
   const episode = entry.kind === 'episode';
   const release = entry.kind === 'episode' ? `S${String(entry.season).padStart(2, '0')}E${String(entry.episode).padStart(2, '0')}` : releaseLabels[entry.kind];
-  const upcoming = entry.airTime ? Date.parse(entry.airTime) > Date.now() : entry.day >= current;
-  const available = !!entry.plexItemId;
-  const status = available ? '' : entry.availabilityUnknown ? 'Availability unknown' : upcoming ? '' : 'Not in Library';
-  const label = episode ? entry.episodeLabel ? episodeLabels[entry.episodeLabel] : 'New episode' : release;
+  const playable = entries.filter(item => item.plexItemId);
+  const available = playable.length === entries.length, unknown = entries.some(item => item.availabilityUnknown);
+  const availabilityLabel = available ? 'In Library' : playable.length ? `${playable.length} of ${entries.length} episodes in Library` : 'Not in Library';
+  const label = stacked ? `${entries.length} episodes` : episode ? entry.episodeLabel ? episodeLabels[entry.episodeLabel] : 'New episode' : release;
+  const times = [...new Set(entries.map(item => item.airTime ? timeFormat.format(new Date(item.airTime)) : 'All day'))].join(' · ');
+  const milestones = stacked ? [...new Set(entries.flatMap(item => item.episodeLabel ? [episodeLabels[item.episodeLabel]] : []))] : [];
+  const caption = stacked ? [episodeRanges(entries), ...milestones].filter(Boolean).join(' · ') : [release, entry.episodeTitle].filter(Boolean).join(' · ');
   return <li>
-    <button type="button" className="calendar-entry" onClick={onOpen}>
+    <button type="button" className="calendar-entry" data-stack={stacked || undefined}
+      onClick={() => onOpen(entry, stacked ? playable.find(item => item.plexShowId)?.plexShowId ?? playable[0]?.plexItemId : entry.plexItemId)}>
       <span className="calendar-art" data-available={available || undefined}>
-        <CardArtwork entry={entry} list={list}/>
+        <CardArtwork entries={entries} list={list}/>
         <span className="calendar-card-label">{label}</span>
-        {available && <span className="calendar-available" title="In Library"><Icon name="check" size={16}/><span className="sr-only">In Library</span></span>}
+        {(playable.length > 0 || !unknown) && <span className="calendar-availability" title={availabilityLabel}>
+          <Icon name={available ? 'check' : playable.length ? 'info' : 'close'} size={16}/><span className="sr-only">{availabilityLabel}</span>
+        </span>}
         <strong>{entry.title}</strong>
       </span>
       <span className="calendar-caption">
-        <span className="calendar-airtime">{entry.airTime ? timeFormat.format(new Date(entry.airTime)) : 'All day'}</span>
-        {episode && <span className="calendar-episode">{[release, entry.episodeTitle].filter(Boolean).join(' · ')}</span>}
-        {status && <span>{status}</span>}
+        <span className="calendar-airtime">{times}</span>
+        {episode && <span className="calendar-episode" title={stacked ? caption : undefined}>{caption}</span>}
+        {unknown && <span>Availability unknown</span>}
       </span>
     </button>
   </li>;
@@ -142,7 +153,7 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
       entries.push(entry);
       groups.set(entry.day, entries);
     }
-    return groups;
+    return new Map([...groups].map(([day, entries]) => [day, groupCalendarEntries(entries)]));
   }, [pages, filter]);
   const viewportTop = () => (controls.current?.getBoundingClientRect().bottom ?? 0) + 10;
 
@@ -230,8 +241,8 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
   const sources = Object.entries(initial.data?.sources ?? {}).filter(([source]) => filter !== (source === 'Radarr' ? 'shows' : 'movies'));
   const failed = sources.filter(([, status]) => status === 'unavailable').map(([source]) => source);
   const disconnected = sources.filter(([, status]) => status === 'disconnected').map(([source]) => source);
-  const open = (entry: CalendarEntry) => {
-    if (entry.plexItemId) {onOpen(entry.plexItemId); return;}
+  const open = (entry: CalendarEntry, plexId?: string) => {
+    if (plexId) {onOpen(plexId); return;}
     setSelected({key: entry.key, title: entry.title, year: entry.year, summary: entry.summary, posterUrl: entry.posterUrl, backdropUrl: entry.backdropUrl,
       kind: entry.kind === 'episode' ? 'show' : 'movie', source: 'plex', ids: entry.ids});
   };
@@ -278,7 +289,7 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
               <h2><time dateTime={day} aria-current={day === current ? 'date' : undefined}><span className="sr-only">{dayFormat.format(dayAt(day))}</span>
                 <span aria-hidden="true" className="calendar-date-stamp"><span>{weekdayFormat.format(dayAt(day))}</span><strong>{Number(day.slice(-2))}</strong><span>{monthName.format(dayAt(day))}</span></span>
                 {day === current && <span className="calendar-date-today">Today</span>}</time></h2>
-              {dayGroups.has(day) ? <ul>{dayGroups.get(day)!.map(entry => <Entry key={entry.key} entry={entry} current={current} list={view === 'list'} onOpen={() => open(entry)}/>)}</ul>
+              {dayGroups.has(day) ? <ul>{dayGroups.get(day)!.map(entries => <Entry key={entries[0]!.key} entries={entries} list={view === 'list'} onOpen={open}/>)}</ul>
                 : <p className="calendar-empty-day">{hasSource(page) ? 'No releases scheduled' : 'Release schedule unavailable'}</p>}
             </section>)}
           </div>;
