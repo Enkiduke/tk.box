@@ -26,7 +26,13 @@ test('TMDB routes validate auth and regional providers, combine media types, app
     const url=new URL(String(input));calls.push(url);
     if(url.searchParams.get('api_key')==='invalid')return Response.json({}, {status:401});
     if(url.pathname.endsWith('/regions'))return Response.json({results:[{iso_3166_1:'US',english_name:'United States'}]});
-    if(url.pathname.includes('/watch/providers/'))return Response.json({results:[{provider_id:8,provider_name:'Netflix'},{provider_id:9,provider_name:'Amazon Prime Video'}]});
+    if(url.pathname.includes('/watch/providers/'))return Response.json({results:[
+      {provider_id:8,provider_name:'Netflix'},{provider_id:9,provider_name:'Amazon Prime Video'},
+      {provider_id:10,provider_name:'Disney Plus'},{provider_id:11,provider_name:'Peacock Premium Plus'},
+      {provider_id:12,provider_name:'Paramount Plus Premium'},{provider_id:13,provider_name:'Paramount Plus Amazon Channel'},
+      {provider_id:14,provider_name:'MGM Plus'},{provider_id:15,provider_name:'Discovery +'},
+      {provider_id:16,provider_name:'Peacock Premium'}
+    ]});
     if(url.pathname==='/3/discover/tv')return Response.json({total_pages:1,results:[{id:1,name:'A show',first_air_date:'2026-10-15',original_language:'fr'}]});
     const page=Number(url.searchParams.get('page')??1);
     if(page===2&&!failed){failed=true;return Response.json({}, {status:503});}
@@ -43,7 +49,7 @@ test('TMDB routes validate auth and regional providers, combine media types, app
     new ExploreStore(db,new Vault(randomBytes(32))),auth,auth,()=> 'account-token',client);
   const get=(path:string)=>app.inject({url:`/api/v1/explore/${path}`,headers:{authorization:'fixture'}});
   assert.equal((await app.inject('/api/v1/explore/tmdb/providers')).statusCode,401);
-  assert.deepEqual((await get('tmdb/providers')).json().defaults,[8,9]);
+  assert.deepEqual((await get('tmdb/providers')).json().defaults,[8,9,10,16,12,14,15]);
   assert.equal((await get('tmdb/providers?region=ZZ')).statusCode,400);
   const path='tmdb/rows/popular-streaming';
   assert.equal((await get(`${path}?provider=99`)).statusCode,400);
@@ -150,6 +156,8 @@ test('Excluded Plex shelves are absent from browsing, admin controls and direct 
     {key:'/hubs/plex',title:'New on Plex',type:'movie'},
     {key:'/hubs/followers',title:'Follower Favorites',type:'movie'},
     {key:'/hubs/watchlisted',title:'Most Watchlisted',type:'show'},
+    {key:'/hubs/week-in-history',title:'Released This Week in History',type:'movie'},
+    {key:'/hubs/localized-history',hubIdentifier:'discover.releasedThisWeekInHistory',title:'Cette semaine',type:'movie'},
     {key:'/hubs/localized-followers',hubIdentifier:'discover.followerFavorites',title:'Favoris',type:'movie'},
     {key:'/hubs/localized-watchlisted',hubIdentifier:'discover.mostWatchlisted',title:'Les plus suivis',type:'show'}
   ];

@@ -33,8 +33,13 @@ type Title = {
   vote_average?: number; vote_count?: number; popularity?: number;
 };
 const kinds = ['movie', 'tv'] as const;
-const services = [['netflix'], ['amazon prime video', 'prime video'], ['disney+'], ['hulu'],
-  ['max', 'hbo max'], ['apple tv+', 'apple tv plus', 'apple tv'], ['paramount+', 'paramount plus']];
+const services = [
+  ['netflix'], ['amazon prime video', 'prime video'], ['disney+'], ['hulu'], ['max', 'hbo max'], ['apple tv+', 'apple tv'],
+  ['peacock premium', 'peacock premium plus', 'peacock'],
+  ['paramount+', 'paramount+ essential', 'paramount+ premium', 'paramount+ with showtime', 'paramount+ showtime'],
+  ['mgm+'], ['discovery+']
+];
+const providerName = (name:string) => name.trim().toLowerCase().replace(/\s+/g,' ').replace(/\s+plus\b/g,'+').replace(/\s+\+/g,'+');
 const date = (value: number) => new Date(value).toISOString().slice(0, 10);
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
@@ -82,10 +87,8 @@ export class TmdbExplore {
     const providers = [...new Map(lists.flat().flatMap(p => p && Number.isSafeInteger(p.provider_id) && p.provider_id > 0 && typeof p.provider_name === 'string'
       ? [[p.provider_id, {id:p.provider_id, name:p.provider_name, logoUrl:tmdbImage(typeof p.logo_path === 'string' ? p.logo_path : undefined, 'w92')}] as const] : [])).values()];
     providers.sort((a,b) => a.name.localeCompare(b.name) || a.id - b.id);
-    const defaults = services.flatMap(names => {
-      const match = providers.find(p => names.includes(p.name.trim().toLowerCase()));
-      return match ? [match.id] : [];
-    });
+    const providerIds = new Map(providers.map(p=>[providerName(p.name),p.id]));
+    const defaults = services.flatMap(names => names.map(name=>providerIds.get(providerName(name))).find(id=>id!==undefined)??[]);
     return {regions, providers, defaults};
   }
   private async titles(type: TitleKind, path: string, params: Record<string, string>, ttl?: number, missingIsEmpty = false): Promise<Result> {
