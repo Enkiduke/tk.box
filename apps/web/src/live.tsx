@@ -1,4 +1,4 @@
-import {Fragment,useEffect,useRef,useState,type ReactNode} from 'react';
+import {Fragment,useEffect,useState,type ReactNode} from 'react';
 import {useApi,useDebounced,useInfinitePages,clock,link,duration,invalidate} from './hooks.js';
 import {api} from './api.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Icon,Modal,Row} from './components.js';
@@ -29,7 +29,6 @@ const reloadGuide=()=>invalidate('/guide');
 // Any filter besides the fixed ones is an IPTV source's id, shown as its category (News, Sports…) after All Channels.
 const fixedFilters=['all','custom','favorites'];
 type Filter=string;
-const aligned=()=>Math.floor(Date.now()/1800000)*1800000;
 const guideHours=4,guideSpan=guideHours*3600000;
 const guideDate=new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric'});
 const validFilter=(value:string|null):value is Filter=>!!value&&(fixedFilters.includes(value)||/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
@@ -119,8 +118,9 @@ export function tuneTarget(c:{id:string;name:string;number:number;stack?:string;
 export const hasFeed=(c:{id:string;feeds?:{id:string}[]},id?:string)=>!!id&&(c.id===id||!!c.feeds?.some(f=>f.id===id));
 export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolean;params:URLSearchParams;accountId:string;onWatch:WatchChannel;busy:boolean;playing?:string}) {
   const requested=params.get('filter'),filter=validFilter(requested)?requested:params.get('channel')?'all':savedFilter(accountId);
-  const [start,setStart]=useState(aligned),[search,setSearch]=useState(''),[error,setError]=useState(''),[favoriteBusy,setFavoriteBusy]=useState<string[]>([]),[selection,setSelection]=useState<{channel:Station;slot?:Slot}>();
-  const q=useDebounced(search),now=useNow(),end=start+guideSpan,channel=params.get('channel')??'';
+  const [browsedStart,setBrowsedStart]=useState<number>(),[search,setSearch]=useState(''),[error,setError]=useState(''),[favoriteBusy,setFavoriteBusy]=useState<string[]>([]),[selection,setSelection]=useState<{channel:Station;slot?:Slot}>();
+  const q=useDebounced(search),now=useNow(),slot=Math.floor(now/1800000)*1800000;
+  const start=browsedStart??slot,end=start+guideSpan,channel=params.get('channel')??'';
   const query=new URLSearchParams({start:String(start),end:String(end),filter,q,limit:'50',...(channel?{channel}:{})}).toString();
   const list=useInfinitePages<Guide>(offset=>`/guide?${query}&offset=${offset}`,50,query),guide=joinPages(list.pages);
   const data={data:guide,loading:list.loading,error:!guide&&!list.loading?{message:'The guide could not be loaded.'}:undefined,reload:reloadGuide};
@@ -130,9 +130,8 @@ export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolea
   const filters:[Filter,string][]=[['all','All Channels'],...categories.map(c=>[c.id,c.name] as [Filter,string]),['custom','Plex Channels'],['favorites','Favorites']];
   useEffect(()=>{try{sessionStorage.setItem(`tk.box:guide:${accountId}`,filter);}catch{}},[filter,accountId]);
   useEffect(()=>{const timer=setInterval(reloadGuide,60000);return()=>clearInterval(timer);},[]);
-  // Roll the guide on at each half hour while it is showing the current slot; a guide paged elsewhere stays put.
-  const slot=Math.floor(now/1800000)*1800000,lastSlot=useRef(slot);
-  useEffect(()=>{const previous=lastSlot.current;lastSlot.current=slot;if(slot!==previous)setStart(s=>s===previous?slot:s);},[slot]);
+  // Resume following the clock if it catches up to a window the viewer browsed to.
+  useEffect(()=>{if(browsedStart===slot)setBrowsedStart(undefined);},[browsedStart,slot]);
   useEffect(()=>{setSelection(undefined);},[start,filter,q,channel]);
   useEffect(()=>{if(selection&&data.data&&!data.data.channels.some(c=>c.id===selection.channel.id))setSelection(undefined);},[data.data]);
   const navigate=(value:Filter)=>{window.location.hash=link('live',{filter:value});};
@@ -143,6 +142,7 @@ export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolea
   }
   const times=Array.from({length:guideHours*2},(_,i)=>start+i*1800000),livePosition=(now-start)/(end-start)*100;
   const guideTimeLabel=`${guideDate.format(start)} · ${clock(start)}`;
+  const browsingAhead=start>slot,browsingBehind=start<slot;
   const selected=selection?data.data?.channels.find(c=>c.id===selection.channel.id):undefined;
   const current=selected?.programs.find(p=>p.program&&p.program.start<=now&&p.program.end>now)?.program;
   const next=selected?.programs.find(p=>p.program&&p.program.start>now)?.program;
@@ -150,18 +150,20 @@ export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolea
   const watch=(c:Station,feedId?:string)=>{setSelection(undefined);if(feedId)rememberFeed(c.stack,feedId);onWatch(tuneTarget(c,feedId),airingNow(c,now)?.title);};
   return <div className="page live-page">
     <div className="browse-controls guide-toolbar">
-      <div className="guide-time-controls" role="group" aria-label="Guide time">
-        <button aria-label="Previous 4 hours" onClick={()=>setStart(s=>s-guideSpan)}><Icon name="back" size={16}/></button>
-        <button className="guide-now" onClick={()=>setStart(aligned())}><strong>Now</strong><span aria-live="polite">{guideTimeLabel}</span></button>
-        <button aria-label="Next 4 hours" onClick={()=>setStart(s=>s+guideSpan)}><Icon name="next" size={16}/></button>
+      <div className="guide-toolbar-content">
+        <div className="guide-time-controls" role="group" aria-label="Guide time">
+          <button aria-label={browsingAhead?'Return to now':'Previous 4 hours'} title={browsingAhead?'Return to now':'Previous 4 hours'} onClick={()=>setBrowsedStart(browsingAhead?undefined:start-guideSpan)}><Icon name={browsingAhead?'restart':'back'} size={16}/></button>
+          <time className="guide-date" dateTime={new Date(start).toISOString()} title={guideTimeLabel} aria-live="polite">{guideTimeLabel}</time>
+          <button aria-label={browsingBehind?'Return to now':'Next 4 hours'} title={browsingBehind?'Return to now':'Next 4 hours'} onClick={()=>setBrowsedStart(browsingBehind?undefined:start+guideSpan)}><Icon name={browsingBehind?'restart':'next'} size={16}/></button>
+        </div>
+        <div className="tabs" role="group" aria-label="Channel filters">{filters.map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>navigate(value)}>{label}</button>)}</div>
+        <div className="guide-search-controls">
+          <label className="guide-search"><Icon name="search"/><input aria-label="Search channels" placeholder="Channel name" maxLength={120} value={search} onChange={e=>setSearch(e.target.value)}/></label>
+          <button onClick={data.reload}>Refresh</button>
+        </div>
       </div>
-      <div className="tabs" role="group" aria-label="Channel filters">{filters.map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>navigate(value)}>{label}</button>)}</div>
     </div>
-    <div className="guide-search-row">
-      <label className="guide-search"><Icon name="search"/><input aria-label="Search channels" placeholder="Channel name" maxLength={120} value={search} onChange={e=>setSearch(e.target.value)}/></label>
-      <button onClick={data.reload}>Refresh</button>
-      {busy&&<span className="muted small" role="status">Tuning channel…</span>}
-    </div>
+    {busy&&<div className="muted small" role="status">Tuning channel…</div>}
     {channel&&<div className="notice subtle"><span>Showing the selected channel.</span><a href={link('live',{filter})}>Show all channels →</a></div>}{error&&<ErrorNotice message={error}/ >}{data.error&&<ErrorNotice message={data.error.message} retry={data.reload}/ >}
     {data.loading&&!data.data?<Loading/>:data.data&&!data.data.channels.length?<Empty title={q?'No matching channels':channel?'Channel unavailable':filter==='favorites'?'No favorite channels yet':filter==='custom'?'No Plex channels yet':'No channels available'}>{q?<button onClick={()=>setSearch('')}>Clear search</button>:channel||filter!=='all'?<button onClick={()=>navigate('all')}>Show All Channels</button>:admin?<a href={link('settings')}>Create a channel or add a source in Settings →</a>:'Your administrator can add and approve channels.'}</Empty>:data.data&&<>
       <div className="guide-scroll"><div className="guide-time"><span>CHANNEL / {data.data.total}</span><div style={{gridTemplateColumns:`repeat(${times.length},1fr)`}}>{times.map(t=><span key={t}>{clock(t)}</span>)}</div></div>{data.data.channels.map((c,i)=>{const head=sourceHead(data.data!,i);return <Fragment key={c.id}>{head&&<div className="guide-source"><span>{head.name}<small>{head.count}</small></span></div>}<div className={`guide-row ${hasFeed(c,channel)?'highlight':''} ${hasFeed(c,playing)?'playing':''}`}><div className="guide-station"><button className={`star ${c.favorite?'active':''}`} disabled={favoriteBusy.includes(c.id)} aria-label={`${c.favorite?'Unfavorite':'Favorite'} ${c.name}`} aria-pressed={c.favorite} onClick={()=>void favorite(c)}><Icon name="star"/></button><button className="station-button" onClick={()=>setSelection({channel:c})} aria-label={`${c.name} details`}><StationIdentity channel={c} size={40}/></button><button className="watch-button" disabled={busy} aria-label={`Watch ${c.name} live`} title="Watch live" onClick={()=>watch(c)}><Icon name="play" size={14}/></button></div><div className="guide-programs">{c.programs.map((p,i)=>{if(p.blank)return <span key={i} className="guide-program blank" aria-hidden="true" style={{left:`${(p.start-start)/(end-start)*100}%`,width:`${(p.end-p.start)/(end-start)*100}%`}}/>;const airing=!!p.program&&p.program.start<=now&&p.program.end>now;const past=p.end<=now;return <button key={i} className={`guide-program ${p.program?'':'no-guide'} ${airing?'airing':''} ${soon(p.program)?'soon':''} ${past?'past':''}`} style={{left:`${(p.start-start)/(end-start)*100}%`,width:`${(p.end-p.start)/(end-start)*100}%`}} disabled={airing&&busy} onClick={()=>airing?watch(c):setSelection({channel:c,slot:p})} title={airing?'Watch live':p.program?.description} aria-label={`${airing?'Watch ':''}${p.program?fullTitle(p.program):'No guide data'},${c.name}, ${clock(p.program?.start??p.start)}`}><strong title={p.program?fullTitle(p.program):'No guide data'}>{p.program?.title??'No guide data'}{p.program?.subtitle&&<em> {p.program.subtitle}</em>}</strong><span>{p.program?.continuous?'24/7':soon(p.program)?`Starting soon · ${clock(p.program!.end)}`:`${clock(p.program?.start??p.start)}–${clock(p.program?.end??p.end)}`}</span>{airing&&!p.program!.continuous&&!soon(p.program)&&<progress aria-label="Program progress" max={p.program!.end-p.program!.start} value={now-p.program!.start}/>}</button>;})}{livePosition>=0&&livePosition<100&&<span className="now-line" style={{left:`${livePosition}%`}} aria-hidden="true"/>}</div></div></Fragment>;})}</div><div ref={list.sentinel} className="list-more">{list.more?<button onClick={list.loadMore}>Load more channels</button>:list.loading?'Loading channels…':`${data.data.channels.length} of ${data.data.total} channels`}</div></>}

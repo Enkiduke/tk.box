@@ -635,17 +635,17 @@ dialog::backdrop{background:rgba(0,0,0,.76)}
 .tabs button[aria-selected=true],.tabs button[aria-pressed=true]{background:var(--accent-tint);color:var(--accent);border-color:var(--accent)}
 .tabs button[aria-selected=true]:hover,.tabs button[aria-pressed=true]:hover{background:var(--accent-tint-hover);color:var(--accent-hover);border-color:var(--accent-hover)}
 .page.live-page{padding-top:calc(var(--nav-h) + 8px)}
-.browse-controls.guide-toolbar{flex-wrap:nowrap;gap:12px}
+.guide-toolbar-content{display:flex;align-items:center;gap:12px;width:100%;min-width:0}
 .guide-toolbar .tabs{min-width:0;flex-wrap:nowrap;overflow-x:auto;margin:0;padding:2px;scrollbar-width:thin}
 .guide-toolbar .tabs button{flex:none;white-space:nowrap}
 .guide-toolbar .tabs button:focus-visible{outline-offset:-2px}
 .guide-time-controls{display:flex;align-items:center;flex:none;gap:4px}
-.guide-time-controls button{height:36px;padding:0 7px}
-.guide-time-controls .guide-now{gap:7px;padding:0 10px;font-size:13px;white-space:nowrap}
-.guide-now span{color:var(--muted);font-variant-numeric:tabular-nums}
-.guide-search-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px}
-.guide-search-row .guide-search{max-width:100%}
-.guide-search-row>button{height:40px;font-size:13px}
+.guide-time-controls button{width:32px;height:36px;padding:0}
+.guide-date{width:180px;padding:0 10px;color:var(--muted);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.guide-search-controls{display:flex;align-items:center;flex:none;gap:8px;margin-left:auto}
+.guide-toolbar .guide-search{width:clamp(140px,18vw,280px);height:36px}
+.guide-toolbar .guide-search svg{flex:none}
+.guide-search-controls>button{height:36px;font-size:13px}
 .guide-search{display:flex;flex-direction:row;align-items:center;gap:8px;width:280px;height:40px;padding:0 14px;border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--muted)}
 .guide-search input{border:0;background:transparent;padding:0;font-size:14px}
 .guide-search svg{width:17px;height:17px}
@@ -786,7 +786,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .poster-grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:18px 10px}
   .search-box{height:48px;margin-bottom:24px}.search-box input{font-size:16px}
   .guide-search{width:100%}
-  .guide-search-row .guide-search{flex:1;min-width:0}
+  .guide-toolbar-content{overflow-x:auto;padding:4px;scrollbar-width:thin}
+  .guide-toolbar .tabs{flex:none;overflow:visible}
   .station-button strong{font-size:13px}
   dialog{width:100%;max-height:100%;margin:0;border-radius:0;height:100%;max-width:100%;border:0}
   .media-dialog{width:100%}
