@@ -108,10 +108,10 @@ export type CalendarPage = {
 };
 // Search across every catalog source; `failed` names sources that could not be searched.
 export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
-export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean; streaming?: boolean; overlapsStreaming?: boolean };
+export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean; streaming?: boolean };
 export type ExploreSeason = { number: number; name: string; episodeCount?: number; airDate?: string; status?: ExploreStatus };
 // Server-wide: the order Explore lists its sources in, sources switched off, and single rows hidden (`source:rowId`).
-export type ExploreLayout = { order: ExploreBrowseSource[]; hidden: ExploreBrowseSource[]; hiddenRows: string[]; tmdbOrder?: TmdbExploreRow[]; showPlexStreaming?: boolean };
+export type ExploreLayout = { order: ExploreBrowseSource[]; hidden: ExploreBrowseSource[]; hiddenRows: string[]; tmdbOrder?: TmdbExploreRow[] };
 export type ExploreSources = {
   plex: boolean;
   // Sources shown, in the administrator's order (whether or not each is set up).

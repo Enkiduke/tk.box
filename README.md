@@ -33,7 +33,11 @@ Save a TMDB API key in **Admin › Artwork › Settings**. In **Settings › Exp
 
 **Admin › Explore** controls the order of the TMDB group and its rows. Personal recommendations use titles and genres from the signed-in viewer’s accessible Plex libraries. Explore excludes known owned titles and uses popular titles when there are too few usable recommendations. Ownership checks cover up to 10,000 Plex titles and depend on a matching TMDB ID or an exact title and year. Use **Refresh** to rebuild your recommendations.
 
-TMDB supplies the Popular and Upcoming movie and show lists. Plex supplies its own Discover shelf order and list contents. **Admin › Explore › Plex** can hide individual shelves or enable Plex’s streaming-service shelves, such as Trending on Netflix. Viewers can hide any shelf the administrator offers in **Settings › Explore**.
+**Because You Watched** uses movies and series that Plex records as watched by the signed-in viewer within the past 90 days. A watched episode can seed its series. Explore shows up to two of these rows when it can match the watched titles to TMDB.
+
+**Top Picks for You** uses a wider sample of the viewer’s watch activity, combining this server’s watched titles with Plex Profile history when available. With Plex watch-state sync enabled, the profile can include titles watched on other Plex servers or marked as watched in Plex Discover. Explore uses the viewer’s most-watched genres and a mix of watched movies and shows to rank TMDB recommendations. When there is no usable watch activity, it shows **Popular Picks**.
+
+TMDB supplies the Popular, Upcoming, and streaming-service lists. Plex supplies the order and contents of its other Discover shelves. **Admin › Explore › Plex** can hide individual shelves. Viewers can hide any shelf the administrator offers in **Settings › Explore**.
 
 ## Requirements
 

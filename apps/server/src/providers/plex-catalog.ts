@@ -5,6 +5,7 @@ const identifier=z.union([z.string().regex(/^\d+$/),z.number().int().nonnegative
 export const catalogNode=z.object({
   ratingKey:identifier,type:z.enum(['movie','show','season','episode']),title:z.string(),librarySectionID:identifier.optional(),
   summary:z.string().optional(),year:z.number().int().optional(),duration:z.number().nonnegative().optional(),viewOffset:z.number().nonnegative().optional(),viewCount:z.number().nonnegative().optional(),
+  lastViewedAt:z.number().positive().optional().catch(undefined),
   thumb:z.string().optional(),art:z.string().optional(),parentThumb:z.string().optional(),grandparentThumb:z.string().optional(),
   parentRatingKey:identifier.optional(),grandparentRatingKey:identifier.optional(),parentTitle:z.string().optional(),grandparentTitle:z.string().optional(),
   index:z.number().int().nonnegative().optional(),parentIndex:z.number().int().nonnegative().optional(),

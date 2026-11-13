@@ -95,45 +95,59 @@ test('release windows and thresholds use movie releases and series premieres',as
   assert.equal(calls[5]?.searchParams.get('first_air_date.lte'),'2027-02-11');
 });
 
-test('browse offers TMDB and Plex, with service-specific Plex shelves off until the admin enables them',async t=>{
+test('Plex service shelves are excluded from browsing, admin controls and direct row requests',async t=>{
   const db=openDatabase(':memory:'),app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
+  const serviceHubs=[
+    {key:'/hubs/netflix',title:'Trending on Netflix',type:'movie'},
+    {key:'/hubs/hulu',title:'Popular Shows on Hulu',type:'show'},
+    {key:'/hubs/trending-1',title:'Trending On Your Services',type:'movie'},
+    {key:'/hubs/trending-2',title:'Trending Your Service',type:'show'},
+    {key:'/hubs/available',title:'Available on Your Services',type:'show'},
+    {key:'/hubs/new',title:'New on Your Services',type:'movie'},
+    {key:'/hubs/peacock',title:'Available on Peacock',type:'movie'},
+    {key:'/hubs/localized',hubIdentifier:'discover.newOnYourServices',title:'Nouveautés',type:'movie'},
+    {key:'/hubs/plex',title:'New on Plex',type:'movie'}
+  ];
   const plex=new PlexAdapter(config(),'browse-test',(async input=>{
     const url=new URL(String(input));
     return Response.json({MediaContainer:url.pathname==='/hubs/sections/home'?{Hub:[
-      {key:'/hubs/netflix',title:'Trending on Netflix',type:'movie'},
-      {key:'/hubs/hulu',title:'Popular Shows on Hulu',type:'show'},
-      {key:'/hubs/curated',title:'Plex Picks',type:'movie'}
+      ...serviceHubs,
+      {key:'/hubs/curated',title:'Plex Picks',type:'movie'},
+      {key:'/hubs/trending',title:'Trending Movies',type:'movie'}
     ]}:{Metadata:[{type:'movie',ratingKey:'42',title:'Fixture movie'}]}});
   }) as typeof fetch);
   const store=new ExploreStore(db,new Vault(randomBytes(32)));
   store.update('1',0,{seerrUrl:'https://seerr.test',seerrApiKey:'fixture'});
+  // A legacy saved opt-in cannot restore service shelves or reset other layout preferences.
+  db.prepare('INSERT INTO explore_layout VALUES(1,1,?)').run(JSON.stringify({
+    order:['plex','tmdb'],hidden:[],hiddenRows:['tmdb:acclaimed'],showPlexStreaming:true
+  }));
   const auth=async()=>({hash:'viewer',grant});
   registerExplore(app,plex,store,auth,auth,()=> 'account-token',new TmdbTitles(()=> 'fixture-key'),{seerr:(async input=>{
     const path=new URL(String(input)).pathname;
     return Response.json({results:path.endsWith('/search')?[{id:99,mediaType:'movie',title:'Seerr search result'}]:[]});
   }) as typeof fetch});
   const get=(url:string)=>app.inject(`/api/v1/explore/${url}`);
-  assert.deepEqual((await get('sources')).json().order,['tmdb','plex']);
+  assert.deepEqual((await get('sources')).json().order,['plex','tmdb']);
   assert.equal((await get('sources')).json().seerr.configured,true);
   assert.equal((await get('seerr/rows')).statusCode,400);
   assert.equal((await get('seerr/rows/trending')).statusCode,400);
   assert.equal((await get('search?q=test&sources=seerr')).json().items[0]?.title,'Seerr search result');
-  assert.deepEqual((await get('plex/rows')).json().rows.map((row:{title:string})=>row.title),['Watchlist','Plex Picks']);
+  const expected=['Watchlist','Plex Picks','Trending Movies'];
+  assert.deepEqual((await get('plex/rows')).json().rows.map((row:{title:string})=>row.title),expected);
   const admin=(await app.inject('/api/v1/admin/explore/layout')).json();
   assert.deepEqual(admin.sources.map((s:{source:string})=>s.source),['plex','tmdb']);
   const plexRows=admin.sources[0].rows;
-  const netflix=plexRows.find((row:{title:string})=>row.title==='Trending on Netflix');
-  assert.equal(netflix.overlapsStreaming,true);
-  assert.equal((await get(`plex/rows/${netflix.id}`)).statusCode,404);
-  const save=(revision:number,hiddenRows:string[])=>app.inject({method:'PUT',url:'/api/v1/admin/explore/layout',payload:{
-    expectedRevision:revision,order:['tmdb','plex'],hidden:[],hiddenRows,showPlexStreaming:true
-  }});
-  assert.equal((await save(0,[])).statusCode,200);
-  assert.equal((await get(`plex/rows/${netflix.id}`)).statusCode,200);
-  assert.equal((await save(1,[`plex:${netflix.id}`])).statusCode,200);
-  assert.equal((await get(`plex/rows/${netflix.id}`)).statusCode,404);
+  assert.deepEqual(plexRows.map((row:{title:string})=>row.title),expected);
+  assert.deepEqual(admin.layout.hiddenRows,['tmdb:acclaimed']);
+  assert.equal(admin.layout.showPlexStreaming,undefined);
+  for(const {key} of serviceHubs){
+    const id=`hub.${Buffer.from(key).toString('base64url')}`;
+    assert.equal((await get(`plex/rows/${id}`)).statusCode,404);
+  }
+  assert.equal((await get(`plex/rows/${plexRows[1].id}`)).statusCode,200);
   assert.ok((await get('tmdb/rows')).json().rows.some((row:{id:string})=>row.id==='upcoming-shows'));
 });
 
@@ -170,36 +184,116 @@ test('Plex recommendation input pages within the viewer grant and keeps a workin
 
 test('personal pools exclude owned titles, rotate seeds and separate account and library grants',async()=>{
   let scans=0;
+  const suggestionPaths:string[]=[];
   const sample=Array.from({length:12},(_,i)=>({kind:i%2?'movie':'show',title:`Seed ${i}`,year:2020,genres:['Drama'],tmdbId:10+i,addedAt:100-i} as const))
     .map(title=>({...title,genres:[...title.genres]}));
   const tmdb=new TmdbExplore(new TmdbTitles(()=> 'key',(async input=>{
     const url=new URL(String(input));
+    if(url.pathname.endsWith('/recommendations'))suggestionPaths.push(url.pathname);
     if(url.pathname.includes('/tv'))return Response.json({results:[{id:99,name:'A new show'}]});
     return Response.json({results:[movie(11),movie(91,'Owned without ID'),movie(42),movie(43)]});
   }) as typeof fetch));
-  const service=new ExploreRecommendations({exploreLibrary:async g=>{
-    scans++;
-    return {complete:g.accountId!=='partial',titles:g.accountId==='1'?[...sample,{kind:'movie',title:'Owned without ID',year:2026,genres:['Drama']}]:[]};
-  }},tmdb,()=>now);
+  let time=now, watchReads=0;
+  const service=new ExploreRecommendations({
+    exploreLibrary:async g=>{
+      scans++;
+      return {complete:g.accountId!=='partial',titles:g.accountId==='1'?[...sample,{kind:'movie',title:'Owned without ID',year:2026,genres:['Drama']}]:[]};
+    },
+    exploreRecentlyWatched:async g=>{
+      watchReads++;
+      if(g.accountId!=='1')return [];
+      const title=time===now?'Recently watched':'Newly watched';
+      return [{kind:'movie',title,genres:['Drama'],tmdbId:11,lastViewedAt:time/1000}];
+    },
+    exploreAccountHistory:async (_grant,token)=>token==='cloud-token'
+      ? [{kind:'show',title:'Watched on another server',genres:['Comedy'],tmdbId:801}] : []
+  },tmdb,()=>time);
   const [pool,repeat]=await Promise.all([service.get(grant,1),service.get(grant,1)]);
   assert.equal(scans,1);
   assert.equal(pool,repeat);
-  assert.ok(pool['because-1']?.title.startsWith('Because You Have '));
+  assert.equal(pool['because-1']?.title,'Because You Watched Recently watched');
+  assert.equal(pool['because-2'],undefined);
+  assert.equal(watchReads,1);
+  assert.deepEqual(suggestionPaths,['/3/movie/11/recommendations']);
+  time+=3600000;
+  assert.equal((await service.get(grant,1))['because-1']?.title,'Because You Watched Newly watched');
+  assert.equal(scans,1);
   const keys=pool['top-picks']?.items.map(c=>c.item.key);
   assert.ok(keys?.includes('movie:tmdb:42'));
   assert.ok(!keys?.includes('movie:tmdb:11')&&!keys?.includes('movie:tmdb:91'));
   const empty=await service.get({...grant,accountId:'2'},1);
   assert.equal(empty['top-picks']?.title,'Popular Picks');
   assert.equal(empty['because-1'],undefined);
+  const cloud=await service.get({...grant,accountId:'2'},1,'cloud-token');
+  assert.equal(cloud['top-picks']?.title,'Top Picks for You');
+  assert.equal(cloud['because-1'],undefined);
+  assert.ok(suggestionPaths.includes('/3/tv/801/recommendations'));
   const partial=await service.get({...grant,accountId:'partial'},1);
   assert.equal(partial['top-picks']?.title,'Popular Picks');
   await service.get({...grant,libraries:grant.libraries.slice(0,1)},1);
   service.forget('1');
   await service.get(grant,1);
   assert.equal(scans,5);
-  assert.notDeepEqual(selectSeeds(sample,now),selectSeeds(sample,now+7*86400000));
+  assert.deepEqual(selectSeeds(sample,['Drama']).slice(0,2).map(seed=>seed.kind),['show','movie']);
   const a=tmdbCandidate(movie(42),'movie')!,b=tmdbCandidate(movie(43),'movie')!;
   assert.deepEqual(rankCandidates([[b,a],[a]],['Drama']).map(c=>c.item.key),[a.item.key,b.item.key]);
+});
+
+test('recent watch seeds use each Plex viewer’s watched movies and series, excluding old, unwatched and inaccessible items',async()=>{
+  const lastViewedAt=now/1000-60;
+  const plex=new PlexAdapter(config(),'watched-test',(async(input,init)=>{
+    const url=new URL(String(input)), token=new Headers(init?.headers).get('X-Plex-Token');
+    assert.ok(token==='server'||token==='other-viewer');
+    if(url.pathname==='/library/metadata/40')return Response.json({MediaContainer:{Metadata:[
+      {type:'show',ratingKey:'40',title:'A watched series',librarySectionID:'20',Guid:[{id:'tmdb://140'}]}
+    ]}});
+    assert.equal(url.searchParams.get('sort'),'lastViewedAt:desc');
+    assert.equal(url.searchParams.get('unwatched'),'0');
+    const film=(ratingKey:string,title:string,viewCount:number,date=lastViewedAt)=>({ratingKey,title,viewCount,lastViewedAt:date,type:'movie',
+      librarySectionID:'10',Guid:[{id:`tmdb://${ratingKey}`}]});
+    const episode=(ratingKey:string)=>({ratingKey,title:'An episode',type:'episode',librarySectionID:'20',grandparentRatingKey:'40',viewCount:1,lastViewedAt});
+    if(url.pathname.includes('/20/')) {
+      assert.equal(url.searchParams.get('type'),'4');
+      return Response.json({MediaContainer:{Metadata:token==='server'?[episode('401'),episode('402')]:[]}});
+    }
+    assert.equal(url.searchParams.get('type'),'1');
+    return Response.json({MediaContainer:{Metadata:token==='server'?
+      [film('42','A watched movie',1,lastViewedAt+10),film('43','Unwatched movie',0),film('44','Old movie',1,lastViewedAt-366*86400),
+        {...film('45','Other library',1),librarySectionID:'99'}]:[film('46','Other viewer’s movie',1)]}});
+  }) as typeof fetch);
+  const titles=await plex.exploreRecentlyWatched(grant,now);
+  assert.deepEqual(titles.map(t=>[t.title,t.tmdbId]),[['A watched movie',42],['A watched series',140]]);
+  const other=await plex.exploreRecentlyWatched({...grant,accountId:'2',serverToken:'other-viewer'},now);
+  assert.deepEqual(other.map(t=>t.title),['Other viewer’s movie']);
+});
+
+test('Plex account history reads only the signed-in profile and resolves titles outside its server grant',async()=>{
+  let pages=0;
+  const plex=new PlexAdapter(config(),'history-test',(async(input,init)=>{
+    const url=new URL(String(input));
+    assert.equal(new Headers(init?.headers).get('x-plex-token'),'account-token');
+    if(url.hostname==='plex.tv')return Response.json({id:1,uuid:'profile-uuid'});
+    if(url.hostname==='community.plex.tv'){
+      assert.equal(init?.method,'POST');
+      const {variables}=JSON.parse(String(init?.body));
+      assert.equal(variables.uuid,'profile-uuid');
+      assert.equal(variables.after,pages?'next':undefined);
+      const metadataItem=pages?{id:'film',type:'MOVIE',guid:'plex://movie/film'}
+        :{id:'episode',type:'EPISODE',grandparent:{id:'series',type:'SHOW',guid:'plex://show/series'}};
+      return Response.json({data:{user:{watchHistory:{nodes:[{metadataItem}],pageInfo:{hasNextPage:pages++===0,endCursor:'next'}}}}});
+    }
+    assert.equal(url.hostname,'discover.provider.plex.tv');
+    assert.equal(url.pathname,'/library/metadata/series,film');
+    assert.equal(url.searchParams.get('includeGuids'),'1');
+    return Response.json({MediaContainer:{Metadata:[
+      {ratingKey:'film',type:'movie',title:'Outside movie',Guid:[{id:'tmdb://402'}]},
+      {ratingKey:'series',type:'show',title:'Outside series',Guid:[{id:'tmdb://401'}],Genre:[{tag:'Drama'}]}
+    ]}});
+  }) as typeof fetch);
+  assert.deepEqual((await plex.exploreAccountHistory(grant,'account-token')).map(t=>[t.tmdbId,t.kind,t.genres]),[[401,'show',['Drama']],[402,'movie',[]]]);
+  assert.equal(pages,2);
+  await assert.rejects(plex.exploreAccountHistory({...grant,accountId:'2'},'account-token'),{code:'PLEX_ACCESS_DENIED'});
+  assert.equal(pages,2);
 });
 
 test('saved service choices and TMDB row order preserve existing visibility settings',()=>{

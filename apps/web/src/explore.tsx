@@ -1,4 +1,4 @@
-import {memo,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
+import {memo,useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {exploreGenres,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
@@ -135,28 +135,46 @@ function Checklist<T extends string>({label,empty,options,name,chosen,join='conj
 }
 function FilterMenu({filters,labels,onChange}:{filters:Filters;labels:boolean;onChange:(next:Filters)=>void}) {
   const popup=useRef<HTMLDetailsElement>(null),[draft,setDraft]=useState(filters);
-  const close=()=>{if(popup.current?.open){popup.current.open=false;popup.current.querySelector('summary')?.focus();}};
+  const close=useCallback((restoreFocus:boolean)=>{
+    const menu=popup.current;
+    if(!menu?.open)return;
+    menu.open=false;
+    menu.querySelectorAll<HTMLDetailsElement>('.explore-pick details[open]').forEach(pick=>{pick.open=false;});
+    if(restoreFocus)menu.querySelector('summary')?.focus();
+  },[]);
+  const apply=useCallback(()=>{
+    if(draft!==filters)onChange(cleanFilters(draft));
+  },[draft,filters,onChange]);
   useEffect(()=>{
     const outside=(event:PointerEvent)=>{
-      if(popup.current&&!popup.current.contains(event.target as Node))popup.current.open=false;
-      popup.current?.querySelectorAll<HTMLDetailsElement>('.explore-pick details[open]').forEach(pick=>{if(!pick.contains(event.target as Node))pick.open=false;});
+      const menu=popup.current,target=event.target as Node;
+      if(!menu?.open)return;
+      if(!menu.contains(target)){
+        apply();
+        close(false);
+        return;
+      }
+      menu.querySelectorAll<HTMLDetailsElement>('.explore-pick details[open]').forEach(pick=>{if(!pick.contains(target))pick.open=false;});
     };
-    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')close();};
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')close(true);};
     document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
     return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
-  },[]);
+  },[apply,close]);
   const count=Number(filters.languages.length>0)+Number(filters.genres.length>0)+Number(!!(filters.from||filters.to))+Number(!!filters.min)+filters.hide.length;
   const toggleHide=(status:Hideable,on:boolean)=>setDraft(d=>({...d,hide:hideable.filter(h=>h===status?on:d.hide.includes(h))}));
-  return <details ref={popup} className="browse-popup" onToggle={e=>{if(e.currentTarget.open)setDraft(filters);}}>
-    <summary role="button" aria-label="Filter Explore"><Icon name="filter"/><span>Filters</span>{count>0&&<b>{count}</b>}</summary>
-    <form className="browse-menu filter-menu explore-filter-menu" onSubmit={e=>{e.preventDefault();onChange(cleanFilters(draft));close();}}>
+  return <details ref={popup} className="browse-popup">
+    <summary role="button" aria-label="Filter Explore" onClick={e=>{
+      if(popup.current?.open){e.preventDefault();apply();close(true);}
+      else setDraft(filters);
+    }}><Icon name="filter"/><span>Filters</span>{count>0&&<b>{count}</b>}</summary>
+    <form className="browse-menu filter-menu explore-filter-menu" onSubmit={e=>{e.preventDefault();apply();close(true);}}>
       <Checklist label="Language" empty="Any language" options={languageCodes} name={languageName} chosen={draft.languages} join="disjunction" onChange={languages=>setDraft(d=>({...d,languages}))}/>
       <Checklist label="Genre" empty="Any genre" options={exploreGenres} name={g=>g} chosen={draft.genres} join="disjunction" onChange={genres=>setDraft(d=>({...d,genres}))}/>
       <div className="explore-years"><label>Released from<input aria-label="Released from year" type="number" min="1870" max="2100" placeholder="Any" value={draft.from} onChange={e=>setDraft(d=>({...d,from:e.target.value}))}/></label>
         <label>to<input aria-label="Released to year" type="number" min="1870" max="2100" placeholder="Any" value={draft.to} onChange={e=>setDraft(d=>({...d,to:e.target.value}))}/></label></div>
       <label>Rating<select aria-label="Minimum rating" value={draft.min} onChange={e=>setDraft(d=>({...d,min:e.target.value}))}><option value="">Any rating</option>{minScores.map(n=><option key={n} value={n}>{n}+ ★</option>)}</select></label>
       {labels&&<div className="explore-hide">{hideable.map(h=><label key={h}><input type="checkbox" checked={draft.hide.includes(h)} onChange={e=>toggleHide(h,e.target.checked)}/>Hide {statusNames[h].toLowerCase()}</label>)}</div>}
-      <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(noFilters);close();}}>Reset</button></div>
+      <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(noFilters);close(true);}}>Reset</button></div>
     </form>
   </details>;
 }

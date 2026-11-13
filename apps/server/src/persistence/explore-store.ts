@@ -20,8 +20,7 @@ export const exploreLayoutInput = z.object({
   order: z.array(exploreSource).max(exploreBrowseSources.length).refine(list => new Set(list).size === list.length, 'List each source once'),
   hidden: z.array(exploreSource).max(exploreBrowseSources.length),
   hiddenRows: z.array(z.string().max(820).regex(/^(plex|tmdb):\S+$/)).max(300),
-  tmdbOrder: z.array(z.enum(tmdbExploreRows)).max(tmdbExploreRows.length).refine(list => new Set(list).size === list.length, 'List each row once').optional(),
-  showPlexStreaming: z.boolean().optional()
+  tmdbOrder: z.array(z.enum(tmdbExploreRows)).max(tmdbExploreRows.length).refine(list => new Set(list).size === list.length, 'List each row once').optional()
 }).strict();
 export const defaultExploreLayout: ExploreLayout = { order: ['tmdb', 'plex'], hidden: [], hiddenRows: [] };
 export const tmdbRowOrder = (order: ExploreLayout['tmdbOrder'] = []) => [...order, ...tmdbExploreRows.filter(row => !order.includes(row))];
@@ -29,10 +28,9 @@ export const tmdbRowOrder = (order: ExploreLayout['tmdbOrder'] = []) => [...orde
 export function exploreLayout(value: Partial<ExploreLayout> | undefined): ExploreLayout {
   const drop = (list: unknown) => Array.isArray(list) ? list.filter(s => typeof s !== 'string' || !/^(trakt|seerr)(:|$)/.test(s)) : list;
   const saved = { ...defaultExploreLayout, ...value };
-  const parsed = exploreLayoutInput.safeParse({ order: drop(saved.order), hidden: drop(saved.hidden), hiddenRows: drop(saved.hiddenRows), tmdbOrder: saved.tmdbOrder, showPlexStreaming:saved.showPlexStreaming });
+  const parsed = exploreLayoutInput.safeParse({ order: drop(saved.order), hidden: drop(saved.hidden), hiddenRows: drop(saved.hiddenRows), tmdbOrder: saved.tmdbOrder });
   const layout = parsed.success ? parsed.data : defaultExploreLayout;
-  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)], ...(layout.tmdbOrder && { tmdbOrder: tmdbRowOrder(layout.tmdbOrder) }),
-    ...(layout.showPlexStreaming !== undefined && {showPlexStreaming:layout.showPlexStreaming}) };
+  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)], ...(layout.tmdbOrder && { tmdbOrder: tmdbRowOrder(layout.tmdbOrder) }) };
 }
 type Stored = { seerrUrl: string; seerrKey?: string };
 

@@ -1,12 +1,20 @@
 import { z } from 'zod';
 import {createHash} from 'node:crypto';
 import {ArtworkCache} from './artwork-cache.js';
+import {remoteJson} from './remote-json.js';
 import type { Config } from '../config.js';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import {languageKey,type CatalogItem,type CatalogPage} from '../../../../packages/contracts/src/index.js';
 
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
+export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
+export type ExploreLocalWatch = ExploreWatchedTitle & {lastViewedAt:number};
+const communityItem = z.object({id:z.string(),guid:z.string().nullish(),type:z.string()});
+const communityHistory = z.object({data:z.object({user:z.object({watchHistory:z.object({
+  nodes:z.array(z.object({metadataItem:communityItem.extend({grandparent:communityItem.nullish()}).nullish()}).nullable()),
+  pageInfo:z.object({hasNextPage:z.boolean(),endCursor:z.string().max(2048).nullish()})
+})})})});
 
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
@@ -232,6 +240,63 @@ export class PlexAdapter {
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
     return this.json(url, accountToken, method, true);
   }
+  // Read the signed-in account's Plex Profile history, including titles outside this server.
+  async exploreAccountHistory(grant:PlexGrant,token:string):Promise<ExploreWatchedTitle[]> {
+    const account=z.object({id:accountSchema.shape.id,uuid:z.string().regex(/^[\w-]{1,64}$/)}).parse(
+      await this.json(new URL('https://plex.tv/api/v2/user'),token));
+    requireThat(account.id===grant.accountId,'PLEX_ACCESS_DENIED','Plex account does not match this session.',403);
+    const items=new Map<string,'movie'|'show'>();
+    let after:string|undefined;
+    for(let page=0;page<3&&items.size<40;page++){
+      const result=await remoteJson(new URL('https://community.plex.tv/api'),{method:'POST',headers:this.headers(token),body:{
+        operationName:'GetWatchHistoryHub',variables:{uuid:account.uuid,first:50,after},
+        query:`query GetWatchHistoryHub($uuid: ID!, $first: PaginationInt!, $after: String) {
+          user(id: $uuid) {
+            watchHistory(first: $first, after: $after) {
+              nodes { metadataItem { id guid type grandparent { id guid type } } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }`
+      }},'Plex history',this.transport,5000);
+      const history=communityHistory.safeParse(result.data);
+      if(result.status!==200||!history.success)break;
+      const {nodes,pageInfo}=history.data.data.user.watchHistory;
+      for(const entry of nodes){
+        const metadata=entry?.metadataItem;
+        const item=metadata?.type.toLowerCase()==='episode'?metadata.grandparent:metadata;
+        const kind=item?.type.toLowerCase();
+        if(kind!=='movie'&&kind!=='show')continue;
+        const id=/^plex:\/\/(?:movie|show)\/([\w-]{1,64})$/.exec(item?.guid??'')?.[1]??item?.id;
+        if(id&&/^[\w-]{1,64}$/.test(id))items.set(id,kind);
+        if(items.size>=40)break;
+      }
+      if(!pageInfo.hasNextPage||!pageInfo.endCursor||pageInfo.endCursor===after)break;
+      after=pageInfo.endCursor;
+    }
+    return this.resolveWatchedTitles(token,items);
+  }
+  private async resolveWatchedTitles(token:string,items:Map<string,'movie'|'show'>):Promise<ExploreWatchedTitle[]> {
+    const ids=[...items.keys()];
+    const results=await Promise.allSettled(Array.from({length:Math.ceil(ids.length/20)},(_,index)=>{
+      const batch=ids.slice(index*20,index*20+20);
+      return this.discover(token,`/library/metadata/${batch.join(',')}`,{includeGuids:1,'X-Plex-Container-Size':batch.length});
+    }));
+    const found=new Map<string,ExploreWatchedTitle>();
+    for(const result of results)if(result.status==='fulfilled'){
+      const container=z.object({MediaContainer:z.object({Metadata:z.array(z.object({
+        ratingKey:z.string(),type:z.string(),title:z.string(),year:z.number().optional(),Genre:z.array(z.object({tag:z.string()})).optional(),
+        Guid:z.array(z.object({id:z.string()})).optional()
+      }).nullable()).default([])})}).safeParse(result.value);
+      for(const item of container.data?.MediaContainer.Metadata??[]){
+        if(!item)continue;
+        const kind=items.get(item.ratingKey);
+        const tmdbId=Number(item.Guid?.map(g=>/^tmdb:\/\/(\d{1,10})$/.exec(g.id)?.[1]).find(Boolean));
+        if(kind===item.type&&Number.isSafeInteger(tmdbId)&&tmdbId>0)found.set(item.ratingKey,{kind,title:item.title,year:item.year,genres:item.Genre?.map(g=>g.tag)??[],tmdbId});
+      }
+    }
+    return ids.flatMap(id=>found.get(id)??[]);
+  }
   // This server's copy of a title the viewer can open: titles with that name whose guid (plex://, imdb://, tmdb://, tvdb://) matches.
   async libraryMatch(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]) {
     return (await this.libraryMatches(grant, kind, title, guids, false))[0];
@@ -293,9 +358,11 @@ export class PlexAdapter {
   }
   // Drops remembered metadata (after artwork or cleanup jobs change the library).
   forgetMetadata() {this.nodes.clear();}
-  private async catalogNode(grant:PlexGrant,id:string) {
+  private async catalogNode(grant:PlexGrant,id:string,includeGuids=false) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex media identifier.');
-    const container=catalogContainer.parse(await this.json(new URL(`/library/metadata/${id}`,this.config.PLEX_URL),grant.serverToken)).MediaContainer;
+    const url=new URL(`/library/metadata/${id}`,this.config.PLEX_URL);
+    if(includeGuids)url.searchParams.set('includeGuids','1');
+    const container=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
     const node=container.Metadata[0];requireThat(container.Metadata.length===1&&node?.ratingKey===id,'MEDIA_NOT_FOUND','Media is unavailable.',404);
     let section=node.librarySectionID??container.librarySectionID,ancestor=node.parentRatingKey;const visited=new Set([id]);
     // Some Plex versions omit the section on seasons; resolve only through actual
@@ -464,6 +531,49 @@ export class PlexAdapter {
       }
     }
     return {titles,complete:complete && !pending.length,...(complete && pending.length ? {capped:true} : {})};
+  }
+  // Date Viewed is Plex's watch state for the token making the request. Query episodes in TV libraries
+  // so a recently watched episode can seed its series even when the series is still in progress.
+  async exploreRecentlyWatched(grant:PlexGrant,now=Date.now()):Promise<ExploreLocalWatch[]> {
+    const latest=Math.floor(now/1000), earliest=latest-365*86400, limit=60;
+    const libraries=grant.libraries.filter(l=>l.type==='movie'||l.type==='show');
+    const watched=new Map<string,{node:CatalogNode;libraryId:string;lastViewedAt:number}>();
+    for(let i=0;i<libraries.length;i+=2){
+      const reads=await Promise.allSettled(libraries.slice(i,i+2).map(async library=>{
+        const type=library.type==='movie'?'movie':'episode';
+        const url=new URL(`/library/sections/${this.library(grant,library.key).key}/all`,this.config.PLEX_URL);
+        for(const [key,value] of Object.entries({type:type==='movie'?'1':'4',sort:'lastViewedAt:desc',unwatched:'0',includeGuids:'1',
+          excludeElements:'Media,Role,Director,Writer,Country,Collection,Producer,Image',
+          'X-Plex-Container-Start':'0','X-Plex-Container-Size':String(limit)}))url.searchParams.set(key,value);
+        const page=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+        requireThat(page.Metadata.length<=limit&&(page.offset===undefined||page.offset===0),'PLEX_PAGINATION_INVALID','Plex returned an unexpected watched page.',502);
+        return page.Metadata.filter(node=>node.type===type&&(node.librarySectionID??page.librarySectionID??library.key)===library.key)
+          .map(node=>({node,libraryId:library.key,lastViewedAt:node.lastViewedAt??0}));
+      }));
+      for(const read of reads)if(read.status==='fulfilled')for(const item of read.value){
+        const {node,libraryId,lastViewedAt}=item;
+        const key=node.type==='movie'?node.ratingKey:node.grandparentRatingKey;
+        if(!key||!node.viewCount||lastViewedAt<earliest||lastViewedAt>latest)continue;
+        const id=`${libraryId}:${key}`;
+        if((watched.get(id)?.lastViewedAt??0)<lastViewedAt)watched.set(id,item);
+      }
+    }
+    const recent=[...watched.values()].sort((a,b)=>b.lastViewedAt-a.lastViewedAt||a.node.ratingKey.localeCompare(b.node.ratingKey)).slice(0,24);
+    const titles:ExploreLocalWatch[]=[];
+    for(let i=0;i<recent.length&&titles.length<16;i+=2){
+      const reads=await Promise.allSettled(recent.slice(i,i+2).map(async ({node,libraryId,lastViewedAt})=>{
+        const kind=node.type==='movie'?'movie':'show';
+        const parent=kind==='show'?await this.catalogNode(grant,node.grandparentRatingKey!,true):undefined;
+        if(parent&&(parent.section!==libraryId||parent.node.type!=='show'))return;
+        const {title,year,genres,tmdbId}=catalogDto(parent?.node??node,libraryId);
+        if(tmdbId)return {kind,title,year,genres,tmdbId,lastViewedAt} satisfies ExploreLocalWatch;
+      }));
+      for(const read of reads)if(read.status==='fulfilled'&&read.value){
+        const title=read.value;
+        if(!titles.some(t=>t.kind===title.kind&&t.tmdbId===title.tmdbId))titles.push(title);
+      }
+    }
+    return titles.slice(0,16);
   }
   // Season and show cards grouped from episodes carry no description, so they take the series' own. A show that
   // can't be read keeps its card without one.
