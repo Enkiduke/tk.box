@@ -59,16 +59,20 @@
 }
 .calendar-entry:hover {background:transparent}
 .calendar-days.cards .calendar-entry[data-stack] {
-  isolation:isolate;gap:14px;
+  isolation:isolate;gap:23px;
   grid-template-areas:'art' 'caption'
 }
-.calendar-days.cards .calendar-entry[data-stack]::before,
-.calendar-days.cards .calendar-entry[data-stack]::after {
-  content:'';grid-area:art;align-self:end;height:12px;border-radius:0 0 10px 10px;
-  background:var(--surface-2);margin:0 7px;transform:translateY(4px);pointer-events:none
+.calendar-stack-layer {
+  grid-area:art;position:relative;isolation:isolate;overflow:hidden;aspect-ratio:16/9;width:100%;
+  border-radius:10px;transform:translateY(8px) scaleX(.94);pointer-events:none;
+  box-shadow:0 1px 5px rgba(0,0,0,.45)
 }
-.calendar-days.cards .calendar-entry[data-stack]::before {background:var(--surface);margin-inline:13px;transform:translateY(7px)}
+.calendar-stack-layer[data-rear] {transform:translateY(15px) scaleX(.88)}
+.calendar-stack-layer img {position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:brightness(.74)}
+.calendar-stack-layer[data-rear] img {filter:brightness(.48)}
+.calendar-stack-layer .calendar-portrait {object-position:center 32%}
 .calendar-days.cards .calendar-entry[data-stack] .calendar-art {grid-area:art;z-index:1}
+.calendar-days.cards .calendar-entry[data-stack] .calendar-art strong {padding-right:25px}
 .calendar-days.cards .calendar-entry[data-stack] .calendar-caption {grid-area:caption}
 .calendar-art {
   position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;
@@ -92,6 +96,10 @@
   border-radius:50%;background:rgba(0,0,0,.72);color:var(--muted)
 }
 .calendar-art[data-available] .calendar-availability {color:var(--calendar-available)}
+.calendar-episode-count {
+  position:absolute;right:10px;bottom:10px;display:grid;place-items:center;min-width:23px;height:23px;padding:0 5px;
+  border-radius:7px;background:rgba(0,0,0,.72);color:white;font-size:12px;font-weight:700
+}
 .calendar-caption {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;color:var(--muted);font-size:12px;font-weight:500}
 .calendar-airtime {color:var(--text);font-weight:650}
 .calendar-episode {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -105,6 +113,8 @@
 .calendar-days.list .calendar-availability svg {width:13px;height:13px}
 .calendar-days.list .calendar-art[data-available]>:is(img,.calendar-art-placeholder) {box-shadow:0 0 0 1px var(--calendar-available)}
 .calendar-days.list .calendar-art strong {align-self:end;grid-column:2;grid-row:1;font-size:15px;text-wrap:wrap}
+.calendar-days.list .calendar-entry[data-stack] .calendar-art {grid-template-columns:44px minmax(0,1fr) auto}
+.calendar-days.list .calendar-episode-count {position:static;grid-column:3;grid-row:1 / 3;align-self:center;background:var(--surface-2)}
 @media(max-width:680px) {
   .calendar-dates,.calendar-options {width:100%}
   .calendar-day {grid-template-columns:54px minmax(0,1fr);gap:8px}
