@@ -44,7 +44,7 @@ function MonthPicker({from, active, current, onPick}: {from: string; active: str
     setBrowsing(isoDay(next));
   };
   return <details className="calendar-picker" onToggle={event => {if (!event.currentTarget.open) setBrowsing(undefined);}}>
-    <summary aria-label={`Pick a date. Showing ${range}`}><Icon name="calendar" size={16}/> {range}</summary>
+    <summary aria-label={`Pick a date. Showing ${range}`} title={range}><Icon name="calendar" size={16}/><span>{range}</span></summary>
     <div className="calendar-month">
       <div className="calendar-month-heading">
         <button type="button" aria-label="Previous month" disabled={month <= '1900-01-01'} onClick={() => step(-1)}><Icon name="back" size={15}/></button>
@@ -264,7 +264,8 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
           <MonthPicker from={from} active={active} current={current} onPick={day => jump(day, true)}/>
           <button type="button" disabled={!nextWeek} aria-label="Next week" onClick={() => nextWeek && jump(nextWeek)}><Icon name="next" size={16}/></button>
         </div>
-        <button type="button" className="calendar-today" onClick={() => jump(current, true)}>Today</button>
+        {active !== current && <button type="button" className="calendar-today" aria-label="Back to today" title="Back to today"
+          onClick={() => jump(current, true)}><Icon name="restart" size={16}/></button>}
       </nav>
       <div className="calendar-options">
         <nav aria-label="Calendar media type" className="calendar-segment">
