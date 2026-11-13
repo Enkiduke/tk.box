@@ -26,7 +26,9 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
       {title: 'Invalid Date', tmdbId: 4, digitalRelease: '2026-11-00'},
     ]);
     assert.equal(url.searchParams.get('includeSeries'), 'true');
-    const timed = {series, seasonNumber: 2, episodeNumber: 1, airDate: '2026-11-13', airDateUtc: '2026-11-13T02:00:00Z', hasFile: true};
+    assert.equal(url.searchParams.get('includeEpisodeImages'), 'true');
+    const timed = {series, seasonNumber: 2, episodeNumber: 1, airDate: '2026-11-13', airDateUtc: '2026-11-13T02:00:00Z', hasFile: true,
+      images: [{coverType: 'screenshot', url: '/MediaCover/episode.jpg', remoteUrl: 'https://artworks.thetvdb.com/still.jpg'}]};
     return Response.json([timed, timed, {...timed, title: 'TBA', episodeNumber: 2, airDateUtc: null},
       {...timed, episodeNumber: 3, airDateUtc: '2026-11-14T06:00:00Z'}]);
   };
@@ -46,6 +48,7 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
   assert.equal((await app.inject({url: url.replace('2026-11-14', '2027-11-14'), headers: owner})).statusCode, 400);
   const result = await app.inject({url, headers: owner});
   assert.equal(result.statusCode, 200);
+  assert.equal(result.json<CalendarPage>().dates[1]?.stillUrl, '/api/v1/explore/image?u=https%3A%2F%2Fartworks.thetvdb.com%2Fstill.jpg');
   assert.deepEqual(result.json<CalendarPage>().dates.map(({day, kind, title, plexItemId, episodeTitle}) => [day, kind, title, plexItemId, episodeTitle]), [
     ['2026-11-12', 'physical', 'The Movie', '100', undefined],
     ['2026-11-12', 'episode', 'The Show', '201', undefined],
@@ -93,7 +96,7 @@ test('Calendar checks duplicate Plex series for the matching episode within the 
   const grant: PlexGrant = {accountId: 'viewer', role: 'viewer', serverToken: 'viewer-token',
     libraries: [{key: '20', title: 'TV', type: 'show'}, {key: '30', title: 'TV 4K', type: 'show'}]};
   const read = (viewer: PlexGrant) => plex.calendarMedia(viewer, 'show', 'The Show', ['tvdb://42']);
-  assert.deepEqual(await read(grant), [{id: '201', posterUrl: undefined, season: 2, episode: 1}]);
+  assert.deepEqual(await read(grant), [{id: '201', posterUrl: undefined, backdropUrl: undefined, season: 2, episode: 1}]);
   const count = calls.length;
   await read(grant);
   assert.equal(calls.length, count);

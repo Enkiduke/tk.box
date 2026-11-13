@@ -12,18 +12,19 @@ const day = z.iso.date();
 const query = z.object({from: day, to: day, zone: z.string().min(1).max(100).default('UTC'), account: z.string().optional()}).strict();
 const dayMs = 86_400_000;
 const id = z.number().int().positive().optional().catch(undefined);
+const images = z.array(z.object({coverType: z.string(), remoteUrl: z.string().nullish(), url: z.string().nullish()})).optional().catch(undefined);
 const info = z.object({
   title: z.string().trim().min(1).max(500), year: z.number().int().positive().optional().catch(undefined),
   overview: z.string().max(20_000).optional().catch(undefined), tmdbId: id, tvdbId: id,
   imdbId: z.string().regex(/^tt\d{1,12}$/).optional().catch(undefined),
   remotePoster: z.string().optional().catch(undefined),
-  images: z.array(z.object({coverType: z.string(), remoteUrl: z.string().optional(), url: z.string().optional()})).optional().catch(undefined),
+  images,
 });
 const movie = info.extend({inCinemas: z.unknown().optional(), digitalRelease: z.unknown().optional(), physicalRelease: z.unknown().optional(), hasFile: z.boolean().optional()});
 const episode = z.object({
   title: z.string().trim().max(500).optional().catch(undefined), seasonNumber: z.number().int().nonnegative(),
   episodeNumber: z.number().int().nonnegative(), airDate: z.unknown().optional(), airDateUtc: z.unknown().optional(),
-  hasFile: z.boolean().optional(), series: info,
+  hasFile: z.boolean().optional(), series: info, images,
 });
 type Scheduled = CalendarEntry & { hasFile?: boolean };
 type Source = keyof CalendarPage['sources'];
@@ -34,11 +35,16 @@ function datePart(value: unknown) {
   return day.safeParse(date).success && date > '0001-01-01' ? date : undefined;
 }
 
+function cover(art: z.infer<typeof images>, types: string[]) {
+  return types.flatMap(type => (art ?? []).filter(image => image.coverType.toLowerCase() === type)
+    .flatMap(image => imagePath(image.remoteUrl ?? undefined) ?? imagePath(image.url ?? undefined) ?? []))[0];
+}
+
 function titleFields(value: z.infer<typeof info>) {
-  const poster = value.images?.find(image => image.coverType === 'poster');
   const ids = {tmdb: value.tmdbId, tvdb: value.tvdbId, imdb: value.imdbId};
   return {title: value.title, year: value.year, summary: value.overview, ids,
-    posterUrl: imagePath(value.remotePoster) ?? imagePath(poster?.remoteUrl) ?? imagePath(poster?.url)};
+    posterUrl: imagePath(value.remotePoster) ?? cover(value.images, ['poster']),
+    backdropUrl: cover(value.images, ['fanart', 'backdrop', 'banner'])};
 }
 
 function movieEntry(raw: unknown): Scheduled[] {
@@ -64,6 +70,7 @@ function episodeEntry(raw: unknown): Scheduled[] {
   if (!release) return [];
   return [{...titleFields(series), key: `episode:${seriesKey}:${seasonNumber}:${episodeNumber}`, kind: 'episode',
     day: release, airTime: airTime?.toISOString(), season: seasonNumber, episode: episodeNumber,
+    stillUrl: cover(result.data.images, ['screenshot', 'still', 'thumb']),
     episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
 }
 
@@ -77,7 +84,7 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     const now = Date.now(), hit = cache.get(key);
     if (hit && hit.until > now) return hit.rows;
     const url = new URL(`${connection.url.replace(/\/+$/, '')}/api/v3/calendar`);
-    url.search = new URLSearchParams({start, end, unmonitored: 'true', ...(source === 'Sonarr' ? {includeSeries: 'true'} : {})}).toString();
+    url.search = new URLSearchParams({start, end, unmonitored: 'true', ...(source === 'Sonarr' ? {includeSeries: 'true', includeEpisodeImages: 'true'} : {})}).toString();
     const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, source, transport, 10_000, 16 * 1024 * 1024).then(response => {
       requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', `${source} could not load its calendar.`, 502);
       return response.data.flatMap(source === 'Radarr' ? movieEntry : episodeEntry);
@@ -143,12 +150,13 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
             if (match) {
               entry.plexItemId = match.id;
               entry.posterUrl = match.posterUrl ?? entry.posterUrl;
+              entry.backdropUrl = match.backdropUrl ?? entry.backdropUrl;
             }
           }
-      } catch {
-        plexUnavailable = true;
-        for (const entry of group) entry.availabilityUnknown = true;
-      }
+        } catch {
+          plexUnavailable = true;
+          for (const entry of group) entry.availabilityUnknown = true;
+        }
       }
     }));
     const dates = [...unique.values()].sort((a, b) => a.day.localeCompare(b.day) || (a.airTime ?? '').localeCompare(b.airTime ?? '') ||

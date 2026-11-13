@@ -87,7 +87,8 @@ export type CalendarEntry = {
   key: string; title: string; day: string; year?: number; airTime?: string;
   kind: 'theatrical' | 'digital' | 'physical' | 'episode';
   season?: number; episode?: number; episodeTitle?: string; summary?: string;
-  posterUrl?: string; ids: Pick<ExploreItem['ids'], 'tmdb' | 'tvdb' | 'imdb'>; plexItemId?: string; availabilityUnknown?: boolean;
+  posterUrl?: string; backdropUrl?: string; stillUrl?: string;
+  ids: Pick<ExploreItem['ids'], 'tmdb' | 'tvdb' | 'imdb'>; plexItemId?: string; availabilityUnknown?: boolean;
 };
 export type CalendarPage = {
   dates: CalendarEntry[];
