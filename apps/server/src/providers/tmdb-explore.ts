@@ -90,8 +90,8 @@ export class TmdbExplore {
     requireThat(Array.isArray(data?.results), 'CATALOG_UNAVAILABLE', 'TMDB could not load these titles.', 502);
     return {items:data.results.flatMap(row => tmdbCandidate(row, type) ?? []), pages:Math.max(0, Math.min(500, Math.floor(number(data.total_pages))))};
   }
-  async trending() {
-    return mixCandidates(await Promise.all(kinds.map(type => this.titles(type, `/trending/${type}/week`, {}, 6 * HOUR).then(r => r.items))));
+  async trending(types:readonly TitleKind[]=kinds) {
+    return mixCandidates(await Promise.all(types.map(type => this.titles(type, `/trending/${type}/week`, {}, 6 * HOUR).then(r => r.items))));
   }
   async suggestions(type: TitleKind, id: number, similar = false) {
     return (await this.titles(type, `/${type}/${id}/${similar ? 'similar' : 'recommendations'}`, {}, undefined, true)).items;
@@ -104,13 +104,14 @@ export class TmdbExplore {
         ...(ids && {with_genres:ids.join('|')})}, 12 * HOUR)).items;
     })));
   }
-  async page(row: TmdbExploreRow, page: number, streaming?: {region: string; ids: number[]}): Promise<ExplorePage> {
-    if (row === 'trending') return sliceExplore(await this.trending(), page);
+  async page(row: TmdbExploreRow, page: number, streaming?: {region: string; ids: number[]}, kind?:ExploreItem['kind']): Promise<ExplorePage> {
     if (streaming && !streaming.ids.length) return {items:[], page, hasMore:false};
     const now = this.now();
     const types: readonly TitleKind[] = row.endsWith('-movies') ? ['movie'] : row.endsWith('-shows') ? ['tv'] : kinds;
+    const selected=kind?types.filter(type=>type===(kind==='show'?'tv':'movie')):types;
+    if (row === 'trending') return sliceExplore(await this.trending(selected), page);
     const upcoming = row.startsWith('upcoming-');
-    const lists = await Promise.all(types.map(async type => {
+    const lists = await Promise.all(selected.map(async type => {
       const dateField = type === 'movie' ? 'primary_release_date' : 'first_air_date';
       const days = row === 'recent-streaming' ? 180 : row === 'acclaimed' ? 365 : undefined;
       const params: Record<string,string> = {

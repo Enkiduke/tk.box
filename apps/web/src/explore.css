@@ -1,7 +1,11 @@
 /* Explore catalog rows and title dialog. */
 .explore-page{padding-bottom:64px}
 .browse-controls.explore-controls{flex-wrap:nowrap}
-.browse-search.explore-search{order:0;flex:1 1 0;max-width:none}
+.browse-search.explore-search{order:0;flex:1 1 0;min-width:0;max-width:none}
+.explore-search input{min-width:0}
+.explore-search>svg,.explore-search .icon-button{flex:none}
+.segmented.explore-content-type{flex:none;margin:0}
+.explore-content-type button{padding-inline:10px}
 .explore-controls .active-filters{min-width:0;flex-wrap:nowrap;margin:0;padding:5px;overflow-x:auto;scrollbar-width:thin}
 .explore-controls .active-filters button{flex-shrink:0}
 @media(max-width:760px){
@@ -9,6 +13,8 @@
   .explore-controls .explore-filter-menu{top:100%;right:0;left:auto;width:min(360px,100%)}
 }
 @media(max-width:420px){
+  .explore-content-type button{padding-inline:5px}
+  .browse-search.explore-search{gap:4px;padding-inline:7px}
   .explore-controls .browse-popup>summary>span{display:none}
 }
 .explore-note{margin:0 0 18px;font-size:14px}

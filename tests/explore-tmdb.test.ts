@@ -63,6 +63,15 @@ test('TMDB routes validate auth and regional providers, combine media types, app
   assert.deepEqual((await get(`${path}?page=2&providers=8,9`)).json().items.map((item:{key:string})=>item.key),['movie:tmdb:2']);
   assert.deepEqual((await get(`${path}?lang=fr&providers=8,9`)).json().items.map((item:{key:string})=>item.key),['show:tmdb:1']);
   assert.equal(calls.filter(url=>url.pathname==='/3/discover/tv').length,1);
+  const shows=(await get(`${path}?kind=show&providers=8,9`)).json();
+  assert.deepEqual(shows.items.map((item:{key:string})=>item.key),['show:tmdb:1']);
+  assert.equal(shows.hasMore,false);
+  const movies=(await get(`${path}?kind=movie&providers=8,9`)).json();
+  assert.deepEqual(movies.items.map((item:{key:string})=>item.key),['movie:tmdb:1']);
+  assert.equal(movies.hasMore,true);
+  assert.deepEqual((await get(`${path}?kind=movie&lang=fr&providers=8,9`)).json().items,[]);
+  assert.deepEqual((await get('tmdb/rows/popular-shows?kind=movie')).json().items,[]);
+  assert.equal((await get(`${path}?kind=episode`)).statusCode,400);
   key='invalid';
   assert.equal((await get(path)).statusCode,502);
   key=undefined;
@@ -127,7 +136,9 @@ test('Plex service shelves are excluded from browsing, admin controls and direct
   const auth=async()=>({hash:'viewer',grant});
   registerExplore(app,plex,store,auth,auth,()=> 'account-token',new TmdbTitles(()=> 'fixture-key'),{seerr:(async input=>{
     const path=new URL(String(input)).pathname;
-    return Response.json({results:path.endsWith('/search')?[{id:99,mediaType:'movie',title:'Seerr search result'}]:[]});
+    return Response.json({results:path.endsWith('/search')?[
+      {id:99,mediaType:'movie',title:'Seerr search result'},{id:100,mediaType:'tv',name:'Seerr show result'}
+    ]:[]});
   }) as typeof fetch});
   const get=(url:string)=>app.inject(`/api/v1/explore/${url}`);
   assert.deepEqual((await get('sources')).json().order,['plex','tmdb']);
@@ -135,6 +146,7 @@ test('Plex service shelves are excluded from browsing, admin controls and direct
   assert.equal((await get('seerr/rows')).statusCode,400);
   assert.equal((await get('seerr/rows/trending')).statusCode,400);
   assert.equal((await get('search?q=test&sources=seerr')).json().items[0]?.title,'Seerr search result');
+  assert.deepEqual((await get('search?q=test&sources=seerr&kind=show')).json().items.map((item:{kind:string})=>item.kind),['show']);
   const expected=['Watchlist','Plex Picks','Trending Movies'];
   assert.deepEqual((await get('plex/rows')).json().rows.map((row:{title:string})=>row.title),expected);
   const admin=(await app.inject('/api/v1/admin/explore/layout')).json();
@@ -148,6 +160,8 @@ test('Plex service shelves are excluded from browsing, admin controls and direct
     assert.equal((await get(`plex/rows/${id}`)).statusCode,404);
   }
   assert.equal((await get(`plex/rows/${plexRows[1].id}`)).statusCode,200);
+  assert.deepEqual((await get(`plex/rows/${plexRows[1].id}?kind=show`)).json().items,[]);
+  assert.deepEqual((await get(`plex/rows/${plexRows[1].id}?kind=movie`)).json().items.map((item:{kind:string})=>item.kind),['movie']);
   assert.ok((await get('tmdb/rows')).json().rows.some((row:{id:string})=>row.id==='upcoming-shows'));
 });
 

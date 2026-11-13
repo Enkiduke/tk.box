@@ -18,7 +18,7 @@ const tmdbRow=z.enum(tmdbExploreRows);
 const kind=z.enum(['movie','show']);
 // Explore's filters, sent with every row page and search: original languages, genres, a release year range, a minimum
 // score and Seerr labels to leave out.
-const filterQuery={lang:z.string().max(200).optional(),from:z.coerce.number().int().min(1870).max(2100).optional(),to:z.coerce.number().int().min(1870).max(2100).optional(),
+const filterQuery={kind:kind.optional(),lang:z.string().max(200).optional(),from:z.coerce.number().int().min(1870).max(2100).optional(),to:z.coerce.number().int().min(1870).max(2100).optional(),
   min:z.coerce.number().min(0).max(10).optional(),hide:z.string().max(40).optional(),genre:z.string().max(300).optional()};
 const page=z.object({page:z.coerce.number().int().min(1).max(500).default(1),...filterQuery}).strict();
 const regionCode=z.string().regex(/^[A-Z]{2}$/);
@@ -50,17 +50,18 @@ ${key}`,hit=this.entries.get(id);if(hit&&hit.until>now)return hit.value as Promi
 export const plexRowTtl=(row:string)=>row==='watchlist'?PAGE_MS:PUBLIC_MS;
 
 // `genres`: a title passes with any of them. `hide`: titles with these Seerr labels.
-export type ExploreFilter={languages:string[];genres?:ExploreGenre[];from?:number;to?:number;min?:number;hide?:ExploreStatus[]};
-export function exploreFilter(input:{lang?:string;genre?:string;from?:number;to?:number;min?:number;hide?:string}):ExploreFilter {
+export type ExploreFilter={kind?:ExploreItem['kind'];languages:string[];genres?:ExploreGenre[];from?:number;to?:number;min?:number;hide?:ExploreStatus[]};
+export function exploreFilter(input:{kind?:ExploreItem['kind'];lang?:string;genre?:string;from?:number;to?:number;min?:number;hide?:string}):ExploreFilter {
   const languages=[...new Set((input.lang??'').split(',').map(l=>l.trim().toLowerCase()).filter(l=>/^[a-z]{2,3}$/.test(l)))].slice(0,30);
   const hide=(['requested','partial','available'] as const).filter(s=>(input.hide??'').split(',').includes(s));
   const genres=exploreGenres.filter(g=>(input.genre??'').split(',').includes(g));
-  return {languages,...(genres.length?{genres}:{}),...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{}),...(hide.length?{hide}:{})};
+  return {languages,...(input.kind&&{kind:input.kind}),...(genres.length?{genres}:{}),...(input.from!==undefined?{from:input.from}:{}),...(input.to!==undefined?{to:input.to}:{}),...(input.min?{min:input.min}:{}),...(hide.length?{hide}:{})};
 }
-export const filtering=(f:ExploreFilter)=>f.languages.length>0||f.from!==undefined||f.to!==undefined||f.min!==undefined||!!f.hide||!!f.genres;
+export const filtering=(f:ExploreFilter)=>!!f.kind||f.languages.length>0||f.from!==undefined||f.to!==undefined||f.min!==undefined||!!f.hide||!!f.genres;
 // What a filter needs that the title does not say. Such titles are looked up; still unknown, they are left out.
 export const lacking=(item:ExploreItem,f:ExploreFilter)=>(f.languages.length>0&&!item.language)||(!!f.genres&&!item.genres?.length)||((f.from!==undefined||f.to!==undefined)&&!item.year)||(f.min!==undefined&&item.rating===undefined);
 export function passes(item:ExploreItem,f:ExploreFilter) {
+  if(f.kind&&item.kind!==f.kind)return false;
   if(item.status&&f.hide?.includes(item.status))return false;
   if(f.genres&&!item.genres?.some(g=>f.genres!.includes(g)))return false;
   if(f.languages.length&&(!item.language||!f.languages.includes(item.language)))return false;
@@ -137,10 +138,11 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
           'INVALID_PROVIDER','Choose a streaming service available in this region.',400);
         streaming={region:country,ids:typeof provider==='number'?[provider]:[...new Set(chosen)].sort((a,b)=>a-b)};
       }
-      if (!filtering(filter)) return labelled(await tmdb.page(row,at,streaming));
+      const {kind:mediaKind,...otherFilters}=filter;
+      if (!filtering(otherFilters)) return labelled(await tmdb.page(row,at,streaming,mediaKind));
       const pages:ExplorePage[]=[];
       for (let i=0;i<FILTER_SPAN;i++) {
-        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming);
+        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming,mediaKind);
         pages.push(result);
         if (!result.hasMore) break;
       }
@@ -252,7 +254,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   // Titles that pass the filter. Language, genres, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
   // known; these are public facts, so they are kept a day for every viewer.
   async function filtered(items:ExploreItem[],filter:ExploreFilter,account:string,token:string) {
-    const filled=await Promise.all(items.map(async item=>{
+    const filled=await Promise.all(items.filter(item=>!filter.kind||item.kind===filter.kind).map(async item=>{
       if(!lacking(item,filter)||!item.ids.tmdb||!seerr.configured())return item;
       const tmdb=item.ids.tmdb,facts=await cache.get('',`facts:${item.kind}:${tmdb}`,PERSON_MS,()=>lookups(()=>seerr.details(account,token,item.kind,tmdb))
         .then(info=>{const found=seerrItem(info,item.kind==='show'?'tv':'movie');return {language:found?.language,genres:found?.genres,year:found?.year,rating:found?.rating};})).catch(()=>undefined);

@@ -23,6 +23,16 @@ const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.L
 type Filters={languages:string[];genres:ExploreGenre[];from:string;to:string;min:string;hide:Hideable[]};
 type Hideable=ExploreStatus;
 const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]},FILTERS_KEY='tk.box.explore.filters';
+const contentTypes=[['all','All'],['movie','Movies'],['show','Shows']] as const;
+type ContentType=typeof contentTypes[number][0];
+const CONTENT_TYPE_KEY='tk.box.explore.content-type';
+function loadContentType():ContentType {
+  try {
+    const saved=localStorage.getItem(CONTENT_TYPE_KEY);
+    if(saved==='movie'||saved==='show')return saved;
+  }catch{/* storage unavailable */}
+  return 'all';
+}
 const hideable:Hideable[]=['requested','partial','available'];
 // TMDB's codes; `cn` is its code for Cantonese.
 const languageCodes=['en','es','fr','de','it','pt','ja','ko','zh','cn','hi','ta','te','ml','ru','sv','da','no','fi','nl','pl','tr','th','ar','he','id','tl'];
@@ -45,11 +55,12 @@ function filterQuery(f:Filters) {
 const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f.to}`):f.from?`${f.from} or later`:`${f.to} or earlier`;
 
 const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;onSelect:(item:ExploreItem)=>void}) {
+  const kindLabel=item.kind==='show'?'Show':'Movie';
   return <div className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
-    <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}, ${item.kind==='show'?'TV':'Movie'}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
+    <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}, ${kindLabel}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
       <Artwork src={item.posterUrl} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       {item.status&&<span className={`explore-badge ${item.status}`}>{statusNames[item.status]}</span>}
-      <span className="explore-kind" aria-hidden="true">{item.kind==='show'?'TV':'Movie'}</span>
+      <span className="explore-kind" aria-hidden="true">{kindLabel}</span>
     </button></div>
     <span className="poster-title"><span className="card-plain">{item.title}</span></span>
     <span className="poster-meta"><span className="card-plain">{cardMeta(item)}</span></span>
@@ -196,9 +207,14 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
   const source=available.find(s=>s===params.get('source'));
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
-  const [filters,setFilters]=useState(loadFilters),fq=filterQuery(filters);
+  const [filters,setFilters]=useState(loadFilters),[contentType,setContentType]=useState(loadContentType);
+  const fq=filterQuery(filters)+(contentType==='all'?'':`&kind=${contentType}`);
   const [selected,setSelected]=useState<ExploreItem>();
   const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
+  const changeContentType=(next:ContentType)=>{
+    setContentType(next);
+    try{localStorage.setItem(CONTENT_TYPE_KEY,next);}catch{/* storage unavailable */}
+  };
   // Typing searches in place; the address keeps the query so Back returns to it.
   useEffect(()=>{if(q!==query)replaceRoute(link('explore',{q}));},[q]);
   if(sources.error)return <div className="page"><ErrorNotice message={sources.error.message} retry={sources.reload}/></div>;
@@ -207,6 +223,9 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   const searchLabel=searchable.length?`Search ${listed(searchable.map(s=>names[s]))}`:'Search Explore';
   return <div className="page explore-page">
     <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
+      <div className="segmented explore-content-type" role="group" aria-label="Explore content type">
+        {contentTypes.map(([type,label])=><button key={type} type="button" aria-pressed={contentType===type} onClick={()=>changeContentType(type)}>{label}</button>)}
+      </div>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
       <ActiveFilters filters={filters} onChange={changeFilters}/>
       <FilterMenu filters={filters} labels={data.seerr.configured} onChange={changeFilters}/>
