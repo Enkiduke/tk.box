@@ -276,7 +276,7 @@ function App() {
     <a className="skip-link" href="#main-content" onClick={e=>{e.preventDefault();document.getElementById('main-content')?.focus();}}>Skip to content</a>
     {!watching&&<header className={`nav ${scrolled||route.page!=='home'||!me?'solid':''}`}>
       <a href="#home" className="brand" aria-label="tk.box home">tk.box</a>
-      {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}>{label}</a>)}</nav>}
+      {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={page} size={16}/><span>{label}</span></a>)}</nav>}
       {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<HeaderStreams/>}{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
     </header>}
     <main id="main-content" tabIndex={-1}>
