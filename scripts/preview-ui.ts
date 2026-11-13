@@ -143,13 +143,14 @@ const seerr=(async(input:string|URL|Request,init?:RequestInit)=>{
   return Response.json({results:[],totalPages:1});
 }) as typeof fetch;
 let failedPage=false;
+const streamingServices=['Netflix','Amazon Prime Video','Disney Plus','Hulu','HBO Max','Apple TV','Paramount Plus Essential','Peacock Premium','MGM Plus','Discovery Plus'];
 const tmdb=(async(input:string|URL|Request)=>{
   const url=new URL(String(input)),path=url.pathname;
   if(path.endsWith('/providers/regions'))return Response.json({results:[{iso_3166_1:'US',english_name:'United States'},{iso_3166_1:'GB',english_name:'United Kingdom'}]});
-  if(path.startsWith('/3/watch/providers/'))return Response.json({results:['Netflix','Amazon Prime Video','Disney+','Hulu','Max','Apple TV+','Paramount+'].map((name,index)=>({provider_id:index+1,provider_name:name,logo_path:`/${index}.png`}))});
+  if(path.startsWith('/3/watch/providers/'))return Response.json({results:streamingServices.map((name,index)=>({provider_id:index+1,provider_name:name,logo_path:`/${index}.png`}))});
   const page=Number(url.searchParams.get('page')??1),providers=url.searchParams.get('with_watch_providers');
   const selection=providers&&!providers.includes('|')?Number(providers):0;
-  const show=path.includes('/tv'),label=selection?['','Netflix','Prime Video','Disney+','Hulu','Max','Apple TV+','Paramount+'][selection]:'Explore';
+  const show=path.includes('/tv'),label=streamingServices[selection-1]??'Explore';
   const today=new Date().toISOString().slice(0,10);
   const start=url.searchParams.get(`${show?'first_air_date':'primary_release_date'}.gte`);
   const upcoming=start&&start>=today;

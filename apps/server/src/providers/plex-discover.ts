@@ -45,15 +45,15 @@ const hubKey = (id: string) => { const key = Buffer.from(id.slice(4), 'base64url
 const unlisted = new Set(['directory', 'clip']);
 const serviceTitle = /\byour\s+(?:(?:favorite|favourite|selected|streaming|watch)\s+)*(?:services?|providers?)\b|\b(?:streaming|watch)\s+(?:services?|providers?)\b|\b(?:on|across)\s+streaming\b/i;
 const namedService = /(?:\b(?:on|to|from)\s+|^)(?:netflix|(?:amazon\s+)?prime video|disney\s*(?:\+|plus)|hulu|(?:hbo\s+)?max|apple tv(?:\s*(?:\+|plus))?|paramount\s*(?:\+|plus)|peacock|crunchyroll|discovery\s*(?:\+|plus)|starz|shudder|mubi|tubi|pluto tv|(?:the\s+)?roku channel|britbox|amc\s*(?:\+|plus))(?=$|\s*[:–—(]|[!,]|\s+(?:this|today|now|originals)\b)/i;
-const communityShelf = /\b(?:followers?\s+favou?rites|most\s+watchlisted)\b/i;
+const excludedShelfName = /\b(?:followers?\s+favou?rites|most\s+watchlisted|released\s+this\s+week\s+in\s+history)\b/i;
 function isExcludedShelf(hub: DiscoverHub, title: string) {
   const label = title.normalize('NFKC').trim().replace(/\s+/g, ' ');
-  if (communityShelf.test(label) || serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
+  if (excludedShelfName.test(label) || serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
   // Plex can change or localize display names. Also check shelf identifiers.
   return [hub.hubIdentifier, hub.hubKey, hub.key].some(value => {
     if (!value) return false;
     const identifier = value.split('?')[0]!.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._/-]+/g, ' ');
-    return communityShelf.test(identifier) || serviceTitle.test(identifier) || /\b(?:services?|streaming)\b/i.test(identifier);
+    return excludedShelfName.test(identifier) || serviceTitle.test(identifier) || /\b(?:services?|streaming)\b/i.test(identifier);
   });
 }
 const LIMIT = 20, HUB_LIMIT = 50;
