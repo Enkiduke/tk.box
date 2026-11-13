@@ -5,6 +5,7 @@ import type {CalendarPage} from '../packages/contracts/src/index.js';
 import {registerCalendar} from '../apps/server/src/calendar-api.js';
 import {AppError} from '../apps/server/src/errors.js';
 import {PlexAdapter, type PlexGrant} from '../apps/server/src/providers/plex.js';
+import {TmdbTitles} from '../apps/server/src/providers/tmdb-titles.js';
 import {config} from './fixtures.js';
 
 test('Calendar keeps the earliest home release and groups episodes by their local air day', async t => {
@@ -49,6 +50,8 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
   const result = await app.inject({url, headers: owner});
   assert.equal(result.statusCode, 200);
   assert.equal(result.json<CalendarPage>().dates[1]?.stillUrl, '/api/v1/explore/image?u=https%3A%2F%2Fartworks.thetvdb.com%2Fstill.jpg');
+  assert.equal(result.json<CalendarPage>().dates[1]?.episodeLabel, 'season-premiere');
+  assert.equal(result.json<CalendarPage>().dates[2]?.episodeLabel, undefined);
   assert.deepEqual(result.json<CalendarPage>().dates.map(({day, kind, title, plexItemId, episodeTitle}) => [day, kind, title, plexItemId, episodeTitle]), [
     ['2026-11-12', 'physical', 'The Movie', '100', undefined],
     ['2026-11-12', 'episode', 'The Show', '201', undefined],
@@ -59,6 +62,29 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
   assert.ok(viewer.json<CalendarPage>().dates.every(entry => !entry.plexItemId));
   assert.deepEqual(requests.sort(), ['radarr.test', 'sonarr.test']);
   assert.deepEqual(matched.sort(), ['owner:tmdb://1', 'owner:tvdb://42', 'viewer:tmdb://1', 'viewer:tvdb://42']);
+});
+
+test('TMDb confirms season and series finales without guessing from the current episode count', async () => {
+  const calls: string[] = [];
+  const titles = new TmdbTitles(() => 'test-key', async input => {
+    const url = new URL(String(input));
+    calls.push(url.pathname);
+    if (url.pathname === '/3/find/42') {
+      assert.equal(url.searchParams.get('external_source'), 'tvdb_id');
+      return Response.json({tv_results: [{id: 123}]});
+    }
+    if (url.pathname === '/3/tv/123/season/1') return Response.json({episodes: [{episode_number: 8, episode_type: 'finale'}]});
+    if (url.pathname === '/3/tv/123/season/2') return Response.json({episodes: [
+      {episode_number: 5, episode_type: 'standard'}, {episode_number: 6, episode_type: 'finale'},
+      {episode_number: 7, episode_type: 'standard'},
+    ]});
+    assert.equal(url.pathname, '/3/tv/123');
+    return Response.json({status: 'Ended', last_episode_to_air: {season_number: 2, episode_number: 6}});
+  });
+  assert.deepEqual([...await titles.episodeFinales({tvdb: 42}, 1, [8])], [[8, 'season-finale']]);
+  assert.deepEqual([...await titles.episodeFinales({tvdb: 42}, 2, [5, 6, 7])], [[6, 'series-finale']]);
+  assert.equal(calls.filter(path => path === '/3/find/42').length, 1);
+  assert.equal(calls.filter(path => path === '/3/tv/123').length, 1);
 });
 
 test('Calendar still returns the working feed during provider and Plex failures', async t => {

@@ -83,10 +83,11 @@ export type ExploreItem = {
   status?: ExploreStatus;
 };
 export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number };
+export type CalendarEpisodeLabel = 'series-premiere' | 'season-premiere' | 'season-finale' | 'series-finale';
 export type CalendarEntry = {
   key: string; title: string; day: string; year?: number; airTime?: string;
   kind: 'theatrical' | 'digital' | 'physical' | 'episode';
-  season?: number; episode?: number; episodeTitle?: string; summary?: string;
+  season?: number; episode?: number; episodeTitle?: string; episodeLabel?: CalendarEpisodeLabel; summary?: string;
   posterUrl?: string; backdropUrl?: string; stillUrl?: string;
   ids: Pick<ExploreItem['ids'], 'tmdb' | 'tvdb' | 'imdb'>; plexItemId?: string; availabilityUnknown?: boolean;
 };

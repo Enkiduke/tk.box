@@ -1,6 +1,7 @@
 import { requireThat } from '../errors.js';
 import { remoteJson } from './remote-json.js';
 import { tmdbImage } from './explore-images.js';
+import type { CalendarEpisodeLabel, CalendarEntry } from '../../../../packages/contracts/src/index.js';
 
 // Admin › Collections picks titles by searching TMDb, and shows a collection's members as posters. Both use the
 // artwork engine's TMDb key; answers are kept for a day, so reopening a collection asks TMDb only for new members.
@@ -43,6 +44,33 @@ export class TmdbTitles {
     return (Array.isArray(data?.results) ? data.results : []).map(r => this.card(r)).filter((c): c is TitleCard => !!c);
   }
   search(kind: TitleKind, query: string) { return this.results(kind, query).then(r => r.slice(0, 20)); }
+
+  async episodeFinales(ids: CalendarEntry['ids'], season: number, episodes: number[]): Promise<Map<number, CalendarEpisodeLabel>> {
+    const labels = new Map<number, CalendarEpisodeLabel>();
+    if (!this.configured()) return labels;
+    let series = ids.tmdb;
+    if (!series && (ids.tvdb || ids.imdb)) {
+      const found = await this.get(`/find/${ids.tvdb ?? ids.imdb}`, {external_source: ids.tvdb ? 'tvdb_id' : 'imdb_id'}) as {tv_results?: Row[]} | undefined;
+      const matches = found?.tv_results;
+      const match = matches?.length === 1 ? matches[0]?.id : undefined;
+      if (typeof match === 'number' && Number.isSafeInteger(match) && match > 0) series = match;
+    }
+    if (!series) return labels;
+    const path = `/tv/${series}`;
+    const details = await this.get(`${path}/season/${season}`) as {episodes?: {episode_number: number; episode_type?: string}[]} | undefined;
+    const scheduled = new Set(episodes);
+    for (const episode of details?.episodes ?? []) {
+      if (episode.episode_type === 'finale' && scheduled.has(episode.episode_number)) labels.set(episode.episode_number, 'season-finale');
+    }
+    if (!labels.size) return labels;
+    // A season finale is also a series finale only when the show is over and this is its confirmed last episode.
+    const show = await this.get(path).catch(() => undefined) as {status?: string; last_episode_to_air?: {season_number: number; episode_number: number}} | undefined;
+    const last = show?.last_episode_to_air;
+    if (show?.status === 'Ended' && last?.season_number === season && labels.has(last.episode_number)) {
+      labels.set(last.episode_number, 'series-finale');
+    }
+    return labels;
+  }
   // One card per member, in order; null where TMDb has no match (or the member is a Plex ID, which TMDb can't answer).
   async lookup(kind: TitleKind, members: TitleMember[]): Promise<(TitleCard | null)[]> {
     const one = async (m: TitleMember): Promise<TitleCard | null> => {
