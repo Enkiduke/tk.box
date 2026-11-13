@@ -105,7 +105,7 @@ export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: 
   video?: { codec?: string; width?: number; height?: number; container?: string } };
 // `name` is the Plex account's display name, for Admin › Activity.
 export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
-type CalendarMedia = {id: string; posterUrl?: string; season?: number; episode?: number};
+type CalendarMedia = {id: string; posterUrl?: string; backdropUrl?: string; season?: number; episode?: number};
 
 // Cache keys name a viewer's server token by digest, never the token itself.
 const tokenScope=(grant:PlexGrant)=>createHash('sha256').update(grant.serverToken).digest('hex');
@@ -257,12 +257,12 @@ export class PlexAdapter {
       for (const id of ids) {
         const {node, section} = await this.catalogNode(grant, id);
         if (node.type !== kind) continue;
-        const posterUrl = catalogDto(node, section).posterUrl;
-        if (kind === 'movie') return [{id, posterUrl}];
+        const {posterUrl, backdropUrl} = catalogDto(node, section);
+        if (kind === 'movie') return [{id, posterUrl, backdropUrl}];
         const episodes = await this.leaves(grant, `/library/metadata/${id}/allLeaves`, section);
         for (const episode of episodes) {
           if (episode.type === 'episode' && episode.grandparentRatingKey === id && episode.parentIndex !== undefined && episode.index !== undefined) {
-            media.push({id: episode.ratingKey, posterUrl, season: episode.parentIndex, episode: episode.index});
+            media.push({id: episode.ratingKey, posterUrl, backdropUrl, season: episode.parentIndex, episode: episode.index});
           }
         }
       }
