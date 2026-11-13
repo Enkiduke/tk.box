@@ -58,6 +58,18 @@
   background:transparent;text-align:left;white-space:normal
 }
 .calendar-entry:hover {background:transparent}
+.calendar-days.cards .calendar-entry[data-stack] {
+  isolation:isolate;gap:14px;
+  grid-template-areas:'art' 'caption'
+}
+.calendar-days.cards .calendar-entry[data-stack]::before,
+.calendar-days.cards .calendar-entry[data-stack]::after {
+  content:'';grid-area:art;align-self:end;height:12px;border-radius:0 0 10px 10px;
+  background:var(--surface-2);margin:0 7px;transform:translateY(4px);pointer-events:none
+}
+.calendar-days.cards .calendar-entry[data-stack]::before {background:var(--surface);margin-inline:13px;transform:translateY(7px)}
+.calendar-days.cards .calendar-entry[data-stack] .calendar-art {grid-area:art;z-index:1}
+.calendar-days.cards .calendar-entry[data-stack] .calendar-caption {grid-area:caption}
 .calendar-art {
   position:relative;isolation:isolate;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;
   aspect-ratio:16/9;overflow:hidden;padding:14px 16px;border-radius:10px;background:var(--surface-2);
@@ -75,10 +87,11 @@
 .calendar-art::after {content:'';z-index:-1;background:linear-gradient(transparent 25%,rgba(0,0,0,.85))}
 .calendar-art strong {font-size:clamp(16px,1.7vw,23px);line-height:1.08;text-wrap:balance;overflow-wrap:anywhere;color:white}
 .calendar-card-label {position:absolute;top:10px;left:10px;background:rgba(0,0,0,.72);padding:3px 8px;border-radius:999px;font-size:11px;color:white}
-.calendar-available {
+.calendar-availability {
   position:absolute;top:10px;right:10px;display:grid;place-items:center;width:24px;height:24px;
-  border-radius:50%;background:rgba(0,0,0,.72);color:var(--calendar-available)
+  border-radius:50%;background:rgba(0,0,0,.72);color:var(--muted)
 }
+.calendar-art[data-available] .calendar-availability {color:var(--calendar-available)}
 .calendar-caption {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;color:var(--muted);font-size:12px;font-weight:500}
 .calendar-airtime {color:var(--text);font-weight:650}
 .calendar-episode {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -88,8 +101,8 @@
 .calendar-days.list .calendar-art img,.calendar-days.list .calendar-art-placeholder {position:static;grid-column:1;grid-row:1 / 3;width:44px;aspect-ratio:2/3;height:auto;border-radius:5px;z-index:auto}
 .calendar-days.list .calendar-art::after {display:none}
 .calendar-days.list .calendar-card-label {position:static;align-self:end;grid-column:2;grid-row:2;background:transparent;color:var(--muted);padding:0}
-.calendar-days.list .calendar-available {top:3px;left:24px;right:auto;width:18px;height:18px}
-.calendar-days.list .calendar-available svg {width:13px;height:13px}
+.calendar-days.list .calendar-availability {top:3px;left:24px;right:auto;width:18px;height:18px}
+.calendar-days.list .calendar-availability svg {width:13px;height:13px}
 .calendar-days.list .calendar-art[data-available]>:is(img,.calendar-art-placeholder) {box-shadow:0 0 0 1px var(--calendar-available)}
 .calendar-days.list .calendar-art strong {align-self:end;grid-column:2;grid-row:1;font-size:15px;text-wrap:wrap}
 @media(max-width:680px) {

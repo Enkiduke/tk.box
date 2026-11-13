@@ -158,6 +158,7 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
             const match = media.find(item => item.season === entry.season && item.episode === entry.episode);
             if (match) {
               entry.plexItemId = match.id;
+              entry.plexShowId = match.showId;
               entry.posterUrl = match.posterUrl ?? entry.posterUrl;
               entry.backdropUrl = match.backdropUrl ?? entry.backdropUrl;
             }

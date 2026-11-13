@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import type {CalendarPage} from '../packages/contracts/src/index.js';
+import type {CalendarEntry, CalendarPage} from '../packages/contracts/src/index.js';
+import {episodeRanges, groupCalendarEntries} from '../apps/web/src/calendar-episodes.js';
 import {registerCalendar} from '../apps/server/src/calendar-api.js';
 import {AppError} from '../apps/server/src/errors.js';
 import {PlexAdapter, type PlexGrant} from '../apps/server/src/providers/plex.js';
@@ -36,7 +37,7 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
   registerCalendar(app, {calendarMedia: async (grant, kind, _, guids) => {
     matched.push(`${grant.accountId}:${guids.join(',')}`);
     if (grant.accountId !== 'owner') return [];
-    return kind === 'movie' ? [{id: '100'}] : [{id: '201', season: 2, episode: 1}];
+    return kind === 'movie' ? [{id: '100'}] : [{id: '201', showId: '200', season: 2, episode: 1}];
   }}, async request => {
     const accountId = request.headers['x-test-account'];
     if (typeof accountId !== 'string') throw new AppError('UNAUTHORIZED', 'Sign in.', 401);
@@ -51,6 +52,7 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
   assert.equal(result.statusCode, 200);
   assert.equal(result.json<CalendarPage>().dates[1]?.stillUrl, '/api/v1/explore/image?u=https%3A%2F%2Fartworks.thetvdb.com%2Fstill.jpg');
   assert.equal(result.json<CalendarPage>().dates[1]?.episodeLabel, 'season-premiere');
+  assert.equal(result.json<CalendarPage>().dates[1]?.plexShowId, '200');
   assert.equal(result.json<CalendarPage>().dates[2]?.episodeLabel, undefined);
   assert.deepEqual(result.json<CalendarPage>().dates.map(({day, kind, title, plexItemId, episodeTitle}) => [day, kind, title, plexItemId, episodeTitle]), [
     ['2026-11-12', 'physical', 'The Movie', '100', undefined],
@@ -122,10 +124,25 @@ test('Calendar checks duplicate Plex series for the matching episode within the 
   const grant: PlexGrant = {accountId: 'viewer', role: 'viewer', serverToken: 'viewer-token',
     libraries: [{key: '20', title: 'TV', type: 'show'}, {key: '30', title: 'TV 4K', type: 'show'}]};
   const read = (viewer: PlexGrant) => plex.calendarMedia(viewer, 'show', 'The Show', ['tvdb://42']);
-  assert.deepEqual(await read(grant), [{id: '201', posterUrl: undefined, backdropUrl: undefined, season: 2, episode: 1}]);
+  assert.deepEqual(await read(grant), [{id: '201', showId: '200', posterUrl: undefined, backdropUrl: undefined, season: 2, episode: 1}]);
   const count = calls.length;
   await read(grant);
   assert.equal(calls.length, count);
   assert.deepEqual(await read({...grant, libraries: grant.libraries.slice(0, 1)}), []);
   assert.ok(calls.slice(count).every(path => !/\/30\/|\/200/.test(path)));
+});
+
+test('Calendar groups same-day episodes by series ID and captions exact episode ranges', () => {
+  const day = '2026-11-25';
+  const episode = (series: number, season: number, number: number, date = day, airTime?: string): CalendarEntry => ({
+    key: `episode:tvdb:${series}:${season}:${number}`, kind: 'episode', title: 'Same title',
+    day: date, airTime, season, episode: number, ids: {tvdb: series},
+  });
+  const first = episode(1, 4, 13), second = episode(1, 4, 14, day, '2026-11-25T23:00:00Z');
+  const gap = episode(1, 4, 17), nextSeason = episode(1, 5, 1), differentSeries = episode(2, 4, 13);
+  const tomorrow = episode(1, 5, 2, '2026-11-26');
+  const movie: CalendarEntry = {key: 'movie:1', kind: 'digital', day, title: first.title, ids: {tmdb: 1}};
+  const groups = groupCalendarEntries([first, movie, differentSeries, second, gap, nextSeason, tomorrow]);
+  assert.deepEqual(groups, [[first, second, gap, nextSeason], [movie], [differentSeries], [tomorrow]]);
+  assert.equal(episodeRanges(groups[0]!), 'Season 4, Episodes 13–14, 17 · Season 5, Episode 1');
 });
