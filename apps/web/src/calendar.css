@@ -17,8 +17,10 @@
 }
 .calendar-range {position:relative}
 .calendar-range>button {width:34px;padding:0;flex:none}
-.calendar-picker summary {list-style:none;margin:0;color:var(--text);cursor:pointer}
+.calendar-picker summary {width:232px;list-style:none;margin:0;color:var(--text);cursor:pointer}
 .calendar-picker summary svg {flex:none}
+.calendar-picker summary span {min-width:0;overflow:hidden;text-overflow:ellipsis}
+.calendar-today {width:34px;flex:none;padding:0}
 .calendar-picker summary::-webkit-details-marker {display:none}
 .calendar-month {
   position:absolute;z-index:5;top:calc(100% + 8px);left:0;width:min(280px,calc(100vw - 2 * var(--gutter)));padding:10px;
@@ -123,7 +125,8 @@
 }
 @media(max-width:400px) {
   .calendar-dates,.calendar-options {gap:6px}
-  .calendar-segment a,.calendar-picker summary,.calendar-today {padding-inline:7px}
+  .calendar-segment a,.calendar-picker summary {padding-inline:7px}
+  .calendar-picker summary {width:clamp(178px,calc(100vw - 138px),232px)}
   .calendar-range>button {width:30px;padding:0}
   .calendar-layout svg {display:none}
 }
