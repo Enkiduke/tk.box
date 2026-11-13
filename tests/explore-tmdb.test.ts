@@ -88,6 +88,7 @@ test('release windows and thresholds use movie releases and series premieres',as
   await tmdb.page('recent-streaming',1,{region:'US',ids:[8]});
   await tmdb.page('acclaimed',1);
   await tmdb.page('popular-movies',1);
+  await tmdb.page('upcoming-movies',1);
   await tmdb.page('upcoming-shows',1);
   for(const [index,url] of calls.slice(0,4).entries()){
     const field=url.pathname.endsWith('/movie')?'primary_release_date':'first_air_date';
@@ -96,19 +97,48 @@ test('release windows and thresholds use movie releases and series premieres',as
     assert.equal(url.searchParams.get('vote_count.gte'),index<2?null:'50');
     assert.equal(url.searchParams.get('vote_average.gte'),index<2?null:'7.2');
   }
-  assert.equal(calls.length,6);
+  assert.equal(calls.length,11);
   assert.equal(calls[4]?.pathname,'/3/discover/movie');
   assert.equal(calls[4]?.searchParams.get('primary_release_date.lte'),'2026-11-13');
-  assert.equal(calls[5]?.pathname,'/3/discover/tv');
-  assert.equal(calls[5]?.searchParams.get('first_air_date.gte'),'2026-11-14');
-  assert.equal(calls[5]?.searchParams.get('first_air_date.lte'),'2027-02-11');
+  const windows=[['2026-11-13','2026-12-27'],['2026-12-28','2027-02-10'],['2027-02-11','2028-05-13']];
+  for(const [index,type,field] of [[5,'movie','primary_release_date'],[8,'tv','first_air_date']] as const){
+    for(const [offset,[from,to]] of windows.entries()){
+      const url=calls[index+offset]!;
+      assert.equal(url.pathname,`/3/discover/${type}`);
+      assert.equal(url.searchParams.get('sort_by'),'popularity.desc');
+      assert.equal(url.searchParams.get(`${field}.gte`),from);
+      assert.equal(url.searchParams.get(`${field}.lte`),to);
+      assert.equal(url.searchParams.has('vote_count.gte'),false);
+    }
+  }
 });
 
-test('Plex service shelves are excluded from browsing, admin controls and direct row requests',async t=>{
+test('Upcoming rows merge the three weighted date ranges before paginating',async()=>{
+  const calls:URL[]=[];
+  const tmdb=new TmdbExplore(new TmdbTitles(()=> 'key',(async input=>{
+    const url=new URL(String(input));calls.push(url);
+    const start=url.searchParams.get('primary_release_date.gte'),page=url.searchParams.get('page');
+    const title=(id:number,popularity:number)=>({...movie(id),release_date:start,popularity});
+    if(start==='2026-11-13')return Response.json({total_pages:2,results:page==='1'
+      ?[title(1,90),...Array.from({length:19},(_,i)=>title(i+5,10))]:[title(24,9)]});
+    if(start==='2026-12-28')return Response.json({total_pages:1,results:[title(2,100)]});
+    return Response.json({total_pages:1,results:[title(3,200),title(4,110)]});
+  }) as typeof fetch),()=>now);
+  const first=await tmdb.page('upcoming-movies',1);
+  assert.deepEqual(first.items.slice(0,4).map(item=>item.ids.tmdb),[3,1,2,4]);
+  assert.equal(first.items.length,20);
+  assert.equal(first.hasMore,true);
+  const second=await tmdb.page('upcoming-movies',2);
+  assert.deepEqual(second.items.map(item=>item.ids.tmdb),[21,22,23,24]);
+  assert.equal(second.hasMore,false);
+  assert.equal(calls.length,4);
+});
+
+test('Excluded Plex shelves are absent from browsing, admin controls and direct row requests',async t=>{
   const db=openDatabase(':memory:'),app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
-  const serviceHubs=[
+  const excludedHubs=[
     {key:'/hubs/netflix',title:'Trending on Netflix',type:'movie'},
     {key:'/hubs/hulu',title:'Popular Shows on Hulu',type:'show'},
     {key:'/hubs/trending-1',title:'Trending On Your Services',type:'movie'},
@@ -117,12 +147,16 @@ test('Plex service shelves are excluded from browsing, admin controls and direct
     {key:'/hubs/new',title:'New on Your Services',type:'movie'},
     {key:'/hubs/peacock',title:'Available on Peacock',type:'movie'},
     {key:'/hubs/localized',hubIdentifier:'discover.newOnYourServices',title:'Nouveautés',type:'movie'},
-    {key:'/hubs/plex',title:'New on Plex',type:'movie'}
+    {key:'/hubs/plex',title:'New on Plex',type:'movie'},
+    {key:'/hubs/followers',title:'Follower Favorites',type:'movie'},
+    {key:'/hubs/watchlisted',title:'Most Watchlisted',type:'show'},
+    {key:'/hubs/localized-followers',hubIdentifier:'discover.followerFavorites',title:'Favoris',type:'movie'},
+    {key:'/hubs/localized-watchlisted',hubIdentifier:'discover.mostWatchlisted',title:'Les plus suivis',type:'show'}
   ];
   const plex=new PlexAdapter(config(),'browse-test',(async input=>{
     const url=new URL(String(input));
     return Response.json({MediaContainer:url.pathname==='/hubs/sections/home'?{Hub:[
-      ...serviceHubs,
+      ...excludedHubs,
       {key:'/hubs/curated',title:'Plex Picks',type:'movie'},
       {key:'/hubs/trending',title:'Trending Movies',type:'movie'}
     ]}:{Metadata:[{type:'movie',ratingKey:'42',title:'Fixture movie'}]}});
@@ -155,7 +189,7 @@ test('Plex service shelves are excluded from browsing, admin controls and direct
   assert.deepEqual(plexRows.map((row:{title:string})=>row.title),expected);
   assert.deepEqual(admin.layout.hiddenRows,['tmdb:acclaimed']);
   assert.equal(admin.layout.showPlexStreaming,undefined);
-  for(const {key} of serviceHubs){
+  for(const {key} of excludedHubs){
     const id=`hub.${Buffer.from(key).toString('base64url')}`;
     assert.equal((await get(`plex/rows/${id}`)).statusCode,404);
   }

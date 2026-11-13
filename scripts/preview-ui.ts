@@ -150,12 +150,15 @@ const tmdb=(async(input:string|URL|Request)=>{
   const page=Number(url.searchParams.get('page')??1),providers=url.searchParams.get('with_watch_providers');
   const selection=providers&&!providers.includes('|')?Number(providers):0;
   const show=path.includes('/tv'),label=selection?['','Netflix','Prime Video','Disney+','Hulu','Max','Apple TV+','Paramount+'][selection]:'Explore';
-  const sort=url.searchParams.get('sort_by');
-  const release=sort?.endsWith('_date.asc')?url.searchParams.get(`${show?'first_air_date':'primary_release_date'}.gte`):new Date().toISOString().slice(0,10);
+  const today=new Date().toISOString().slice(0,10);
+  const start=url.searchParams.get(`${show?'first_air_date':'primary_release_date'}.gte`);
+  const upcoming=start&&start>=today;
+  const dateGroup=upcoming?Math.floor((Date.parse(start)-Date.parse(today))/86400000):0;
+  const release=upcoming?start:today;
   if(selection===2)await new Promise(resolve=>setTimeout(resolve,450));
   if(selection===2&&page===2&&!show&&!failedPage){failedPage=true;return Response.json({}, {status:503});}
   const results=Array.from({length:16},(_,i)=>{
-    const id=path.includes('/discover/')&&page===1&&i===0&&!show?42:1000+selection*1000+page*100+i;
+    const id=path.includes('/discover/')&&page===1&&i===0&&!show&&!upcoming?42:1000+selection*1000+page*100+i+dateGroup*100;
     const title=id===42?titles[0]:`${label} · ${titles[i%titles.length]} ${show?'TV':'Film'} ${page}`;
     return {id,[show?'name':'title']:title,[show?'first_air_date':'release_date']:release,
       overview:'A fixture title for the Explore preview.',poster_path:`/${i}.png`,original_language:'en',genre_ids:[i%2?18:35],vote_average:7.5,vote_count:90,popularity:20-i};

@@ -27,6 +27,7 @@ export function ExploreSettings({admin}:{admin:boolean}) {
           <img src={tmdbLogoUrl} alt="TMDB" referrerPolicy="no-referrer"/>
         </a>
         <p className="muted small">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+        <p className="muted small">Streaming availability data from <a href="https://www.justwatch.com/" target="_blank" rel="noreferrer">JustWatch</a>.</p>
       </Card>
     </>}
   </>;

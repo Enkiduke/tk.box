@@ -133,6 +133,5 @@
 .explore-service-list button {display:inline-flex; align-items:center; gap:.45rem; flex:none; white-space:nowrap; border-radius:999px; padding:.35rem .75rem;}
 .explore-service-list button[aria-pressed="true"] {border-color:var(--accent); color:var(--accent);}
 .explore-service-list img {width:1.15rem; height:1.15rem; border-radius:.25rem; object-fit:contain;}
-.explore-provider-credit {display:block; padding-inline:.2rem;}
 .explore-row-status {min-height:4rem; display:flex; align-items:center;}
 .explore-tmdb-credit img {width:5rem; height:auto;}
