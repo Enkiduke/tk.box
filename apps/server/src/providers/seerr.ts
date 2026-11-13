@@ -1,10 +1,10 @@
-import type { ExploreDetails, ExploreItem, ExploreRequestExtras, ExploreSeerrAccount, ExploreSeerrOptions, ExploreSeerrUser, ExplorePage, ExploreSeason, ExploreStatus, ExternalRating } from '../../../../packages/contracts/src/index.js';
+import type { ExploreDetails, ExploreItem, ExploreRequestExtras, ExploreSeerrAccount, ExploreSeerrOptions, ExploreSeerrUser, ExploreSeason, ExploreStatus, ExternalRating } from '../../../../packages/contracts/src/index.js';
 import { AppError, requireThat, requireWritable } from '../errors.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import { flagImage, tmdbImage } from './explore-images.js';
 import { exploreGenresOf, tmdbGenres } from './explore-genres.js';
 
-// Seerr (Overseerr, Jellyseerr): TMDB-backed discovery rows and media requests. Each viewer signs in to Seerr with
+// Seerr (Overseerr, Jellyseerr): title search, metadata and media requests. Each viewer signs in to Seerr with
 // their own Plex account token, so requests are made as, and limited to, their Seerr user.
 type Info = { status?: number; status4k?: number; tvdbId?: number; ratingKey?: string;
   seasons?: { seasonNumber: number; status?: number; status4k?: number }[];
@@ -77,17 +77,9 @@ export function statusIndex(media: Tracked[]) {
   return index;
 }
 
-export const seerrRows = [
-  { id: 'trending', title: 'Trending', icon: 'trending', path: '/discover/trending' },
-  { id: 'popular-movies', title: 'Popular Movies', icon: 'movies', path: '/discover/movies', type: 'movie' },
-  { id: 'popular-shows', title: 'Popular Shows', icon: 'shows', path: '/discover/tv', type: 'tv' },
-  { id: 'upcoming-movies', title: 'Upcoming Movies', icon: 'calendar', path: '/discover/movies/upcoming', type: 'movie' },
-  { id: 'upcoming-shows', title: 'Upcoming Shows', icon: 'calendar', path: '/discover/tv/upcoming', type: 'tv' }
-] as const;
-
 type Session = { cookie: string; user: SeerrUser };
 export type SeerrConnection = { url: string; apiKey?: string };
-// With the administrator's API key, browsing (rows, search, details, statuses) reads Seerr as the server and nobody
+// With the administrator's API key, search, details and statuses read Seerr as the server and nobody
 // signs in. A viewer is signed in to Seerr only to request, so the request is theirs. Without a key, every read
 // signs the viewer in as well.
 export class Seerr {
@@ -195,17 +187,9 @@ export class Seerr {
     value.catch(() => { if (this.index?.value === value) this.index = undefined; });
     return value;
   }
-  async row(accountId: string, plexToken: string, id: string, page: number): Promise<ExplorePage> {
-    const row = seerrRows.find(r => r.id === id); requireThat(row, 'NOT_FOUND', 'Unknown row.', 404);
-    return this.page(await this.read(accountId, plexToken, row.path, { page }), page, 'type' in row ? row.type : undefined);
-  }
   async search(accountId: string, plexToken: string, query: string) {
-    return this.page(await this.read(accountId, plexToken, '/search', { query, page: 1 }), 1).items;
-  }
-  private page(data: unknown, page: number, type?: 'movie' | 'tv'): ExplorePage {
-    const value = (data ?? {}) as { results?: Media[]; totalPages?: number; totalResults?: number };
-    const items = (value.results ?? []).flatMap(m => seerrItem(m, type) ?? []);
-    return { items, page, hasMore: page < (value.totalPages ?? 0), ...(value.totalResults !== undefined ? { total: value.totalResults } : {}) };
+    const data=await this.read(accountId, plexToken, '/search', {query,page:1}) as {results?: Media[]} | undefined;
+    return (data?.results ?? []).flatMap(m => seerrItem(m) ?? []);
   }
   async details(accountId: string, plexToken: string, kind: 'movie' | 'show', tmdb: number) {
     return await this.read(accountId, plexToken, `/${kind === 'show' ? 'tv' : 'movie'}/${tmdb}`) as Details;

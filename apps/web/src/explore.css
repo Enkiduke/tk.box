@@ -1,6 +1,16 @@
-/* Explore: catalog rows from Plex Discover and Seerr, and the title dialog with Seerr requests. */
+/* Explore catalog rows and title dialog. */
 .explore-page{padding-bottom:64px}
-.explore-search{max-width:none}
+.browse-controls.explore-controls{flex-wrap:nowrap}
+.browse-search.explore-search{order:0;flex:1 1 0;max-width:none}
+.explore-controls .active-filters{min-width:0;flex-wrap:nowrap;margin:0;padding:5px;overflow-x:auto;scrollbar-width:thin}
+.explore-controls .active-filters button{flex-shrink:0}
+@media(max-width:760px){
+  .explore-controls .browse-popup{position:static}
+  .explore-controls .explore-filter-menu{top:100%;right:0;left:auto;width:min(360px,100%)}
+}
+@media(max-width:420px){
+  .explore-controls .browse-popup>summary>span{display:none}
+}
 .explore-note{margin:0 0 18px;font-size:14px}
 /* Rows pad themselves to the gutter, as on Home. */
 .explore-rows{display:flex;flex-direction:column;gap:clamp(24px,3vw,40px);margin:4px calc(var(--gutter)*-1) 0}
@@ -109,3 +119,14 @@
 .explore-pick input,.explore-hide input{width:auto;padding:0;accent-color:var(--accent)}
 .explore-hide{display:flex;flex-direction:column}
 .explore-years{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.explore-streaming {min-width:0; margin:0 0 .65rem;}
+.explore-streaming-row .explore-streaming {padding-inline:var(--gutter);}
+.explore-streaming-row .row-more {opacity:1; transform:none;}
+.explore-streaming-row .row-track:has(.explore-row-status),.explore-streaming-row .row-track:has(.notice) {width:100%;grid-auto-columns:100%;}
+.explore-service-list {display:flex; align-items:center; gap:.45rem; overflow-x:auto; max-width:100%; padding:.2rem .2rem .4rem; scrollbar-width:thin;}
+.explore-service-list button {display:inline-flex; align-items:center; gap:.45rem; flex:none; white-space:nowrap; border-radius:999px; padding:.35rem .75rem;}
+.explore-service-list button[aria-pressed="true"] {border-color:var(--accent); color:var(--accent);}
+.explore-service-list img {width:1.15rem; height:1.15rem; border-radius:.25rem; object-fit:contain;}
+.explore-provider-credit {display:block; padding-inline:.2rem;}
+.explore-row-status {min-height:4rem; display:flex; align-items:center;}
+.explore-tmdb-credit img {width:5rem; height:auto;}

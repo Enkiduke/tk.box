@@ -10,27 +10,80 @@ export type TitleCard = { tmdb_id: number; title: string; year?: number; poster?
 export type TitleMember = { rating_key?: string; tmdb_id?: number; imdb_id?: string; title?: string; year?: number };
 type Row = { id?: unknown; title?: unknown; name?: unknown; release_date?: unknown; first_air_date?: unknown; poster_path?: unknown };
 const DAY_MS = 86400000, MAX_CACHED = 3000;
+type Cached = { until: number; savedAt?: number; data?: unknown; pending?: Promise<unknown> };
 
 export class TmdbTitles {
-  private cache = new Map<string, { at: number; value: Promise<unknown> }>();
+  private cache = new Map<string, Cached>();
+  private credential?: string;
+  private generation = 0;
+  private active = 0;
+  private waiting: (() => void)[] = [];
   constructor(private key: () => string | undefined, private transport: typeof fetch = fetch, private now = Date.now) {}
-  configured() { return !!this.key(); }
-  private get(path: string, params: Record<string, string> = {}): Promise<unknown> {
+  credentialGeneration() {
     const key = this.key();
-    requireThat(key, 'TMDB_KEY_MISSING', 'Add a TMDb key in Artwork › Settings to search for titles.', 409);
-    const id = `${path}?${new URLSearchParams(params)}`, hit = this.cache.get(id);
-    if (hit && this.now() - hit.at < DAY_MS) return hit.value;
+    if (this.credential !== key) {
+      this.credential = key;
+      this.cache.clear();
+      this.generation++;
+    }
+    return this.generation;
+  }
+  configured() { this.credentialGeneration(); return !!this.credential; }
+  private async limited<T>(read: () => Promise<T>): Promise<T> {
+    if (this.active < 6) this.active++;
+    else {
+      requireThat(this.waiting.length < 120, 'CATALOG_UNAVAILABLE', 'TMDB is busy. Try again in a moment.', 502);
+      await new Promise<void>(resolve => this.waiting.push(resolve));
+    }
+    try { return await read(); }
+    finally {
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active--;
+    }
+  }
+  async get(path: string, params: Record<string, string> = {}, ttl = DAY_MS): Promise<unknown> {
+    const generation = this.credentialGeneration(), key = this.credential;
+    requireThat(key, 'TMDB_KEY_MISSING', 'Add a TMDB key in Artwork › Settings.', 409);
+    const query = new URLSearchParams(params); query.sort();
+    const id = `${path}?${query}`, hit = this.cache.get(id), now = this.now();
+    if (hit?.pending) return hit.pending;
+    if (hit && hit.until > now) return hit.data;
     const url = new URL(`https://api.themoviedb.org/3${path}`);
-    for (const [k, v] of Object.entries({ ...params, api_key: key })) url.searchParams.set(k, v);
-    const value = remoteJson(url, {}, 'TMDb', this.transport, 10000).then(r => {
-      requireThat(r.status !== 401, 'CATALOG_UNAVAILABLE', 'TMDb refused the API key.', 502);
-      requireThat(r.status < 500 && r.status !== 429, 'CATALOG_UNAVAILABLE', `TMDb answered ${r.status}.`, 502);
+    url.search = query.toString(); url.searchParams.set('api_key', key);
+    const entry: Cached = { until: 0, savedAt: hit?.savedAt, data: hit?.data };
+    entry.pending = this.limited(async () => {
+      requireThat(this.credentialGeneration() === generation, 'TMDB_KEY_CHANGED', 'TMDB settings changed. Try again.', 409);
+      const r = await remoteJson(url, {}, 'TMDB', this.transport, 10000);
+      requireThat(r.status !== 401 && r.status !== 403, 'TMDB_KEY_REJECTED', 'TMDB refused the API key. Check Artwork › Settings.', 502);
+      requireThat(r.status === 404 || (r.status === 200 && r.data !== undefined), 'CATALOG_UNAVAILABLE', `TMDB answered ${r.status}.`, 502);
       return r.status === 404 ? undefined : r.data;
+    }).then(data => {
+      requireThat(this.credentialGeneration() === generation, 'TMDB_KEY_CHANGED', 'TMDB settings changed. Try again.', 409);
+      entry.savedAt = this.now(); entry.until = entry.savedAt + ttl; entry.data = data;
+      return data;
+    }).catch(error => {
+      if (this.credentialGeneration() === generation && error?.code === 'CATALOG_UNAVAILABLE' &&
+          entry.savedAt !== undefined && this.now() - entry.savedAt <= ttl + DAY_MS) {
+        entry.until = this.now() + 60000;
+        return entry.data;
+      }
+      if (this.cache.get(id) === entry) this.cache.delete(id);
+      throw error;
+    }).finally(() => {
+      entry.pending = undefined;
+      this.trim();
     });
-    value.catch(() => this.cache.delete(id));
-    this.cache.delete(id); this.cache.set(id, { at: this.now(), value });
-    if (this.cache.size > MAX_CACHED) this.cache.delete(this.cache.keys().next().value!);
-    return value;
+    this.cache.delete(id); this.cache.set(id, entry);
+    this.trim();
+    return entry.pending;
+  }
+  private trim() {
+    if (this.cache.size <= MAX_CACHED) return;
+    for (const [id, entry] of this.cache) {
+      if (!entry.pending) this.cache.delete(id);
+      if (this.cache.size <= MAX_CACHED) break;
+    }
   }
   private card(row: Row | undefined): TitleCard | null {
     if (!row || typeof row.id !== 'number') return null;

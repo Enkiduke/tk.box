@@ -7,7 +7,7 @@ import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
-import {ExploreCache,SHARED,exploreFilter,interleave,lacking,passes,rowKeep,rowShown,shownSources} from '../apps/server/src/explore-api.js';
+import {ExploreCache,exploreFilter,interleave,lacking,passes,plexRowTtl,rowShown,shownSources} from '../apps/server/src/explore-api.js';
 import {exploreGenresOf,tmdbGenres} from '../apps/server/src/providers/explore-genres.js';
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
@@ -34,7 +34,7 @@ test('Seerr titles map TMDB fields for movies and shows and skip people',()=>{
   const movie=seerrItem({id:603,mediaType:'movie',title:'The Matrix',releaseDate:'1999-03-31',posterPath:'/p.jpg',voteAverage:8.2,mediaInfo:{status:5}});
   assert.equal(movie?.key,'movie:tmdb:603');assert.equal(movie?.year,1999);assert.equal(movie?.status,'available');
   assert.equal(movie?.posterUrl,`/api/v1/explore/image?u=${encodeURIComponent('https://image.tmdb.org/t/p/w342/p.jpg')}`);
-  // Single-type discover rows omit mediaType; TMDB sends empty strings for missing translations.
+  // Single-type detail responses omit mediaType. TMDB sends empty strings for missing translations.
   const show=seerrItem({id:1399,title:'',name:'Game of Thrones',firstAirDate:'2011-04-17'},'tv');
   assert.equal(show?.kind,'show');assert.equal(show?.title,'Game of Thrones');
   assert.equal(seerrItem({id:1,mediaType:'person',name:'Someone'}),undefined);
@@ -45,14 +45,14 @@ test('Seerr renews an expired session with the Plex token and retries once',asyn
     const path=new URL(url).pathname,cookie=new Headers(init?.headers).get('cookie');calls.push(`${init?.method??'GET'} ${path} ${cookie??''}`);
     if(path==='/api/v1/auth/plex'){session++;return new Response('{}',{headers:{'set-cookie':`connect.sid=s${session}; Path=/; HttpOnly`}});}
     if(path==='/api/v1/auth/me')return Response.json({id:7,displayName:'Viewer',permissions:32});
-    // The first session expires before the row is read.
+    // The first session expires before search is read.
     if(cookie==='connect.sid=s1')return Response.json({message:'Unauthorized'},{status:401});
     return Response.json({results:[{id:1,mediaType:'movie',title:'A'}],totalPages:3,totalResults:60});
   }) as typeof fetch;
   const seerr=new Seerr(()=>({url:'http://seerr.test'}),transport);
-  const page=await seerr.row('1','plex-token','trending',1);
-  assert.equal(page.items.length,1);assert.equal(page.hasMore,true);assert.equal(page.total,60);
-  assert.equal(session,2);assert.equal(calls.filter(c=>c.includes('/discover/trending')).length,2);
+  const results=await seerr.search('1','plex-token','A');
+  assert.equal(results.length,1);
+  assert.equal(session,2);assert.equal(calls.filter(c=>c.includes('/search')).length,2);
   // A second refusal is a permission problem, not another sign-in.
   const denied=new Seerr(()=>({url:'http://seerr.test'}),(async(url:URL)=>{const path=new URL(url).pathname;
     if(path==='/api/v1/auth/plex')return new Response('{}',{headers:{'set-cookie':'connect.sid=x; Path=/'}});
@@ -94,7 +94,7 @@ test('With the API key, browsing reads Seerr without signing anyone in and lists
     return Response.json({results:[{id:1,mediaType:'movie',title:'A',mediaInfo:{status:5}}],totalPages:1});
   }) as typeof fetch;
   const seerr=new Seerr(()=>({url:'http://seerr.test',apiKey:'k'}),transport);
-  assert.equal((await seerr.row('1','plex-token','trending',1)).items[0]?.status,'available');
+  assert.equal((await seerr.search('1','plex-token','A'))[0]?.status,'available');
   const index=await seerr.statuses();
   assert.deepEqual([...index!],[['movie:tmdb:603','requested'],['movie:tmdb:604','available'],['show:tmdb:1399','partial']]);
   await seerr.statuses();
@@ -145,11 +145,10 @@ test('Explore reads are kept per viewer until they expire or are forgotten, and 
   await assert.rejects(cache.get('a','bad',1000,async()=>{throw new Error('down');},1200));
   assert.equal(await cache.get('a','bad',1000,read,1300),6);
 });
-test('Public Explore rows are kept 12 hours, Seerr ones for every viewer, and the watchlist stays short',()=>{
+test('Plex shelves are kept 12 hours and the watchlist stays short',()=>{
   const day=12*3600000,short=10*60000;
-  assert.deepEqual(rowKeep('seerr','trending','a'),{account:SHARED,ttl:day});
-  assert.deepEqual(rowKeep('plex','hub.abc','a'),{account:'a',ttl:day});
-  assert.deepEqual(rowKeep('plex','watchlist','a'),{account:'a',ttl:short});
+  assert.equal(plexRowTtl('hub.abc'),day);
+  assert.equal(plexRowTtl('watchlist'),short);
 });
 test('Explore filters read languages, a year range and a minimum score, and leave out titles that lack what a filter needs',()=>{
   const f=exploreFilter({lang:'en, JA,xx1,en',from:1990,to:2005,min:7});
@@ -196,16 +195,16 @@ test('Explore search interleaves sources best first and lists a title once with 
   assert.deepEqual(a.ids,{tmdb:1,plex:'p1'});
 });
 test('Explore layout keeps the administrator order, lists missing sources last and hides sources and single rows',()=>{
-  assert.deepEqual(exploreLayout(undefined),{order:['plex','seerr'],hidden:[],hiddenRows:[]});
-  assert.deepEqual(exploreLayout({order:['seerr']}).order,['seerr','plex']);
+  assert.deepEqual(exploreLayout(undefined),{order:['tmdb','plex'],hidden:[],hiddenRows:[]});
+  assert.deepEqual(exploreLayout({order:['plex']}).order,['plex','tmdb']);
   // Trakt, saved before it was removed, is dropped and the rest kept.
-  assert.deepEqual(exploreLayout({order:['trakt','seerr','plex'],hidden:['trakt','plex'],hiddenRows:['trakt:watchlist','seerr:trending']} as never),{order:['seerr','plex'],hidden:['plex'],hiddenRows:['seerr:trending']});
+  assert.deepEqual(exploreLayout({order:['trakt','seerr','plex','tmdb'],hidden:['trakt','plex','seerr'],hiddenRows:['trakt:watchlist','seerr:trending','plex:watchlist']} as never),{order:['plex','tmdb'],hidden:['plex'],hiddenRows:['plex:watchlist']});
   // A damaged saved value falls back to the default.
-  assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['plex','seerr']);
+  assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['tmdb','plex']);
   const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
-  const saved=store.updateLayout('1',0,{order:['seerr','plex'],hidden:['plex'],hiddenRows:['seerr:upcoming-shows']});
+  const saved=store.updateLayout('1',0,{order:['plex','tmdb'],hidden:['plex'],hiddenRows:['tmdb:upcoming-shows']});
   assert.equal(saved.revision,1);
-  assert.deepEqual(shownSources(saved),['seerr']);
-  assert.equal(rowShown(saved,'seerr','upcoming-shows'),false);assert.equal(rowShown(saved,'seerr','trending'),true);assert.equal(rowShown(saved,'plex','watchlist'),false);
-  assert.throws(()=>store.updateLayout('1',0,{order:['plex','seerr'],hidden:[],hiddenRows:[]}),/Settings changed/);
+  assert.deepEqual(shownSources(saved),['tmdb']);
+  assert.equal(rowShown(saved,'tmdb','upcoming-shows'),false);assert.equal(rowShown(saved,'tmdb','trending'),true);assert.equal(rowShown(saved,'plex','watchlist'),false);
+  assert.throws(()=>store.updateLayout('1',0,{order:['plex','tmdb'],hidden:[],hiddenRows:[]}),/Settings changed/);
 });

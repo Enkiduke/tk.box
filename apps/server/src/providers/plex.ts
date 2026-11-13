@@ -6,6 +6,8 @@ import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import {languageKey,type CatalogItem,type CatalogPage} from '../../../../packages/contracts/src/index.js';
 
+export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
+
 const accountSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), username: z.string().max(200).optional(), title: z.string().max(200).optional() });
 const pinSchema = z.object({ id: z.number().int(), code: z.string(), expiresIn: z.number().positive(), authToken: z.string().nullable().optional() });
 const resourceSchema = z.array(z.object({ clientIdentifier: z.string(), provides: z.string(), owned: z.boolean(), accessToken: z.string().min(1).optional() }));
@@ -427,6 +429,41 @@ export class PlexAdapter {
     }
     const {items,more,total}=await read(query.offset,query.limit);
     return {items,offset:query.offset,limit:query.limit,total,hasMore:more};
+  }
+  async exploreLibrary(grant:PlexGrant):Promise<{titles:ExploreLibraryTitle[]; complete:boolean; capped?:boolean}> {
+    const libraries = grant.libraries.filter(library => library.type === 'movie' || library.type === 'show');
+    const pending = libraries.map(library => ({library, offset:0}));
+    const titles:ExploreLibraryTitle[] = [];
+    let complete = true;
+    for (let budget = 10000; pending.length && budget > 0;) {
+      const batch = pending.splice(0, Math.min(2, Math.ceil(budget/200)));
+      const reads = await Promise.allSettled(batch.map(async ({library, offset}) => {
+        const size = Math.min(budget, 200); budget -= size;
+        const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
+        for (const [key,value] of Object.entries({type:library.type==='movie'?'1':'2', sort:'addedAt:desc', includeGuids:'1',
+          excludeElements:'Media,Role,Director,Writer,Country,Collection,Producer,Image',
+          'X-Plex-Container-Start':String(offset), 'X-Plex-Container-Size':String(size)})) url.searchParams.set(key,value);
+        const page = catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+        requireThat(page.Metadata.length <= size && (page.offset === undefined || page.offset === offset),
+          'PLEX_PAGINATION_INVALID','Plex returned an unexpected library page.',502);
+        const entries = page.Metadata.map(node => {
+          requireThat((node.librarySectionID ?? page.librarySectionID ?? library.key) === library.key && node.type === library.type,
+            'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);
+          const {title,year,genres,addedAt,tmdbId} = catalogDto(node,library.key);
+          return {kind:library.type==='movie'?'movie':'show',title,year,genres,addedAt,tmdbId} satisfies ExploreLibraryTitle;
+        });
+        const next = offset + page.Metadata.length;
+        return {entries, library, next, more:next < (page.totalSize ?? (page.Metadata.length === size ? next+1 : next))};
+      }));
+      for (const result of reads) {
+        if (result.status === 'rejected') { complete = false; continue; }
+        const {entries,library,next,more} = result.value;
+        titles.push(...entries);
+        if (more && entries.length) pending.push({library,offset:next});
+        else if (more) complete = false;
+      }
+    }
+    return {titles,complete:complete && !pending.length,...(complete && pending.length ? {capped:true} : {})};
   }
   // Season and show cards grouped from episodes carry no description, so they take the series' own. A show that
   // can't be read keeps its card without one.

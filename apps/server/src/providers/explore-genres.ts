@@ -14,3 +14,9 @@ const tmdbNames:Record<number,string>={28:'Action',12:'Adventure',16:'Animation'
   36:'History',27:'Horror',10402:'Music',9648:'Mystery',10749:'Romance',878:'Science Fiction',53:'Thriller',10752:'War',37:'Western',
   10759:'Action & Adventure',10762:'Kids',10764:'Reality',10765:'Sci-Fi & Fantasy',10768:'War & Politics'};
 export const tmdbGenres=(ids:number[])=>exploreGenresOf(ids.map(id=>tmdbNames[id]));
+export const tmdbIdsForGenre=(genre:ExploreGenre,kind:'movie'|'tv')=>Object.entries(tmdbNames)
+  .filter(([id,name])=>{
+    const value=Number(id);
+    const tvOnly=value>=10759, movieOnly=[12,14,36,27,10402,10749,878,53,10752,28].includes(value);
+    return (kind==='tv'?!movieOnly:!tvOnly)&&exploreGenresOf([name]).includes(genre);
+  }).map(([id])=>Number(id));

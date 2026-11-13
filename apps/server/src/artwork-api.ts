@@ -55,8 +55,8 @@ const libraries=(grant:PlexGrant)=>grant.libraries.filter(l=>['movie','show'].in
 const runOf=(grant:PlexGrant):ArtworkRun=>({token:grant.serverToken,libraries:grant.libraries});
 type Marks={warning:string|null;marks:[string,string|boolean|null][]};
 
-export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,admin:Admin) {
-  const remote=new ExploreImages(fetch,providerHosts,15*1024*1024),titles=new TmdbTitles(()=>store.keys().tmdb);
+export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,admin:Admin,titles=new TmdbTitles(()=>store.keys().tmdb)) {
+  const remote=new ExploreImages(fetch,providerHosts,15*1024*1024);
   const files=new ArtworkFiles(join(engine.workDir,'assets'),join(engine.paths.cacheDir,'artwork'),join(engine.workDir,'config.json'));
   const pictures=new ArtworkPictures(()=>store.keys(),()=>store.settings().language||'en');
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=await admin(request);return worker.request<T>(runOf(grant),method,params);};
