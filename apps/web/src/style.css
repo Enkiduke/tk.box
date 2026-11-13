@@ -99,7 +99,9 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .nav-links{display:flex;gap:26px}
 .nav-links a{font-size:15px;color:#cfcfd6;font-weight:500;transition:color .15s;position:relative;padding:6px 0;white-space:nowrap}
 .nav-links a:hover{color:#fff}
+.nav-links a{display:inline-flex;align-items:center;gap:6px}
 .nav-links a[aria-current=page]{color:#fff;font-weight:700}
+.nav-links a[aria-current=page] svg{color:var(--accent)}
 .nav-links a[aria-current=page]:after{content:'';position:absolute;left:0;right:0;bottom:-4px;height:2px;border-radius:2px;background:var(--accent)}
 .nav-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
 .nav-search{position:relative;flex:none;width:38px;height:38px}
@@ -737,6 +739,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .detail-body{grid-template-columns:1fr;gap:12px}
   .nav{gap:24px}.nav-links{gap:18px}
   .nav:has(.nav-search-box.is-open) .nav-links{visibility:hidden}
+}
+@media(761px <= width <= 860px){
+  .nav{gap:12px;padding-inline:16px}
+  .nav-links{gap:10px}
 }
 @media(max-width:760px){
   :root{--nav-h:56px;--gutter:16px}
