@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
-import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
+import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore, CleanupWatch } from '../persistence/cleanup-store.js';
 import { tagArrTitle } from '../providers/arr-tags.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
@@ -70,8 +70,44 @@ export function cleanupCollections(kept: KeptCollections['collections'], definit
   return kept.map(({ name, library, kind }) => ({ name, library, kind: kind === 'custom' && seasonal.has(`${library}:${collectionKey(name)}`) ? 'seasonal' : kind }));
 }
 
+// Each movie's, show's and season's latest watch by anyone and by each of `users` (Plex account ids), from the
+// saved snapshot (account '' is anyone) and tk.box's own history, the later of each.
+type WatchScope = CleanupWatch['scope'];
+export type CleanupWatches = { server_id: string } & Record<WatchScope, Record<string, { any: string; users: Record<string, string> }>>;
+export function cleanupWatches(serverId: string, rows: CleanupWatch[], users: Set<string>): CleanupWatches {
+  const latest: Record<WatchScope, Record<string, { any: number; users: Record<string, number> }>> = { movie: {}, show: {}, season: {} };
+  for (const { scope, ratingKey, account, at } of rows) {
+    const entry = latest[scope][ratingKey] ??= { any: at, users: {} };
+    entry.any = Math.max(entry.any, at);
+    if (account && users.has(account)) entry.users[account] = Math.max(entry.users[account] ?? at, at);
+  }
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const out = (scope: WatchScope) => Object.fromEntries(Object.entries(latest[scope]).map(([key, e]) =>
+    [key, { any: iso(e.any), users: Object.fromEntries(Object.entries(e.users).map(([user, at]) => [user, iso(at)])) }]));
+  return { server_id: serverId, movie: out('movie'), show: out('show'), season: out('season') };
+}
+// Save watch history's file (the script's --watch-snapshot): the rows to keep, or why they can't be kept.
+export function snapshotRows(data: unknown, serverId: string): { checked: number; rows: CleanupWatch[] } | string {
+  const file = data as { server_id?: unknown; complete?: unknown; checked?: unknown; watches?: unknown } | null;
+  if (!file || typeof file !== 'object' || !Array.isArray(file.watches) || typeof file.checked !== 'number') return 'the script did not write it';
+  if (file.server_id !== serverId) return 'it is from a different Plex server';
+  if (file.complete !== true) return 'some titles could not be checked; fix them and save again';
+  const rows: CleanupWatch[] = [], at = (value: unknown) => typeof value === 'string' ? Date.parse(value) : NaN;
+  for (const w of file.watches as { scope?: unknown; rating_key?: unknown; any?: unknown; users?: unknown }[]) {
+    const scope = w?.scope, key = w?.rating_key, any = at(w?.any);
+    if ((scope !== 'movie' && scope !== 'show' && scope !== 'season') || typeof key !== 'string' || !/^\d{1,40}$/.test(key) || !Number.isFinite(any)) return 'it has an invalid row';
+    rows.push({ scope, ratingKey: key, account: '', at: any });
+    for (const [user, value] of Object.entries(w.users && typeof w.users === 'object' ? w.users : {})) {
+      const when = at(value);
+      if (!/^\d{1,20}$/.test(user) || !Number.isFinite(when)) return 'it has an invalid row';
+      rows.push({ scope, ratingKey: key, account: user, at: when });
+    }
+  }
+  return { checked: file.checked, rows };
+}
+
 // The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = []) {
+export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = [], watches?: CleanupWatches) {
   return {
     plex: { url: paths.plexUrl }, tautulli: { url: services.tautulli.url }, radarr: { url: services.radarr.url }, sonarr: { url: services.sonarr.url },
     movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
@@ -85,7 +121,9 @@ export function cleanupConfig(settings: CleanupSettings, services: CleanupServic
     leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
     holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()])),
     // The titles a run looks at: tk.box's requests now on the server.
-    requests
+    requests,
+    // Not read by the script yet: it still asks Tautulli.
+    ...(watches ? { watches } : {})
   };
 }
 // What has to be set before a run can start, in the words the page shows. The script checks all of it again.
@@ -126,6 +164,9 @@ export class CleanupEngine {
   requests: () => CleanupRequest[] = () => [];
   // Told the whole titles a real run deleted, so their requests are removed.
   deleted?: (titles: { kind: 'movie' | 'show'; tmdb: number }[]) => void;
+  // This Plex server's id, and its watches (the saved snapshot and tk.box's history), read as each run starts.
+  serverId: () => string | undefined = () => undefined;
+  watches: (serverId: string) => CleanupWatch[] = () => [];
   constructor(private store: CleanupStore, readonly paths: Paths, private services: () => CleanupServices, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
@@ -142,11 +183,19 @@ export class CleanupEngine {
   }
   // A preview always runs with --dry-run; a run follows the Preview only setting.
   enqueue(actor: string, preview: boolean, token: string, scheduled = false) {
+    const dry = preview || this.store.settings().dryRun;
+    return this.add(actor, `${scheduled ? 'Scheduled: ' : ''}${dry ? 'Preview: what would be deleted' : 'Clean up: delete what is due'}`, preview ? ['--dry-run'] : [], token);
+  }
+  // Save watch history: a preview that also writes Tautulli's dates for every title, which tk.box then keeps.
+  saveWatchHistory(actor: string, token: string) {
+    if (!this.serverId()) throw new AppError('CLEANUP_NOT_READY', 'Set PLEX_MACHINE_ID first: saved watch history is kept per Plex server.', 409);
+    return this.add(actor, 'Save watch history', ['--dry-run', '--watch-snapshot'], token);
+  }
+  private add(actor: string, label: string, args: string[], token: string) {
     const missing = this.missing();
     if (missing.length) throw new AppError('CLEANUP_NOT_READY', missing[0]!, 409);
-    const dry = preview || this.store.settings().dryRun, args = preview ? ['--dry-run'] : [];
     if (this.pending()) throw new AppError('CLEANUP_BUSY', 'A clean up is already running or waiting.', 409);
-    const id = this.store.addJob(actor, `${scheduled ? 'Scheduled: ' : ''}${dry ? 'Preview: what would be deleted' : 'Clean up: delete what is due'}`, args);
+    const id = this.store.addJob(actor, label, args);
     this.queue.push({ id, args, token }); void this.next();
     return this.store.job(id);
   }
@@ -222,21 +271,24 @@ export class CleanupEngine {
     const running: Running = this.current = { id: job.id, lines: [], dropped: 0, canceled: false, secrets: Object.values(secrets).filter((v): v is string => !!v) };
     const say = (line: string) => { running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
     let code: number | null = null;
-    const started = Date.now();
+    const started = Date.now(), snapshot = job.args.includes('--watch-snapshot'), snapshotFile = join(this.workDir, 'watch-snapshot.json');
     try {
       this.store.jobStarted(job.id);
       const engine = await this.status();
       if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
       const file = this.writeConfig(settings, services);
       say(`> purge_requests ${job.args.join(' ')}`.trim());
-      const comparison = job.args.includes('--dry-run') ? ['--compare-native-history', join(this.paths.dataDir, 'tk.box.sqlite')] : [];
-      const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args, ...comparison], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const comparison = job.args.includes('--dry-run') && !snapshot ? ['--compare-native-history', join(this.paths.dataDir, 'tk.box.sqlite')] : [];
+      if (snapshot) rmSync(snapshotFile, { force: true });
+      const args = job.args.flatMap(a => a === '--watch-snapshot' ? [a, snapshotFile] : [a]);
+      const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...args, ...comparison], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);
       code = await done;
     } catch (e) { say(`ERROR: ${(e as Error).message}`); }
     const status = running.canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed';
     if (running.canceled) say('Canceled.');
+    else if (snapshot) say(this.keepSnapshot(job.id, snapshotFile));
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('clean up job finished', { jobId: job.id, status, code });
     // Even a failed run may have deleted some titles first; the status file lists those it did. One left from an
@@ -244,11 +296,26 @@ export class CleanupEngine {
     if (!running.canceled && !job.args.includes('--dry-run') && !settings.dryRun) this.reportDeleted(started);
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
+  private keepSnapshot(jobId: number, file: string) {
+    try {
+      const serverId = this.serverId(), actor = this.store.job(jobId).actor;
+      let data: unknown = null;
+      try { data = JSON.parse(readFileSync(file, 'utf8')); } catch { /* not written */ }
+      const found = serverId ? snapshotRows(data, serverId) : 'Plex is not connected';
+      if (typeof found === 'string') return `Watch history was not saved: ${found}.`;
+      const saved = this.store.saveWatchSnapshot(actor, serverId!, found.checked, found.rows);
+      return `Saved watch history: ${found.checked} titles and seasons checked, ${saved.watches} with watches.`;
+    } catch (e) { this.log('clean up: could not save watch history', errorDetail(e)); return 'Watch history was not saved: it could not be stored.'; }
+    finally { rmSync(file, { force: true }); }
+  }
   // Written whole and then moved into place, so the script never reads a half-written config.
   private writeConfig(settings: CleanupSettings, services: CleanupServices) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections(), this.requests()), null, 2), { mode: 0o600 });
+    const requests = this.requests(), serverId = this.serverId();
+    const users = new Set([...settings.exemptUserIds, ...requests.flatMap(r => r.requester_plex_id === null ? [] : [r.requester_plex_id])].map(String));
+    const watches = serverId ? cleanupWatches(serverId, this.watches(serverId), users) : undefined;
+    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections(), requests, watches), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

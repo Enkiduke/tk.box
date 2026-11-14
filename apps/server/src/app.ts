@@ -131,7 +131,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const ctx: ModuleContext = {config, db, vault, plex, bus, budget, serviceKeys, background,
     log: {info: (message, detail) => app.log.info(detail ?? {}, message), warn: (message, detail) => app.log.warn(detail ?? {}, message)}};
   // Watch history and Admin › Activity come first: every playback module reports to them.
-  const {history, monitor: plexMonitor} = await mountModule(app, ctx, watchHistoryModule, undefined);
+  const {history, monitor: plexMonitor, latestWatches} = await mountModule(app, ctx, watchHistoryModule, undefined);
   const plexSessions = (grant: Parameters<typeof plex.sessions>[0]) => plexMonitor.sessions(grant);
   const activityApi = await mountModule(app, ctx, activityModule, {history, plexSessions}), {activity} = activityApi;
   // Custom channels share the live session routes with IPTV; their sessions belong to CustomTv.
@@ -149,7 +149,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles});
   await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests});
+  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches});
   await mountModule(app, ctx, calendarModule, {connections: () => ({radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr')}), titles: tmdbTitles});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(),

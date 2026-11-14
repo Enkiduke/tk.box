@@ -27,6 +27,7 @@ from purge_support.plex import find_plex_item, matching_arr_tags, protected_coll
 from purge_support.policy import (MissingAddedAtError, days_remaining, held_until, hold_key, leaving_soon, parse_added_at,
                                   rule_for_requests)
 from purge_support.reporting import RunReport, add_entry, add_status, log_report, write_status
+from purge_support.watch_snapshot import WatchSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def load_arr_data(client, needed, tags_needed):
 
 
 def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, history,
-                          arr_data, now, report, processed_keys, context, native_preview=None):
+                          arr_data, now, report, processed_keys, context, native_preview=None, snapshot=None):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
     media_type, tmdb_id = key
@@ -121,6 +122,9 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
         raise ApiError("Different media IDs resolved to the same Plex item; refusing repeated processing")
     processed_keys.add(item_key)
     context["item"] = item
+    if snapshot:
+        # Before any protection, so a title protected now still has its dates once that changes.
+        snapshot.record(item, media_type, {request.requestor_id for request in requests_group if request.requestor_id is not None})
     kind = "movie" if media_type == "movie" else "show"
     logger.info("Processing '%s' for request IDs %s", item.title, [request.request_id for request in requests_group])
 
@@ -181,7 +185,7 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None):
+def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None, snapshot=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -213,7 +217,8 @@ def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None):
         try:
             process_request_group(key, raw_requests, settings=settings, plex=plex,
                                   radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,
-                                  now=now, report=report, processed_keys=processed_keys, context=context, native_preview=native_preview)
+                                  now=now, report=report, processed_keys=processed_keys, context=context, native_preview=native_preview,
+                                  snapshot=snapshot)
         except MissingAddedAtError as exc:
             logger.warning("Skipping %s TMDB=%s (request IDs %s): %s; retaining media",
                            *key, [request.get("id") for request in raw_requests], exc)
@@ -250,6 +255,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="report what would be deleted; change nothing")
     parser.add_argument("--status", type=Path, help="write each title's status here as JSON when the run finishes")
     parser.add_argument("--compare-native-history", type=Path, help="compare against the tk.box database during a dry run")
+    parser.add_argument("--watch-snapshot", type=Path, help="during a dry run, write Tautulli's watch dates for each title here")
     args = parser.parse_args(argv)
     configure_logging()
     try:
@@ -258,6 +264,9 @@ def main(argv=None):
     except (ConfigError, OSError, ValueError) as exc:
         logger.error("Cannot start purge: %s", exc)
         return 1
+    if args.watch_snapshot and not settings.dry_run:
+        logger.error("Cannot start purge: --watch-snapshot needs a dry run")
+        return 1
     logger.info("Starting purge (%s)", "DRY RUN: nothing is deleted" if settings.dry_run else "deleting for real")
     try:
         with requests.Session() as session:
@@ -265,11 +274,19 @@ def main(argv=None):
             plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
             native_preview = (NativeHistoryPreview(args.compare_native_history, getattr(plex, "machineIdentifier", ""), args.status)
                               if settings.dry_run and args.compare_native_history else None)
+            history = TautulliClient(http, settings.tautulli, settings.exempt_user_ids)
+            snapshot = WatchSnapshot(history) if args.watch_snapshot else None
             report = run(settings, plex,
                          ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"),
-                         TautulliClient(http, settings.tautulli, settings.exempt_user_ids), native_preview=native_preview)
+                         history, native_preview=native_preview, snapshot=snapshot)
         if args.status:
             write_status(report, args.status, settings.dry_run)
+        if snapshot:
+            # A title not found in Plex has nothing to keep; any other failure leaves the snapshot incomplete.
+            snapshot.write(args.watch_snapshot, getattr(plex, "machineIdentifier", ""), report.failed == 0)
+            logger.info("Watch history: %s titles and seasons checked, %s with watches%s", len(snapshot.entries),
+                        sum(1 for status in snapshot.entries.values() if status.last_watched_by_anyone is not None),
+                        "" if report.failed == 0 else f"; incomplete, {report.failed} titles failed")
         return 1 if report.failed or report.skipped_missing_added_at else 0
     except Exception:
         logger.exception("Purge aborted")

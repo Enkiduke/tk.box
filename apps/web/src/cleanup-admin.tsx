@@ -16,7 +16,8 @@ type Engine={ready:boolean;version?:string;error?:string};
 type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
-type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
+type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean;
+  watchSnapshot:{at:number;checked:number;watches:number}|null};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
@@ -50,10 +51,14 @@ function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
 function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
   const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
   const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
+  // Goes with Tautulli: keeps its watch dates in tk.box.
+  const saveWatches=()=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/watch-snapshot','POST',{})));
+  const saved=data.watchSnapshot;
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
   const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr]] as const).filter(([,on])=>on).map(([name])=>name);
   return <>
     <SectionHead title="Clean Up">
+      <button disabled={off} title={saved?`Saved ${new Date(saved.at).toLocaleString()}: ${saved.watches} titles and seasons with watches. Saving again keeps the later dates.`:'Copies Tautulli’s watch dates into tk.box. Changes nothing in Plex.'} onClick={saveWatches}>{saved?'Watch history saved':'Save watch history'}</button>
       <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
       <button disabled={off||!real} title={real?'Deletes everything that is due.':'Preview only is on in Settings, so runs only report.'} onClick={()=>setConfirm(true)}><Icon name="trash" size={16}/>Clean up now</button>
     </SectionHead>
