@@ -1,6 +1,7 @@
 import { AppError } from '../errors.js';
 import { remoteJson } from '../providers/remote-json.js';
 import type { Meta } from './artwork-files.js';
+import { TtlCache } from '../lib/ttl-cache.js';
 
 // The pictures TMDb, Fanart.tv, TVDB and Plex offer for one title (posters, logos or backdrops), as the title editor lists
 // them. The title's IDs come from its .artwork.json, so looking only needs Plex for Plex's own pictures. The providers are
@@ -39,19 +40,13 @@ function tvdbRows(artwork: Json[], types: Json[], kind: string): Art[] {
 }
 
 export class ArtworkPictures {
-  private cache = new Map<string, { at: number; value: Promise<unknown> }>();
+  private cache = new TtlCache<Promise<unknown>>(MAX_CACHED, () => this.now());
   private tvdbToken?: { key: string; token: Promise<string> };
   constructor(private keys: () => Keys, private language: () => string, private transport: typeof fetch = fetch, private now = Date.now) {}
 
   // A provider's JSON, kept a day; asked once however many requests want it at the same time.
   private json(id: string, load: () => Promise<unknown>) {
-    const hit = this.cache.get(id);
-    if (hit && this.now() - hit.at < DAY_MS) return hit.value;
-    const value = load();
-    value.catch(() => { if (this.cache.get(id)?.value === value) this.cache.delete(id); });
-    this.cache.delete(id); this.cache.set(id, { at: this.now(), value });
-    if (this.cache.size > MAX_CACHED) this.cache.delete(this.cache.keys().next().value!);
-    return value;
+    return this.cache.remember(id, DAY_MS, load);
   }
   private async get(service: string, url: URL, headers: Record<string, string> = {}) {
     const response = await remoteJson(url, { headers }, service, this.transport, 20000, 32 * 1024 * 1024);

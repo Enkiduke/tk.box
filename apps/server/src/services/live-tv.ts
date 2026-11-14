@@ -10,6 +10,7 @@ import { assertVideoEncode, type EncoderBudget } from '../streaming/policy.js';
 import { ProviderConnections, type ConnectionLease } from '../streaming/provider-connections.js';
 import type { IptvStore } from '../persistence/iptv-store.js';
 import { ffmpegEnv, protocols, type StreamGuard } from '../streaming/stream-guard.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 export type LiveDelivery = 'remux' | 'transcode';
 export type LiveSource = { videoCodec?: string; audioCodec?: string; width?: number; height?: number };
@@ -39,7 +40,7 @@ export class LiveTv {
   private relays = new Map<string, Relay>();
   private viewers = new Map<string, Viewer>();
   private root: string;
-  private timer: NodeJS.Timeout;
+  private timer: Repeating;
   observer: LiveObserver = {};
   connections = new ProviderConnections(() => Number.POSITIVE_INFINITY);
   tuneRetries = 3; tuneRetryMs = 3000;
@@ -49,7 +50,7 @@ export class LiveTv {
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private options = { maxRelays: 8, maxPerViewer: 4, idleMs: 45000, readyMs: 30000 }) {
     this.root = join(cacheDir, 'live', `${process.pid}-${opaque().slice(0, 8)}`);
     void this.reapStale(join(cacheDir, 'live'));
-    this.timer = setInterval(() => this.sweep(), 10000); this.timer.unref();
+    this.timer = every(10000, () => this.sweep(), e => this.log('live channel sweep failed', errorDetail(e)));
   }
   async start(hash: string, channelId: string) {
     const channel = this.store.tune(channelId);
@@ -109,7 +110,7 @@ export class LiveTv {
     if (relay && !relay.viewers.size) this.destroy(relay);
   }
   stopWhere(matches: (v: { id: string; hash: string }) => boolean) { for (const v of [...this.viewers.values()]) if (matches(v)) this.stop(v.id, v.hash); }
-  close() { clearInterval(this.timer); for (const relay of [...this.relays.values()]) this.destroy(relay); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
+  close() { this.timer.stop(); for (const relay of [...this.relays.values()]) this.destroy(relay); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   get count() { return this.relays.size; }
   isLive(channelId: string) { return !!this.relays.get(channelId)?.live; }
   // Administrator activity: how a viewer's channel is being delivered right now.

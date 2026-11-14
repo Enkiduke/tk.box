@@ -13,6 +13,7 @@ import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
 import type {TmdbTitles} from './providers/tmdb-titles.js';
 import {TmdbTitleDiscovery} from './providers/tmdb-title-discovery.js';
 import {ExploreRecommendations} from './explore-recommendations.js';
+import { TtlCache } from './lib/ttl-cache.js';
 
 const source=z.enum(exploreBrowseSources);
 const tmdbRow=z.enum(tmdbExploreRows);
@@ -35,17 +36,11 @@ const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.st
 // Plex shelves change about daily. The watchlist can change outside tk.box, so it stays short.
 const ROWS_MS=12*3600000,PUBLIC_MS=12*3600000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000;
 export class ExploreCache {
-  private entries=new Map<string,{until:number;value:Promise<unknown>}>();
-  get<T>(account:string,key:string,ttl:number,read:()=>Promise<T>,now=Date.now()):Promise<T> {
-    const id=`${account}
-${key}`,hit=this.entries.get(id);if(hit&&hit.until>now)return hit.value as Promise<T>;
-    const value=read();this.entries.delete(id);this.entries.set(id,{until:now+ttl,value});
-    value.catch(()=>{if(this.entries.get(id)?.value===value)this.entries.delete(id);});
-    while(this.entries.size>2000)this.entries.delete(this.entries.keys().next().value!);
-    return value;
-  }
-  forget(account?:string) {if(account===undefined){this.entries.clear();return;}for(const id of [...this.entries.keys()])if(id.startsWith(`${account}
-`))this.entries.delete(id);}
+  private entries=new TtlCache<Promise<unknown>>(2000);
+  get<T>(account:string,key:string,ttl:number,read:()=>Promise<T>,now=Date.now()):Promise<T> {return this.entries.remember(`${account}
+${key}`,ttl,read,now);}
+  forget(account?:string) {if(account===undefined)this.entries.clear();else this.entries.deleteWhere(id=>id.startsWith(`${account}
+`));}
 }
 
 export const plexRowTtl=(row:string)=>row==='watchlist'?PAGE_MS:PUBLIC_MS;

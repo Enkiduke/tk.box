@@ -17,6 +17,7 @@ import { SportsSchedule } from '../services/sports-schedule.js';
 import { DEFAULT_ESPN, DEFAULT_TSDB } from '../providers/sports-feeds.js';
 import { registerSports } from '../sports-api.js';
 import type { CustomChannelStore } from '../persistence/custom-channels.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 const list = (value: string | undefined, fallback: string[]) => { const items = (value ?? '').split(',').map(s => s.trim()).filter(Boolean); return items.length ? items : fallback; };
 
@@ -58,16 +59,16 @@ export const iptvModule = defineModule({
     // New listings or a new TheSportsDB key: match events again.
     bus.on('iptv.source.published', () => sports.invalidate());
     bus.on('service-keys.changed', () => sports.invalidate());
-    let timer: NodeJS.Timeout | undefined;
+    let timer: Repeating | undefined;
     return {
       api: { store: iptv, live },
       async start() {
-        timer = setInterval(() => { void refresh.tick().catch(() => {}); }, 15000); timer.unref();
+        timer = every(15000, () => refresh.tick(), e => log.warn('source refresh tick failed', errorDetail(e)));
         iptv.relistAll(); await refresh.tick();
         void sports.tick();
       },
       async stop() {
-        clearInterval(timer); await refresh.close();
+        timer?.stop(); await refresh.close();
         live.close(); health.close(); sports.close(); guard.close();
       }
     };

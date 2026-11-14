@@ -4,6 +4,7 @@ import type { ArtworkEngine } from './artwork-engine.js';
 import type { Finished } from './plex-notifications.js';
 import { WAITING } from './plex-background.js';
 import { dueAt, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 // Artwork's and collections' schedules, run by tk.box instead of cron and a Tautulli hook. Each task runs on its
 // schedule, server local time (a missed time within two hours after, if tk.box was down then). Newly added titles are
@@ -34,7 +35,7 @@ const SETTLE_MS = 30000, SETTLE_MAX_MS = 3 * 60000, MAX_QUEUED = 50;
 const addedMs = (addedAt?: number) => addedAt === undefined ? 0 : addedAt < 1e11 ? addedAt * 1000 : addedAt;
 
 export class ArtworkSchedule {
-  private timer?: NodeJS.Timeout;
+  private timer?: Repeating;
   private settle?: NodeJS.Timeout;
   private settleSince?: number;
   private ticking = false;
@@ -42,8 +43,8 @@ export class ArtworkSchedule {
   private libraries: PlexGrant['libraries'] = [];
   constructor(private store: ArtworkStore, private engine: ArtworkEngine, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private streaming: (grant: PlexGrant) => Promise<number> = async () => 0) {}
-  start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); }
-  close() { clearInterval(this.timer); clearTimeout(this.settle); }
+  start() { this.timer = every(60000, () => this.tick(), e => this.log('artwork schedule failed', errorDetail(e))); }
+  close() { this.timer?.stop(); clearTimeout(this.settle); }
   notificationLibraries(grant: PlexGrant) {
     this.libraries = grant.libraries;
   }
