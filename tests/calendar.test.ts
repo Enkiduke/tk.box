@@ -5,6 +5,7 @@ import type {CalendarEntry, CalendarPage} from '../packages/contracts/src/index.
 import {episodeRanges, groupCalendarEntries} from '../apps/web/src/calendar-episodes.js';
 import {registerCalendar} from '../apps/server/src/calendar-api.js';
 import {AppError} from '../apps/server/src/errors.js';
+import {installAccess} from '../apps/server/src/modules/access.js';
 import {PlexAdapter, type PlexGrant} from '../apps/server/src/providers/plex.js';
 import {TmdbTitles} from '../apps/server/src/providers/tmdb-titles.js';
 import {config} from './fixtures.js';
@@ -34,15 +35,16 @@ test('Calendar keeps the earliest home release and groups episodes by their loca
     return Response.json([timed, timed, {...timed, title: 'TBA', episodeNumber: 2, airDateUtc: null},
       {...timed, episodeNumber: 3, airDateUtc: '2026-11-14T06:00:00Z'}]);
   };
+  installAccess(app, {viewer: async request => {
+    const accountId = request.headers['x-test-account'];
+    if (typeof accountId !== 'string') throw new AppError('UNAUTHORIZED', 'Sign in.', 401);
+    return {hash: accountId, grant: {accountId, role: 'viewer', serverToken: accountId, libraries: []}} as never;
+  }});
   registerCalendar(app, {calendarMedia: async (grant, kind, _, guids) => {
     matched.push(`${grant.accountId}:${guids.join(',')}`);
     if (grant.accountId !== 'owner') return [];
     return kind === 'movie' ? [{id: '100'}] : [{id: '201', showId: '200', season: 2, episode: 1}];
-  }}, async request => {
-    const accountId = request.headers['x-test-account'];
-    if (typeof accountId !== 'string') throw new AppError('UNAUTHORIZED', 'Sign in.', 401);
-    return {grant: {accountId, role: 'viewer', serverToken: accountId, libraries: []}};
-  }, () => ({radarr: {url: 'http://radarr.test', key: 'test-key'}, sonarr: {url: 'http://sonarr.test', key: 'test-key'}}), transport);
+  }}, () => ({radarr: {url: 'http://radarr.test', key: 'test-key'}, sonarr: {url: 'http://sonarr.test', key: 'test-key'}}), transport);
   const url = '/api/v1/calendar?from=2026-11-12&to=2026-11-14&zone=America%2FNew_York';
   assert.equal((await app.inject(url)).statusCode, 401);
   const owner = { 'x-test-account': 'owner' };
@@ -92,9 +94,10 @@ test('TMDb confirms season and series finales without guessing from the current 
 test('Calendar still returns the working feed during provider and Plex failures', async t => {
   const app = Fastify();
   t.after(() => app.close());
-  registerCalendar(app, {calendarMedia: async () => {throw new Error('Plex is unavailable');}}, async () => ({
-    grant: {accountId: 'owner', role: 'admin', serverToken: 'owner', libraries: []},
-  }), () => ({radarr: {url: 'http://radarr.test', key: 'key'}, sonarr: {url: 'http://sonarr.test', key: 'key'}}), async input => {
+  installAccess(app, {viewer: async () => ({
+    hash: 'owner', grant: {accountId: 'owner', role: 'admin', serverToken: 'owner', libraries: []},
+  }) as never});
+  registerCalendar(app, {calendarMedia: async () => {throw new Error('Plex is unavailable');}}, () => ({radarr: {url: 'http://radarr.test', key: 'key'}, sonarr: {url: 'http://sonarr.test', key: 'key'}}), async input => {
     return new URL(String(input)).hostname === 'sonarr.test' ? new Response(null, {status: 503}) :
       Response.json([{title: 'The Movie', tmdbId: 1, digitalRelease: '2026-11-12', hasFile: true}]);
   });

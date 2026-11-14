@@ -14,6 +14,7 @@ import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
 import { ChannelHealth } from '../apps/server/src/services/channel-health.js';
 import { registerChannelHealth } from '../apps/server/src/health-api.js';
+import { installAccess } from '../apps/server/src/modules/access.js';
 import { classify, dhash, hamming, parseAnalysis, probeStream, type ProbeResult } from '../apps/server/src/services/stream-probe.js';
 import { ProviderConnections } from '../apps/server/src/streaming/provider-connections.js';
 
@@ -160,11 +161,35 @@ test('The scheduler respects provider connections, yields to viewers and trusts 
   } finally { service.close(); db.close(); }
 });
 
+test('Disabled channel health rejects manual checks and ignores due work and tune events', async () => {
+  const { db, store, health, source, ids } = lineup(2), cache = mkdtempSync(join(tmpdir(), 'tk-health-'));
+  let probes = 0;
+  const service = new ChannelHealth(store, health, cache, ffmpeg, () => {}, {enabled:false,tickMs:1}, async () => {
+    probes++;
+    return result('online');
+  });
+  try {
+    health.queueSource(source);
+    const before = health.forSource(source);
+    assert.throws(() => service.queueSource(source), {code:'CHANNEL_CHECKS_DISABLED'});
+    assert.throws(() => service.queueChannels(source, ids), {code:'CHANNEL_CHECKS_DISABLED'});
+    assert.throws(() => service.queueChannel(ids[0]!), {code:'CHANNEL_CHECKS_DISABLED'});
+    service.tuned(ids[0]!);
+    service.tuneFailed(ids[1]!);
+    service.pump();
+    await new Promise(done => setTimeout(done,20));
+    assert.equal(probes,0);
+    assert.equal(service.active(),0);
+    assert.deepEqual(health.forSource(source),before);
+  } finally {service.close();db.close();}
+});
+
 test('Health API is administrator-scoped and never returns stream locations', async () => {
   const { db, store, health, source, ids } = lineup(2), app = Fastify(), cache = mkdtempSync(join(tmpdir(), 'tk-health-'));
   const service = new ChannelHealth(store, health, cache, ffmpeg, () => {}, { maxChecks: 0, sampleSeconds: 7, tickMs: 60000 });
   let role = 'admin';
-  registerChannelHealth(app, store, health, service, async () => { if (role !== 'admin') throw Object.assign(new Error('Administrator access required.'), { statusCode: 403 }); return { grant: { accountId: 'owner' } }; });
+  installAccess(app, { admin: (async () => { if (role !== 'admin') throw Object.assign(new Error('Administrator access required.'), { statusCode: 403 }); return { grant: { accountId: 'owner' } }; }) as never });
+  registerChannelHealth(app, store, health, service);
   try {
     const read = await app.inject({ url: `/api/v1/admin/iptv/sources/${source}/health` });
     assert.equal(read.statusCode, 200); assert.equal(read.json().summary.unchecked, 2);

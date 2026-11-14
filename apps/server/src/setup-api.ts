@@ -13,7 +13,7 @@ import { AppError, requireThat } from './errors.js';
 type Discovery = Awaited<ReturnType<PlexAdapter['discoverOwner']>>;
 type Library = { key: string; title: string; type: string };
 type Pending = { pinId: number; code: string; expires: number; lastPoll: number; token?: string; discovery?: Discovery };
-type CookieOptions = { httpOnly: boolean; secure: boolean; sameSite: 'lax'; path: string };
+export type CookieOptions = { httpOnly: boolean; secure: boolean; sameSite: 'lax'; path: string };
 
 // What someone typed for their Plex server, as the addresses to try in order: a bare host gets Plex's port 32400,
 // and without a scheme http is tried before https. Only plain http(s) origins come back.
@@ -77,9 +77,9 @@ export function registerSetup(app: FastifyInstance, config: Config, plex: PlexAd
   };
   const signedIn = (discovery: Discovery) => ({ status: 'signed_in' as const, libraries: discovery.libraries.map(l => ({ key: l.key, title: l.title, type: l.type })), selected: discovery.requiredLibraryIds });
 
-  app.get('/api/v1/setup', async () => ({ plexConfigured: config.plexConfigured, milestone: 0, ...(config.plexConfigured ? {} : { plexUrl: config.PLEX_URL }) }));
+  app.get('/api/v1/setup', { config: { access: 'public' } }, async () => ({ plexConfigured: config.plexConfigured, milestone: 0, ...(config.plexConfigured ? {} : { plexUrl: config.PLEX_URL }) }));
   // Looks for Plex at the typed address, or at the configured one (127.0.0.1:32400 by default) when none is given.
-  app.post('/api/v1/setup/plex/find', { config: { rateLimit: { max: 30, timeWindow: 60000 } } }, async req => {
+  app.post('/api/v1/setup/plex/find', { config: { access: 'public', rateLimit: { max: 30, timeWindow: 60000 } } }, async req => {
     open(req);
     const { url } = z.object({ url: z.string().max(300).optional() }).strict().parse(req.body ?? {});
     const candidates = url === undefined ? [config.PLEX_URL.replace(/\/+$/, '')] : plexAddressCandidates(url);
@@ -95,7 +95,7 @@ export function registerSetup(app: FastifyInstance, config: Config, plex: PlexAd
     }
     return { found: false, plexUrl: candidates[0] };
   });
-  app.post('/api/v1/setup/plex/start', { config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => {
+  app.post('/api/v1/setup/plex/start', { config: { access: 'public', rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => {
     open(req);
     requireThat(pending.size < 20, 'LOGIN_LIMIT', 'Too many pending sign-ins.', 429);
     const pin = await plex.createPin(), binding = opaque();
@@ -103,7 +103,7 @@ export function registerSetup(app: FastifyInstance, config: Config, plex: PlexAd
     reply.setCookie(cookies.setup, binding, { ...cookies.options, maxAge: 3600 });
     return { authUrl: plex.authUrl(pin.code) };
   });
-  app.post('/api/v1/setup/plex/status', async req => {
+  app.post('/api/v1/setup/plex/status', { config: { access: 'public' } }, async req => {
     open(req);
     const entry = challenge(req), now = Date.now();
     if (entry.discovery) return signedIn(entry.discovery);
@@ -117,14 +117,14 @@ export function registerSetup(app: FastifyInstance, config: Config, plex: PlexAd
     return signedIn(discovery);
   });
   // Runs each tool with its version flag. Owner-only, since it starts the programs it's given.
-  app.post('/api/v1/setup/tools', async req => {
+  app.post('/api/v1/setup/tools', { config: { access: 'public' } }, async req => {
     open(req); owner(req);
     const body = z.object({ ffmpeg: z.string().trim().min(1).max(500), ffprobe: z.string().trim().min(1).max(500), python: z.string().trim().min(1).max(500) }).partial().strict().parse(req.body ?? {});
     const paths = { ffmpeg: body.ffmpeg ?? config.FFMPEG_PATH, ffprobe: body.ffprobe ?? config.FFPROBE_PATH, python: body.python ?? config.PYTHON_PATH };
     const [ffmpeg, ffprobe, python] = await Promise.all([toolVersion(paths.ffmpeg, ['-version']), toolVersion(paths.ffprobe, ['-version']), toolVersion(paths.python, ['--version'])]);
     return { ffmpeg: { path: paths.ffmpeg, version: ffmpeg }, ffprobe: { path: paths.ffprobe, version: ffprobe }, python: { path: paths.python, version: python } };
   });
-  app.post('/api/v1/setup/finish', { config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply: FastifyReply) => {
+  app.post('/api/v1/setup/finish', { config: { access: 'public', rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply: FastifyReply) => {
     open(req);
     const { token, discovery } = owner(req);
     const body = z.object({ libraries: z.array(z.string().regex(/^\d+$/)).min(2).max(100), ffmpeg: z.string().trim().min(1).max(500).optional(), ffprobe: z.string().trim().min(1).max(500).optional(), python: z.string().trim().min(1).max(500).optional() }).strict().parse(req.body);

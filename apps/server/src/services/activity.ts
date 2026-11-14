@@ -11,7 +11,7 @@ export type StreamOpen = {
   id: string; kind: StreamKind; hash: string; accountId: string; user?: string; delivery: StreamDelivery; ip: string; userAgent?: string;
   mediaId?: string; channelId?: string; channel?: { name: string; number: number }; positionMs?: number; durationMs?: number; quality?: string; target?: { maxHeight?: number; maxBitrateKbps?: number }; source?: StreamSource;
 };
-type Stream = StreamOpen & { started: number; seen: number; state: 'playing' | 'paused'; positionAt: number; sent: { at: number; bytes: number }[] };
+export type Stream = StreamOpen & { started: number; seen: number; state: 'playing' | 'paused'; positionAt: number; sent: { at: number; bytes: number }[] };
 const RATE_WINDOW_MS = 30000;
 
 export class Activity {

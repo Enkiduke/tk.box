@@ -7,6 +7,7 @@ import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {SourceRefresh} from '../apps/server/src/services/source-refresh.js';
 import {registerIptv} from '../apps/server/src/iptv-api.js';
+import {installAccess} from '../apps/server/src/modules/access.js';
 
 const playlist=Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="station",Station\nhttps://streams.invalid/station');
 const xml=Buffer.from('<tv><channel id="guide"><display-name>Station</display-name></channel><programme channel="guide" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Programme</title></programme></tv>');
@@ -62,7 +63,9 @@ test('editing a legacy shared EPG isolates its settings and keeps saved listings
     assert.equal(store.mappingReview(first.channel.id,saved.guide.id).mapping?.method,'admin');
     const start=Date.UTC(2026,9,17,12);
     assert.equal(store.guide(first.channel.id,saved.guide.id,start,start+3600000)[0]?.program?.title,'Programme');
+    assert.deepEqual(store.historyGuide(first.channel.id,start,start+10000).map(p=>p.title),['Programme']);
     store.remove('owner',first.source.id,saved.source.revision);
+    assert.deepEqual(store.historyGuide(first.channel.id,start,start+10000),[]);
     assert.throws(()=>store.status(saved.guide.id),{code:'SOURCE_NOT_FOUND'});
     assert.equal(store.status(second.source.id).feedId,feed.id);assert.equal(store.visible().length,1);
     store.removeGuide('owner',second.source.id,otherSource.revision);
@@ -92,7 +95,7 @@ test('source guide HTTP saves bind immediately, survive failed imports and clean
     if(delayed){signal=inputSignal;return new Promise<Buffer>(resolve=>{finish=resolve;});}
     return xml;
   }}),access=async()=>({grant:{accountId:'owner'}});
-  registerIptv(app,store,refresh,access,access);
+  installAccess(app,{viewer:access as never,admin:access as never});registerIptv(app,store,refresh);
   try {
     const {source}=add('Channels'),url=`/api/v1/admin/iptv/sources/${source.id}/guide`;
     const response=await app.inject({method:'PUT',url,payload:{expectedRevision:source.revision,endpoint,intervalHours:6}});

@@ -11,6 +11,7 @@ import Fastify from 'fastify';
 import { gzipSync } from 'node:zlib';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { registerIptv } from '../apps/server/src/iptv-api.js';
+import { installAccess } from '../apps/server/src/modules/access.js';
 import { SourceRefresh } from '../apps/server/src/services/source-refresh.js';
 import { RestrictedSourceFetcher } from '../apps/server/src/providers/source-fetch.js';
 
@@ -47,7 +48,7 @@ test('EPG URL creation, immediate refresh and channel linking publish compressed
     return {status:200,headers:{},body:gzipSync(fail?'<tv>invalid':xml),complete:true};
   });
   const access=async()=>({grant:{accountId:'owner'}});
-  registerIptv(app,store,new SourceRefresh(store,fetcher),access,access);
+  installAccess(app,{viewer:access as never,admin:access as never});registerIptv(app,store,new SourceRefresh(store,fetcher));
   try {
     const created=await app.inject({method:'POST',url:'/api/v1/admin/iptv/sources',payload:{kind:'xmltv',name:'URL EPG',endpoint:{url:'https://provider.invalid/guide.xml.gz?token=fixture-secret',headers:{Authorization:'Bearer fixture-secret'}}}});
     assert.equal(created.statusCode,200);const feed=created.json();

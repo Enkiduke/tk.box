@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { CalendarEntry, CalendarPage } from '../../../packages/contracts/src/index.js';
 import type { ArrService } from './providers/arr-tags.js';
-import type { PlexAdapter, PlexGrant } from './providers/plex.js';
+import type { PlexAdapter } from './providers/plex.js';
 import { imagePath } from './providers/explore-images.js';
 import { remoteJson } from './providers/remote-json.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
+import { viewer } from './modules/access.js';
 
 const day = z.iso.date();
 const query = z.object({from: day, to: day, zone: z.string().min(1).max(100).default('UTC'), account: z.string().optional()}).strict();
@@ -76,8 +77,7 @@ function episodeEntry(raw: unknown): Scheduled[] {
     episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
 }
 
-export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>,
-  auth: (request: FastifyRequest) => Promise<{grant: PlexGrant}>, connections: () => {radarr: ArrService; sonarr: ArrService},
+export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, connections: () => {radarr: ArrService; sonarr: ArrService},
   transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales'>) {
   // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
   const cache = new Map<string, {until: number; rows: Promise<Scheduled[]>}>();
@@ -98,8 +98,8 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     return rows;
   };
 
-  app.get('/api/v1/calendar', {config: {rateLimit: {max: 60, timeWindow: 60_000}}}, async (request, reply): Promise<CalendarPage> => {
-    const {grant} = await auth(request);
+  app.get('/api/v1/calendar', {config: {access: 'viewer', rateLimit: {max: 60, timeWindow: 60_000}}}, async (request, reply): Promise<CalendarPage> => {
+    const {grant} = viewer(request);
     reply.header('Cache-Control', 'private, no-store');
     const {from, to, zone, account} = query.parse(request.query), start = Date.parse(from), end = Date.parse(to);
     requireThat(account === undefined || account === grant.accountId, 'FORBIDDEN', 'This calendar belongs to another account.', 403);
