@@ -109,6 +109,17 @@ export type ExploreWatchProvider = {id: number; name: string; logoUrl?: string};
 export type ExploreWatchProviders = {regions: {code: string; name: string}[]; providers: ExploreWatchProvider[]; defaults: number[]};
 // Seerr's view of a title on the media server: available, partly available, or requested (including being downloaded).
 export type ExploreStatus = 'available' | 'partial' | 'requested';
+// tk.box's own requests (docs/REQUESTS.md). A title's label: on the server, partly, being downloaded, or asked for.
+export type RequestLabel = 'available' | 'partial' | 'downloading' | 'requested';
+export type RequestStatus = 'queued' | 'requested' | 'downloading' | 'partial' | 'available' | 'failed' | 'removed';
+export type RequestItem = { id: number; kind: 'movie' | 'show'; tmdbId: number; title: string; year?: number; status: RequestStatus; statusAt: number; createdAt: number;
+  seen: boolean; seasons: { season: number; available: boolean }[]; accountName: string; error?: string; removedBy?: string };
+export type RequestPage = { items: RequestItem[]; total: number; page: number; hasMore: boolean };
+export type MyRequests = { items: RequestItem[]; unseen: number };
+export type RequestDestination = { profileId: number; rootFolder: string; tags: number[] };
+export type RequestSettings = { revision: number; movie: RequestDestination; show: RequestDestination & { seasonFolders: boolean }; searchOnAdd: boolean };
+export type RequestOptions = { connected: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[];
+  defaults: RequestDestination };
 // The genres Explore filters on: TMDB's movie and TV genres and Plex's, merged into one list.
 export const exploreGenres = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Kids',
   'Music', 'Mystery', 'Reality', 'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western'] as const;

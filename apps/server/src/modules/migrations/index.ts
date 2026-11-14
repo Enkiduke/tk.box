@@ -3,7 +3,9 @@ import { migrate, type Migration } from '../../persistence/migrate.js';
 import { watchHistoryMigrations } from './watch-history.js';
 import { customChannelsMigrations } from './custom-channels.js';
 import { iptvMigrations } from './iptv.js';
+import { arrMigrations } from './arr.js';
 import { artworkMigrations } from './artwork.js';
+import { requestsMigrations } from './requests.js';
 import { exploreMigrations } from './explore.js';
 import { cleanupMigrations } from './cleanup.js';
 
@@ -13,7 +15,9 @@ export const moduleMigrations: Readonly<Record<string, readonly Migration[]>> = 
   'watch-history': watchHistoryMigrations,
   'custom-channels': customChannelsMigrations,
   iptv: iptvMigrations,
+  arr: arrMigrations,
   artwork: artworkMigrations,
+  requests: requestsMigrations,
   explore: exploreMigrations,
   cleanup: cleanupMigrations
 };

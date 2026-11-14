@@ -28,6 +28,8 @@ import { watchHistoryModule } from './modules/watch-history.js';
 import { activityModule } from './modules/activity.js';
 import { artworkModule } from './modules/artwork.js';
 import { cleanupModule } from './modules/cleanup.js';
+import { arrModule } from './modules/arr.js';
+import { requestsModule } from './modules/requests.js';
 import { clientEventsModule } from './modules/client-events.js';
 import { catalogModule } from './modules/catalog.js';
 import { exploreModule } from './modules/explore.js';
@@ -35,6 +37,7 @@ import { calendarModule } from './modules/calendar.js';
 import { plexNotificationsModule } from './modules/plex-notifications.js';
 import { signInModule } from './modules/sign-in.js';
 import { adminModule } from './modules/admin.js';
+import { connectionHealth } from './services/connection-health.js';
 import { webModule } from './modules/web.js';
 
 export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box', exploreTransports: {tmdb?:typeof fetch; seerr?:typeof fetch; images?:typeof fetch} = {}) {
@@ -135,14 +138,18 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   await mountModule(app, ctx, clientEventsModule, undefined);
   // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
   const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length;
-  const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb}), tmdbTitles = artwork.titles;
+  // Radarr and Sonarr, read by Collections, Clean Up and the calendar.
+  const arr = await mountModule(app, ctx, arrModule, undefined);
+  const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb, arr}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
+  await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles});
   const {store: exploreStore} = await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, seerr: () => exploreStore.seerr()});
-  await mountModule(app, ctx, calendarModule, {connections: cleanup.services, titles: tmdbTitles});
+  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, seerr: () => exploreStore.seerr()});
+  await mountModule(app, ctx, calendarModule, {connections: () => ({radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr')}), titles: tmdbTitles});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
-  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage()});
+  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(),
+    checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports)});
   await mountModule(app, ctx, webModule, undefined);
   return app;
 }
