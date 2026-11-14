@@ -5,6 +5,7 @@ import type { HealthStore } from '../persistence/channel-health-store.js';
 import { ProviderConnections, type ConnectionLease } from '../streaming/provider-connections.js';
 import { probeStream, type Prober } from './stream-probe.js';
 import type { StreamGuard } from '../streaming/stream-guard.js';
+import { requireThat } from '../errors.js';
 
 // What the live relay layer tells the checker. Connections themselves are shared through
 // ProviderConnections: a check only starts on a free one, and a new viewer cancels checks.
@@ -16,7 +17,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // where it stopped and a large lineup is spread over the source's interval instead of bursting.
 export class ChannelHealth {
   private checks = new Map<string, Check>();
-  private timer: NodeJS.Timeout;
+  private timer?: NodeJS.Timeout;
   private closed = false;
   private dir: string;
   relays: RelayUsage = { live: () => false };
@@ -25,29 +26,34 @@ export class ChannelHealth {
   guard?: StreamGuard;
   constructor(private store: IptvStore, private health: HealthStore, cacheDir: string, private ffmpeg = 'ffmpeg',
     private log: (message: string, detail: Record<string, unknown>) => void = () => {},
-    private options = { maxChecks: 4, sampleSeconds: 7, tickMs: 5000 }, private probe: Prober = probeStream) {
+    private options: {maxChecks?:number;sampleSeconds?:number;tickMs?:number;enabled?:boolean} = {}, private probe: Prober = probeStream) {
     this.dir = join(cacheDir, 'channel-health');
-    this.timer = setInterval(() => this.pump(), options.tickMs); this.timer.unref();
-    void this.prune();
+    if (this.enabled) {
+      this.timer = setInterval(() => this.pump(), options.tickMs ?? 5000); this.timer.unref();
+      void this.prune();
+    }
   }
+  get enabled() { return this.options.enabled !== false; }
   thumbnail(channelId: string) { return uuid.test(channelId) ? join(this.dir, `${channelId}.jpg`) : undefined; }
   // Cancelled checks stay listed until their process exits, but no longer hold a connection.
   active(sourceId?: string) { return [...this.checks.values()].filter(c => !c.abort.signal.aborted && (!sourceId || c.sourceId === sourceId)).length; }
   checking(channelId: string) { return this.checks.has(channelId); }
-  queueSource(sourceId: string) { const queued = this.health.queueSource(sourceId); this.pump(); return queued; }
-  queueChannels(sourceId: string, ids: string[]) { const queued = this.health.queueChannels(sourceId, ids); this.pump(); return queued; }
-  queueChannel(channelId: string) { this.health.queueChannel(channelId); this.pump(); }
-  tuned(channelId: string) { this.health.relayOnline(channelId); }
+  private requireEnabled() { requireThat(this.enabled, 'CHANNEL_CHECKS_DISABLED', 'Channel health checks are disabled in this instance.', 409); }
+  queueSource(sourceId: string) { this.requireEnabled(); const queued = this.health.queueSource(sourceId); this.pump(); return queued; }
+  queueChannels(sourceId: string, ids: string[]) { this.requireEnabled(); const queued = this.health.queueChannels(sourceId, ids); this.pump(); return queued; }
+  queueChannel(channelId: string) { this.requireEnabled(); this.health.queueChannel(channelId); this.pump(); }
+  tuned(channelId: string) { if (this.enabled) this.health.relayOnline(channelId); }
   // A failed tune is a strong hint; verify it now rather than waiting for the next sweep.
-  tuneFailed(channelId: string) { try { this.queueChannel(channelId); } catch { /* left the lineup */ } }
+  tuneFailed(channelId: string) { if (this.enabled) try { this.queueChannel(channelId); } catch { /* left the lineup */ } }
   pump(now = Date.now()) {
-    if (this.closed) return;
+    if (this.closed || !this.enabled) return;
+    const maxChecks = this.options.maxChecks ?? 4;
     for (const sourceId of this.health.dueSources(now)) {
-      if (this.options.maxChecks - this.active() <= 0) break;
+      if (maxChecks - this.active() <= 0) break;
       // Channels already playing are settled from their relay and do not use up a connection.
-      for (const channelId of this.health.due(sourceId, this.options.maxChecks * 3, new Set(this.checks.keys()), now)) {
+      for (const channelId of this.health.due(sourceId, maxChecks * 3, new Set(this.checks.keys()), now)) {
         if (this.relays.live(channelId)) { this.health.relayOnline(channelId, now); continue; }
-        if (this.options.maxChecks - this.active() <= 0) break;
+        if (maxChecks - this.active() <= 0) break;
         const check: Check = { sourceId, abort: new AbortController() };
         const lease = this.connections.tryCheck(() => check.abort.abort());
         if (!lease) break;
@@ -61,7 +67,7 @@ export class ChannelHealth {
       try {
         const { streamUrl, allowPrivate } = this.store.streamFor(channelId), proxy = allowPrivate ? undefined : await this.guard?.url();
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
-        const result = await this.probe(streamUrl, { ffmpeg: this.ffmpeg, signal: check.abort.signal, sampleSeconds: this.options.sampleSeconds, thumbnailPath: this.thumbnail(channelId), ...(proxy ? { proxy } : {}) });
+        const result = await this.probe(streamUrl, { ffmpeg: this.ffmpeg, signal: check.abort.signal, sampleSeconds: this.options.sampleSeconds ?? 7, thumbnailPath: this.thumbnail(channelId), ...(proxy ? { proxy } : {}) });
         if (this.closed) return;
         const outcome = this.health.record(channelId, result);
         if (result.reason === 'CHECKER_UNAVAILABLE') this.log('channel check could not start FFmpeg', { channelId });

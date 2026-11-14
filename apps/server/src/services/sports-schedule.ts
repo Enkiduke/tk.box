@@ -27,7 +27,7 @@ export class SportsSchedule {
   private stale = true;
   lastSync: number | null = null;
   lastError: string | null = null;
-  constructor(private iptv: IptvStore, private store: SportsStore, private health: HealthStore, private pump: () => void,
+  constructor(private iptv: IptvStore, private store: SportsStore, private health: HealthStore | undefined, private pump: () => void,
     private options: SportsOptions, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private get: (url: string) => Promise<unknown> = fetchJson(), private image: (url: string) => Promise<Image> = url => logos.get(url)) {
     this.timer = setInterval(() => { void this.tick(); }, options.tickMs); this.timer.unref();
@@ -82,7 +82,7 @@ export class SportsSchedule {
       for (const source of sources) {
         const synced = this.iptv.syncNumbers(source.id);
         if (synced.numbered || synced.released) this.log('sports channels updated', { sourceId: source.id, ...synced });
-        this.health.queueEvents(source.id);
+        this.health?.queueEvents(source.id);
       }
       this.pump();
     } catch (error) {
