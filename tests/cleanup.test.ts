@@ -6,7 +6,8 @@ import { openMigratedDatabase } from '../apps/server/src/modules/migrations/inde
 import {Vault} from '../apps/server/src/security/vault.js';
 import {migrate} from '../apps/server/src/persistence/migrate.js';
 import {cleanupMigrations} from '../apps/server/src/modules/migrations/cleanup.js';
-import {cleanupCollections,cleanupConfig,cleanupMissing,holdUntil,withHolds,withKept,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
+import {cleanupCollections,cleanupConfig,cleanupMissing,cleanupWatches,holdUntil,snapshotRows,withHolds,withKept,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
+import {HistoryStore} from '../apps/server/src/persistence/history-store.js';
 
 const store=()=>new CleanupStore(openMigratedDatabase(':memory:'),new Vault(randomBytes(32)));
 const services:CleanupServices={tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
@@ -99,4 +100,46 @@ test('the script is given tk.box’s requests and no Seerr, and settings saved w
   db.prepare("DELETE FROM schema_migrations WHERE owner='cleanup' AND name='drop-seerr'").run();
   migrate(db,'cleanup',cleanupMigrations);
   assert.equal(JSON.parse((db.prepare("SELECT value FROM cleanup_config WHERE name='settings'").get() as {value:string}).value).deleteFromSeerr,undefined);
+});
+
+test('saved watch history keeps the later date of each, and only for its own Plex server',()=>{
+  const s=store(),at=(d:string)=>Date.parse(d);
+  s.saveWatchSnapshot('admin','srv',3,[{scope:'movie',ratingKey:'10',account:'',at:at('2026-01-01')},{scope:'movie',ratingKey:'10',account:'7',at:at('2026-01-01')}]);
+  const info=s.saveWatchSnapshot('admin','srv',3,[{scope:'movie',ratingKey:'10',account:'',at:at('2025-06-01')},{scope:'season',ratingKey:'21',account:'',at:at('2026-02-01')}]);
+  assert.deepEqual([info.checked,info.watches],[3,2]);
+  assert.equal(s.watchSnapshotRows('srv').find(r=>r.ratingKey==='10'&&r.account==='')!.at,at('2026-01-01'));
+  assert.deepEqual(s.watchSnapshotRows('other'),[]);
+  s.saveWatchSnapshot('admin','other',1,[]);
+  assert.deepEqual(s.watchSnapshotRows('other'),[]);
+});
+
+test('the run config’s watches take the later of the snapshot and tk.box’s history, per scope and user',()=>{
+  const w=cleanupWatches('srv',[
+    {scope:'show',ratingKey:'5',account:'',at:Date.parse('2026-01-01')},
+    {scope:'show',ratingKey:'5',account:'7',at:Date.parse('2026-01-01')},
+    {scope:'show',ratingKey:'5',account:'7',at:Date.parse('2026-03-01')},
+    {scope:'show',ratingKey:'5',account:'9',at:Date.parse('2026-04-01')},
+  ],new Set(['7']));
+  assert.deepEqual(w,{server_id:'srv',movie:{},season:{},show:{'5':{any:'2026-04-01T00:00:00.000Z',users:{'7':'2026-03-01T00:00:00.000Z'}}}});
+});
+
+test('a watch history file is kept only when complete, from this server and well formed',()=>{
+  const good={server_id:'srv',complete:true,checked:2,watches:[{scope:'season',rating_key:'21',any:'2026-01-01T00:00:00+00:00',users:{'7':'2025-12-01T00:00:00+00:00'}}]};
+  assert.deepEqual(snapshotRows(good,'srv'),{checked:2,rows:[{scope:'season',ratingKey:'21',account:'',at:Date.parse('2026-01-01')},{scope:'season',ratingKey:'21',account:'7',at:Date.parse('2025-12-01')}]});
+  assert.match(snapshotRows({...good,complete:false},'srv') as string,/could not be checked/);
+  assert.match(snapshotRows(good,'other') as string,/different Plex server/);
+  assert.match(snapshotRows({...good,watches:[{...good.watches[0],scope:'episode'}]},'srv') as string,/invalid/);
+  assert.match(snapshotRows(null,'srv') as string,/did not write/);
+});
+
+test('tk.box’s own watches are read per movie, show and season, without channels or unwatched sessions',()=>{
+  const db=openMigratedDatabase(':memory:'),history=new HistoryStore(db);
+  const media=db.prepare('INSERT INTO history_media(server_id,rating_key,metadata) VALUES(?,?,?)');
+  const movie=media.run('srv','10',JSON.stringify({type:'movie'})).lastInsertRowid,episode=media.run('srv','30',JSON.stringify({type:'episode',showId:'5',seasonId:'21'})).lastInsertRowid;
+  const elsewhere=media.run('other','11',JSON.stringify({type:'movie'})).lastInsertRowid;
+  const session=db.prepare("INSERT INTO history_sessions(id,source,account_id,media_id,client,stream,generation,started_at,observed_at,watch_ms,position_ms) VALUES(?,?,?,?,'c','{}','g',?,?,?,0)");
+  session.run('a','plex','7',movie,100,100,5000); session.run('b','vod','7',movie,200,200,5000); session.run('c','vod','8',episode,300,300,5000);
+  session.run('d','vod','7',episode,400,400,0); session.run('e','iptv','7',movie,500,500,5000); session.run('f','vod','7',elsewhere,600,600,5000);
+  const rows=history.latestWatches('srv').map(r=>`${r.scope}:${r.ratingKey}:${r.account}:${r.at}`).sort();
+  assert.deepEqual(rows,['movie:10:7:200','season:21:8:300','show:5:8:300']);
 });

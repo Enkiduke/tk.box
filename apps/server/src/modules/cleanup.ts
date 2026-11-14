@@ -8,6 +8,7 @@ import type { ArtworkStore } from '../persistence/artwork-store.js';
 import type { ArtworkEngine } from '../services/artwork-engine.js';
 import type { ArrService } from '../providers/arr-tags.js';
 import type { Requests } from '../services/requests.js';
+import type { CleanupWatch } from '../persistence/cleanup-store.js';
 
 type Deps = {
   // The collections artwork keeps are never purged.
@@ -16,6 +17,8 @@ type Deps = {
   arr: { connection: (name: 'radarr' | 'sonarr') => ArrService };
   // tk.box's requests: the titles a run looks at, and those to mark removed once it deleted them.
   requests: Pick<Requests, 'forCleanup' | 'removedByCleanup'>;
+  // Watch history: each account's latest watch of each title on a Plex server.
+  watches: (serverId: string) => CleanupWatch[];
 };
 
 // Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
@@ -24,7 +27,7 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, log }, { artwork, requests, arr }: Deps) {
+  setup(routes, { config, db, vault, bus, background, log }, { artwork, requests, arr, watches }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
       const own = store.connections();
@@ -35,6 +38,8 @@ export const cleanupModule = defineModule({
     registerCleanup(routes, store, engine, services);
     engine.finished = () => bus.emit('library.edited', { by: 'cleanup' });
     engine.requests = () => requests.forCleanup();
+    engine.serverId = () => config.PLEX_MACHINE_ID;
+    engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
     engine.deleted = titles => requests.removedByCleanup(titles);
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     return {

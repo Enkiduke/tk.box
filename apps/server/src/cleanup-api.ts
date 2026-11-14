@@ -14,7 +14,8 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
     const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query),s=services();
     const set=(c:{url:string;key?:string})=>!!(c.url&&c.key);
     return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(!!query.recheck),missing:engine.missing(),
-      connected:{tautulli:set(s.tautulli),radarr:set(s.radarr),sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
+      connected:{tautulli:set(s.tautulli),radarr:set(s.radarr),sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending(),
+      watchSnapshot:store.watchSnapshot()??null};
   });
   app.put('/api/v1/admin/cleanup/settings',async request=>{
     const {grant}=viewer(request),{expectedRevision,...value}=cleanupSettings.extend({expectedRevision:revision}).strict().parse(request.body);
@@ -42,6 +43,11 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
   app.post('/api/v1/admin/cleanup/jobs',{config:{rateLimit:{max:10,timeWindow:60000}}},async request=>{
     const {grant}=viewer(request),{preview}=z.object({preview:z.boolean()}).strict().parse(request.body);
     return engine.enqueue(grant.accountId,preview,grant.serverToken);
+  });
+  // Save watch history: a preview that saves Tautulli's watch dates in tk.box. Goes with Tautulli.
+  app.post('/api/v1/admin/cleanup/watch-snapshot',{config:{rateLimit:{max:10,timeWindow:60000}}},async request=>{
+    z.object({}).strict().parse(request.body??{});const {grant}=viewer(request);
+    return engine.saveWatchHistory(grant.accountId,grant.serverToken);
   });
   app.get<{Params:{id:string}}>('/api/v1/admin/cleanup/jobs/:id',async request=>{
     const id=z.coerce.number().int().positive().parse(request.params.id),{since}=z.object({since:z.coerce.number().int().nonnegative().default(0)}).strict().parse(request.query);

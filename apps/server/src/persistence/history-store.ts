@@ -68,6 +68,18 @@ export class HistoryStore {
     this.db = undefined;
   }
 
+  // Clean Up: each account's latest watch of each movie, show and season on this Plex server, in tk.box's player or
+  // Plex's own apps. Any time watched counts; channels don't.
+  latestWatches(serverId: string) {
+    return this.connection().prepare(`WITH w AS (SELECT m.rating_key AS rk,json_extract(m.metadata,'$.type') AS type,
+        json_extract(m.metadata,'$.showId') AS show,json_extract(m.metadata,'$.seasonId') AS season,s.account_id AS account,s.started_at AS at
+        FROM history_sessions s JOIN history_media m ON m.id=s.media_id WHERE s.source IN ('vod','plex') AND s.watch_ms>0 AND m.server_id=?)
+      SELECT 'movie' AS scope,rk AS ratingKey,account,MAX(at) AS at FROM w WHERE type='movie' GROUP BY rk,account
+      UNION ALL SELECT 'show',show,account,MAX(at) FROM w WHERE type='episode' AND show IS NOT NULL GROUP BY show,account
+      UNION ALL SELECT 'season',season,account,MAX(at) FROM w WHERE type='episode' AND season IS NOT NULL GROUP BY season,account`)
+      .all(serverId) as { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number }[];
+  }
+
   recover(since: number): HistorySession[] {
     const db = this.connection();
     return db.transaction(() => {
