@@ -295,7 +295,7 @@ function App() {
     :route.page==='calendar'?<Suspense fallback={<div className="page"><Loading/></div>}><Calendar key={me.accountId} accountId={me.accountId} params={route.params} onOpen={openItem} onSelect={openExploreItem}/></Suspense>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout} params={route.params}/></Suspense></div>
-    :route.page==='admin'?<div className="page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
+    :route.page==='admin'?<div className="page admin-page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
     :watching?(!session&&!tuning&&<div className="page"><Empty title="Nothing is playing"><a href="#home">Find something to watch</a></Empty></div>)
     :<div className="page"><Empty title="Page not found"><a href="#home">Return home</a></Empty></div>;
   return <div className={`app page-${route.page}`}>
