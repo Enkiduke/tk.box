@@ -214,7 +214,8 @@ export class CleanupEngine {
       if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
       const file = this.writeConfig(settings, services);
       say(`> purge_requests ${job.args.join(' ')}`.trim());
-      const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const comparison = job.args.includes('--dry-run') ? ['--compare-native-history', join(this.paths.dataDir, 'tk.box.sqlite')] : [];
+      const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args, ...comparison], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);
       code = await done;

@@ -43,7 +43,7 @@ def delete_whole_item(item, media_type, arr_item, media_ids, settings, arr, seer
                 report.failed += 1
 
 
-def process_seasons(show, requests, series, settings, sonarr, history, now, report, tmdb_id):
+def process_seasons(show, requests, series, settings, sonarr, history, now, report, tmdb_id, native_preview=None):
     """Keep season policy after cleanup leaves only a later season."""
     seasons = show.seasons()  # Failure must never fall back to deleting the show.
     if not seasons or any(isinstance(season.index, bool) or not isinstance(season.index, int)
@@ -81,6 +81,8 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
             rule = rule_for_requests(requests, watch, settings, season_added_at=added_at)
             held = held_until(rule, settings, hold)
             due_at = held or rule.deletion_date
+            if native_preview:
+                native_preview.compare(season, "season", requests, settings, hold, rule, now, season_added_at=added_at)
             if now >= due_at:
                 season_targets(season.index, episodes)
                 logger.warning("DELETE Candidate: '%s'. %s: %s", label, rule.name, rule.reason)

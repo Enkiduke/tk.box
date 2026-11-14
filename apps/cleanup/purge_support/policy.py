@@ -11,6 +11,13 @@ class MissingAddedAtError(ValueError):
     """Seerr did not provide the added-date anchor needed to evaluate a request."""
 
 
+def plex_datetime(value):
+    """PlexAPI's naive timestamp datetimes are in the host's local timezone."""
+    if not isinstance(value, datetime):
+        raise ValueError("Missing Plex addedAt date")
+    return value.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class WatchStatus:
     last_watched_by_anyone: datetime | None

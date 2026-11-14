@@ -21,6 +21,7 @@ from purge_support.actions import delete_whole_item, process_seasons
 from purge_support.api import ApiError, ArrClient, HttpClient, SeerrClient, positive_id
 from purge_support.config import ConfigError, Settings
 from purge_support.history import TautulliClient
+from purge_support.native_history import NativeHistoryPreview
 from purge_support.plex import find_plex_item, matching_arr_tags, protected_collections, update_plex_collection
 from purge_support.policy import (MissingAddedAtError, days_remaining, held_until, hold_key, leaving_soon, parse_added_at,
                                   rule_for_requests)
@@ -101,7 +102,7 @@ def load_arr_data(client, needed, tags_needed):
 
 
 def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, sonarr, history,
-                          arr_data, now, report, processed_keys, context):
+                          arr_data, now, report, processed_keys, context, native_preview=None):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
     media_type, tmdb_id = key
@@ -161,16 +162,18 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
             add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}", key=hold)
             return
     if media_type == "tv" and settings.enable_season_retention:
-        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id):
+        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id, native_preview):
             # Season by season, the show itself never belongs in the collection.
             report.settled.add(str(item.ratingKey))
             return
 
-    requests_group = resolve_added_dates(requests_group, item, history)
+    resolved_requests = resolve_added_dates(requests_group, item, history)
     watch = history.watch_status(item, media_type, {request.requestor_id for request in requests_group})
-    rule = rule_for_requests(requests_group, watch, settings)
+    rule = rule_for_requests(resolved_requests, watch, settings)
     held = held_until(rule, settings, hold)
     due_at = held or rule.deletion_date
+    if native_preview:
+        native_preview.compare(item, media_type, requests_group, settings, hold, rule, now)
     if held:
         logger.info("Keeping '%s' until at least %s: held by an administrator", item.title, held.isoformat())
     if now >= due_at:
@@ -195,7 +198,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, seerr, radarr, sonarr, history, now=None):
+def run(settings, plex, seerr, radarr, sonarr, history, now=None, native_preview=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -227,7 +230,7 @@ def run(settings, plex, seerr, radarr, sonarr, history, now=None):
         try:
             process_request_group(key, raw_requests, settings=settings, plex=plex, seerr=seerr,
                                   radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,
-                                  now=now, report=report, processed_keys=processed_keys, context=context)
+                                  now=now, report=report, processed_keys=processed_keys, context=context, native_preview=native_preview)
         except MissingAddedAtError as exc:
             logger.warning("Skipping %s TMDB=%s (request IDs %s): %s; retaining media",
                            *key, [request.get("id") for request in raw_requests], exc)
@@ -263,6 +266,7 @@ def main(argv=None):
     parser.add_argument("config", type=Path, help="tk.box's JSON config for this run")
     parser.add_argument("--dry-run", action="store_true", help="report what would be deleted; change nothing")
     parser.add_argument("--status", type=Path, help="write each title's status here as JSON when the run finishes")
+    parser.add_argument("--compare-native-history", type=Path, help="compare against the tk.box database during a dry run")
     args = parser.parse_args(argv)
     configure_logging()
     try:
@@ -276,9 +280,11 @@ def main(argv=None):
         with requests.Session() as session:
             http = HttpClient(session, settings.timeout)
             plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
+            native_preview = (NativeHistoryPreview(args.compare_native_history, getattr(plex, "machineIdentifier", ""), args.status)
+                              if settings.dry_run and args.compare_native_history else None)
             report = run(settings, plex, SeerrClient(http, settings.seerr),
                          ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"),
-                         TautulliClient(http, settings.tautulli, settings.exempt_user_ids))
+                         TautulliClient(http, settings.tautulli, settings.exempt_user_ids), native_preview=native_preview)
         if args.status:
             write_status(report, args.status, settings.dry_run)
         return 1 if report.failed or report.skipped_missing_added_at else 0

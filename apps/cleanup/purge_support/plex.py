@@ -1,12 +1,11 @@
 """Plex matching, exemption checks, and library-scoped collection updates."""
 
 import logging
-from datetime import datetime, timezone
-
 from plexapi.exceptions import NotFound
 
 from .api import ApiError, positive_id
 from .config import COLLECTION_KINDS, collection_key
+from .policy import plex_datetime
 
 logger = logging.getLogger(__name__)
 LEAVING_SOON_SORT_TITLE = "!011_Leaving Soon"
@@ -93,13 +92,6 @@ def matching_arr_tags(item, tag_names, exempt_names):
         if name.casefold() in exempt_names:
             matches.add(name)
     return sorted(matches)
-
-
-def plex_datetime(value):
-    """PlexAPI's naive timestamp datetimes are in the host's local timezone."""
-    if not isinstance(value, datetime):
-        raise ValueError("Missing Plex addedAt date")
-    return value.astimezone(timezone.utc)
 
 
 def season_added_at(season):
