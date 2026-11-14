@@ -393,6 +393,29 @@ test('Plex recommendation input pages within the viewer grant and keeps a workin
   assert.ok(requests.every(url=>url.searchParams.get('includeGuids')==='1'&&url.searchParams.get('X-Plex-Container-Size')==='200'));
 });
 
+test('Plex recommendation input queues each library pages from its size, four reads at a time within the title budget',async()=>{
+  const read=async(sizes:Record<string,number>,short?:number)=>{
+    let open=0,most=0;const offsets:string[]=[];
+    const plex=new PlexAdapter(config(),'explore-test',(async input=>{
+      const url=new URL(String(input)),library=url.pathname.split('/')[3]!,start=Number(url.searchParams.get('X-Plex-Container-Start')),size=Number(url.searchParams.get('X-Plex-Container-Size'));
+      offsets.push(`${library}@${start}`);open++;most=Math.max(most,open);await new Promise(done=>setTimeout(done,2));open--;
+      const count=start===short?size-1:Math.max(0,Math.min(size,sizes[library]!-start));
+      return Response.json({MediaContainer:{offset:start,totalSize:sizes[library],Metadata:Array.from({length:count},(_,i)=>({ratingKey:String(start+i+1),type:library==='10'?'movie':'show',title:'Owned'}))}});
+    }) as typeof fetch);
+    return {snapshot:await plex.exploreLibrary(grant),most,offsets};
+  };
+  const all=await read({'10':4000,'20':1500});
+  assert.equal(all.snapshot.titles.length,5500);assert.equal(all.snapshot.complete,true);
+  assert.equal(all.most,4);assert.equal(all.offsets.length,28);assert.equal(new Set(all.offsets).size,28);
+  // Libraries take turns, so the budget is shared rather than spent on the first library.
+  const capped=await read({'10':12000,'20':12000});
+  assert.equal(capped.snapshot.titles.length,10000);assert.equal(capped.snapshot.capped,true);assert.equal(capped.snapshot.complete,false);
+  assert.equal(capped.snapshot.titles.filter(t=>t.kind==='movie').length,5000);
+  // A queued page that comes back short leaves titles unread.
+  const gap=await read({'10':1000,'20':0},400);
+  assert.equal(gap.snapshot.complete,false);assert.equal(gap.snapshot.titles.length,999);
+});
+
 test('personal pools exclude owned titles, rotate seeds and separate account and library grants',async()=>{
   let scans=0;
   const suggestionPaths:string[]=[];

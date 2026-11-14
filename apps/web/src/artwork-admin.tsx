@@ -109,7 +109,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
       <Switch label="Also send logos" checked={draft.uploadLogo} disabled={!draft.upload} onChange={v=>set({uploadLogo:v})}/>
       <label className="narrow">Plex label for finished titles<input value={draft.completionLabel} maxLength={60} onChange={e=>set({completionLabel:e.target.value})}/><small>Empty for none.</small></label>
     </Card>
-    <p className="muted small">Provider keys are in <a href="#admin?section=connections">Connections</a>.</p>
+    <p className="muted small">Provider keys are in <a href="#admin?section=connections&category=metadata">Connections</a>.</p>
     <Card title="Output">
       <div className="form-columns">
         <label>JPEG quality<input type="number" min="50" max="100" required value={draft.quality} onChange={e=>set({quality:Number(e.target.value)})}/></label>

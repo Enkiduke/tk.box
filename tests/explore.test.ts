@@ -139,6 +139,40 @@ test('With the API key, browsing reads Seerr without signing anyone in and lists
   assert.equal(await new Seerr(()=>({url:'http://seerr.test'}),transport).statuses(),undefined);
   assert.equal(statusIndex([{mediaType:'person',tmdbId:1,status:5}]).size,0);
 });
+test('Seerr labels: pages after the first are read together, an expired index answers while a new one is read, and a request drops it',async()=>{
+  let status=5,open=0,most=0,reads=0,release:(()=>void)|undefined;
+  const transport=(async(url:URL)=>{
+    const u=new URL(url);
+    if(u.pathname==='/api/v1/request')return Response.json({id:1});
+    if(u.pathname==='/api/v1/auth/plex')return Response.json({id:1},{headers:{'set-cookie':'connect.sid=s; Path=/'}});
+    if(u.pathname==='/api/v1/auth/me')return Response.json({id:1});
+    const skip=Number(u.searchParams.get('skip'));if(!skip)reads++;
+    open++;most=Math.max(most,open);
+    if(skip===0&&release===undefined&&reads>1)await new Promise<void>(done=>{release=done;});
+    else await new Promise(done=>setTimeout(done,5));
+    open--;
+    return Response.json({pageInfo:{pages:12},results:[{mediaType:'movie',tmdbId:skip+1,status}]});
+  }) as typeof fetch;
+  const seerr=new Seerr(()=>({url:'http://seerr.test',apiKey:'k'}),transport),start=Date.now();
+  const first=await seerr.statuses(start);
+  assert.equal(first!.size,12);assert.equal(first!.get('movie:tmdb:1'),'available');
+  // The first page alone, then the other eleven five at a time.
+  assert.equal(most,5);
+  // Past five minutes the old index answers at once; the new read finishes behind it.
+  status=3;
+  assert.equal(await seerr.statuses(start+6*60000),first);
+  assert.equal(await seerr.statuses(start+6*60000),first);
+  release!();
+  await new Promise(done=>setTimeout(done,50));
+  assert.equal((await seerr.statuses(start+6*60000))!.get('movie:tmdb:1'),'requested');
+  assert.equal(reads,2);
+  // After a request nothing old is kept: the next read is waited for.
+  await seerr.request('1','plex-token','movie',1,undefined,false);
+  status=5;release=()=>{};
+  assert.equal((await seerr.statuses(start+7*60000))!.get('movie:tmdb:1'),'available');
+  assert.equal(reads,3);
+});
+
 test('Cast and crew resolve to IMDb people through the title credits first, then an exact-name search',async()=>{
   assert.equal(matchPerson('Penélope Cruz',[{id:1,name:'Penelope Cruz Jr'},{id:2,name:'penelope cruz'}]),2);
   assert.equal(matchPerson('',[{id:1,name:''}]),undefined);

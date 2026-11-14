@@ -87,7 +87,8 @@ export class Seerr {
   private sessions = new Map<string, Session>();
   private signing = new Map<string, Promise<Session>>();
   private settings = new TtlCache<SeerrPublic>(64);
-  private index?: { key: string; until: number; value: Promise<Map<string, ExploreStatus>> };
+  private index?: { key: string; until: number; value: Promise<Map<string, ExploreStatus>>; done: boolean };
+  private lastIndex?: { key: string; at: number; value: Map<string, ExploreStatus> };
   constructor(private connection: () => SeerrConnection | undefined, private transport: typeof fetch = fetch) {}
   configured() { return !!this.connection(); }
   // Statuses on Plex titles need the media list, which only the API key may read.
@@ -111,7 +112,10 @@ export class Seerr {
   // Settings check: the key opens Seerr's API.
   async checkKey(base: string, apiKey: string) {
     const response = await remoteJson(this.url(base, '/auth/me'), { headers: { 'X-Api-Key': apiKey } }, 'Seerr', this.transport, 8000);
-    requireThat(response.status === 200, 'SEERR_KEY_REJECTED', 'Seerr did not accept that API key.', 400);
+    if (response.status === 401 || response.status === 403) throw new AppError('SEERR_KEY_REJECTED', 'Seerr did not accept that API key.', 400);
+    if (response.status === 429) throw new AppError('SEERR_UNAVAILABLE', 'Seerr is rate-limiting requests. Check again later.', 502);
+    const user = response.data as Partial<SeerrUser> | undefined;
+    requireThat(response.status === 200 && typeof user?.id === 'number', 'SEERR_UNAVAILABLE', 'Seerr did not return an account. Check its address and status.', 502);
   }
   private async signIn(base: string, plexToken: string): Promise<Session> {
     requireWritable();
@@ -168,26 +172,36 @@ export class Seerr {
     return this.check(response);
   }
   // Every title Seerr tracks, read in pages with the API key and kept for a few minutes. Undefined without a key.
+  // Once that expires, the last index answers (up to an hour old) while a new one is read, so rows never wait on it
+  // again after the first read. A request drops both, so the title just requested shows as requested.
   statuses(now = Date.now()): Promise<Map<string, ExploreStatus> | undefined> {
     const connection = this.connection(), apiKey = connection?.apiKey;
     if (!connection || !apiKey) return Promise.resolve(undefined);
-    const key = `${connection.url}\n${apiKey}`;
-    if (this.index?.key === key && this.index.until > now) return this.index.value;
-    const value = (async () => {
-      const media: Tracked[] = [];
-      for (let page = 0; page < 50; page++) {
-        const response = await remoteJson(this.url(connection.url, '/media', { take: 100, skip: page * 100, filter: 'all', sort: 'added' }), { headers: { 'X-Api-Key': apiKey } }, 'Seerr', this.transport);
-        requireThat(response.status === 200, 'SEERR_UNAVAILABLE', 'Seerr could not list its media.', 502);
-        const data = response.data as { results?: Tracked[]; pageInfo?: { pages?: number } } | undefined;
-        media.push(...(data?.results ?? []));
-        if (!data?.results?.length || page + 1 >= (data.pageInfo?.pages ?? 0)) break;
-      }
-      return statusIndex(media);
-    })();
-    this.index = { key, until: now + 300000, value };
-    // A failed read is not kept.
-    value.catch(() => { if (this.index?.value === value) this.index = undefined; });
-    return value;
+    const key = `${connection.url}
+${apiKey}`;
+    const last = this.lastIndex?.key === key && now - this.lastIndex.at < 3600000 ? this.lastIndex.value : undefined;
+    if (this.index?.key === key && this.index.until > now) return this.index.done || !last ? this.index.value : Promise.resolve(last);
+    const entry: { key: string; until: number; value: Promise<Map<string, ExploreStatus>>; done: boolean } = { key, until: now + 300000, value: this.readIndex(connection.url, apiKey), done: false };
+    this.index = entry;
+    entry.value.then(value => { entry.done = true; if (this.index === entry) this.lastIndex = { key, at: now, value }; }, () => {
+      // A failed read is not kept.
+      if (this.index === entry) this.index = undefined;
+    });
+    return last ? Promise.resolve(last) : entry.value;
+  }
+  // The first page says how many there are; the rest are read five at a time.
+  private async readIndex(base: string, apiKey: string) {
+    const page = async (n: number) => {
+      const response = await remoteJson(this.url(base, '/media', { take: 100, skip: n * 100, filter: 'all', sort: 'added' }), { headers: { 'X-Api-Key': apiKey } }, 'Seerr', this.transport);
+      requireThat(response.status === 200, 'SEERR_UNAVAILABLE', 'Seerr could not list its media.', 502);
+      return response.data as { results?: Tracked[]; pageInfo?: { pages?: number } } | undefined;
+    };
+    const first = await page(0), media: Tracked[] = [...first?.results ?? []];
+    const pages = first?.results?.length ? Math.min(50, first.pageInfo?.pages ?? 0) : 0;
+    for (let n = 1; n < pages; n += 5) {
+      for (const data of await Promise.all(Array.from({ length: Math.min(5, pages - n) }, (_, i) => page(n + i)))) media.push(...data?.results ?? []);
+    }
+    return statusIndex(media);
   }
   async search(accountId: string, plexToken: string, query: string) {
     const data=await this.read(accountId, plexToken, '/search', {query,page:1}) as {results?: Media[]} | undefined;
@@ -234,7 +248,7 @@ export class Seerr {
   }
   async request(accountId: string, plexToken: string, kind: 'movie' | 'show', tmdb: number, seasons: number[] | undefined, is4k: boolean, extras: ExploreRequestExtras = {}) {
     await this.call(accountId, plexToken, 'POST', '/request', {}, { mediaType: kind === 'show' ? 'tv' : 'movie', mediaId: tmdb, is4k, ...(kind === 'show' ? { seasons: seasons?.length ? seasons : 'all' } : {}), ...extras });
-    this.index = undefined;
+    this.index = undefined; this.lastIndex = undefined;
   }
 }
 export type SeerrDetails = Details;

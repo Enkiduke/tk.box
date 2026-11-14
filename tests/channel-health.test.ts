@@ -138,26 +138,30 @@ test('The scheduler respects provider connections, yields to viewers and trusts 
   const service = new ChannelHealth(store, health, cache, ffmpeg, () => {}, { maxChecks: 4, sampleSeconds: 7, tickMs: 60000 }, async (url, { signal }) => new Promise(done => {
     running.set(url, done); signal?.addEventListener('abort', () => { aborted.push(url); running.delete(url); done(result('inconclusive', { reason: 'CANCELLED' })); });
   }));
-  const settle = () => new Promise(done => setTimeout(done, 20));
+  // Each check awaits a real mkdir before it reaches the probe, so wait for the state itself rather than a fixed delay.
+  const until = async (ok: () => boolean, what: string) => {
+    for (let i = 0; i < 400 && !ok(); i++) await new Promise(done => setTimeout(done, 5));
+    assert.ok(ok(), what);
+  };
+  const online = () => [...health.forSource(source).values()].filter(s => s.status === 'online').length;
   try {
     let limit = 1;
     service.connections = new ProviderConnections(() => limit);
     service.relays = { live: id => id === ids[4] };
-    service.pump(); await settle();
-    assert.equal(running.size, 1, 'one provider connection');
+    service.pump(); await until(() => running.size === 1, 'one provider connection');
+    assert.equal(service.active(), 1);
     // A viewer tuning on this source takes the connection back once the check has exited.
     const viewer = await service.connections.viewer();
     assert.equal(aborted.length, 1); assert.equal(service.active(source), 0);
-    service.pump(); await settle(); assert.equal(running.size, 0, 'no check while the viewer holds the only connection');
+    service.pump(); assert.equal(service.active(), 0, 'no check while the viewer holds the only connection');
+    await new Promise(done => setImmediate(done)); assert.equal(running.size, 0);
     viewer.release();
     limit = 3;
-    service.pump(); await settle();
-    assert.equal(running.size, 3);
-    for (const done of [...running.values()]) done(result('online')); running.clear(); await settle();
+    service.pump(); await until(() => running.size === 3, 'three provider connections');
+    for (const done of [...running.values()]) done(result('online')); running.clear();
     // The live channel was marked online from its relay without spending a connection.
-    const states = health.forSource(source);
-    assert.equal(states.get(ids[4]!)?.reason, 'LIVE_RELAY');
-    assert.equal([...states.values()].filter(s => s.status === 'online').length, 4);
+    await until(() => online() === 4, 'three checks and one relay online');
+    assert.equal(health.forSource(source).get(ids[4]!)?.reason, 'LIVE_RELAY');
   } finally { service.close(); db.close(); }
 });
 
