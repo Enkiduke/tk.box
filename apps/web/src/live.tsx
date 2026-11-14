@@ -105,7 +105,7 @@ function LiveRow({title,href,channels,now,onWatch,busy,events}:{title:string;hre
 }
 // The time left sits inside the bar: light text over the track, and a copy clipped to the filled part in dark text.
 const LiveProgress=({label,pct}:{label:string;pct:number})=><span className="live-progress"><span>{label}</span><span aria-hidden="true" style={{clipPath:`inset(0 ${100-pct}% 0 0)`}}>{label}</span></span>;
-export type WatchChannel=(channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]},program?:string)=>void;
+export type WatchChannel=(channel:{id:string;name:string;number:number;stack?:string;feeds?:StationFeed[]},program?:string,previousDeliveryId?:string)=>void;
 // A stack is one station with several provider feeds. The server lists the best feed first;
 // a viewer's last pick for that station wins while it is still available.
 const feedKey=(stack:string)=>`tk.box:feed:${stack}`;
@@ -148,18 +148,18 @@ export function Live({admin,params,accountId,onWatch,busy,playing}:{admin:boolea
   const next=selected?.programs.find(p=>p.program&&p.program.start>now)?.program;
   const program=selection?.slot?.program;
   const watch=(c:Station,feedId?:string)=>{setSelection(undefined);if(feedId)rememberFeed(c.stack,feedId);onWatch(tuneTarget(c,feedId),airingNow(c,now)?.title);};
-  return <div className="page live-page">
-    <div className="browse-controls guide-toolbar">
+  return <div className="page toolbar-page">
+    <div className="page-toolbar guide-toolbar">
       <div className="guide-toolbar-content">
-        <div className="guide-time-controls" role="group" aria-label="Guide time">
+        <div className="toolbar-group guide-time-controls" role="group" aria-label="Guide time">
           <button aria-label={browsingAhead?'Return to now':'Previous 4 hours'} title={browsingAhead?'Return to now':'Previous 4 hours'} onClick={()=>setBrowsedStart(browsingAhead?undefined:start-guideSpan)}><Icon name={browsingAhead?'restart':'back'} size={16}/></button>
           <time className="guide-date" aria-current={start===slot?'time':undefined} dateTime={new Date(start).toISOString()} title={guideTimeLabel} aria-live="polite">{guideTimeLabel}</time>
           <button aria-label={browsingBehind?'Return to now':'Next 4 hours'} title={browsingBehind?'Return to now':'Next 4 hours'} onClick={()=>setBrowsedStart(browsingBehind?undefined:start+guideSpan)}><Icon name={browsingBehind?'restart':'next'} size={16}/></button>
         </div>
-        <div className="tabs" role="group" aria-label="Channel filters">{filters.map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>navigate(value)}>{label}</button>)}</div>
+        <div className="toolbar-group guide-filters" role="group" aria-label="Channel filters">{filters.map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>navigate(value)}>{label}</button>)}</div>
         <div className="guide-search-controls">
-          <label className="guide-search"><Icon name="search"/><input aria-label="Search channels" placeholder="Channel name" maxLength={120} value={search} onChange={e=>setSearch(e.target.value)}/></label>
-          <button onClick={data.reload}>Refresh</button>
+          <label className="browse-search"><Icon name="search"/><input aria-label="Search channels" placeholder="Channel name" maxLength={120} value={search} onChange={e=>setSearch(e.target.value)}/></label>
+          <button className="icon-button toolbar-icon" aria-label="Refresh guide" title="Refresh guide" onClick={data.reload}><Icon name="restart"/></button>
         </div>
       </div>
     </div>

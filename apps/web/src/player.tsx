@@ -7,8 +7,10 @@ import {CaptionCue,captionBox,subtitleFontSize,subtitleSizes,updateSubtitleStyle
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
 import {pickSubtitle,subtitleChoice,updatePlayerPreferences,usePlayerPreferences} from './player-preferences.js';
-import {qualityTiers,type CatalogItem,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
-export type PlayerHandle={stop:()=>{timeMs:number;started:boolean}};
+import {qualityTiers,type CatalogItem,type PlaybackObservation,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
+export type PlayerHandle={stop:()=>{timeMs:number;started:boolean;observation?:PlaybackObservation;epoch?:number}};
+type ProgressState = 'playing' | 'paused' | 'stopped';
+type ReportProgress = (timeMs: number, state?: ProgressState, observation?: PlaybackObservation, epoch?: number) => void;
 // Custom channels only: the viewer's own position behind the shared broadcast (IPTV stays strictly live).
 export type TimeshiftState={state:'LIVE'|'PAUSED'|'PLAYING_DELAYED'|'EXPIRED'|'STOPPED';behindLiveMs:number;viewerCursorUtc:number;broadcastNowUtc:number};
 export type Timeshift=(action:'pause'|'resume'|'go-live'|'state',displayedUtc?:number)=>Promise<TimeshiftState>;
@@ -44,9 +46,10 @@ export type QueueState={title:string;items:CatalogItem[];index:number};
 const queueArt=(item:CatalogItem)=>item.type==='episode'?item.posterUrl??item.backdropUrl:item.posterUrl;
 const queueLabel=(item:CatalogItem)=>item.type==='episode'?`S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'} · ${item.title}`:item.title;
 const queueDetail=(item:CatalogItem)=>item.type==='episode'?item.showTitle:item.year?String(item.year):undefined;
-type Props={url?:string;queue?:QueueState;onQueuePick?:(index:number,from:'resume'|'beginning')=>void;loading?:boolean;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;reconnecting?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;onStall?:(timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onFinished:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:(timeMs:number,state:'playing'|'paused'|'stopped')=>void;onError:(message:string)=>void};
+type Props={url?:string;queue?:QueueState;onQueuePick?:(index:number,from:'resume'|'beginning')=>void;loading?:boolean;live?:boolean;onChannel?:(step:1|-1)=>void;channels?:ReactNode;feeds?:Feed[];feed?:string;onFeed?:(id:string)=>void;delivery?:Delivery;startOffsetMs?:number;tracks?:MediaTracks;markers?:SkipMarker[];programs?:LiveProgram[];source?:SourceInfo;subtitleBase?:string;switching?:'audio'|'quality';quality?:Quality;qualityOptions?:QualityOption[];onQualityChange?:(quality:Quality,timeMs:number)=>void;liveSwitching?:boolean;reconnecting?:boolean;tuning?:boolean;timeshift?:Timeshift;onAudioChange?:(id:string,timeMs:number)=>void;onStall?:(timeMs:number)=>void;docked:boolean;title?:string;subtitle?:string;onStop:()=>void;onFinished:()=>void;onRestore:()=>void;onBack:()=>void;onProgress:ReportProgress;onError:(message:string)=>void};
 export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function PersistentPlayer({url,queue,onQueuePick,loading,live=false,onChannel,channels,feeds,feed,onFeed,delivery='direct',startOffsetMs=0,tracks,markers,programs,source,subtitleBase,switching,quality='auto',qualityOptions,onQualityChange,liveSwitching,reconnecting,tuning,timeshift,onAudioChange,onStall,docked,title,subtitle,onStop,onFinished,onRestore,onBack,onProgress,onError},handle) {
   const ref=useRef<HTMLVideoElement>(null),shell=useRef<HTMLElement>(null),bottomRef=useRef<HTMLDivElement>(null),topRef=useRef<HTMLDivElement>(null),state=useRef({active:false,started:false});
+  const stopObservation=useRef<()=>{observation?:PlaybackObservation;epoch?:number}>(()=>({}));
   const [view,setView]=useState({playing:false,waiting:false,time:0,duration:NaN,buffered:0,volume:1,muted:false}),[idle,setIdle]=useState(false),[fullscreen,setFullscreen]=useState(false),[scrub,setScrub]=useState<number>();
   const [panel,setPanel]=useState<Panel>(),[rate,setRate]=useState(1),subtitleStyle=useSubtitleStyle(),[remaining,setRemaining]=useState(false);
   const [subtitleId,setSubtitleId]=useState<string|null>(null),[subtitleStatus,setSubtitleStatus]=useState<'loading'|'ready'|'failed'>(),[captions,setCaptions]=useState<Caption[]>(),[shift,setShift]=useState(0),lastSubtitle=useRef<string|null>(null);
@@ -76,33 +79,52 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
   const suggestion=live?undefined:lighter(quality,qualityOptions,source?.bitrateKbps),suggestionRef=useRef(suggestion);suggestionRef.current=onQualityChange?suggestion:undefined;
   const [nudge,setNudge]=useState(false),nudgeDismissed=useRef(false);
   useEffect(()=>{setNudge(false);nudgeDismissed.current=false;},[url]);
-  const clear=()=>{hold.current=undefined;const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
+  const clear=()=>{hold.current=undefined;const video=ref.current!,result={timeMs:video.currentTime*1000,started:state.current.started,...stopObservation.current()};state.current.active=false;video.pause();video.removeAttribute('src');video.load();return result;};
   useImperativeHandle(handle,()=>({stop:clear}),[]);
   useEffect(()=>{
     const video=ref.current!,generation={active:!!url,started:false};state.current=generation;setShift(0);
     // Only the session that replaces a stalled seek resumes at the held position; anything else starts fresh.
     if(hold.current&&Math.abs(startOffsetMs/1000-hold.current.time)>1)hold.current=undefined;
     let hls:Hls|undefined,last=0,seekOnLoad=true,failureReported=false,resumeAt:number|undefined;
+    let mode:PlaybackObservation['state']='buffering',sequence=0,mediaShift=0,terminal:PlaybackObservation|undefined;
+    const clockStart=performance.now();
+    const sample=(kind:PlaybackObservation['state'])=>{
+      if(!generation.active||!generation.started||!Number.isFinite(video.currentTime))return;
+      mode=kind;
+      const at=live?displayedUtc():undefined;
+      return {sequence:++sequence,elapsedMs:Math.round(performance.now()-clockStart),positionMs:Math.max(0,Math.round((video.currentTime+mediaShift)*1000)),
+        rate:video.playbackRate,state:kind,...(at!==undefined&&Number.isFinite(at)&&at>0?{presentationUtc:Math.round(at)}:{})};
+    };
+    stopObservation.current=()=>({observation:terminal??sample('stopped'),epoch:generationKey});
+    const report=(kind:PlaybackObservation['state'])=>{
+      const observation=sample(kind);
+      if(observation)onProgress(observation.positionMs,undefined,observation,generationKey);
+    };
     const fail=(message:string)=>{
-      if(!generation.active||failureReported)return;failureReported=true;hold.current=undefined;hls?.stopLoad();
+      if(!generation.active||failureReported)return;report('buffering');failureReported=true;hold.current=undefined;hls?.stopLoad();
       // A delayed custom-channel viewer whose buffer ran out gets the expiry notice and Go Live, not an error.
       const shift=timeshiftRef.current;if(!shift){onError(message);return;}
       void shift('state').then(s=>{if(!generation.active)return;if(s.state==='EXPIRED')setShifted(s);else onError(message);},()=>{if(generation.active)onError(message);});
     };
-    const progress=(kind:'playing'|'paused'|'stopped')=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind);};
+    const progress=(kind:ProgressState,observation?:PlaybackObservation)=>{if(generation.active&&generation.started&&video.readyState>0&&Number.isFinite(video.currentTime))onProgress(video.currentTime*1000,kind,observation,generationKey);};
     const sync=()=>setView({playing:hold.current?.playing??!video.paused,waiting:!!hold.current||!video.paused&&video.readyState<3,time:hold.current?.time??video.currentTime,duration:hold.current?.duration??video.duration,buffered:video.buffered.length?video.buffered.end(video.buffered.length-1):0,volume:video.volume,muted:video.muted});
     const loaded=()=>{const at=resumeAt??startOffsetMs/1000;resumeAt=undefined;if(generation.active&&seekOnLoad&&at>0&&Number.isFinite(video.duration))video.currentTime=Math.min(at,Math.max(0,video.duration-.1));sync();};
     const playing=()=>{generation.started=true;setEnded(false);setCountdown(undefined);progress('playing');sync();};
-    const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing');}};
-    const pause=()=>{progress('paused');sync();},ended=()=>{if(live)fail('The live stream ended unexpectedly.');else {progress('stopped');if(generation.active)endedRef.current?.();}sync();},error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
+    const time=()=>{sync();if(!video.paused&&Date.now()-last>10000){last=Date.now();progress('playing',mode==='playing'&&!video.seeking?sample('playing'):undefined);}};
+    const pause=()=>{progress('paused',video.ended?undefined:sample('paused'));sync();};
+    const ended=()=>{if(live)fail('The live stream ended unexpectedly.');else {terminal=sample('ended');progress('stopped',terminal);if(generation.active)endedRef.current?.();}sync();};
+    const error=()=>{if(video.error?.code!==1)fail('Playback could not continue. The source may be unavailable or incompatible with this browser.');};
     const stalls=new StallMeter();
-    const waiting=()=>{if(generation.started&&!video.seeking&&!video.paused)stalls.start(performance.now());sync();};
+    const waiting=()=>{if(generation.started&&!video.seeking&&!video.paused){stalls.start(performance.now());if(mode!=='buffering')report('buffering');}sync();};
     const resumed=()=>{hold.current=undefined;stalls.end(performance.now());sync();};
+    const rendered=()=>{if(!video.seeking&&!video.paused&&mode!=='playing')report('playing');resumed();};
     // A seek that never lands. Direct play reopens the file at the target; Plex HLS gets a new session starting there,
     // since Plex may never deliver a segment from before where its transcoder started.
     let pendingSeek:{at:number;time:number}|undefined,reloads=0,restarting=false;
-    const seeking=()=>{if(hold.current&&Math.abs(video.currentTime-hold.current.time)>1)hold.current=undefined;if(generation.started)pendingSeek={at:performance.now(),time:video.currentTime};};
-    const events={seeking,loadedmetadata:loaded,play:playing,timeupdate:time,pause:()=>{stalls.end(performance.now());pause();},ended,error,waiting,playing:resumed,volumechange:sync,progress:sync,seeked:resumed} as const;
+    const seeking=()=>{if(mode!=='seeking')report('seeking');if(hold.current&&Math.abs(video.currentTime-hold.current.time)>1)hold.current=undefined;if(generation.started)pendingSeek={at:performance.now(),time:video.currentTime};};
+    const seeked=()=>{if(!video.paused&&video.readyState>=3)rendered();else resumed();};
+    const ratechange=()=>{if(mode==='playing'&&!video.seeking)report('playing');};
+    const events={seeking,loadedmetadata:loaded,play:playing,timeupdate:time,pause:()=>{stalls.end(performance.now());pause();},ended,error,waiting,playing:rendered,volumechange:sync,progress:sync,seeked,ratechange} as const;
     for(const [name,listener] of Object.entries(events))video.addEventListener(name,listener);
     if(url) {
       // Recent Chromium answers "maybe" for native HLS, but hls.js over MSE is the tested path; native HLS is the fallback without MSE.
@@ -120,13 +142,22 @@ export const PersistentPlayer=forwardRef<PlayerHandle,Props>(function Persistent
           fail('Playback could not continue. The stream stopped responding or is incompatible with this browser.');controller.destroy();
         });
         controller.on(Controller.Events.FRAG_LOADED,()=>{networkRetries=0;});
-        controller.on(Controller.Events.INIT_PTS_FOUND,(_event,data)=>{if(generation.active&&data.id==='main')setShift(timelineShift(data.initPTS,data.timescale));});
+        controller.on(Controller.Events.INIT_PTS_FOUND,(_event,data)=>{
+          if(!generation.active||data.id!=='main'||live)return;
+          const nextShift=timelineShift(data.initPTS,data.timescale);
+          if(nextShift!==mediaShift&&mode==='playing'){
+            report('seeking');
+            mediaShift=nextShift;
+            report('playing');
+          } else mediaShift=nextShift;
+          setShift(nextShift);
+        });
         controller.loadSource(url);controller.attachMedia(video);void video.play().catch(()=>{});
       }).catch(()=>{fail('The streaming player could not be loaded.');});
       else {video.src=url;void video.play().catch(()=>{});}
     }
     // Paused sessions keep the server-side stream alive and the Plex position current.
-    const heartbeat=window.setInterval(()=>{if(video.paused&&!video.ended)progress('paused');},60000);
+    const heartbeat=window.setInterval(()=>{if(video.paused&&!video.ended)progress('paused',sample('paused'));},60000);
     const watchdog=new LivePlaybackWatchdog(),stallCheck=live&&url&&feeds?window.setInterval(()=>{
       if(generation.active&&!failureReported&&watchdog.check(performance.now(),video.currentTime,video.paused||video.seeking))fail('The live stream stopped advancing.');
     },2000):undefined;

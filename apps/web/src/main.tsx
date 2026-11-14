@@ -1,6 +1,6 @@
 import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import type {Principal,Library,CatalogItem,CatalogPage,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
+import type {Principal,Library,CatalogItem,CatalogPage,ExploreItem,PlaybackObservation,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
 import {api,ApiClientError} from './api.js';
 import {useApi,useRoute,useScrolled,link,replaceRoute,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram,type SkipMarker} from './player.js';
@@ -16,11 +16,13 @@ import {openPlexPopup} from './plex-popup.js';
 import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 import {getPlayerPreferences} from './player-preferences.js';
+import type {OpenRelatedTitle} from './title-discovery.js';
 // Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
 const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
+const ExploreDialog=lazy(()=>import('./explore.js').then(m=>({default:m.ExploreDialog})));
 const Calendar=lazy(()=>import('./calendar.js').then(m=>({default:m.Calendar})));
 // A deploy replaces the hashed bundles, so a tab opened before it asks for files that are gone. Reload once to pick up
 // the new build; the timestamp stops a loop if the file is still missing after the reload.
@@ -70,6 +72,9 @@ function App() {
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
   const itemId=route.params.get('item');
+  const [explored,setExplored]=useState<{account?:string;page:string;item:ExploreItem}>();
+  const exploredItem=explored&&explored.account===signedIn&&explored.page===route.page?explored.item:undefined;
+  useEffect(()=>{setExplored(undefined);},[route.page,signedIn]);
   const searchReturnTo=useRef('#home');
   const routeHash=link(route.page,Object.fromEntries(route.params));
   useEffect(()=>{if(['home','movies','shows','explore','live','settings','admin'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
@@ -83,21 +88,33 @@ function App() {
   useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const banner=document.querySelector<HTMLButtonElement>('.nav-search-toggle');if(banner?.getClientRects().length){banner.click();return;}const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   useEffect(()=>{if(!itemId)window.scrollTo({top:0,behavior:'instant'});},[route.page]);
   // Stable callbacks keep memoized cards from re-rendering on unrelated shell updates.
-  const openItem=useCallback((id:string)=>{setError('');const {page,params}=routeRef.current,next=new URLSearchParams(params);next.set('item',id);window.location.hash=`${page==='watch'?'home':page}?${next}`;},[]);
+  const openItem=useCallback((id:string)=>{setExplored(undefined);setError('');const {page,params}=routeRef.current,next=new URLSearchParams(params);next.set('item',id);window.location.hash=`${page==='watch'?'home':page}?${next}`;},[]);
   const closeItem=()=>{const params=new URLSearchParams(route.params);params.delete('item');window.location.hash=`${route.page}${params.size?'?'+params:''}`;};
+  const openExploreItem=useCallback((item:ExploreItem)=>{
+    const {page,params}=routeRef.current,next=new URLSearchParams(params);
+    if(next.has('item')){
+      next.delete('item');
+      replaceRoute(`#${page}${next.size?'?'+next:''}`);
+    }
+    setExplored({account:signedIn,page,item});
+  },[signedIn]);
+  const openRelated:OpenRelatedTitle=useCallback(({item,libraryId})=>{
+    if(libraryId)openItem(libraryId);
+    else openExploreItem(item);
+  },[openItem,openExploreItem]);
   async function checkAuth() {
     const result=await api<{status:string}>('/auth/plex/status','POST');if(result.status==='authenticated'){setAuthUrl('');plexPopup.current?.close();plexPopup.current=null;identity.reload();catalog.reload();}
   }
   useEffect(()=>{if(!authUrl)return;let running=false;const timer=setInterval(()=>{if(running)return;running=true;void checkAuth().catch(e=>{if(e instanceof ApiClientError&&['AUTH_EXPIRED','PLEX_ACCESS_DENIED'].includes(e.code)){setAuthUrl('');setError(e.message);}}).finally(()=>{running=false;});},3000);return()=>clearInterval(timer);},[authUrl]);
   async function action(fn:()=>Promise<void>) {if(locking.current)return;locking.current=true;setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{locking.current=false;setBusy(false);}}
-  async function stop() {
+  async function stop(replacingLive=false) {
     failover.current.cancel();setSwitchingLive(false);
     const active=sessionRef.current,position=player.current?.stop();sessionRef.current=undefined;setSession(undefined);
     if(!active)return;
-    if(active.kind==='live'){await api(`/live/sessions/${active.id}`,'DELETE');return;}
+    if(active.kind==='live'){await api(`/live/sessions/${active.id}`,'DELETE',{replacing:replacingLive,observation:position?.observation,epoch:position?.epoch});return;}
     // Detach local output first. Only an actually started VOD reports progress;
     // preparing/canceling a title never resets its existing resume position.
-    try {if(position?.started)await api(`/playback/sessions/${active.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(position.timeMs,active.item.durationMs??position.timeMs)),state:'stopped'});}
+    try {if(position?.started)await api(`/playback/sessions/${active.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(position.timeMs,active.item.durationMs??position.timeMs)),state:'stopped',observation:position.observation});}
     finally {refreshCatalog();await api(`/playback/sessions/${active.id}`,'DELETE');}
   }
   // Moving on to a queued item keeps Back pointing where the queue was started.
@@ -138,16 +155,16 @@ function App() {
     void action(async()=>{try{await start(next,from,true);}finally{setLoadingNext(undefined);}});
   };
   // The server answers once the channel's relay has its first segment, so playback starts promptly.
-  const watchChannel=useCallback<WatchChannel>((channel,program)=>void action(async()=>{
+  const watchChannel=useCallback<WatchChannel>((channel,program,previousDeliveryId)=>void action(async()=>{
     // Back returns to where the channel was picked (Live TV or Home); switching from the player keeps that place.
     const {page,params}=routeRef.current;if(page!=='watch')returnTo.current=link(page,Object.fromEntries(params));
     clearQueue();const token={};tuningRef.current=token;setTuning({name:channel.name,...(program?{program}:{})});window.location.hash='watch';
     try {
-      await stop();if(tuningRef.current!==token)return;
+      await stop(!!previousDeliveryId);if(tuningRef.current!==token)return;
       const recovery=failover.current=new LiveFailover();
       // A feed that cannot be started (offline, or a 4K source this server will not convert) moves on to the station's next feed.
       // The session keeps the station's feed list so the player can switch feeds without a guide lookup.
-      const next=await recovery.tune(channel,program,()=>failover.current===recovery&&tuningRef.current===token);if(!next)return;
+      const next=await recovery.tune(channel,program,()=>failover.current===recovery&&tuningRef.current===token,previousDeliveryId);if(!next)return;
       sessionRef.current=next;setSession(next);
     } catch(e) {
       if(tuningRef.current===token&&routeRef.current.page==='watch')window.location.hash=returnTo.current;
@@ -202,9 +219,9 @@ function App() {
   const reopen=async(current:VodSession|LiveSession,isCurrent:()=>boolean)=>{
     const position=player.current?.stop();
     if(current.kind==='live') {
-      void api(`/live/sessions/${current.id}`,'DELETE').catch(()=>{});
+      void api(`/live/sessions/${current.id}`,'DELETE',{replacing:true}).catch(()=>{});
       const recovery=failover.current=new LiveFailover();
-      const next=await recovery.tune(current.channel,current.program,()=>isCurrent()&&failover.current===recovery);
+      const next=await recovery.tune(current.channel,current.program,()=>isCurrent()&&failover.current===recovery,current.id);
       if(next&&isCurrent()){sessionRef.current=next;setSession(next);}
       return;
     }
@@ -216,14 +233,14 @@ function App() {
   };
   const vodBody=(current:VodSession,timeMs:number,change:{audioStreamId?:string;quality?:Quality}={})=>{
     const audioStreamId=change.audioStreamId??current.audioStreamId,quality=change.quality??current.quality??'auto',{audioLanguage}=getPlayerPreferences();
-    return {audioStreamId,body:{mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),quality,...(audioStreamId?{audioStreamId}:audioLanguage?{audioLanguage}:{})}};
+    return {audioStreamId,body:{mode:'plex_vod',ratingKey:current.item.id,capabilities:browserCapabilities(),startAtMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),previousDeliveryId:current.id,quality,...(audioStreamId?{audioStreamId}:audioLanguage?{audioLanguage}:{})}};
   };
   // Another audio track or quality, or a seek Plex never delivered, needs a new playback session resumed at that position;
   // each change keeps the other choice.
   const restart=(change:{audioStreamId?:string;quality?:Quality},timeMs:number)=>void action(async()=>{
     const current=sessionRef.current;if(current?.kind!=='vod')return;
     const {body,audioStreamId}=vodBody(current,timeMs,change);
-    const release=()=>api(`/playback/sessions/${current.id}`,'DELETE').catch(()=>{});let released=false;
+    const release=()=>api(`/playback/sessions/${current.id}`,'DELETE',{replacing:true}).catch(()=>{});let released=false;
     // A stalled seek recovers quietly behind the player's own buffering spinner.
     if(change.quality||change.audioStreamId)setSwitching(change.quality?'quality':'audio');
     try {
@@ -249,11 +266,20 @@ function App() {
   };
   const switchFeed=(id:string)=>{
     const current=sessionRef.current;if(current?.kind!=='live'||busy)return;
-    rememberFeed(current.channel.stack,id);watchChannel(tuneTarget(current.channel,id),current.program);
+    rememberFeed(current.channel.stack,id);watchChannel(tuneTarget(current.channel,id),current.program,current.id);
   };
   const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
   useEffect(()=>{if(identity.error?.status===401){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
-  const progress=(timeMs:number,state:'playing'|'paused'|'stopped')=>{const current=session;if(current?.kind!=='vod')return;void api(`/playback/sessions/${current.id}/progress`,'PATCH',{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state}).catch(e=>{if(!reconnectToken.current)setError(e.message);});};
+  const progress=(timeMs:number,state?:'playing'|'paused'|'stopped',observation?:PlaybackObservation,epoch=0)=>{
+    const current=session;
+    if(current?.kind==='live'){
+      if(observation)void api(`/live/sessions/${current.id}/progress`,'PATCH',{observation,epoch}).catch(()=>{});
+      return;
+    }
+    if(current?.kind!=='vod')return;
+    const body=state?{timeMs:Math.round(Math.min(timeMs,current.item.durationMs??timeMs)),state,observation}:{observation};
+    void api(`/playback/sessions/${current.id}/progress`,'PATCH',body).catch(e=>{if(state&&sessionRef.current?.id===current.id&&!reconnectToken.current)setError(e.message);});
+  };
   const vod=session?.kind==='vod'?session:undefined,channel=session?.kind==='live'?session:undefined,item=vod?.item??loadingNext;
   const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
   const subtitle=channel?channel.program:item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
@@ -265,8 +291,8 @@ function App() {
   const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
-    :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onOpen={openItem}/></Suspense></div>
-    :route.page==='calendar'?<Suspense fallback={<div className="page"><Loading/></div>}><Calendar key={me.accountId} accountId={me.accountId} params={route.params} onOpen={openItem}/></Suspense>
+    :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onSelect={openExploreItem}/></Suspense></div>
+    :route.page==='calendar'?<Suspense fallback={<div className="page"><Loading/></div>}><Calendar key={me.accountId} accountId={me.accountId} params={route.params} onOpen={openItem} onSelect={openExploreItem}/></Suspense>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout} params={route.params}/></Suspense></div>
     :route.page==='admin'?<div className="page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
@@ -277,7 +303,7 @@ function App() {
     {!watching&&<header className={`nav ${scrolled||route.page!=='home'||!me?'solid':''}`}>
       <a href="#home" className="brand" aria-label="tk.box home">tk.box</a>
       {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={16}/><span>{label}</span></a>)}</nav>}
-      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<HeaderStreams/>}{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="avatar" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
+      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<HeaderStreams/>}{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="nav-settings" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} title="Settings" aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
     </header>}
     <main id="main-content" tabIndex={-1}>
       <ActionNotice/>
@@ -286,7 +312,9 @@ function App() {
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={22}/><span>{label}</span></a>)}</nav>}
     <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} reconnecting={reconnecting} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
-    {me&&itemId&&/^\d+$/.test(itemId)&&<Details id={itemId} onClose={closeItem} onOpen={openItem} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>}
+    {me&&(itemId&&/^\d+$/.test(itemId)
+      ?<Details id={itemId} onClose={closeItem} onOpen={openItem} onOpenRelated={openRelated} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>
+      :exploredItem&&<Suspense fallback={null}><ExploreDialog key={exploredItem.key} item={exploredItem} onClose={()=>setExplored(undefined)} onOpen={openItem} onOpenRelated={openRelated}/></Suspense>)}
     {artwork&&<Suspense fallback={null}><TitleArtwork key={artwork} ratingKey={artwork} onClose={()=>setArtwork(undefined)}/></Suspense>}
   </div>;
 }

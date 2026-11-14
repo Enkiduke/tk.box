@@ -1,6 +1,6 @@
 import { requireThat } from '../errors.js';
 
-export type Segment = { id: string; start: number; end: number; bytes: number; programId: string; revision: number; uri: string; discontinuity: boolean; sequence: number; initUri?: string; discontinuitySequence?: number };
+export type Segment = { id: string; start: number; end: number; bytes: number; programId: string; revision: number; uri: string; discontinuity: boolean; sequence: number; initUri?: string; discontinuitySequence?: number; airingId?: string };
 // Metadata index for a disk-backed store. Eviction results must be unlinked by its owner.
 export class SegmentBuffer {
   private segments: Segment[] = [];

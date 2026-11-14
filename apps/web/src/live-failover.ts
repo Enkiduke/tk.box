@@ -16,9 +16,9 @@ export class LiveFailover {
   cancel(){this.cancelled=true;}
   // Opens the chosen feed, moving on to the station's other feeds when it cannot be started.
   // Resolves undefined when cancelled; rejects with the chosen feed's error when no feed starts.
-  async tune(channel:Station,program:string|undefined,isCurrent:()=>boolean):Promise<LiveSession|undefined> {
+  async tune(channel:Station,program:string|undefined,isCurrent:()=>boolean,previousDeliveryId?:string):Promise<LiveSession|undefined> {
     const ids=[channel.id,...(channel.feeds??[]).map(f=>f.id).filter(id=>id!==channel.id)];
-    const {created,error}=await this.open(ids,()=>!this.cancelled&&isCurrent());
+    const {created,error}=await this.open(ids,()=>!this.cancelled&&isCurrent(),previousDeliveryId);
     if(created)return {...created,kind:'live',program,channel:{...created.channel,stack:channel.stack,feeds:channel.feeds}};
     if(error)throw error;
   }
@@ -35,19 +35,19 @@ export class LiveFailover {
     const backups=station?.feeds?.filter(f=>!this.attempted.has(f.id))??[];
     if(!active()||!backups.length)return;
     // Release this viewer before opening a replacement, including on one-connection plans.
-    try{await this.request(`/live/sessions/${current.id}`,'DELETE');}
+    try{await this.request(`/live/sessions/${current.id}`,'DELETE',{replacing:true});}
     catch(e){if(!(e instanceof ApiClientError&&e.status===404))throw e;}
-    const {created}=await this.open(backups.map(f=>f.id),active);
+    const {created}=await this.open(backups.map(f=>f.id),active,current.id);
     if(created)return {...created,kind:'live' as const,program:current.program,channel:{...created.channel,stack,feeds:station!.feeds}};
   }
   // Tries each feed in order, keeping the first skipped error for when none starts.
-  private async open(ids:string[],active:()=>boolean):Promise<{created?:Created;error?:ApiClientError}> {
+  private async open(ids:string[],active:()=>boolean,previousDeliveryId?:string):Promise<{created?:Created;error?:ApiClientError}> {
     let error:ApiClientError|undefined;
     for(const id of ids) {
       if(!active())return {};
       this.attempted.add(id);
       let created:Created;
-      try{created=await this.request('/live/sessions','POST',{channelId:id});}
+      try{created=await this.request('/live/sessions','POST',{channelId:id,...(previousDeliveryId?{previousDeliveryId}:{})});}
       catch(e){if(e instanceof ApiClientError&&skippable.includes(e.code)){error??=e;continue;}throw e;}
       // A manual stop or channel change can happen during the request. Reclaim any late session.
       if(!active()){await this.request(`/live/sessions/${created.id}`,'DELETE').catch(()=>{});return {};}

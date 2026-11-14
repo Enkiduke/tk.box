@@ -12,6 +12,7 @@ import type { LocalMedia } from '../providers/local-media.js';
 import type { PartProxy } from '../providers/part-proxy.js';
 import type { Slot } from './scheduler.js';
 import type { LiveDelivery, LiveSource } from './live-tv.js';
+import { plexHistoryMedia, type HistoryAiring, type HistoryMedia } from '../persistence/history-store.js';
 
 type Station = {
   key: string; channelId: string; dir: string; viewers: Set<string>; grant: PlexGrant; stopped: boolean; child?: ChildProcess;
@@ -22,7 +23,7 @@ type Station = {
 };
 // One run of a program (or the blank slate) on the station, from its first segment's broadcast time. `mediaStartMs`
 // is the media position shown at `start`, so captions follow broadcast time: media = mediaStartMs + (utc - start).
-type Airing = { id: string; mediaId?: string; start: number; mediaStartMs: number; subtitles: ReturnType<typeof mediaTracks>['subtitles'] };
+type Airing = { id: string; mediaId?: string; media?: HistoryMedia; delivery?: LiveDelivery; start: number; mediaStartMs: number; subtitles: ReturnType<typeof mediaTracks>['subtitles'] };
 type Viewer = { id: string; hash: string; channelId: string; seen: number; cursor: ViewerCursor };
 type Input = { path: string; demuxer?: string; protocols: string };
 export type TimeshiftState = { state: string; viewerCursorUtc: number; broadcastNowUtc: number; behindLiveMs: number; bufferStartUtc?: number; bufferEndUtc?: number };
@@ -37,6 +38,28 @@ export function segmentStart(previousEnd: number | undefined, now: number, durat
   return newProgram ? Math.round(Math.max(previousEnd, now - durationMs)) : previousEnd;
 }
 
+export function viewedAirings(segments: readonly Segment[], airings: readonly Airing[], from: number, to: number): HistoryAiring[] {
+  let low = 0, high = segments.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (segments[mid]!.end <= from) low = mid + 1;
+    else high = mid;
+  }
+  const result: HistoryAiring[] = [];
+  for (let i = low; i < segments.length; i++) {
+    const segment = segments[i]!;
+    if (segment.start >= to) break;
+    const last = result.at(-1);
+    if (last && last.id === segment.airingId && last.end === segment.start) {
+      last.end = segment.end;
+      continue;
+    }
+    const airing = airings.find(a => a.id === segment.airingId);
+    if (airing?.media) result.push({ id: airing.id, start: segment.start, end: segment.end, media: airing.media, delivery: airing.delivery });
+  }
+  return result;
+}
+
 // Custom channel playout. A channel is a schedule, not a running video: a station starts when the first viewer
 // tunes in and stops when the last one leaves. It plays one program at a time, joining the airing program at its
 // clock position and moving to whatever the schedule says is next, so publishing and the clock are always honored.
@@ -48,6 +71,8 @@ export function segmentStart(previousEnd: number | undefined, now: number, durat
 // or delayed viewer needs them (up to the pause retention setting, the byte cap and a free-space floor). Each viewer
 // gets its own manifest: the live edge, or a window starting at its own cursor. The station's clock never pauses.
 export class CustomTv {
+  onViewerEnded?: (id: string) => void;
+  historyServerId?: string;
   private stations = new Map<string, Station>();
   private viewers = new Map<string, Viewer>();
   private root: string;
@@ -85,12 +110,12 @@ export class CustomTv {
     this.authorize(station, grant, viewer, station.library ? [station.library] : []);
     return { id: viewer.id, streamUrl: `/api/v1/live/sessions/${viewer.id}/index.m3u8`, delivery: (station.encode ? 'transcode' : 'remux') as LiveDelivery, channel, source: station.source ?? {}, timeshift: true };
   }
-  private owned(id: string, hash: string) {
+  private owned(id: string, hash: string, touch = true) {
     const viewer = this.viewers.get(id);
     requireThat(viewer?.hash === hash, 'SESSION_NOT_FOUND', 'Live session is unavailable.', 404);
     const station = this.stations.get(viewer.channelId);
     requireThat(station, 'SESSION_NOT_FOUND', 'Live session is unavailable.', 404);
-    viewer.seen = Date.now();
+    if (touch) viewer.seen = Date.now();
     return { viewer, station };
   }
   // Every viewer needs access to the library of each program it is sent, checked on every manifest.
@@ -135,6 +160,10 @@ export class CustomTv {
     requireThat(media, 'SUBTITLE_NOT_FOUND', 'This program is no longer available.', 404);
     return media;
   }
+  historyViewer(id: string, hash: string) {
+    const { viewer, station } = this.owned(id, hash, false), state = viewer.cursor.inspect(Date.now()).state;
+    return { state, airings: (from: number, to: number) => viewedAirings(station.segments, station.airings, from, to) };
+  }
   resume(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.resume(now); return this.state(id, hash, now); }
   goLive(id: string, hash: string, now = Date.now()) { this.owned(id, hash).viewer.cursor.goLive(); return this.state(id, hash, now); }
   state(id: string, hash: string, now = Date.now()): TimeshiftState {
@@ -144,6 +173,7 @@ export class CustomTv {
   stop(id: string, hash: string) {
     const viewer = this.viewers.get(id); if (!viewer || viewer.hash !== hash) return;
     viewer.cursor.stop(); this.viewers.delete(id);
+    this.onViewerEnded?.(id);
     const station = this.stations.get(viewer.channelId);
     station?.viewers.delete(id);
     if (station && !station.viewers.size) this.destroy(station);
@@ -189,7 +219,7 @@ export class CustomTv {
             const bytes = await stat(join(s.dir, line)).then(x => x.size, () => 0);
             if (!bytes) break;
             const previous = s.segments.at(-1), start = segmentStart(previous?.end, now, duration, discontinuity || !!s.opening), marked = discontinuity && !!previous;
-            s.segments.push({ id: line, uri: line, start, end: start + Math.max(1, Math.round(duration)), bytes, programId: s.library ?? '', revision: 0, sequence, discontinuity: marked, discontinuitySequence: s.discontinuities });
+            s.segments.push({ id: line, uri: line, start, end: start + Math.max(1, Math.round(duration)), bytes, programId: s.library ?? '', revision: 0, sequence, discontinuity: marked, discontinuitySequence: s.discontinuities, airingId: s.opening?.id ?? s.airings.at(-1)?.id });
             if (marked) s.discontinuities++;
             if (s.opening) { s.airings.push({ ...s.opening, start }); s.opening = undefined; }
             s.lastSequence = sequence;
@@ -247,7 +277,9 @@ export class CustomTv {
       s.encode = encode; s.source = { videoCodec: media.videoCodec, audioCodec: media.audioCodec, width: media.width, height: media.height };
       // Join at the clock position as of this moment, so startup time never leaves the channel behind its schedule.
       const now = Date.now(), offsetMs = slot.entry.mediaOffsetMs + Math.max(0, now - slot.start);
-      const opening = { id: opaque().slice(0, 16), mediaId: item.ratingKey, mediaStartMs: offsetMs, subtitles: mediaTracks(item).subtitles };
+      const opening: Omit<Airing, 'start'> = { id: opaque().slice(0, 16), mediaId: item.ratingKey, mediaStartMs: offsetMs,
+        subtitles: mediaTracks(item).subtitles, delivery: encode ? 'transcode' : 'remux',
+        media: this.historyServerId ? plexHistoryMedia(this.historyServerId, item) : undefined };
       s.opening = opening;
       // Copied video starts at the keyframe before the join point, which can be seconds earlier.
       if (!encode && offsetMs > 500) void this.keyframe(input, offsetMs).then(at => { if (at !== undefined) opening.mediaStartMs = at; });
@@ -322,7 +354,7 @@ export class CustomTv {
     if (s.stopped) return;
     s.stopped = true; clearInterval(s.indexer);
     if (this.stations.get(s.channelId) === s) this.stations.delete(s.channelId);
-    for (const id of s.viewers) { this.viewers.get(id)?.cursor.stop(); this.viewers.delete(id); }
+    for (const id of s.viewers) { this.viewers.get(id)?.cursor.stop(); if (this.viewers.delete(id)) this.onViewerEnded?.(id); }
     const child = s.child;
     const exited = !child || child.exitCode !== null ? Promise.resolve() : new Promise<void>(done => { child.once('close', () => done()); child.kill('SIGKILL'); });
     void exited.then(() => rm(s.dir, { recursive: true, force: true, maxRetries: 5 })).catch(() => {});
