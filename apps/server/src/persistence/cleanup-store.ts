@@ -3,6 +3,7 @@ import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
+import { prepared } from './statements.js';
 
 // Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its Tautulli and Sonarr
 // connections and its job history. The script reads none of this directly: before each run tk.box writes its JSON
@@ -51,11 +52,11 @@ const job = (r: Record<string, unknown>) => ({ id: r.id as number, label: r.labe
 export class CleanupStore {
   constructor(private db: Db, private vault: Vault) {}
   private row<T>(name: 'settings' | 'connections' | `state:${string}`) {
-    const row = this.db.prepare('SELECT revision,value FROM cleanup_config WHERE name=?').get(name) as { revision: number; value: string } | undefined;
+    const row = prepared(this.db, 'SELECT revision,value FROM cleanup_config WHERE name=?').get(name) as { revision: number; value: string } | undefined;
     return row && { revision: row.revision, value: JSON.parse(row.value) as T };
   }
   private write(name: string, revision: number, value: unknown) {
-    this.db.prepare('INSERT INTO cleanup_config VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(name, revision, JSON.stringify(value));
+    prepared(this.db, 'INSERT INTO cleanup_config VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(name, revision, JSON.stringify(value));
   }
   settings(): CleanupSettings & { revision: number } {
     const row = this.row<Partial<CleanupSettings>>('settings');
@@ -69,7 +70,7 @@ export class CleanupStore {
       const revision = this.row('settings')?.revision ?? 0;
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
       this.write('settings', revision + 1, value);
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_settings_changed', now, JSON.stringify({ dryRun: value.dryRun, schedule: value.schedule }));
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_settings_changed', now, JSON.stringify({ dryRun: value.dryRun, schedule: value.schedule }));
       return this.settings();
     })();
   }
@@ -89,7 +90,7 @@ export class CleanupStore {
       const seal = (given: string | undefined, saved: string | undefined, name: string) => given === undefined ? saved : given ? this.vault.seal(given, `cleanup:${name}-key`) : undefined;
       const tautulliKey = seal(valid.tautulliKey, value.tautulliKey, 'tautulli'), sonarrKey = seal(valid.sonarrKey, value.sonarrKey, 'sonarr');
       this.write('connections', revision + 1, { tautulliUrl: valid.tautulliUrl, sonarrUrl: valid.sonarrUrl, ...(tautulliKey ? { tautulliKey } : {}), ...(sonarrKey ? { sonarrKey } : {}) });
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_connections_changed', now,
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_connections_changed', now,
         JSON.stringify({ tautulliUrl: valid.tautulliUrl, sonarrUrl: valid.sonarrUrl, tautulliKeySet: !!tautulliKey, sonarrKeySet: !!sonarrKey }));
       return this.connectionsView();
     })();
@@ -106,7 +107,7 @@ export class CleanupStore {
       const holds = this.holds(now);
       if (until === null) delete holds[key]; else holds[key] = { until, by: actor, at: now };
       this.setState('holds', holds);
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, until === null ? 'cleanup_hold_cleared' : 'cleanup_hold_set', now, JSON.stringify({ key, until }));
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, until === null ? 'cleanup_hold_cleared' : 'cleanup_hold_set', now, JSON.stringify({ key, until }));
       return holds;
     })();
   }
@@ -116,26 +117,26 @@ export class CleanupStore {
   setKept(actor: string, key: string, tag: string, now = Date.now()) {
     this.db.transaction(() => {
       this.setState('kept', { ...this.kept(), [key]: { tag, by: actor, at: now } });
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_title_kept', now, JSON.stringify({ key, tag }));
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_title_kept', now, JSON.stringify({ key, tag }));
     })();
   }
   state<T>(name: string) { return this.row<T>(`state:${name}`)?.value; }
   setState(name: string, value: unknown) { this.write(`state:${name}`, 0, value); }
 
   addJob(actor: string, label: string, args: string[], now = Date.now()) {
-    return Number(this.db.prepare("INSERT INTO cleanup_jobs(label,args,actor,status,created_at) VALUES(?,?,?,'queued',?)").run(label, JSON.stringify(args), actor, now).lastInsertRowid);
+    return Number(prepared(this.db, "INSERT INTO cleanup_jobs(label,args,actor,status,created_at) VALUES(?,?,?,'queued',?)").run(label, JSON.stringify(args), actor, now).lastInsertRowid);
   }
-  jobStarted(id: number, now = Date.now()) { this.db.prepare("UPDATE cleanup_jobs SET status='running',started_at=? WHERE id=?").run(now, id); }
+  jobStarted(id: number, now = Date.now()) { prepared(this.db, "UPDATE cleanup_jobs SET status='running',started_at=? WHERE id=?").run(now, id); }
   jobFinished(id: number, status: CleanupJobStatus, exitCode: number | null, output: string, now = Date.now()) {
-    this.db.prepare('UPDATE cleanup_jobs SET status=?,exit_code=?,output=?,finished_at=? WHERE id=?').run(status, exitCode, output, now, id);
+    prepared(this.db, 'UPDATE cleanup_jobs SET status=?,exit_code=?,output=?,finished_at=? WHERE id=?').run(status, exitCode, output, now, id);
   }
   // A restart stops whatever was running or waiting.
-  abandonJobs(now = Date.now()) { this.db.prepare("UPDATE cleanup_jobs SET status='canceled',finished_at=?,output=COALESCE(output,'')||? WHERE status IN ('queued','running')").run(now, '\n[tk.box restarted; this job was stopped]'); }
-  jobs(limit = 30) { return (this.db.prepare('SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code FROM cleanup_jobs ORDER BY id DESC LIMIT ?').all(limit) as Record<string, unknown>[]).map(job); }
+  abandonJobs(now = Date.now()) { prepared(this.db, "UPDATE cleanup_jobs SET status='canceled',finished_at=?,output=COALESCE(output,'')||? WHERE status IN ('queued','running')").run(now, '\n[tk.box restarted; this job was stopped]'); }
+  jobs(limit = 30) { return (prepared(this.db, 'SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code FROM cleanup_jobs ORDER BY id DESC LIMIT ?').all(limit) as Record<string, unknown>[]).map(job); }
   job(id: number) {
-    const row = this.db.prepare('SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code,output FROM cleanup_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    const row = prepared(this.db, 'SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code,output FROM cleanup_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new AppError('NOT_FOUND', 'No such job.', 404);
     return { ...job(row), output: (row.output as string | null) ?? '' };
   }
-  pruneJobs() { this.db.prepare('DELETE FROM cleanup_jobs WHERE id NOT IN (SELECT id FROM cleanup_jobs ORDER BY id DESC LIMIT 200)').run(); }
+  pruneJobs() { prepared(this.db, 'DELETE FROM cleanup_jobs WHERE id NOT IN (SELECT id FROM cleanup_jobs ORDER BY id DESC LIMIT 200)').run(); }
 }

@@ -87,5 +87,10 @@ export const iptvMigrations: Migration[] = [
   // Event channels being watched past their window, and until when they stay on (SportsStore.hold).
   { name: 'sports-holds', legacy: 21, up: 'CREATE TABLE sports_holds(channel_id TEXT PRIMARY KEY, until INTEGER NOT NULL)' },
   // Refreshes and channel checks on a schedule (JSON, packages/contracts/src/schedule.ts); NULL is every interval_hours.
-  { name: 'schedules', legacy: 22, up: 'ALTER TABLE iptv_sources ADD COLUMN schedule TEXT; ALTER TABLE iptv_health_policies ADD COLUMN schedule TEXT' }
+  { name: 'schedules', legacy: 22, up: 'ALTER TABLE iptv_sources ADD COLUMN schedule TEXT; ALTER TABLE iptv_health_policies ADD COLUMN schedule TEXT' },
+  // A counter that changes whenever the saved snapshot does, whoever writes it, so the store can tell its decoded copy
+  // is current without reading the multi-megabyte snapshot.
+  { name: 'snapshot-version', up: `ALTER TABLE iptv_sources ADD COLUMN snapshot_version INTEGER NOT NULL DEFAULT 0;
+      CREATE TRIGGER iptv_snapshot_version AFTER UPDATE OF encrypted_snapshot ON iptv_sources
+        BEGIN UPDATE iptv_sources SET snapshot_version=snapshot_version+1 WHERE id=NEW.id; END;` }
 ];

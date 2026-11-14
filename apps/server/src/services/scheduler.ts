@@ -1,6 +1,7 @@
 import type { Db } from '../persistence/database.js';
 import { requireThat } from '../errors.js';
 import { z } from 'zod';
+import { prepared } from '../persistence/statements.js';
 
 export const playlistSchema = z.array(z.object({ occurrenceId: z.string().min(1), mediaId: z.string().min(1), title: z.string(), subtitle: z.string().optional(), durationMs: z.number().int().positive().max(86400000), mediaOffsetMs: z.number().int().nonnegative().default(0) }).strict()).min(1).max(10000);
 export type Entry = z.infer<typeof playlistSchema>[number];
@@ -24,17 +25,17 @@ export function resolveSlot(timeline: Timeline, now: number) {
 export class ChannelScheduler {
   constructor(private db: Db) {}
   timeline(channelId: string, now: number): Timeline {
-    const row = this.db.prepare('SELECT value FROM publications WHERE channel_id=? AND superseded=0 AND effective_at<=? ORDER BY effective_at DESC,revision DESC LIMIT 1').get(channelId, now) as {value: string} | undefined;
+    const row = prepared(this.db, 'SELECT value FROM publications WHERE channel_id=? AND superseded=0 AND effective_at<=? ORDER BY effective_at DESC,revision DESC LIMIT 1').get(channelId, now) as {value: string} | undefined;
     requireThat(row, 'CHANNEL_NOT_STARTED', 'No published program at this time.', 404);
     return JSON.parse(row.value) as Timeline;
   }
   current(channelId: string, now: number) { return resolveSlot(this.timeline(channelId, now), now); }
-  revision(channelId: string) { return (this.db.prepare('SELECT revision FROM channels WHERE id=?').get(channelId) as {revision: number} | undefined)?.revision ?? 0; }
+  revision(channelId: string) { return (prepared(this.db, 'SELECT revision FROM channels WHERE id=?').get(channelId) as {revision: number} | undefined)?.revision ?? 0; }
   // When the channel first went on air, if it has.
-  startedAt(channelId: string) { return (this.db.prepare('SELECT MIN(effective_at) AS at FROM publications WHERE channel_id=? AND superseded=0').get(channelId) as {at: number | null}).at ?? undefined; }
+  startedAt(channelId: string) { return (prepared(this.db, 'SELECT MIN(effective_at) AS at FROM publications WHERE channel_id=? AND superseded=0').get(channelId) as {at: number | null}).at ?? undefined; }
   // A published revision waiting for the current program to finish.
   pending(channelId: string, now: number) {
-    const row = this.db.prepare('SELECT value FROM publications WHERE channel_id=? AND superseded=0 AND effective_at>? ORDER BY effective_at DESC,revision DESC LIMIT 1').get(channelId, now) as {value: string} | undefined;
+    const row = prepared(this.db, 'SELECT value FROM publications WHERE channel_id=? AND superseded=0 AND effective_at>? ORDER BY effective_at DESC,revision DESC LIMIT 1').get(channelId, now) as {value: string} | undefined;
     return row ? JSON.parse(row.value) as Timeline : undefined;
   }
   // The publication `entries` would become at `now`, without writing it: the airing program keeps its end,
@@ -54,19 +55,19 @@ export class ChannelScheduler {
   }
   publish(channelId: string, entries: Entry[], expectedRevision: number, now: number, actor: string): Timeline {
     return this.db.transaction(() => {
-      const channel = this.db.prepare('SELECT revision FROM channels WHERE id=?').get(channelId) as {revision: number} | undefined;
+      const channel = prepared(this.db, 'SELECT revision FROM channels WHERE id=?').get(channelId) as {revision: number} | undefined;
       requireThat((channel?.revision ?? 0) === expectedRevision, 'REVISION_CONFLICT', 'Channel changed. Reload the draft.', 409);
       const {publication} = this.plan(channelId, entries, now);
-      if (!channel) this.db.prepare('INSERT INTO channels VALUES(?,0)').run(channelId);
-      this.db.prepare('UPDATE publications SET superseded=1 WHERE channel_id=? AND superseded=0 AND effective_at>?').run(channelId, now);
-      this.db.prepare('INSERT INTO publications(channel_id,revision,effective_at,value) VALUES(?,?,?,?)').run(channelId, publication.revision, publication.effectiveAt, JSON.stringify(publication));
-      this.db.prepare('UPDATE channels SET revision=? WHERE id=?').run(publication.revision, channelId);
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'channel_published', now, JSON.stringify({channelId, revision: publication.revision, effectiveAt: publication.effectiveAt, nextEntryId: publication.nextEntryId, reason: publication.reason}));
+      if (!channel) prepared(this.db, 'INSERT INTO channels VALUES(?,0)').run(channelId);
+      prepared(this.db, 'UPDATE publications SET superseded=1 WHERE channel_id=? AND superseded=0 AND effective_at>?').run(channelId, now);
+      prepared(this.db, 'INSERT INTO publications(channel_id,revision,effective_at,value) VALUES(?,?,?,?)').run(channelId, publication.revision, publication.effectiveAt, JSON.stringify(publication));
+      prepared(this.db, 'UPDATE channels SET revision=? WHERE id=?').run(publication.revision, channelId);
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'channel_published', now, JSON.stringify({channelId, revision: publication.revision, effectiveAt: publication.effectiveAt, nextEntryId: publication.nextEntryId, reason: publication.reason}));
       return publication;
     })();
   }
   // Removes a channel's whole schedule history.
-  forget(channelId: string) { this.db.prepare('DELETE FROM publications WHERE channel_id=?').run(channelId); this.db.prepare('DELETE FROM channels WHERE id=?').run(channelId); }
+  forget(channelId: string) { prepared(this.db, 'DELETE FROM publications WHERE channel_id=?').run(channelId); prepared(this.db, 'DELETE FROM channels WHERE id=?').run(channelId); }
   guide(channelId: string, start: number, end: number) {
     requireThat(start < end && end - start <= 7 * 86400000, 'INVALID_WINDOW', 'Guide window must be at most seven days.');
     const slots: Slot[] = []; let cursor = start;
