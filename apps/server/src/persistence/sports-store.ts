@@ -3,6 +3,7 @@ import type { Db } from './database.js';
 import { requireThat } from '../errors.js';
 import { AppError } from '../errors.js';
 import { SPORTS, stackKey, type SportsEvent, type Window } from '../services/sports-match.js';
+import { prepared } from './statements.js';
 
 export const NOW = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
 // SQL predicate (channel alias `c`): an event channel (its group follows events) with no event on right now.
@@ -52,18 +53,18 @@ export class SportsStore {
   // `changed` reclassifies a source's channels into regular and event channels (IptvStore.relist).
   constructor(private db: Db, private changed: (sourceId: string) => void = () => {}) {}
   policy(sourceId: string): SportsPolicy {
-    const row = this.db.prepare('SELECT enabled,lead_minutes FROM sports_policies WHERE source_id=?').get(sourceId) as { enabled: number; lead_minutes: number } | undefined;
+    const row = prepared(this.db, 'SELECT enabled,lead_minutes FROM sports_policies WHERE source_id=?').get(sourceId) as { enabled: number; lead_minutes: number } | undefined;
     return { enabled: !!row?.enabled, leadMinutes: row?.lead_minutes ?? 30 };
   }
   setPolicy(actor: string, sourceId: string, input: z.input<typeof sportsPolicy>, now = Date.now()) {
-    const v = sportsPolicy.parse(input), source = this.db.prepare('SELECT kind FROM iptv_sources WHERE id=?').get(sourceId) as { kind: string } | undefined;
+    const v = sportsPolicy.parse(input), source = prepared(this.db, 'SELECT kind FROM iptv_sources WHERE id=?').get(sourceId) as { kind: string } | undefined;
     requireThat(source, 'SOURCE_NOT_FOUND', 'Source not found.', 404); requireThat(source.kind === 'm3u', 'INVALID_POLICY', 'Sports events apply to M3U sources only.');
     this.db.transaction(() => {
-      this.db.prepare('INSERT INTO sports_policies VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,lead_minutes=excluded.lead_minutes').run(sourceId, Number(v.enabled), v.leadMinutes);
+      prepared(this.db, 'INSERT INTO sports_policies VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,lead_minutes=excluded.lead_minutes').run(sourceId, Number(v.enabled), v.leadMinutes);
       // Turned off, every group is regular again: its channels list by the regular rules.
-      if (!v.enabled) this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
-      this.db.prepare('UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_policy_changed', now, JSON.stringify({ id: sourceId }));
+      if (!v.enabled) prepared(this.db, 'DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
+      prepared(this.db, 'UPDATE iptv_sources SET revision=revision+1 WHERE id=?').run(sourceId);
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_policy_changed', now, JSON.stringify({ id: sourceId }));
       this.changed(sourceId);
     })();
     return this.policy(sourceId);
@@ -74,20 +75,20 @@ export class SportsStore {
     return this.db.transaction(() => {
       const current = this.settings().revision;
       if (current !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Live Events settings changed. Reload and retry.', 409);
-      this.db.prepare('INSERT INTO sports_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(current + 1, JSON.stringify(v));
-      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_settings_changed', now, JSON.stringify(v));
+      prepared(this.db, 'INSERT INTO sports_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(current + 1, JSON.stringify(v));
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'sports_settings_changed', now, JSON.stringify(v));
       return this.settings();
     })();
   }
   // Leagues seen in downloaded schedules, with how many games each has from `from` on.
   leagues(from: number) {
-    return this.db.prepare('SELECT league_key AS key,MAX(league) AS name,MAX(sport) AS sport,SUM(end>=?) AS upcoming FROM sports_events WHERE league_key IS NOT NULL GROUP BY league_key').all(from) as { key: string; name: string; sport: string; upcoming: number }[];
+    return prepared(this.db, 'SELECT league_key AS key,MAX(league) AS name,MAX(sport) AS sport,SUM(end>=?) AS upcoming FROM sports_events WHERE league_key IS NOT NULL GROUP BY league_key').all(from) as { key: string; name: string; sport: string; upcoming: number }[];
   }
-  sources() { return (this.db.prepare("SELECT p.source_id AS id,p.lead_minutes FROM sports_policies p JOIN iptv_sources s ON s.id=p.source_id WHERE p.enabled=1 AND s.kind='m3u'").all() as { id: string; lead_minutes: number }[]); }
+  sources() { return (prepared(this.db, "SELECT p.source_id AS id,p.lead_minutes FROM sports_policies p JOIN iptv_sources s ON s.id=p.source_id WHERE p.enabled=1 AND s.kind='m3u'").all() as { id: string; lead_minutes: number }[]); }
   // A live status only moves forward; the end follows it: still playing extends, finished closes.
   upsert(events: SportsEvent[], now = Date.now()) {
-    const get = this.db.prepare('SELECT state,ended_at FROM sports_events WHERE id=?');
-    const put = this.db.prepare(`INSERT INTO sports_events(id,source,sport,league,title,start,end,state,time_known,sides,abbreviations,ended_at,updated_at,league_key,logos)
+    const get = prepared(this.db, 'SELECT state,ended_at FROM sports_events WHERE id=?');
+    const put = prepared(this.db, `INSERT INTO sports_events(id,source,sport,league,title,start,end,state,time_known,sides,abbreviations,ended_at,updated_at,league_key,logos)
       VALUES(@id,@source,@sport,@league,@title,@start,@end,@state,@time_known,@sides,@abbreviations,@ended_at,@now,@leagueKey,@logos)
       ON CONFLICT(id) DO UPDATE SET sport=excluded.sport,league=excluded.league,league_key=excluded.league_key,title=excluded.title,start=excluded.start,end=excluded.end,state=excluded.state,time_known=excluded.time_known,sides=excluded.sides,abbreviations=excluded.abbreviations,logos=excluded.logos,ended_at=excluded.ended_at,updated_at=excluded.updated_at`);
     this.db.transaction(() => {
@@ -99,21 +100,21 @@ export class SportsStore {
       }
     })();
   }
-  prune(now = Date.now()) { this.db.prepare('DELETE FROM sports_events WHERE end<?').run(now - 36 * 3600_000); }
+  prune(now = Date.now()) { prepared(this.db, 'DELETE FROM sports_events WHERE end<?').run(now - 36 * 3600_000); }
   events(from: number, to: number): SportsEvent[] {
-    return (this.db.prepare('SELECT * FROM sports_events WHERE end>=? AND start<=? ORDER BY start').all(from, to) as EventRow[])
+    return (prepared(this.db, 'SELECT * FROM sports_events WHERE end>=? AND start<=? ORDER BY start').all(from, to) as EventRow[])
       .map(r => ({ id: r.id, source: r.source, sport: r.sport, league: r.league, leagueKey: r.league_key ?? '', title: r.title, start: r.start, end: r.end, state: r.state, timeKnown: !!r.time_known, sides: JSON.parse(r.sides), abbreviations: JSON.parse(r.abbreviations) }));
   }
   // Replaces a source's windows in one transaction. A held channel keeps its window open until its hold ends, the old
   // window carried over if the schedule no longer matches it.
   replaceWindows(sourceId: string, leadMinutes: number, windows: Map<string, Window>, now = Date.now()) {
     return this.db.transaction(() => {
-      this.db.prepare('DELETE FROM sports_holds WHERE until<=?').run(now);
-      const held = this.db.prepare('SELECT w.*,h.until FROM sports_windows w JOIN sports_holds h ON h.channel_id=w.channel_id WHERE w.source_id=?').all(sourceId) as (WindowRow & { until: number })[];
-      this.db.prepare('DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
-      const put = this.db.prepare('INSERT INTO sports_windows(channel_id,source_id,event_id,title,league,start,end,visible_from,visible_until,state,matched_by,stack_key,sport,league_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      prepared(this.db, 'DELETE FROM sports_holds WHERE until<=?').run(now);
+      const held = prepared(this.db, 'SELECT w.*,h.until FROM sports_windows w JOIN sports_holds h ON h.channel_id=w.channel_id WHERE w.source_id=?').all(sourceId) as (WindowRow & { until: number })[];
+      prepared(this.db, 'DELETE FROM sports_windows WHERE source_id=?').run(sourceId);
+      const put = prepared(this.db, 'INSERT INTO sports_windows(channel_id,source_id,event_id,title,league,start,end,visible_from,visible_until,state,matched_by,stack_key,sport,league_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       for (const [channelId, w] of windows) put.run(channelId, sourceId, w.eventId, w.title.slice(0, 300), w.league.slice(0, 120), w.start, w.end, w.start - leadMinutes * 60_000, w.end + GRACE_MS, w.state, w.matchedBy, stackKey(w).slice(0, 300), w.sport ?? 'sports', w.leagueKey || null);
-      const extend = this.db.prepare('UPDATE sports_windows SET visible_until=MAX(visible_until,?) WHERE channel_id=?');
+      const extend = prepared(this.db, 'UPDATE sports_windows SET visible_until=MAX(visible_until,?) WHERE channel_id=?');
       for (const h of held) {
         if (windows.has(h.channel_id)) extend.run(h.until, h.channel_id);
         else put.run(h.channel_id, sourceId, h.event_id, h.title, h.league, h.start, h.end, h.visible_from, h.until, h.state, h.matched_by, h.stack_key, h.sport, h.league_key);
@@ -123,27 +124,27 @@ export class SportsStore {
   // Keeps a watched event channel and the other feeds of its event on until WATCH_HOLD_MS after `seen`, the viewer's
   // last request. Written at most once a minute per channel.
   hold(channelId: string, seen: number) {
-    const until = seen + WATCH_HOLD_MS, current = this.db.prepare('SELECT until FROM sports_holds WHERE channel_id=?').get(channelId) as { until: number } | undefined;
+    const until = seen + WATCH_HOLD_MS, current = prepared(this.db, 'SELECT until FROM sports_holds WHERE channel_id=?').get(channelId) as { until: number } | undefined;
     if (current && current.until >= until - 60_000) return;
-    const w = this.db.prepare('SELECT source_id,stack_key FROM sports_windows WHERE channel_id=?').get(channelId) as { source_id: string; stack_key: string | null } | undefined;
+    const w = prepared(this.db, 'SELECT source_id,stack_key FROM sports_windows WHERE channel_id=?').get(channelId) as { source_id: string; stack_key: string | null } | undefined;
     if (!w) return;
-    const feeds = w.stack_key === null ? [channelId] : (this.db.prepare('SELECT channel_id FROM sports_windows WHERE source_id=? AND stack_key=?').all(w.source_id, w.stack_key) as { channel_id: string }[]).map(r => r.channel_id);
+    const feeds = w.stack_key === null ? [channelId] : (prepared(this.db, 'SELECT channel_id FROM sports_windows WHERE source_id=? AND stack_key=?').all(w.source_id, w.stack_key) as { channel_id: string }[]).map(r => r.channel_id);
     this.db.transaction(() => {
-      const put = this.db.prepare('INSERT INTO sports_holds VALUES(?,?) ON CONFLICT(channel_id) DO UPDATE SET until=MAX(until,excluded.until)');
-      const extend = this.db.prepare('UPDATE sports_windows SET visible_until=? WHERE channel_id=? AND visible_until<?');
+      const put = prepared(this.db, 'INSERT INTO sports_holds VALUES(?,?) ON CONFLICT(channel_id) DO UPDATE SET until=MAX(until,excluded.until)');
+      const extend = prepared(this.db, 'UPDATE sports_windows SET visible_until=? WHERE channel_id=? AND visible_until<?');
       for (const id of feeds) { put.run(id, until); extend.run(until, id, until); }
     })();
   }
-  windows(sourceId: string) { return new Map((this.db.prepare('SELECT * FROM sports_windows WHERE source_id=?').all(sourceId) as WindowRow[]).map(r => [r.channel_id, r])); }
-  window(channelId: string) { return this.db.prepare('SELECT * FROM sports_windows WHERE channel_id=?').get(channelId) as WindowRow | undefined; }
+  windows(sourceId: string) { return new Map((prepared(this.db, 'SELECT * FROM sports_windows WHERE source_id=?').all(sourceId) as WindowRow[]).map(r => [r.channel_id, r])); }
+  window(channelId: string) { return prepared(this.db, 'SELECT * FROM sports_windows WHERE channel_id=?').get(channelId) as WindowRow | undefined; }
   // A league's logo address as last published. A new address drops the saved image so it is downloaded again.
   setLogoUrl(key: string, url: string, now = Date.now()) {
-    this.db.prepare(`INSERT INTO sports_league_logos(league_key,url,checked_at) VALUES(?,?,?)
+    prepared(this.db, `INSERT INTO sports_league_logos(league_key,url,checked_at) VALUES(?,?,?)
       ON CONFLICT(league_key) DO UPDATE SET bytes=CASE WHEN url IS excluded.url THEN bytes ELSE NULL END,type=CASE WHEN url IS excluded.url THEN type ELSE NULL END,url=excluded.url,checked_at=excluded.checked_at`).run(key, url, now);
   }
-  logosMissing() { return this.db.prepare('SELECT league_key AS key,url FROM sports_league_logos WHERE url IS NOT NULL AND bytes IS NULL').all() as { key: string; url: string }[]; }
+  logosMissing() { return prepared(this.db, 'SELECT league_key AS key,url FROM sports_league_logos WHERE url IS NOT NULL AND bytes IS NULL').all() as { key: string; url: string }[]; }
   saveLogo(key: string, url: string, image: { type: string; bytes: Buffer }) {
-    this.db.prepare('UPDATE sports_league_logos SET type=?,bytes=? WHERE league_key=? AND url=?').run(image.type, image.bytes, key, url);
+    prepared(this.db, 'UPDATE sports_league_logos SET type=?,bytes=? WHERE league_key=? AND url=?').run(image.type, image.bytes, key, url);
   }
-  count(from: number) { return (this.db.prepare('SELECT COUNT(*) AS n FROM sports_events WHERE end>=?').get(from) as { n: number }).n; }
+  count(from: number) { return (prepared(this.db, 'SELECT COUNT(*) AS n FROM sports_events WHERE end>=?').get(from) as { n: number }).n; }
 }

@@ -4,6 +4,7 @@ import type { Db } from './database.js';
 import type { Vault } from '../security/vault.js';
 import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
+import { prepared } from './statements.js';
 
 // Artwork's settings, layouts and job history. The engine (apps/artwork/artwork_engine.py) reads none of this directly:
 // before each run tk.box writes it out as the engine's JSON config (artworkConfig). Provider keys are sealed.
@@ -90,8 +91,8 @@ export class ArtworkStore {
   private splitTemplates(now = Date.now()) {
     if (this.state<boolean>('layouts:templates')) return;
     this.db.transaction(() => {
-      const rows = this.db.prepare('SELECT name,revision,value FROM artwork_layouts ORDER BY name').all() as { name: string; revision: number; value: string }[];
-      const names = new Set(rows.map(r => r.name)), insert = this.db.prepare('INSERT INTO artwork_layouts VALUES(?,1,?,?)');
+      const rows = prepared(this.db, 'SELECT name,revision,value FROM artwork_layouts ORDER BY name').all() as { name: string; revision: number; value: string }[];
+      const names = new Set(rows.map(r => r.name)), insert = prepared(this.db, 'INSERT INTO artwork_layouts VALUES(?,1,?,?)');
       const free = (base: string, role: string) => {
         for (let n = 1; ; n++) {
           const suffix = n === 1 ? `-${role}` : `-${role}-${n}`, name = base.slice(0, 40 - suffix.length) + suffix;
@@ -104,7 +105,7 @@ export class ArtworkStore {
         for (const [role, options] of [['season', season], ['episode', episode]] as const)
           if (options && typeof options === 'object' && !(role === 'season' && row.name === 'tk-movies'))
             insert.run(free(row.name, role), JSON.stringify({ extends: row.name, role, ...options }), now);
-        this.db.prepare('UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify(rest), now, row.name);
+        prepared(this.db, 'UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify(rest), now, row.name);
       }
       this.setState('layouts:templates', true);
     })();
@@ -113,13 +114,13 @@ export class ArtworkStore {
   // title made into one by default, so a saved tk-custom still drawing that text gets the bundled logo settings, once.
   private customLogos(file: string, now = Date.now()) {
     if (this.state<boolean>('layouts:custom-logo')) return;
-    const row = this.db.prepare('SELECT revision,value FROM artwork_layouts WHERE name=?').get('tk-custom') as { revision: number; value: string } | undefined;
+    const row = prepared(this.db, 'SELECT revision,value FROM artwork_layouts WHERE name=?').get('tk-custom') as { revision: number; value: string } | undefined;
     const value = row && JSON.parse(row.value) as Record<string, unknown>;
     this.db.transaction(() => {
       if (row && value?.logo_mode === 'none' && value.custom_text === '{title_lines}') {
         const seed = (JSON.parse(readFileSync(file, 'utf8')) as { layouts: Record<string, Record<string, unknown>> }).layouts['tk-custom'];
         const kept = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'logo_mode' && !key.startsWith('text_') && !['custom_text', 'font_size', 'letter_spacing', 'position_x', 'position_y'].includes(key)));
-        this.db.prepare('UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify({ ...kept, ...seed }), now, 'tk-custom');
+        prepared(this.db, 'UPDATE artwork_layouts SET revision=?,value=?,updated_at=? WHERE name=?').run(row.revision + 1, JSON.stringify({ ...kept, ...seed }), now, 'tk-custom');
       }
       this.setState('layouts:custom-logo', true);
     })();
@@ -127,16 +128,16 @@ export class ArtworkStore {
   // Collection schedules were kept with the artwork settings until collections had their own, and new titles joined
   // their custom collections with artwork's newly added check. They move over once, keeping what was set.
   private moveSchedules() {
-    const row = this.db.prepare('SELECT value FROM artwork_settings WHERE id=1').get() as { value: string } | undefined;
+    const row = prepared(this.db, 'SELECT value FROM artwork_settings WHERE id=1').get() as { value: string } | undefined;
     const settings = row && JSON.parse(row.value) as Stored;
     if (!settings?.schedules || !('seasonal' in settings.schedules || 'collections' in settings.schedules)) return;
     this.db.transaction(() => {
       const { revision, value } = this.storedCollections(), old = settings.schedules, base = collectionDefaults.schedules;
       const custom = !!value.definitions?.some(d => d.enabled !== false);
       value.schedules = { custom: old.seasonal ?? base.custom, all: old.collections ?? base.all, added: custom && old.added ? old.added : base.added };
-      this.db.prepare('INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(value));
+      prepared(this.db, 'INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(value));
       const { seasonal: _, collections: __, ...kept } = old;
-      this.db.prepare('UPDATE artwork_settings SET value=? WHERE id=1').run(JSON.stringify({ ...settings, schedules: kept }));
+      prepared(this.db, 'UPDATE artwork_settings SET value=? WHERE id=1').run(JSON.stringify({ ...settings, schedules: kept }));
     })();
   }
   // The bundled layouts become the starting set. A database seeded with the earlier set has those replaced by the tk-*
@@ -145,22 +146,22 @@ export class ArtworkStore {
     if ((this.state<number>('layouts:seed') ?? 0) >= SEED_VERSION) return;
     const seed = JSON.parse(readFileSync(file, 'utf8')) as { layouts: Record<string, Record<string, unknown>> };
     this.db.transaction(() => {
-      const remove = this.db.prepare('DELETE FROM artwork_layouts WHERE name=?'), insert = this.db.prepare('INSERT OR REPLACE INTO artwork_layouts VALUES(?,1,?,?)');
+      const remove = prepared(this.db, 'DELETE FROM artwork_layouts WHERE name=?'), insert = prepared(this.db, 'INSERT OR REPLACE INTO artwork_layouts VALUES(?,1,?,?)');
       for (const name of Object.keys(RETIRED)) remove.run(name);
       for (const [name, value] of Object.entries(seed.layouts)) insert.run(name, JSON.stringify(value), now);
-      const row = this.db.prepare('SELECT value FROM artwork_settings WHERE id=1').get() as { value: string } | undefined;
+      const row = prepared(this.db, 'SELECT value FROM artwork_settings WHERE id=1').get() as { value: string } | undefined;
       if (row) {
         const value = JSON.parse(row.value) as Stored, move = (name: string) => RETIRED[name] ?? name;
         value.defaultLayout = move(value.defaultLayout);
         value.layoutByLibrary = Object.fromEntries(Object.entries(value.layoutByLibrary ?? {}).map(([id, name]) => [id, move(name)]));
         value.layoutByType = { ...defaults.layoutByType, ...Object.fromEntries(Object.entries(value.layoutByType ?? {}).map(([kind, name]) => [kind, move(name as string)])) };
-        this.db.prepare('UPDATE artwork_settings SET value=? WHERE id=1').run(JSON.stringify(value));
+        prepared(this.db, 'UPDATE artwork_settings SET value=? WHERE id=1').run(JSON.stringify(value));
       }
       this.setState('layouts:seed', SEED_VERSION);
     })();
   }
   private stored() {
-    const row = this.db.prepare('SELECT revision,value FROM artwork_settings WHERE id=1').get() as { revision: number; value: string } | undefined;
+    const row = prepared(this.db, 'SELECT revision,value FROM artwork_settings WHERE id=1').get() as { revision: number; value: string } | undefined;
     // Settings saved before a field existed read as its default.
     return { revision: row?.revision ?? 0, value: { ...defaults, keys: {}, ...(row ? JSON.parse(row.value) as Partial<Stored> : {}) } as Stored };
   }
@@ -190,13 +191,13 @@ export class ArtworkStore {
         if (given === undefined) continue;
         if (given) keys[name] = this.vault.seal(given, `artwork:${name}-key`); else delete keys[name];
       }
-      this.db.prepare('INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...settings, keys }));
+      prepared(this.db, 'INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...settings, keys }));
       this.audit(actor, 'artwork_settings_changed', { ...settings, keysSet: Object.keys(keys) }, now);
       return this.view();
     })();
   }
   private storedCollections() {
-    const row = this.db.prepare('SELECT revision,value FROM artwork_collections WHERE id=1').get() as { revision: number; value: string } | undefined;
+    const row = prepared(this.db, 'SELECT revision,value FROM artwork_collections WHERE id=1').get() as { revision: number; value: string } | undefined;
     const value = row ? JSON.parse(row.value) as ArtworkCollections & { radarrKey?: string } : { ...collectionDefaults };
     // Collections saved before an option existed read it as its default.
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
@@ -215,25 +216,25 @@ export class ArtworkStore {
       const { revision, value: stored } = this.storedCollections();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Collections changed. Reload and retry.', 409);
       const sealed = radarrKey === undefined ? stored.radarrKey : radarrKey ? this.vault.seal(radarrKey, 'artwork:radarr-key') : undefined;
-      this.db.prepare('INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...value, ...(sealed ? { radarrKey: sealed } : {}) }));
+      prepared(this.db, 'INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...value, ...(sealed ? { radarrKey: sealed } : {}) }));
       this.audit(actor, 'artwork_collections_changed', { definitions: value.definitions?.length ?? null, franchise: value.franchise, radarr: !!value.radarr.url, schedules: value.schedules }, now);
       return this.collections();
     })();
   }
   // Small values the schedules keep between runs.
-  state<T>(key: string): T | undefined { const row = this.db.prepare('SELECT value FROM artwork_state WHERE key=?').get(key) as { value: string } | undefined; return row && JSON.parse(row.value) as T; }
-  setState(key: string, value: unknown) { this.db.prepare('INSERT INTO artwork_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
-  layoutNames() { return (this.db.prepare('SELECT name FROM artwork_layouts ORDER BY name').all() as { name: string }[]).map(r => r.name); }
+  state<T>(key: string): T | undefined { const row = prepared(this.db, 'SELECT value FROM artwork_state WHERE key=?').get(key) as { value: string } | undefined; return row && JSON.parse(row.value) as T; }
+  setState(key: string, value: unknown) { prepared(this.db, 'INSERT INTO artwork_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
+  layoutNames() { return (prepared(this.db, 'SELECT name FROM artwork_layouts ORDER BY name').all() as { name: string }[]).map(r => r.name); }
   // Each layout, and for a season or episode template the layout it extends.
   layoutList() {
     return Object.entries(this.layouts()).map(([name, value]) => typeof value.extends === 'string'
       ? { name, base: value.extends, role: value.role === 'episode' ? 'episode' as const : 'season' as const } : { name });
   }
   layouts() {
-    return Object.fromEntries((this.db.prepare('SELECT name,value FROM artwork_layouts ORDER BY name').all() as { name: string; value: string }[]).map(r => [r.name, JSON.parse(r.value) as Record<string, unknown>]));
+    return Object.fromEntries((prepared(this.db, 'SELECT name,value FROM artwork_layouts ORDER BY name').all() as { name: string; value: string }[]).map(r => [r.name, JSON.parse(r.value) as Record<string, unknown>]));
   }
   layout(name: string) {
-    const row = this.db.prepare('SELECT revision,value,updated_at FROM artwork_layouts WHERE name=?').get(name) as { revision: number; value: string; updated_at: number } | undefined;
+    const row = prepared(this.db, 'SELECT revision,value,updated_at FROM artwork_layouts WHERE name=?').get(name) as { revision: number; value: string; updated_at: number } | undefined;
     if (!row) throw new AppError('LAYOUT_NOT_FOUND', 'That layout does not exist.', 404);
     return { name, revision: row.revision, updatedAt: row.updated_at, value: JSON.parse(row.value) as Record<string, unknown> };
   }
@@ -242,9 +243,9 @@ export class ArtworkStore {
     layoutName.parse(name); const valid = layoutValue.parse(value);
     await check({ ...this.layouts(), [name]: valid });
     return this.db.transaction(() => {
-      const current = this.db.prepare('SELECT revision FROM artwork_layouts WHERE name=?').get(name) as { revision: number } | undefined;
+      const current = prepared(this.db, 'SELECT revision FROM artwork_layouts WHERE name=?').get(name) as { revision: number } | undefined;
       if ((current?.revision ?? 0) !== expectedRevision) throw new AppError('REVISION_CONFLICT', expectedRevision ? 'Layout changed. Reload and retry.' : 'A layout with that name already exists.', 409);
-      this.db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,value=excluded.value,updated_at=excluded.updated_at')
+      prepared(this.db, 'INSERT INTO artwork_layouts VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,value=excluded.value,updated_at=excluded.updated_at')
         .run(name, expectedRevision + 1, JSON.stringify(valid), now);
       this.audit(actor, expectedRevision ? 'artwork_layout_changed' : 'artwork_layout_created', { name }, now);
       return this.layout(name);
@@ -254,31 +255,31 @@ export class ArtworkStore {
     const s = this.settings();
     if ([s.defaultLayout, ...Object.values(s.layoutByLibrary), ...Object.values(s.layoutByType)].includes(name)) throw new AppError('LAYOUT_IN_USE', 'Choose another layout where this one is used first.', 409);
     if (this.layoutList().some(l => l.base === name)) throw new AppError('LAYOUT_IN_USE', 'Delete its season and episode templates first.', 409);
-    if (!this.db.prepare('DELETE FROM artwork_layouts WHERE name=?').run(name).changes) throw new AppError('LAYOUT_NOT_FOUND', 'That layout does not exist.', 404);
+    if (!prepared(this.db, 'DELETE FROM artwork_layouts WHERE name=?').run(name).changes) throw new AppError('LAYOUT_NOT_FOUND', 'That layout does not exist.', 404);
     this.audit(actor, 'artwork_layout_removed', { name }, now);
   }
   addJob(actor: string, label: string, args: string[], now = Date.now()) {
-    return Number(this.db.prepare("INSERT INTO artwork_jobs(label,args,actor,status,created_at) VALUES(?,?,?,'queued',?)").run(label, JSON.stringify(args), actor, now).lastInsertRowid);
+    return Number(prepared(this.db, "INSERT INTO artwork_jobs(label,args,actor,status,created_at) VALUES(?,?,?,'queued',?)").run(label, JSON.stringify(args), actor, now).lastInsertRowid);
   }
-  jobStarted(id: number, now = Date.now()) { this.db.prepare("UPDATE artwork_jobs SET status='running',started_at=? WHERE id=?").run(now, id); }
+  jobStarted(id: number, now = Date.now()) { prepared(this.db, "UPDATE artwork_jobs SET status='running',started_at=? WHERE id=?").run(now, id); }
   jobFinished(id: number, status: Exclude<JobStatus, 'queued' | 'running'>, exitCode: number | null, output: string, now = Date.now()) {
-    this.db.prepare('UPDATE artwork_jobs SET status=?,exit_code=?,output=?,finished_at=? WHERE id=?').run(status, exitCode, output, now, id);
+    prepared(this.db, 'UPDATE artwork_jobs SET status=?,exit_code=?,output=?,finished_at=? WHERE id=?').run(status, exitCode, output, now, id);
   }
   // Jobs a restart interrupted never resume on their own.
-  abandonJobs(now = Date.now()) { this.db.prepare("UPDATE artwork_jobs SET status='canceled',finished_at=?,output=output||? WHERE status IN ('queued','running')").run(now, '\n[tk.box restarted; this job was stopped]'); }
+  abandonJobs(now = Date.now()) { prepared(this.db, "UPDATE artwork_jobs SET status='canceled',finished_at=?,output=output||? WHERE status IN ('queued','running')").run(now, '\n[tk.box restarted; this job was stopped]'); }
   // The latest jobs, or the latest of one engine's (the history is pruned to a few hundred, so filtering here is cheap).
   jobs(limit = 30, script?: JobRow['script']) {
-    const rows = (this.db.prepare('SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code FROM artwork_jobs ORDER BY id DESC LIMIT ?').all(script ? 1000 : limit) as Record<string, unknown>[]).map(job);
+    const rows = (prepared(this.db, 'SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code FROM artwork_jobs ORDER BY id DESC LIMIT ?').all(script ? 1000 : limit) as Record<string, unknown>[]).map(job);
     return script ? rows.filter(r => r.script === script).slice(0, limit) : rows;
   }
   job(id: number) {
-    const row = this.db.prepare('SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code,output FROM artwork_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    const row = prepared(this.db, 'SELECT id,label,args,actor,status,created_at,started_at,finished_at,exit_code,output FROM artwork_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new AppError('JOB_NOT_FOUND', 'That job does not exist.', 404);
     return { ...job(row), output: row.output as string };
   }
   // Keeps the history short; the output of old jobs is not worth the space.
-  pruneJobs(keep = 200) { this.db.prepare('DELETE FROM artwork_jobs WHERE id NOT IN (SELECT id FROM artwork_jobs ORDER BY id DESC LIMIT ?)').run(keep); }
-  private audit(actor: string, event: string, detail: unknown, now: number) { this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
+  pruneJobs(keep = 200) { prepared(this.db, 'DELETE FROM artwork_jobs WHERE id NOT IN (SELECT id FROM artwork_jobs ORDER BY id DESC LIMIT ?)').run(keep); }
+  private audit(actor: string, event: string, detail: unknown, now: number) { prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
 }
 // The collections engine's commands; every artwork engine job starts with an option (or has none).
 const COLLECTION_COMMANDS = new Set(['all', 'custom', 'added', 'index']);

@@ -7,6 +7,7 @@ import { arrange, insertGrouped, insertNew, natural, MAX_ENTRIES, type ArrangeIn
 import { eligibleVideoEncode } from '../streaming/policy.js';
 import type { ChannelMedia, ChannelRoot } from '../providers/plex.js';
 import type { Program } from '../providers/iptv.js';
+import { prepared } from './statements.js';
 
 // Why an entry cannot be published: nothing playable, no runtime, or it would need a video encode the server refuses.
 export type EntryIssue = 'no_media' | 'no_duration' | 'incompatible';
@@ -68,29 +69,29 @@ export class CustomChannelStore {
   private logoFacts = new Map<string, { at: number; movies: Set<string>; main?: string }>();
   constructor(private db: Db) { this.scheduler = new ChannelScheduler(db); }
   private row(id: string) {
-    const row = this.db.prepare('SELECT c.*,n.number,n.position FROM custom_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=?').get(id) as Row | undefined;
+    const row = prepared(this.db, 'SELECT c.*,n.number,n.position FROM custom_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=?').get(id) as Row | undefined;
     requireThat(row, 'CHANNEL_NOT_FOUND', 'Channel not found.', 404); return row;
   }
-  private rows() { return this.db.prepare('SELECT c.*,n.number,n.position FROM custom_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id ORDER BY n.position,c.created_at').all() as Row[]; }
+  private rows() { return prepared(this.db, 'SELECT c.*,n.number,n.position FROM custom_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id ORDER BY n.position,c.created_at').all() as Row[]; }
   private check(row: Row, expected: number) { requireThat(row.revision === expected, 'REVISION_CONFLICT', 'Channel changed. Reload and retry.', 409); }
-  private audit(actor: string, event: string, detail: Record<string, unknown>, now: number) { this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
+  private audit(actor: string, event: string, detail: Record<string, unknown>, now: number) { prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
   private draft(row: Row) { return JSON.parse(row.draft) as DraftEntry[]; }
   private onAir(row: Row) { return row.published ? JSON.parse(row.published) as DraftEntry[] : undefined; }
-  private touch(id: string, now: number) { this.db.prepare('UPDATE custom_channels SET revision=revision+1,updated_at=? WHERE id=?').run(now, id); }
+  private touch(id: string, now: number) { prepared(this.db, 'UPDATE custom_channels SET revision=revision+1,updated_at=? WHERE id=?').run(now, id); }
   private saveDraft(id: string, entries: DraftEntry[], now: number) {
     requireThat(entries.length <= MAX_ENTRIES, 'DRAFT_TOO_LARGE', `A channel can hold at most ${MAX_ENTRIES.toLocaleString()} programs.`, 413);
-    this.db.prepare('UPDATE custom_channels SET draft=? WHERE id=?').run(JSON.stringify(entries), id); this.touch(id, now);
+    prepared(this.db, 'UPDATE custom_channels SET draft=? WHERE id=?').run(JSON.stringify(entries), id); this.touch(id, now);
   }
   private number(id: string, number: number | undefined) {
-    const existing = this.db.prepare('SELECT number,position FROM lineup_numbers WHERE channel_id=?').get(id) as { number: number; position: number } | undefined;
+    const existing = prepared(this.db, 'SELECT number,position FROM lineup_numbers WHERE channel_id=?').get(id) as { number: number; position: number } | undefined;
     if (number !== undefined) {
-      const taken = this.db.prepare('SELECT channel_id FROM lineup_numbers WHERE number=? AND channel_id<>?').get(number, id);
+      const taken = prepared(this.db, 'SELECT channel_id FROM lineup_numbers WHERE number=? AND channel_id<>?').get(number, id);
       requireThat(!taken, 'NUMBER_CONFLICT', `Channel ${number} is already in use. Pick another number.`, 409);
     } else if (!existing) {
-      const used = new Set((this.db.prepare('SELECT number FROM lineup_numbers').all() as { number: number }[]).map(n => n.number)); number = 1; while (used.has(number)) number++;
+      const used = new Set((prepared(this.db, 'SELECT number FROM lineup_numbers').all() as { number: number }[]).map(n => n.number)); number = 1; while (used.has(number)) number++;
     }
-    const tail = existing ? existing.position : ((this.db.prepare('SELECT MAX(position) AS tail FROM lineup_numbers').get() as { tail: number | null }).tail ?? -1) + 1;
-    this.db.prepare('INSERT INTO lineup_numbers VALUES(?,?,?) ON CONFLICT(channel_id) DO UPDATE SET number=excluded.number').run(id, number ?? existing!.number, tail);
+    const tail = existing ? existing.position : ((prepared(this.db, 'SELECT MAX(position) AS tail FROM lineup_numbers').get() as { tail: number | null }).tail ?? -1) + 1;
+    prepared(this.db, 'INSERT INTO lineup_numbers VALUES(?,?,?) ON CONFLICT(channel_id) DO UPDATE SET number=excluded.number').run(id, number ?? existing!.number, tail);
   }
   private status(row: Row, now: number) {
     const started = this.scheduler.startedAt(row.id), pending = this.scheduler.pending(row.id, now);
@@ -107,14 +108,14 @@ export class CustomChannelStore {
   }
   list(now = Date.now()) { return this.rows().map(r => this.summary(r, now)); }
   detail(id: string, now = Date.now()) {
-    const row = this.row(id), sources = this.db.prepare('SELECT * FROM custom_sources WHERE channel_id=? ORDER BY title').all(id) as SourceRow[];
+    const row = this.row(id), sources = prepared(this.db, 'SELECT * FROM custom_sources WHERE channel_id=? ORDER BY title').all(id) as SourceRow[];
     return { ...this.summary(row, now), entries: this.draft(row), sources: sources.map(s => ({ id: s.id, kind: s.kind, plexId: s.plex_id, title: s.title, specials: !!s.specials, autoAdd: !!s.auto_add, lastChecked: s.last_checked,
       lastResult: s.last_result ? JSON.parse(s.last_result) as SyncResult : null, lastError: s.last_error, programs: this.draft(row).filter(e => e.sourceId === s.id).length })) };
   }
   create(actor: string, input: z.input<typeof customCreate>, now = Date.now()) {
     const v = customCreate.parse(input), id = randomUUID();
     this.db.transaction(() => {
-      this.db.prepare('INSERT INTO custom_channels(id,name,summary,logo_url,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(id, v.name, v.summary, v.logoUrl ?? null, now, now);
+      prepared(this.db, 'INSERT INTO custom_channels(id,name,summary,logo_url,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(id, v.name, v.summary, v.logoUrl ?? null, now, now);
       this.number(id, v.number); this.audit(actor, 'custom_channel_created', { id }, now);
     })();
     return this.detail(id, now);
@@ -123,7 +124,7 @@ export class CustomChannelStore {
     const v = customEdit.parse(input);
     this.db.transaction(() => {
       const row = this.row(id); this.check(row, v.expectedRevision);
-      this.db.prepare('UPDATE custom_channels SET name=?,summary=?,logo_url=?,plex_logo=?,enabled=? WHERE id=?').run(v.name ?? row.name, v.summary ?? row.summary, v.logoUrl === undefined ? row.logo_url : v.logoUrl,
+      prepared(this.db, 'UPDATE custom_channels SET name=?,summary=?,logo_url=?,plex_logo=?,enabled=? WHERE id=?').run(v.name ?? row.name, v.summary ?? row.summary, v.logoUrl === undefined ? row.logo_url : v.logoUrl,
         v.plexLogo === undefined ? row.plex_logo : v.plexLogo, v.enabled === undefined ? row.enabled : Number(v.enabled), id);
       if (v.number !== undefined && v.number !== row.number) this.number(id, v.number);
       this.touch(id, now); this.audit(actor, 'custom_channel_edited', { id }, now);
@@ -133,9 +134,9 @@ export class CustomChannelStore {
   remove(actor: string, id: string, expected: number, now = Date.now()) {
     this.db.transaction(() => {
       this.check(this.row(id), expected);
-      this.db.prepare('DELETE FROM lineup_numbers WHERE channel_id=?').run(id);
+      prepared(this.db, 'DELETE FROM lineup_numbers WHERE channel_id=?').run(id);
       this.scheduler.forget(id);
-      this.db.prepare('DELETE FROM custom_channels WHERE id=?').run(id);
+      prepared(this.db, 'DELETE FROM custom_channels WHERE id=?').run(id);
       this.audit(actor, 'custom_channel_deleted', { id }, now);
     })();
   }
@@ -145,7 +146,7 @@ export class CustomChannelStore {
     this.db.transaction(() => {
       const rows = this.rows();
       requireThat(ids.length === rows.length && new Set(ids).size === ids.length && rows.every(r => ids.includes(r.id)), 'REVISION_CONFLICT', 'Channels changed. Reload and retry.', 409);
-      const positions = rows.map(r => r.position!).sort((a, b) => a - b), put = this.db.prepare('UPDATE lineup_numbers SET position=? WHERE channel_id=?');
+      const positions = rows.map(r => r.position!).sort((a, b) => a - b), put = prepared(this.db, 'UPDATE lineup_numbers SET position=? WHERE channel_id=?');
       ids.forEach((id, i) => put.run(positions[i], id));
       this.audit(actor, 'custom_channels_reordered', { ids }, now);
     })();
@@ -162,11 +163,11 @@ export class CustomChannelStore {
       for (const { root, items } of selections) {
         let sourceId: string | undefined;
         if (isSource(root.type)) {
-          const kind = root.type, existing = this.db.prepare('SELECT id FROM custom_sources WHERE channel_id=? AND kind=? AND plex_id=?').get(id, kind, root.id) as { id: string } | undefined;
+          const kind = root.type, existing = prepared(this.db, 'SELECT id FROM custom_sources WHERE channel_id=? AND kind=? AND plex_id=?').get(id, kind, root.id) as { id: string } | undefined;
           sourceId = existing?.id ?? randomUUID();
-          if (!existing) this.db.prepare('INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials,auto_add,seeded) VALUES(?,?,?,?,?,?,?,1)').run(sourceId, id, kind, root.id, root.title, Number(v.specials), Number(v.autoAdd));
-          else if (v.autoAdd) this.db.prepare('UPDATE custom_sources SET auto_add=1 WHERE id=?').run(sourceId);
-          const seen = this.db.prepare('INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)');
+          if (!existing) prepared(this.db, 'INSERT INTO custom_sources(id,channel_id,kind,plex_id,title,specials,auto_add,seeded) VALUES(?,?,?,?,?,?,?,1)').run(sourceId, id, kind, root.id, root.title, Number(v.specials), Number(v.autoAdd));
+          else if (v.autoAdd) prepared(this.db, 'UPDATE custom_sources SET auto_add=1 WHERE id=?').run(sourceId);
+          const seen = prepared(this.db, 'INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)');
           for (const m of items) seen.run(sourceId, m.mediaId);
         }
         // Specials (season 0) join a whole show, collection or category only when asked for; an explicitly chosen
@@ -246,7 +247,7 @@ export class CustomChannelStore {
     return this.db.transaction(() => {
       const row = this.row(id); this.check(row, v.expectedRevision);
       const timeline: Timeline = this.scheduler.publish(id, this.publishable(row), v.expectedPublication, now, actor);
-      this.db.prepare('UPDATE custom_channels SET published=draft WHERE id=?').run(id); this.touch(id, now);
+      prepared(this.db, 'UPDATE custom_channels SET published=draft WHERE id=?').run(id); this.touch(id, now);
       return { channel: this.detail(id, now), effectiveAt: timeline.effectiveAt, reason: timeline.reason };
     })();
   }
@@ -254,7 +255,7 @@ export class CustomChannelStore {
   // Automatic new episodes. Off by default for every selection; turning it on never touches existing programs.
   setAutoAdd(actor: string, id: string, sourceId: string, enabled: boolean, now = Date.now()) {
     this.row(id);
-    const result = this.db.prepare('UPDATE custom_sources SET auto_add=? WHERE id=? AND channel_id=?').run(Number(enabled), sourceId, id);
+    const result = prepared(this.db, 'UPDATE custom_sources SET auto_add=? WHERE id=? AND channel_id=?').run(Number(enabled), sourceId, id);
     requireThat(result.changes === 1, 'SOURCE_NOT_FOUND', 'That show is no longer on this channel.', 404);
     this.audit(actor, enabled ? 'custom_auto_add_on' : 'custom_auto_add_off', { id, sourceId }, now);
     return this.detail(id, now);
@@ -265,7 +266,7 @@ export class CustomChannelStore {
     const v = draftRevision.parse(input);
     return this.db.transaction(() => {
       const row = this.row(id); this.check(row, v.expectedRevision);
-      const result = this.db.prepare('DELETE FROM custom_sources WHERE id=? AND channel_id=?').run(sourceId, id);
+      const result = prepared(this.db, 'DELETE FROM custom_sources WHERE id=? AND channel_id=?').run(sourceId, id);
       requireThat(result.changes === 1, 'SOURCE_NOT_FOUND', 'That source is no longer on this channel.', 404);
       this.saveDraft(id, this.draft(row).filter(e => e.sourceId !== sourceId), now);
       this.audit(actor, 'custom_source_removed', { id, sourceId }, now);
@@ -273,30 +274,30 @@ export class CustomChannelStore {
     })();
   }
   autoSources(channelId?: string) {
-    return (this.db.prepare(`SELECT s.id,s.channel_id AS channelId,s.plex_id AS plexId FROM custom_sources s WHERE s.auto_add=1${channelId ? ' AND s.channel_id=?' : ''} ORDER BY s.last_checked IS NOT NULL,s.last_checked`).all(...(channelId ? [channelId] : [])) as { id: string; channelId: string; plexId: string }[]);
+    return (prepared(this.db, `SELECT s.id,s.channel_id AS channelId,s.plex_id AS plexId FROM custom_sources s WHERE s.auto_add=1${channelId ? ' AND s.channel_id=?' : ''} ORDER BY s.last_checked IS NOT NULL,s.last_checked`).all(...(channelId ? [channelId] : [])) as { id: string; channelId: string; plexId: string }[]);
   }
   syncWaiting(sourceId: string, now = Date.now()) {
-    this.db.prepare('UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify({ added: 0, titles: [], review: [], waiting: true } satisfies SyncResult), sourceId);
+    prepared(this.db, 'UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify({ added: 0, titles: [], review: [], waiting: true } satisfies SyncResult), sourceId);
   }
   syncFailed(sourceId: string, error: string, now = Date.now()) {
     // The last good list and schedule stay as they are; the next check retries.
-    this.db.prepare('UPDATE custom_sources SET last_checked=?,last_error=? WHERE id=?').run(now, error.slice(0, 200), sourceId);
+    prepared(this.db, 'UPDATE custom_sources SET last_checked=?,last_error=? WHERE id=?').run(now, error.slice(0, 200), sourceId);
   }
   // Applies one check's Plex listing. Genuinely new playable episodes join the draft and, on a channel that is on air,
   // the published list too, which republishes at the end of the airing program like any edit. A publication still
   // waiting for its boundary is merged into, not replaced, so the administrator's curation is never lost.
   applySync(actor: string, sourceId: string, items: ChannelMedia[], now = Date.now()): SyncResult {
     return this.db.transaction(() => {
-      const source = this.db.prepare('SELECT * FROM custom_sources WHERE id=?').get(sourceId) as (SourceRow & { channel_id: string }) | undefined;
+      const source = prepared(this.db, 'SELECT * FROM custom_sources WHERE id=?').get(sourceId) as (SourceRow & { channel_id: string }) | undefined;
       requireThat(source, 'SOURCE_NOT_FOUND', 'That show is no longer on this channel.', 404);
-      const seen = new Set((this.db.prepare('SELECT plex_id FROM custom_source_episodes WHERE source_id=?').all(sourceId) as { plex_id: string }[]).map(r => r.plex_id));
-      const mark = this.db.prepare('INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)'), save = (result: SyncResult) => {
-        this.db.prepare('UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify(result), sourceId); return result;
+      const seen = new Set((prepared(this.db, 'SELECT plex_id FROM custom_source_episodes WHERE source_id=?').all(sourceId) as { plex_id: string }[]).map(r => r.plex_id));
+      const mark = prepared(this.db, 'INSERT OR IGNORE INTO custom_source_episodes VALUES(?,?)'), save = (result: SyncResult) => {
+        prepared(this.db, 'UPDATE custom_sources SET last_checked=?,last_result=?,last_error=NULL WHERE id=?').run(now, JSON.stringify(result), sourceId); return result;
       };
       // A selection made before episodes were tracked learns what exists now, and adds nothing.
       if (!source.seeded) {
         for (const m of items) mark.run(sourceId, m.mediaId);
-        this.db.prepare('UPDATE custom_sources SET seeded=1 WHERE id=?').run(sourceId);
+        prepared(this.db, 'UPDATE custom_sources SET seeded=1 WHERE id=?').run(sourceId);
         return save({ added: 0, titles: [], review: [], seeded: true });
       }
       const row = this.row(source.channel_id), draft = this.draft(row), added: DraftEntry[] = [], review: SyncResult['review'] = [];
@@ -321,7 +322,7 @@ export class CustomChannelStore {
         const published = insert(JSON.parse(row.published) as DraftEntry[], sourceId, added);
         requireThat(published.length <= MAX_ENTRIES, 'DRAFT_TOO_LARGE', `A channel can hold at most ${MAX_ENTRIES.toLocaleString()} programs.`, 413);
         this.scheduler.publish(row.id, published.map(toEntry), this.scheduler.revision(row.id), now, actor);
-        this.db.prepare('UPDATE custom_channels SET published=? WHERE id=?').run(JSON.stringify(published), row.id);
+        prepared(this.db, 'UPDATE custom_channels SET published=? WHERE id=?').run(JSON.stringify(published), row.id);
       }
       this.audit(actor, 'custom_episodes_added', { id: row.id, sourceId, entries: added.map(e => e.entryId), mediaIds: added.map(e => e.mediaId) }, now);
       return save(result);
@@ -332,9 +333,9 @@ export class CustomChannelStore {
   private viewable(now: number) { return this.rows().filter(r => r.enabled && r.number !== null && (this.scheduler.startedAt(r.id) ?? Infinity) <= now); }
   isVisible(id: string, now = Date.now()) { return this.viewable(now).some(r => r.id === id); }
   tune(id: string) { requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404); const r = this.row(id); return { id: r.id, name: r.name, number: r.number! }; }
-  exists(id: string) { return !!this.db.prepare('SELECT 1 FROM custom_channels WHERE id=?').get(id); }
+  exists(id: string) { return !!prepared(this.db, 'SELECT 1 FROM custom_channels WHERE id=?').get(id); }
   stations(account: string, favoritesOnly: boolean, search: string, channelId?: string, now = Date.now()) {
-    const favorites = new Set((this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id));
+    const favorites = new Set((prepared(this.db, 'SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id));
     return this.viewable(now).filter(r => (!favoritesOnly || favorites.has(r.id)) && (!channelId || r.id === channelId) && (!search || r.name.toLocaleLowerCase().includes(search) || String(r.number).includes(search)))
       .map(r => {
         // logoKey changes with the Plex title shown, so the guide fetches the new logo when the airing movie changes.
@@ -353,10 +354,10 @@ export class CustomChannelStore {
   }
   favorite(account: string, id: string, value: boolean) {
     requireThat(this.isVisible(id), 'CHANNEL_NOT_FOUND', 'Channel not found.', 404);
-    if (value) this.db.prepare('INSERT OR IGNORE INTO custom_favorites VALUES(?,?)').run(account, id);
-    else this.db.prepare('DELETE FROM custom_favorites WHERE account_id=? AND channel_id=?').run(account, id);
+    if (value) prepared(this.db, 'INSERT OR IGNORE INTO custom_favorites VALUES(?,?)').run(account, id);
+    else prepared(this.db, 'DELETE FROM custom_favorites WHERE account_id=? AND channel_id=?').run(account, id);
   }
-  favoriteIds(account: string) { return (this.db.prepare('SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id).filter(id => this.isVisible(id)); }
+  favoriteIds(account: string) { return (prepared(this.db, 'SELECT channel_id FROM custom_favorites WHERE account_id=?').all(account) as { channel_id: string }[]).map(f => f.channel_id).filter(id => this.isVisible(id)); }
   // Automatic Plex logo: the movie airing now, else the main title on air. A movie is known from the draft or the
   // published list, so one still airing from a list that was just replaced is recognised too.
   private facts(row: Row) {
