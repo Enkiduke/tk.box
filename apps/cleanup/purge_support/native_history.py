@@ -52,7 +52,7 @@ class NativeHistoryPreview:
     def compare(self, item, media_type, requests, settings, key, current_rule, now, season_added_at=None):
         """Log hypothetical retention only. Coverage must be established separately before native deletion."""
         try:
-            users = {request.requestor_id for request in requests} | settings.exempt_user_ids
+            users = {request.requestor_id for request in requests if request.requestor_id is not None} | settings.exempt_user_ids
             watch = self.watch_status(item, media_type, users)
             if season_added_at is None and any(request.added_at is None for request in requests):
                 added_at = plex_datetime(item.addedAt)

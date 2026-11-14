@@ -146,10 +146,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const arr = await mountModule(app, ctx, arrModule, undefined);
   const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb, arr}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
-  await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles});
-  const {store: exploreStore} = await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, transports: exploreTransports});
+  const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles});
+  await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, seerr: () => exploreStore.seerr()});
+  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests});
   await mountModule(app, ctx, calendarModule, {connections: () => ({radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr')}), titles: tmdbTitles});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(),

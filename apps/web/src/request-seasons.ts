@@ -1,7 +1,7 @@
 import type {ExploreSeason} from '../../../packages/contracts/src/index.js';
 
-// Which seasons a series request asks Seerr for. Modes follow Sonarr's monitor options, but Seerr requests whole
-// seasons, so each becomes a season list. Seasons already on the server or requested are never asked for again.
+// Which seasons a series request asks for. Modes follow Sonarr's monitor options, but requests name whole seasons,
+// so each becomes a season list. Seasons already on the server or requested are never asked for again.
 export type SeasonMode='all'|'first'|'last'|'manual';
 export const seasonModes:[SeasonMode,string][]=[['all','All Seasons'],['first','First Season'],['last','Last Season'],['manual','Manual']];
 

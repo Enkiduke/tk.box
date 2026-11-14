@@ -5,14 +5,14 @@ import {invalidate,useApi} from './hooks.js';
 import {Empty,ErrorNotice,Loading} from './components.js';
 import {Card,SectionHead,Switch,date,useMutation} from './settings-ui.js';
 
-// Admin › Requests: every request (docs/REQUESTS.md), where requests go in Radarr and Sonarr, and the one-time Seerr import.
+// Admin › Requests: every request (docs/REQUESTS.md) and where requests go in Radarr and Sonarr.
 export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',requested:'Requested',downloading:'Downloading',partial:'Partly available',available:'Available',failed:'Failed',removed:'Removed'};
 const tone:Partial<Record<RequestStatus,string>>={available:'ok',partial:'ok',downloading:'warning',failed:'danger'};
 const removedBy:Record<string,string>={requester:'by the requester',admin:'by an administrator',cleanup:'by Clean Up',arr:'from Radarr or Sonarr'};
 const seasonText=(item:RequestItem)=>item.kind==='movie'?'Movie':item.seasons.length?`Season${item.seasons.length>1?'s':''} ${item.seasons.map(s=>s.season).join(', ')}`:'Show';
 
 export function RequestsAdmin() {
-  return <><SectionHead title="Requests"/><RequestList/><RequestDefaults/><SeerrImport/></>;
+  return <><SectionHead title="Requests"/><RequestList/><RequestDefaults/></>;
 }
 
 function RequestList() {
@@ -76,21 +76,4 @@ function Destination({title,service,options,value,set}:{title:string;service:str
         onChange={e=>set({tags:e.target.checked?[...value.tags,t.id]:value.tags.filter(x=>x!==t.id)})}/>{t.label}</label>)}</div>}
     </>}
   </fieldset>;
-}
-
-type ImportResult={imported:number;skipped:number;declined:number;withoutPlexId:number};
-function SeerrImport() {
-  const [url,setUrl]=useState(''),[key,setKey]=useState(''),[result,setResult]=useState<ImportResult>(),mutation=useMutation(()=>invalidate('/admin/requests'));
-  const run=()=>void mutation.run(async()=>{setResult(await api<ImportResult>('/admin/requests/import-seerr','POST',{url:url.trim(),apiKey:key.trim()}));setKey('');});
-  return <form onSubmit={e=>{e.preventDefault();run();}}>
-    <Card title="Import from Seerr" description="Copies Seerr’s requests once. Running it again adds only new ones. Nothing is saved.">
-      <div className="form-columns">
-        <label>Seerr address<input type="url" required placeholder="http://seerr:5055" maxLength={300} value={url} onChange={e=>setUrl(e.target.value)}/></label>
-        <label>API key<input type="password" required autoComplete="off" maxLength={200} value={key} onChange={e=>setKey(e.target.value)}/></label>
-      </div>
-      {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy||!url.trim()||!key.trim()}>{mutation.busy?'Importing…':'Import'}</button>
-        {result&&<span className="success" role="status">{result.imported} imported · {result.skipped} already here or unusable · {result.declined} declined skipped{result.withoutPlexId?` · ${result.withoutPlexId} without a Plex account`:''}</span>}</div>
-    </Card>
-  </form>;
 }

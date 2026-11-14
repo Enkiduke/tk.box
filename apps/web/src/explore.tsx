@@ -4,24 +4,24 @@ import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';
 import {ratingLinks,Ratings} from './library.js';
-import {RequestDialog} from './request-dialog.js';
+import {RequestDialog,statusNames} from './request-dialog.js';
+import {MyRequestsButton} from './my-requests.js';
 import {rowKey,useExplorePrefs} from './explore-prefs.js';
 import {StreamingSelector,StreamingStatus,useStreamingSelection} from './explore-streaming.js';
 import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
 import {displayName,TitleFacts} from './title-facts.js';
 import './explore.css';
 
-// Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves), and Seerr, on one page:
+// Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves) and TMDB, on one page:
 // every source's rows in turn, one search across them all, and filters that narrow both.
-// A title's dialog opens this server's copy when there is one, requests it through Seerr, or watchlists it on Plex.
+// A title's dialog opens this server's copy when there is one, requests it (Radarr or Sonarr), or watchlists it on Plex.
 const names:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr',tmdb:'TMDB'};
-const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',requested:'Requested'};
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
 const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.ListFormat(undefined,{type}).format(parts);
 
-// Filters: original languages, genres, a release year range, a minimum score and Seerr labels to hide, kept in this browser.
+// Filters: original languages, genres, a release year range, a minimum score and request labels to hide, kept in this browser.
 type Filters={languages:string[];genres:ExploreGenre[];from:string;to:string;min:string;hide:Hideable[]};
 type Hideable=ExploreStatus;
 const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]},FILTERS_KEY='tk.box.explore.filters';
@@ -35,7 +35,7 @@ function loadContentType():ContentType {
   }catch{/* storage unavailable */}
   return 'all';
 }
-const hideable:Hideable[]=['requested','partial','available'];
+const hideable:Hideable[]=['requested','downloading','partial','available'];
 // TMDB's codes; `cn` is its code for Cantonese.
 const languageCodes=['en','es','fr','de','it','pt','ja','ko','zh','cn','hi','ta','te','ml','ru','sv','da','no','fi','nl','pl','tr','th','ar','he','id','tl'];
 const minScores=['5','6','7','8'];
@@ -228,16 +228,15 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
         {contentTypes.map(([type,label])=><button key={type} type="button" aria-pressed={contentType===type} onClick={()=>changeContentType(type)}>{label}</button>)}
       </div>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
-      <FilterMenu filters={filters} labels={data.seerr.configured} onChange={changeFilters}/>
+      <FilterMenu filters={filters} labels onChange={changeFilters}/>
+      <MyRequestsButton/>
       <button className="icon-button toolbar-icon" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
     <ActiveFilters filters={filters} onChange={changeFilters}/>
     {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
       {admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
     </p>}
-    {/* Plex titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
-    {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#admin?section=connections">Admin › Connections</a> to show Available and Requested on Plex titles.</p>}
-    {/* Plex Discover doesn't say a title's language; Seerr is where it is looked up. */}
+    {/* Plex Discover doesn't say a title's language; TMDB is where it is looked up. */}
     {filters.languages.length>0&&!data.tmdb.configured&&<p className="explore-note muted">Plex titles without a language are hidden while a language filter is on.</p>}
     {query?<ExploreSearch key={`${query}${searchable.join()}${fq}`} q={query} sources={searchable} fq={fq} onSelect={onSelect}/>
       :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={onSelect}/>
@@ -246,17 +245,16 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
   </div>;
 }
 
-export function ExploreDialog({item:start,onClose,onOpen,onOpenRelated}:{item:ExploreItem;onClose:()=>void;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
+export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{item:ExploreItem;admin:boolean;onClose:()=>void;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
   const {region}=useExplorePrefs();
-  const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,seerr=info?.seerr;
-  const sources=useApi<ExploreSources>('/explore/sources'),seerrOn=sources.data?.seerr.configured;
+  const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,request=info?.request;
   // The card's own artwork and text show at once; details fill in what the card lacked.
   const item:ExploreItem={...start,...info?.item,posterUrl:start.posterUrl??info?.item.posterUrl,backdropUrl:info?.item.backdropUrl??start.backdropUrl,summary:info?.item.summary??start.summary,ids:{...start.ids,...info?.item.ids}};
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[done,setDone]=useState('');
   const status=info?.item.status??start.status,art=item.backdropUrl??item.posterUrl;
   const facts=[item.year,info?.contentRating,item.kind==='show'?(item.episodeCount?`${item.episodeCount} episodes`:'TV series'):item.durationMs?duration(item.durationMs):undefined,info?.status,
     !info?.ratings.length&&item.rating?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
-  const [requesting,setRequesting]=useState(false),canRequest=!!seerr&&(seerr.requestable||seerr.requestable4k);
+  const [requesting,setRequesting]=useState(false),canRequest=!!request?.requestable;
   const run=async(action:()=>Promise<unknown>,message:string)=>{if(busy)return;setBusy(true);setError('');setDone('');try{await action();setDone(message);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist.':'Removed from your Plex watchlist.');
   const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{done&&<p className="success explore-done" role="status"><Icon name="check" size={16}/>{done}</p>}</>;
@@ -271,7 +269,7 @@ export function ExploreDialog({item:start,onClose,onOpen,onOpenRelated}:{item:Ex
             {facts.length>0&&<p className="detail-meta">{facts.map((fact,i)=><span key={i}>{fact}</span>)}</p>}
             <Ratings ratings={info?.ratings} links={{...ratingLinks({title:item.title,kind:item.kind,...item.ids}),
               ...Object.fromEntries(info?.links.map(l=>[l.site,l.url])??[])}}/>
-            {(status||seerr?.status4k)&&<p className="explore-badges">{status&&<span className={`badge explore-status ${status}`}>{statusNames[status]}</span>}{seerr?.status4k&&<span className={`badge explore-status ${seerr.status4k}`}>4K · {statusNames[seerr.status4k]}</span>}</p>}
+            {status&&<p className="explore-badges"><span className={`badge explore-status ${status}`}>{statusNames[status]}</span></p>}
           </div>
           <div className="button-row">
             {info?.libraryId&&<button className="primary large" onClick={()=>onOpen(info.libraryId!)}><Icon name="play"/>Watch</button>}
@@ -287,12 +285,11 @@ export function ExploreDialog({item:start,onClose,onOpen,onOpenRelated}:{item:Ex
         {details.error&&<ErrorNotice message={details.error.message} retry={details.reload}/>}
         {info?.tagline&&<p className="tagline">{info.tagline}</p>}
         <p className="synopsis">{item.summary||'No synopsis available.'}</p>
-        {seerrOn&&info&&!seerr&&<p className="muted small">Seerr does not know this title, so it can’t be requested.</p>}
         {feedback}
       </div>
       <TitleFacts kind={item.kind} info={info} genres={item.genres}/>
     </div>
     <TitleDiscovery kind={item.kind} ids={item.ids} cast={info?.cast} onOpen={onOpenRelated}/>
-    {requesting&&seerr&&<RequestDialog item={item} seerr={seerr} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
+    {requesting&&request&&<RequestDialog item={item} request={request} admin={admin} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
   </Modal>;
 }

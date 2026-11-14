@@ -1,4 +1,4 @@
-import type { RequestItem, RequestLabel } from '../../../../packages/contracts/src/index.js';
+import type { ExploreSeason, RequestItem, RequestLabel } from '../../../../packages/contracts/src/index.js';
 import { readOnly, requireThat, requireWritable } from '../errors.js';
 import { FulfilError, type Fulfiller, type QueueState } from '../providers/arr-fulfiller.js';
 import type { ArrService } from '../providers/arr-tags.js';
@@ -18,8 +18,10 @@ export type Requester = { accountId: string; name: string };
 export type RequestInput = { kind: RequestKind; tmdb: number; seasons?: number[] };
 export type Override = { profileId?: number; rootFolder?: string; tags?: number[] };
 export type RequestChange = { id: number; kind: RequestKind; tmdb: number; accountId?: string; status: RequestStatus };
+export type CleanupRequest = { id: number; kind: 'movie' | 'tv'; tmdb: number; tvdb: number | null; title: string; year: number | null;
+  requester_plex_id: number | null; available_at: string | null; seasons: number[] };
 type TmdbTitle = { title?: string; name?: string; release_date?: string; first_air_date?: string; external_ids?: { tvdb_id?: number | null };
-  seasons?: { season_number?: number }[] };
+  seasons?: { season_number?: number; name?: string; episode_count?: number; air_date?: string | null }[] };
 
 export class Requests {
   private labelCache?: Map<string, RequestLabel>;
@@ -53,6 +55,39 @@ export class Requests {
       if (!current || rank[label] > rank[current]) labels.set(key, label);
     }
     return this.labelCache = labels;
+  }
+
+  // Clean Up's titles: every request now on the server, in full or in part, in the purge script's shape. A requester
+  // is named by their Plex account id; one imported without a Plex account has none.
+  forCleanup(): CleanupRequest[] {
+    return this.store.live().filter(r => r.status === 'available' || r.status === 'partial').map(r => ({
+      id: r.id, kind: r.kind === 'movie' ? 'movie' : 'tv', tmdb: r.tmdbId, tvdb: r.tvdbId ?? null, title: r.title, year: r.year ?? null,
+      requester_plex_id: r.accountId && /^\d{1,15}$/.test(r.accountId) ? Number(r.accountId) : null,
+      available_at: r.availableAt ? new Date(r.availableAt).toISOString() : null, seasons: r.seasons.map(s => s.season) }));
+  }
+  // Clean Up deleted these whole titles: their requests are removed (seasons it deleted leave the show's requests).
+  removedByCleanup(titles: { kind: RequestKind; tmdb: number }[]) {
+    for (const { kind, tmdb } of titles) for (const row of this.store.forTitle(kind, tmdb)) {
+      this.store.setStatus(row.id, 'removed', { removedBy: 'cleanup', seen: true });
+      this.emit(row, 'removed');
+    }
+  }
+
+  // This server's rating key for the title, when Plex has it.
+  plexKey(kind: RequestKind, tmdbId: number, tvdbId?: number) { return this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) })?.ratingKey; }
+
+  // Explore's details dialog: what can still be requested, and each regular season's state (TMDB's seasons).
+  async titleState(kind: RequestKind, tmdbId: number, tvdbId?: number): Promise<{ requestable: boolean; seasons: ExploreSeason[] }> {
+    const held = this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) }), live = this.store.forTitle(kind, tmdbId);
+    if (kind === 'movie') return { requestable: !held && !live.length, seasons: [] };
+    const raw = await this.tmdb.get(`/tv/${tmdbId}`, { append_to_response: 'external_ids' }) as TmdbTitle | undefined;
+    const seasons = (raw?.seasons ?? []).filter(s => Number.isInteger(s.season_number) && s.season_number! > 0).sort((a, b) => a.season_number! - b.season_number!).map(s => {
+      const n = s.season_number!, rows = live.filter(r => r.seasons.some(rs => rs.season === n));
+      const status: RequestLabel | undefined = held?.seasons.has(n) ? 'available' : rows.some(r => r.status === 'downloading') ? 'downloading'
+        : rows.some(r => openStatuses.includes(r.status)) ? 'requested' : undefined;
+      return { number: n, name: s.name || `Season ${n}`, ...(s.episode_count ? { episodeCount: s.episode_count } : {}), ...(s.air_date ? { airDate: s.air_date } : {}), ...(status ? { status } : {}) };
+    });
+    return { requestable: seasons.some(s => !s.status), seasons };
   }
 
   async create(by: Requester, input: RequestInput, override?: Override) {
@@ -125,9 +160,6 @@ export class Requests {
     return this.store.get(id)!;
   }
 
-  // Rows were added outside create (the Seerr import): labels are worked out again, and any queued ones sent soon.
-  imported() { this.labelCache = undefined; }
-
   async retry(id: number) {
     requireWritable();
     const row = this.store.get(id);
@@ -163,7 +195,7 @@ export class Requests {
       if (next === 'partial') return;
     }
     if (!row.arrId && row.seerrId && row.status !== 'queued' && this.due(row.id, now)) {
-      // Imported from Seerr: find it in Radarr or Sonarr to follow its downloads.
+      // Imported from Seerr, so never sent by tk.box: find it in Radarr or Sonarr to follow its downloads.
       this.checked.set(row.id, now);
       const arrId = await this.fulfiller.find(row.kind, row.tmdbId, row.tvdbId).catch(() => undefined);
       if (arrId) { this.store.setArrId(row.id, arrId); row = { ...row, arrId }; }

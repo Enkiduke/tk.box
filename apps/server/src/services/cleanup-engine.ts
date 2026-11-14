@@ -12,13 +12,14 @@ import { WAITING } from './plex-background.js';
 import { collectionKey } from './hidden-downloads.js';
 import type { KeptCollections } from './artwork-engine.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
+import type { CleanupRequest } from './requests.js';
 
 // Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
 // a time. tk.box writes the script's JSON config from its settings and passes the Plex token and service keys in the
 // environment for that run only; they are redacted from the job output. The daily schedule reads Plex with the Plex
 // admin token, like Artwork's, and waits while there is no working one.
 type Paths = { python: string; script: string; poster: string; dataDir: string; plexUrl: string };
-export type CleanupServices = { seerr?: { url: string; apiKey?: string }; radarr: { url: string; key?: string }; tautulli: { url: string; key?: string }; sonarr: { url: string; key?: string } };
+export type CleanupServices = { radarr: { url: string; key?: string }; tautulli: { url: string; key?: string }; sonarr: { url: string; key?: string } };
 // Each title the last finished run looked at (Clean Up › Status); the script writes it with --status. `deletion_date` is
 // the rule's own date and `held_until` a later one an administrator's hold keeps it until. `key` names its hold and
 // `rating_key` its Plex item, for the poster.
@@ -70,11 +71,11 @@ export function cleanupCollections(kept: KeptCollections['collections'], definit
 }
 
 // The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = []) {
+export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = []) {
   return {
-    plex: { url: paths.plexUrl }, seerr: { url: services.seerr?.url ?? '' }, tautulli: { url: services.tautulli.url }, radarr: { url: services.radarr.url }, sonarr: { url: services.sonarr.url },
+    plex: { url: paths.plexUrl }, tautulli: { url: services.tautulli.url }, radarr: { url: services.radarr.url }, sonarr: { url: services.sonarr.url },
     movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
-    delete_from_radarr: settings.deleteFromRadarr, delete_from_sonarr: settings.deleteFromSonarr, delete_from_seerr: settings.deleteFromSeerr,
+    delete_from_radarr: settings.deleteFromRadarr, delete_from_sonarr: settings.deleteFromSonarr,
     days_after_watched: settings.daysAfterWatched, days_after_unwatched: settings.daysAfterUnwatched,
     days_after_any_watch_exempt: settings.daysAfterAnyWatchExempt, days_after_exempt_watch: settings.daysAfterExemptWatch,
     exempt_user_ids: settings.exemptUserIds, exempt_arr_tags: settings.exemptArrTags, exempt_if_in_collection: settings.exemptIfInCollection,
@@ -82,7 +83,9 @@ export function cleanupConfig(settings: CleanupSettings, services: CleanupServic
     enable_season_retention: settings.seasons.enabled, protect_latest_season: settings.seasons.protectLatest, protect_specials_season: settings.seasons.protectSpecials,
     create_leaving_soon_collection: settings.leavingSoon.enabled, leaving_soon_name: settings.leavingSoon.name, leaving_soon_days: settings.leavingSoon.days,
     leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
-    holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()]))
+    holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()])),
+    // The titles a run looks at: tk.box's requests now on the server.
+    requests
   };
 }
 // What has to be set before a run can start, in the words the page shows. The script checks all of it again.
@@ -90,7 +93,6 @@ export function cleanupMissing(settings: CleanupSettings, services: CleanupServi
   const set = (s: { url: string; key?: string }) => !!(s.url && s.key), radarr = set(services.radarr), sonarr = set(services.sonarr), missing: string[] = [];
   const movies = settings.movieLibraries.length > 0, tv = settings.tvLibraries.length > 0;
   if (!movies && !tv) missing.push('Choose at least one movie or TV library.');
-  if (!services.seerr?.url || !services.seerr.apiKey) missing.push('Connect Seerr in Admin › Connections.');
   if (!set(services.tautulli)) missing.push('Connect Tautulli in Admin › Connections.');
   if (settings.deleteFromRadarr && !radarr) missing.push('Delete from Radarr needs Radarr connected in Admin › Connections.');
   if (settings.deleteFromSonarr && !sonarr) missing.push('Delete from Sonarr needs Sonarr connected in Admin › Connections.');
@@ -120,6 +122,10 @@ export class CleanupEngine {
   finished?: () => void;
   // tk.box's own collections, read as each run starts.
   collections: () => CleanupCollection[] = () => [];
+  // tk.box's requests on the server, read as each run starts.
+  requests: () => CleanupRequest[] = () => [];
+  // Told the whole titles a real run deleted, so their requests are removed.
+  deleted?: (titles: { kind: 'movie' | 'show'; tmdb: number }[]) => void;
   constructor(private store: CleanupStore, readonly paths: Paths, private services: () => CleanupServices, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
@@ -177,6 +183,13 @@ export class CleanupEngine {
     this.store.setHold(actor, key, action.action === 'clear' ? null : holdUntil(item, this.store.settings()));
     return this.titles();
   }
+  private reportDeleted(since: number) {
+    const run = this.lastRun();
+    if (run.dryRun || !run.updated || Date.parse(run.updated) < since) return;
+    const titles = run.items.flatMap(i => i.status === 'deleted' && i.kind !== 'season' && i.key && /^(movie|tv):\d+$/.test(i.key)
+      ? [{ kind: i.key.startsWith('movie:') ? 'movie' as const : 'show' as const, tmdb: Number(i.key.split(':')[1]) }] : []);
+    if (titles.length) try { this.deleted?.(titles); } catch (e) { this.log('clean up: could not mark requests removed', errorDetail(e)); }
+  }
   private lastRun(): CleanupTitles {
     try {
       const file = JSON.parse(readFileSync(join(this.workDir, 'status.json'), 'utf8')) as { updated?: unknown; dry_run?: unknown; complete?: unknown; items?: unknown };
@@ -205,10 +218,11 @@ export class CleanupEngine {
     if (this.current) return;
     const job = this.queue.shift(); if (!job) return;
     const services = this.services(), settings = this.store.settings();
-    const secrets = { PLEX_TOKEN: job.token, SEERR_API_KEY: services.seerr?.apiKey, TAUTULLI_API_KEY: services.tautulli.key, RADARR_API_KEY: services.radarr.key, SONARR_API_KEY: services.sonarr.key };
+    const secrets = { PLEX_TOKEN: job.token, TAUTULLI_API_KEY: services.tautulli.key, RADARR_API_KEY: services.radarr.key, SONARR_API_KEY: services.sonarr.key };
     const running: Running = this.current = { id: job.id, lines: [], dropped: 0, canceled: false, secrets: Object.values(secrets).filter((v): v is string => !!v) };
     const say = (line: string) => { running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
     let code: number | null = null;
+    const started = Date.now();
     try {
       this.store.jobStarted(job.id);
       const engine = await this.status();
@@ -225,13 +239,16 @@ export class CleanupEngine {
     if (running.canceled) say('Canceled.');
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('clean up job finished', { jobId: job.id, status, code });
+    // Even a failed run may have deleted some titles first; the status file lists those it did. One left from an
+    // earlier run (this one stopped before writing its own) is not read.
+    if (!running.canceled && !job.args.includes('--dry-run') && !settings.dryRun) this.reportDeleted(started);
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // Written whole and then moved into place, so the script never reads a half-written config.
   private writeConfig(settings: CleanupSettings, services: CleanupServices) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections()), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections(), this.requests()), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

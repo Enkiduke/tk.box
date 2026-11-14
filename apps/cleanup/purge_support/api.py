@@ -71,51 +71,6 @@ class HttpClient:
             raise ApiError(f"{method} {url}: invalid JSON") from None
 
 
-class SeerrClient:
-    def __init__(self, http: HttpClient, service: Service):
-        self.http = http
-        self.url = service.url + "/api/v1"
-        self.headers = {"X-Api-Key": service.key}
-
-    def available_requests(self):
-        results, seen = [], set()
-        while True:
-            data = self.http.request("GET", self.url + "/request", headers=self.headers, decode=True,
-                                     params={"take": 100, "skip": len(results), "filter": "available", "sort": "added"})
-            if not isinstance(data, dict):
-                raise ApiError("Invalid Seerr request response")
-            page = object_list(data.get("results"), "Seerr requests")
-            info = data.get("pageInfo") or {}
-            total = info.get("results") if isinstance(info, dict) else None
-            if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
-                raise ApiError("Invalid Seerr request count")
-            if not page:
-                if total is not None and len(results) < total:
-                    raise ApiError("Seerr request pagination ended before all requests were fetched")
-                return results
-            for request in page:
-                try:
-                    request_id = positive_id(request.get("id"))
-                except (ValueError, TypeError):
-                    raise ApiError("Seerr returned a request without a valid ID") from None
-                if request_id in seen:
-                    raise ApiError("Seerr request pagination repeated a request; aborting incomplete fetch")
-                seen.add(request_id)
-            results.extend(page)
-            if total is not None and len(results) >= total:
-                return results
-
-    def details(self, media_type, tmdb_id):
-        data = self.http.request("GET", f"{self.url}/{media_type}/{positive_id(tmdb_id)}",
-                                 headers=self.headers, decode=True)
-        if not isinstance(data, dict):
-            raise ApiError("Invalid Seerr media details")
-        return data
-
-    def delete_media(self, media_id):
-        self.http.request("DELETE", f"{self.url}/media/{positive_id(media_id)}", headers=self.headers)
-
-
 class ArrClient:
     def __init__(self, http: HttpClient, service: Service, name: str):
         self.http = http

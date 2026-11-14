@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import {tmdbExploreRows,type ExploreLayout,type ExploreRowInfo,type ExploreSeerrAccount,type ExploreBrowseSource,type ExploreSources} from '../../../packages/contracts/src/index.js';
+import {tmdbExploreRows,type ExploreLayout,type ExploreRowInfo,type ExploreBrowseSource,type ExploreSources} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Loading} from './components.js';
@@ -12,15 +12,14 @@ type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreB
 const sourceNames:Record<ExploreBrowseSource,string>={plex:'Plex',tmdb:'TMDB'};
 const tmdbLogoUrl=new URL('./assets/ratings/tmdb.svg',import.meta.url).href;
 
-// Explore's catalog sources: the administrator orders them and picks the rows on offer in Admin › Explore, and connects
-// Seerr in Admin › Connections; each viewer switches off what they don't want from those here.
+// Explore's catalog sources: the administrator orders them and picks the rows on offer in Admin › Explore; each viewer
+// switches off what they don't want from those here.
 export function ExploreSettings({admin}:{admin:boolean}) {
   const sources=useApi<ExploreSources>('/explore/sources');
   return <><SectionHead title="Explore"/>
     {sources.loading&&!sources.data?<Loading/>:sources.error?<ErrorNotice message={sources.error.message} retry={sources.reload}/>:sources.data&&<>
       <ExploreRowPrefs sources={sources.data}/>
       <StreamingSettings configured={sources.data.tmdb.configured} admin={admin}/>
-      <SeerrAccount sources={sources.data} admin={admin}/>
       <Card title="Credits">
         <a className="explore-tmdb-credit" href="https://www.themoviedb.org/" target="_blank" rel="noreferrer">
           <img src={tmdbLogoUrl} alt="TMDB" referrerPolicy="no-referrer"/>
@@ -79,19 +78,9 @@ function SourcePrefs({source}:{source:ExploreBrowseSource}) {
     </ol>}
   </li>;
 }
-// Seerr access is checked as the card opens, which signs the viewer in to Seerr as requesting would.
-function SeerrAccount({sources,admin}:{sources:ExploreSources;admin:boolean}) {
-  const account=useApi<ExploreSeerrAccount>(sources.seerr.configured?'/explore/seerr/account':undefined),a=account.data;
-  const can=!!a&&(a.canRequest.movie||a.canRequest.show);
-  const status=!sources.seerr.configured?<span className="dot-label">{admin?<a href="#admin?section=connections">Not set up</a>:'Not set up'}</span>
-    :account.error?<span className="dot-label danger" title={account.error.message}>Not connected</span>
-    :!a?<span className="dot-label">Checking…</span>
-    :<span className={`dot-label ${can?'ok':'danger'}`}>{can?a.user??'Connected':'Can’t request'}</span>;
-  return <Card title="Seerr" actions={status}/>;
-}
-// Admin › Explore: what Explore shows and in what order. Seerr is connected in Admin › Connections.
+// Admin › Explore: what Explore shows and in what order.
 export function ExploreAdmin() {
-  return <><SectionHead title="Explore" description={<>What Explore offers every viewer, in order. Seerr is connected in <a href="#admin?section=connections">Admin › Connections</a>.</>}/><ExploreLayoutSettings/></>;
+  return <><SectionHead title="Explore" description="What Explore offers every viewer, in order."/><ExploreLayoutSettings/></>;
 }
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {

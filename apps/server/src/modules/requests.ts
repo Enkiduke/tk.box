@@ -14,7 +14,6 @@ type Deps = {
   // TMDB names the title and gives a show's seasons and TVDB id.
   titles: Pick<TmdbTitles, 'get'>;
   arrTransport?: typeof fetch;
-  seerrTransport?: typeof fetch;
 };
 
 const SWEEP_MS = 60000, REBUILD_MS = 6 * 3600000;
@@ -25,7 +24,7 @@ const SWEEP_MS = 60000, REBUILD_MS = 6 * 3600000;
 export const requestsModule = defineModule({
   name: 'requests',
   migrations: requestsMigrations,
-  setup(routes, { db, plex, bus, background, log }, { arr, titles, arrTransport, seerrTransport }: Deps) {
+  setup(routes, { db, plex, bus, background, log }, { arr, titles, arrTransport }: Deps) {
     const store = new RequestStore(db), fulfiller = new ArrFulfiller(arr.connection, arrTransport);
     const availability = new RequestAvailability(async () => {
       const grant = await background.grant();
@@ -36,7 +35,7 @@ export const requestsModule = defineModule({
     requests.changed = change => bus.emit('requests.changed', change);
     bus.on('plex.library.changed', () => availability.soon());
     bus.on('library.edited', ({ by }) => { if (by === 'cleanup') availability.soon(5000); });
-    registerRequests(routes, store, requests, fulfiller, titles, seerrTransport);
+    registerRequests(routes, store, requests, fulfiller);
     let sweep: { stop(): void } | undefined, rebuild: { stop(): void } | undefined;
     return {
       api: { requests, store },

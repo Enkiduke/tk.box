@@ -9,14 +9,14 @@ import {openConsole,type Job} from './admin-console.js';
 import {CleanupStatus} from './cleanup-status.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
-// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Seerr, Tautulli, Radarr
+// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Tautulli, Radarr
 // and Sonarr are connected in Admin › Connections.
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
-type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;deleteFromSeerr:boolean;
+type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
-type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'seerr'|'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
+type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
@@ -51,7 +51,7 @@ function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
   const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
   const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
-  const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr],['Seerr',data.settings.deleteFromSeerr]] as const).filter(([,on])=>on).map(([name])=>name);
+  const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr]] as const).filter(([,on])=>on).map(([name])=>name);
   return <>
     <SectionHead title="Clean Up">
       <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
@@ -110,7 +110,7 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       <Switch label="Preview only" description="When on, manual and scheduled runs only report what would happen. Plex, files and collections stay unchanged." checked={draft.dryRun} onChange={v=>set({dryRun:v})}/>
       <p className={`cleanup-note${draft.dryRun?'':' cleanup-delete-note'}`}>{draft.dryRun?'No files will be deleted with this setting.':'Clean up now and scheduled runs will delete due titles and their files. Preview always changes nothing.'} Changes take effect after saving.</p>
     </Card>
-    <Card title="Libraries to clean up" description="Only available Seerr requests in these Plex libraries are checked.">
+    <Card title="Libraries to clean up" description="Only available requests in these Plex libraries are checked.">
       {data.libraries.length?<div className="form-columns">
         <fieldset className="form-stack"><legend>Movies</legend>{movies.length?movies.map(library('movieLibraries')):<small className="muted">No movie libraries.</small>}</fieldset>
         <fieldset className="form-stack"><legend>TV</legend>{shows.length?shows.map(library('tvLibraries')):<small className="muted">No TV libraries.</small>}</fieldset>
@@ -148,7 +148,6 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
     <Card title="Also remove from connected apps" description="A run that deletes always removes due content from Plex with its files. These options control the other apps. Plex must allow media deletion.">
       <Switch label="Delete from Radarr" description={needs(connected.radarr,'Radarr')??'Removes the movie and its files.'} checked={draft.deleteFromRadarr} onChange={v=>set({deleteFromRadarr:v})}/>
       <Switch label="Delete from Sonarr" description={needs(connected.sonarr,'Sonarr')??'Removes whole shows, or unmonitors episodes and removes their files when cleaning up individual seasons.'} checked={draft.deleteFromSonarr} onChange={v=>set({deleteFromSonarr:v})}/>
-      <Switch label="Remove from Seerr" description="Clears the media record after a whole title is deleted. Individual-season cleanup keeps the show’s requests." checked={draft.deleteFromSeerr} onChange={v=>set({deleteFromSeerr:v})}/>
     </Card>
     <Card title="Leaving Soon collection" description="Show whole titles approaching their deadline in a Plex collection. This does not add extra time before deletion.">
       <Switch label="Maintain a Leaving Soon collection" description="Updated only during runs with Preview only off. Individual seasons appear in Status, but are not added to the collection." checked={draft.leavingSoon.enabled} onChange={v=>set({leavingSoon:{...draft.leavingSoon,enabled:v}})}/>
