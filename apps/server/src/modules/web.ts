@@ -14,7 +14,7 @@ export const webModule = defineModule({
   async setup(routes, { config }) {
     // `boot` changes on every start, so open players can tell the server restarted and reconnect.
     const boot = randomUUID();
-    routes.get('/health', async () => ({ status: 'ok', boot }));
+    routes.get('/health', {config:{rateLimit:{max:120,timeWindow:60000}}}, async () => ({ status: 'ok', boot }));
     // Register only the trusted build's actual public files; no user-supplied filesystem paths,
     // directory listing, symlink traversal, wildcard routing or media-cache mount.
     const registerAssets = async (dir: string, prefix: string) => {
@@ -27,7 +27,9 @@ export const webModule = defineModule({
           // the HTML entry point is always revalidated so new builds are picked up.
           const caching = url.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache';
           const handler = async (_req: unknown, reply: FastifyReply) => reply.type(types[extname(file.name)]!).header('Cache-Control', caching).send(createReadStream(path));
-          routes.get(url, handler); if (url === '/index.html') routes.get('/', handler);
+          // Bundles and styles have their own budget, so loading the app leaves the API budget for data.
+          const options = {config:{rateLimit:{max:120,timeWindow:60000}}};
+          routes.get(url, options, handler); if (url === '/index.html') routes.get('/', options, handler);
         }
       }
     };

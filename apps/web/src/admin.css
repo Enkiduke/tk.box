@@ -44,8 +44,12 @@
 .connections-nav a[aria-current=page]{border-color:var(--line-strong);background:var(--surface-3);color:var(--text)}
 .connections-nav a[aria-current=page] .connections-icon{color:var(--accent)}
 .connections-icon{display:grid;place-items:center;width:26px;height:26px;border-radius:6px;background:var(--surface-2)}
-.connections-count{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
-.connections-count[data-warning=true]{color:#f2cf7a}
+.connections-count{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.connections-count::after{content:'';width:7px;height:7px;border:1px solid currentColor;border-radius:50%}
+.connections-count[data-tone=success]::after{color:#7fd8a0;background:currentColor}
+.connections-count[data-tone=warning]{color:#f2cf7a}
+.connections-count[data-tone=warning]::after{background:currentColor}
+.connections-count[data-tone=checking]::after{border-style:dashed}
 .connections-services{min-width:0;padding:7px 4px 0 18px}
 .connections-services h4{margin:0 0 8px;font-size:14px;font-weight:650}
 .connections-list{list-style:none;margin:0;padding:0}

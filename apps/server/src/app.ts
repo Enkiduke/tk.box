@@ -45,7 +45,11 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const identity = new IdentityService(db, vault, plex, config.PLEX_RECHECK_SECONDS * 1000), settings = new SettingsStore(db);
   const budget = new EncoderBudget(() => settings.get().maxConcurrentCpuVideoTranscodes);
   const localMedia = new LocalMedia(config.localMedia), subtitles = new SubtitleService(plex, config.FFMPEG_PATH, config.CACHE_DIR, localMedia);
-  await app.register(cookie); await app.register(rateLimit, {max: 120, timeWindow: 60000});
+  await app.register(cookie);
+  await app.register(rateLimit, {max: 120, timeWindow: 60000, errorResponseBuilder: (_req, {statusCode, ttl}) => {
+    const seconds = Math.max(1, Math.ceil(ttl / 1000));
+    return new AppError('RATE_LIMITED', `Too many requests. Try again in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`, statusCode, true);
+  }});
   // JSON, scripts, styles and playlists go out brotli/gzip-compressed; images, video and byte ranges never are, and
   // request bodies are never decompressed. Registered before any route, since it attaches to each route as it is added.
   await app.register(compress, {encodings: ['br', 'gzip'], globalDecompression: false});
@@ -91,13 +95,13 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     const status = (error as {statusCode?: number}).statusCode;
     const e = error instanceof AppError ? error : error instanceof ZodError ? new AppError('VALIDATION_FAILED', 'Request contains invalid or missing values.') : [400,413,415,429].includes(status ?? 0) ? new AppError(status === 429 ? 'RATE_LIMITED' : 'INVALID_REQUEST', status === 429 ? 'Request rate limit reached.' : 'Request could not be accepted.', status) : new AppError('INTERNAL_ERROR', 'Request could not be completed.', 500);
     // Deliberately exclude raw request URLs, upstream data, exception messages and token headers.
-    app.log.warn({code: e.code, requestId: req.id}, 'request rejected');
+    app.log.warn({code: e.code, requestId: req.id, ...(e.code === 'RATE_LIMITED' ? {route: req.routeOptions.url} : {})}, 'request rejected');
     // Plex refused something: the viewer's next request checks their access with Plex again.
     if (e.code === 'PLEX_ACCESS_DENIED') identity.forget(req.cookies[sessionCookie]);
     reply.code(e.status).send({code: e.code, message: e.message, retryable: e.retryable});
   });
   const auth = (req: {cookies: Record<string, string | undefined>}) => identity.authenticate(req.cookies[sessionCookie]);
-  // Admins are the Plex server owner and the Plex accounts the owner made admins (Admin › Admins). Plex lets only the
+  // Admins are the Plex server owner and the Plex accounts the owner made admins (Admin › Users). Plex lets only the
   // owner's token change the server, so the others act on Plex with the owner's saved Plex admin token (Admin ›
   // Connections), as themselves in tk.box's audit; without one saved they keep their own.
   const admins = new AdminStore(db);

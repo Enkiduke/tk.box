@@ -73,7 +73,7 @@ export function registerIptv(app:FastifyInstance,store:IptvStore,refresh:SourceR
     return store.guidePage(grant.accountId,input.filter,input.start,input.end,input.offset,input.limit,input.q,input.channel,custom,input.kind);
   });
   // Guide routes are shared by every channel kind; custom channel IDs are answered by the custom store.
-  app.get('/api/v1/iptv/channels/:id/logo',{config:{access:'viewer'}},async(req,reply)=>{
+  app.get('/api/v1/iptv/channels/:id/logo',{config:{access:'viewer',rateLimit:{max:1200,timeWindow:60000}}},async(req,reply)=>{
     if(custom?.exists(channelParams(req.params))){
       // The logo address, else the Plex title's logo, else its poster.
       const key=z.object({v:z.string().regex(/^\d{1,20}$/).optional()}).parse(req.query).v;
