@@ -73,6 +73,25 @@ export const playbackSettings = z.object({
 export type PlaybackSettings = z.infer<typeof playbackSettings>;
 // `owner` is the Plex server owner, the one admin who can make others admins.
 export type Principal = { accountId: string; role: 'admin' | 'viewer'; owner?: boolean };
+export type PlexUserSettings = {
+  key: string;
+  accountId: string | null;
+  name: string;
+  username?: string;
+  home: boolean;
+  managed: boolean;
+  access: 'granted' | 'pending' | 'none';
+  canAdmin: boolean;
+};
+export type PlexUsersView = {
+  users: PlexUserSettings[];
+  admins: { accountId: string; name: string; addedAt: number }[];
+  ownerId: string;
+  ownerName?: string;
+  ownerTokenSaved: boolean;
+  directoryIncomplete: boolean;
+  canRevoke: boolean;
+};
 export type ApiError = { code: string; message: string; retryable: boolean };
 
 export type Library = {key: string; title: string; type: 'movie' | 'show'};

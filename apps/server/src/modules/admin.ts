@@ -1,14 +1,16 @@
 import { z } from 'zod';
 import { defineModule } from './module.js';
 import { viewer } from './access.js';
-import { AppError } from '../errors.js';
-import { playbackSettings } from '../../../../packages/contracts/src/index.js';
+import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
+import type { FastifyRequest } from 'fastify';
+import { playbackSettings, type PlexUsersView } from '../../../../packages/contracts/src/index.js';
 import { serviceKeysInput } from '../persistence/service-keys.js';
 import { plexAccountId, type AdminStore } from '../persistence/admin-store.js';
 import type { SettingsStore } from '../persistence/database.js';
 import type { ServerMetrics } from '../services/metrics.js';
 import type { IdentityService } from '../services/identity.js';
 import type { connectionHealth } from '../services/connection-health.js';
+import { canManageTkBox } from '../providers/plex-users.js';
 
 type Deps = {
   admins: AdminStore; settings: SettingsStore; metrics: ServerMetrics;
@@ -18,7 +20,7 @@ type Deps = {
   customBuffer: () => unknown;
 };
 
-// Server-wide admin settings no feature owns: Admin › Connections keys, Admin › Admins (owner only), playback settings
+// Server-wide admin settings no feature owns: Admin › Connections keys, Admin › Users (owner only), playback settings
 // and server metrics. Every route is admin unless it declares owner.
 export const adminModule = defineModule({
   name: 'admin',
@@ -53,15 +55,60 @@ export const adminModule = defineModule({
       const saved = serviceKeys.update(grant.accountId, input); background.invalidate(); bus.emit('service-keys.changed', { plex: input.plex !== undefined });
       return saved;
     });
-    // Admin › Admins: the owner picks other admins from their Plex friends and Plex Home.
     const asOwner = { config: { access: 'owner' as const } };
-    routes.get('/api/v1/admin/admins', asOwner, async req => {
+    const editing = new Set<string>();
+    async function editUser<T>(key: string, action: () => Promise<T>) {
+      requireThat(!editing.has(key), 'USER_CHANGE_IN_PROGRESS', 'A change for this Plex user is already in progress.', 409);
+      editing.add(key);
+      try { return await action(); }
+      finally { editing.delete(key); }
+    }
+    async function listUsers(req: FastifyRequest): Promise<PlexUsersView> {
       const { hash, grant } = viewer(req);
-      return { admins: admins.list(), users: await plex.plexUsers(identity.accountToken(hash)), ownerTokenSaved: !!(await background.grant()), ownerId: grant.accountId };
-    });
-    routes.post('/api/v1/admin/admins', asOwner, async req => {
-      const { grant } = viewer(req), body = z.object({ accountId: plexAccountId, name: z.string().max(200), admin: z.boolean() }).strict().parse(req.body);
-      return { admins: body.admin ? admins.add(grant.accountId, body.accountId, body.name, grant.accountId) : admins.remove(grant.accountId, body.accountId) };
+      const { users, directoryIncomplete } = await plex.plexUsers(identity.accountToken(hash));
+      return {
+        admins: admins.list(), ownerTokenSaved: serviceKeys.view().plex, ownerId: grant.accountId, ownerName: grant.name,
+        directoryIncomplete, canRevoke: !readOnly(),
+        users: [...users.values()].map(person => {
+          const { access, ...user } = person;
+          return { ...user, access: user.accountId === grant.accountId || access.some(share => !share.pending) ? 'granted' : access.length ? 'pending' : 'none',
+            canAdmin: user.accountId !== grant.accountId && canManageTkBox(person) };
+        }),
+      };
+    }
+    async function setAdmin(req: FastifyRequest) {
+      const { hash, grant } = viewer(req);
+      const { accountId, admin } = z.object({ accountId: plexAccountId, name: z.string().max(200).optional(), admin: z.boolean() }).strict().parse(req.body);
+      requireThat(accountId !== grant.accountId, 'VALIDATION_FAILED', 'The server owner is always an admin.');
+      return editUser(accountId, async () => {
+        if (!admin) return { admins: admins.remove(grant.accountId, accountId) };
+        const { users } = await plex.plexUsers(identity.accountToken(hash));
+        const user = users.get(accountId);
+        requireThat(user && canManageTkBox(user),
+          'PLEX_SHARE_REQUIRED', 'Grant Plex library access before making this user an admin.', 409);
+        return { admins: admins.add(grant.accountId, accountId, user.name, grant.accountId) };
+      });
+    }
+    for (const path of ['/api/v1/admin/users', '/api/v1/admin/admins']) {
+      routes.get(path, asOwner, listUsers);
+      routes.post(path, asOwner, setAdmin);
+    }
+    routes.delete('/api/v1/admin/users/:key/plex-access', asOwner, async req => {
+      requireWritable();
+      const { hash, grant } = viewer(req);
+      const { key } = z.object({ key: z.string().regex(/^(?:(?:share|items)-)?\d{1,20}$/) }).parse(req.params);
+      requireThat(key !== grant.accountId, 'VALIDATION_FAILED', 'The server owner’s access cannot be removed.');
+      return editUser(key, async () => {
+        const token = identity.accountToken(hash);
+        const { users } = await plex.plexUsers(token);
+        const user = users.get(key);
+        requireThat(user?.access.length, 'PLEX_SHARE_NOT_FOUND', 'This user no longer has a share on this Plex server.', 404);
+        const changes = await Promise.allSettled([...new Set(user.access.map(share => share.path))].map(path => plex.revokePlexShare(token, path)));
+        const failure = changes.find(change => change.status === 'rejected');
+        if (failure) throw failure.reason;
+        admins.revokePlexAccess(grant.accountId, key, user.accountId);
+        return { revoked: true };
+      });
     });
     routes.get('/api/v1/admin/settings/playback', async () => ({ ...settings.get(), activeVideoEncoders: budget.count, customBuffer: customBuffer() }));
     routes.patch('/api/v1/admin/settings/playback', async req => {

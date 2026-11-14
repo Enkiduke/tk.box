@@ -13,7 +13,7 @@ import {RequestsAdmin} from './requests-admin.js';
 import {ActivityAdmin} from './activity-admin.js';
 import {HistoryAdmin} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
-import {AdminsAdmin} from './admins-admin.js';
+import {UsersAdmin} from './users-admin.js';
 import './admin.css';
 
 // The Admin console: server-wide settings and media management tools, apart from each viewer's own Settings.
@@ -21,11 +21,10 @@ import './admin.css';
 const groups=[
   ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Events','star']]],
   ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['requests','Requests','download']]],
-  ['Server',[['activity','Activity','play'],['admins','Admins','shield'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash']]]
+  ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash']]]
 ] as const;
 type Section=typeof groups[number][1][number][0];
-// Admins is the server owner's alone.
-const ownerOnly=new Set<string>(['admins']);
+const ownerOnly=new Set<string>(['users']);
 function PlaybackSection() {
   return <><SectionHead title="Playback"/><ServerPlaybackSettings/></>;
 }
@@ -33,7 +32,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
   const sectionIds=groups.flatMap(([,items])=>items.map(([id])=>id as string)).filter(id=>me.owner||!ownerOnly.has(id));
   const section=params.get('section');
   const requested=section??remembered('admin','iptv');
-  const asked=requested==='keys'?'connections':requested==='history'?'activity':requested;
+  const asked=requested==='keys'?'connections':requested==='history'?'activity':requested==='admins'?'users':requested;
   const current=(sectionIds.includes(asked)?asked:'iptv') as Section;
   const open=(id:string)=>{remember('admin',id);const next=new URLSearchParams();next.set('section',id);window.location.hash=`admin?${next}`;};
   // The open section is always in the address, so a reload or a shared link lands on it.
@@ -48,7 +47,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='admins'?<AdminsAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:<PlaybackSection/>}</div>
     </div>
     <AdminConsole/>
   </div>;

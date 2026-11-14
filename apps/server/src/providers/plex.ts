@@ -7,6 +7,7 @@ import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import {languageKey,type CatalogItem,type CatalogPage} from '../../../../packages/contracts/src/index.js';
 import { TtlCache } from '../lib/ttl-cache.js';
+import { readPlexUsers } from './plex-users.js';
 
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
 export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
@@ -240,19 +241,25 @@ export class PlexAdapter {
     const libraries = await this.serverAccess(serverToken);
     return { accountId, ...(name ? { name } : {}), role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
   }
-  // The owner's Plex friends and Plex Home members, by Plex account, for choosing other admins. Read with the owner's
-  // own account token; either list failing leaves it out.
   async plexUsers(accountToken: string) {
-    const user = z.object({ id: z.union([z.string(), z.number()]).transform(String), title: z.string().max(200).nullish(), username: z.string().max(200).nullish(),
-      home: z.boolean().nullish() }).passthrough();
-    const list = (data: unknown) => z.array(z.unknown()).max(5000).catch([]).parse(Array.isArray(data) ? data : (data as { users?: unknown } | null)?.users)
-      .flatMap(entry => { const parsed = user.safeParse(entry); return parsed.success && /^\d{1,20}$/.test(parsed.data.id) ? [parsed.data] : []; });
-    const [friends, home] = await Promise.all([this.json(new URL('https://plex.tv/api/v2/friends'), accountToken).then(list, () => []),
-      this.json(new URL('https://plex.tv/api/v2/home/users'), accountToken).then(list, () => [])]);
-    const users = new Map<string, { accountId: string; name: string; username?: string; home: boolean }>();
-    for (const [entries, inHome] of [[friends, false], [home, true]] as const) for (const u of entries)
-      users.set(u.id, { accountId: u.id, name: u.title || u.username || `Plex user ${u.id}`, ...(u.username ? { username: u.username } : {}), home: inHome || !!users.get(u.id)?.home || !!u.home });
-    return [...users.values()];
+    try {
+      return await readPlexUsers(
+        path => this.json(new URL(path, 'https://clients.plex.tv'), accountToken),
+        path => this.json(new URL(path, 'https://plex.tv'), accountToken),
+        this.config.PLEX_MACHINE_ID!,
+      );
+    } catch {
+      throw new AppError('PLEX_USERS_UNAVAILABLE', 'Plex could not load the server’s sharing settings.', 502);
+    }
+  }
+  async revokePlexShare(accountToken: string, path: string) {
+    requireWritable();
+    requireThat(/^\/api\/v2\/(?:shared_servers|shared_items)\/\d{1,20}$/.test(path), 'INVALID_REQUEST', 'Invalid Plex share.');
+    const response = await this.transport(new URL(path, 'https://clients.plex.tv'), {
+      method: 'DELETE', headers: this.headers(accountToken), redirect: 'error', signal: AbortSignal.timeout(10000),
+    }).catch(() => undefined);
+    await response?.body?.cancel();
+    requireThat(response?.ok, 'PLEX_REVOKE_FAILED', 'Plex could not remove all access. Refresh the list and try again.', 502);
   }
   // Plex's cloud catalog (watchlist, Discover shelves, search), read with the viewer's own Plex account token.
   async discover(accountToken: string, path: string, query: Record<string, string | number> = {}, method = 'GET') {

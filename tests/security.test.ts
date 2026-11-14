@@ -221,31 +221,79 @@ test('rebranding preserves existing Plex links and sessions with secure and prev
   }
 });
 
-test('the server owner makes Plex users admins; they get Admin but not the admin list', async () => {
-  const db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32)), f = fakePlex(), plex = new PlexAdapter(config(), 'admins', f.transport);
+test('the server owner manages tk.box admins and Plex shares scoped to this server', async () => {
+  const db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32)), f = fakePlex();
+  const accepted = [
+    {id: 101, machineIdentifier: 'machine', invited: {id: 2, title: 'Viewer'}, accessToken: 'private-share-token'},
+    {id: 104, machineIdentifier: 'machine', invited: {id: 4, title: 'Library guest'}},
+    {id: 204, machineIdentifier: 'other-server', invited: {id: 4, title: 'Library guest'}},
+  ];
+  const invitations = [{id: 105, machineIdentifier: 'machine', invitedEmail: 'invite@example.test', inviteToken: 'private-invite'}];
+  const sharedItems = [{id: 106, uri: 'server://machine/library/metadata/1'}, {id: 206, uri: 'server://other-server/library/metadata/1'}];
+  const removed: string[] = [];
+  let plexRejects = true;
+  const plex = new PlexAdapter(config(), 'users', async (url, init) => {
+    const target = new URL(String(url)), path = target.pathname;
+    if (target.origin !== 'https://clients.plex.tv') return f.transport(url, init);
+    assert.equal(new Headers(init?.headers).get('X-Plex-Token'), 'fixture-account-token');
+    if (init?.method === 'DELETE') {
+      removed.push(path);
+      if (path === '/api/v2/shared_servers/101' && plexRejects) return new Response(null, {status: 503});
+      for (const entries of [accepted, invitations, sharedItems]) {
+        const index = entries.findIndex(entry => path.endsWith(`/${entry.id}`));
+        if (index !== -1) entries.splice(index, 1);
+      }
+      return new Response(null, {status: 204});
+    }
+    if (path === '/api/v2/shared_servers/owned/accepted') return Response.json(accepted);
+    if (path === '/api/v2/shared_servers/invites/owned/pending') return Response.json(invitations);
+    if (path === '/api/v2/shared_sources/owned') return Response.json([{id: 1006, status: 'accepted', invited: {id: 2}, origin: 'machine', sharedItems}]);
+    throw new Error(`Unexpected Plex path ${path}`);
+  });
   const app = await buildApp(config(), db, vault, plex, false), id = new IdentityService(db, vault, plex), origin = 'http://127.0.0.1:3000';
   // The fake Plex answers for one account at a time, so each request first says whose it is.
   const session = async (accountId: number) => { f.options.accountId = accountId; const s = await id.finish((await id.start()).binding); assert.ok(s); return {accountId, headers: {origin, cookie: `tk.box_local=${s.cookie}`}}; };
-  const call = async (as: {accountId: number; headers: Record<string, string>}, url: string, payload?: object) => {
-    f.options.accountId = as.accountId; return app.inject({method: payload ? 'POST' : 'GET', url, headers: as.headers, ...(payload ? {payload} : {})});
+  const call = async (as: {accountId: number; headers: Record<string, string>}, url: string, payload?: object, method: 'GET' | 'POST' | 'DELETE' = payload ? 'POST' : 'GET') => {
+    f.options.accountId = as.accountId;
+    return app.inject({method, url, headers: as.headers, ...(method === 'GET' ? {} : {payload: payload ?? {}})});
   };
+  const path = '/api/v1/admin/users';
+  const revoke = (as: Parameters<typeof call>[0], key: string) => call(as, `${path}/${key}/plex-access`, {}, 'DELETE');
   try {
     const viewer = await session(2), owner = await session(1), me = async (as: typeof viewer) => (await call(as, '/api/v1/me')).json();
     assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 403);
     assert.deepEqual([(await me(owner)).role, (await me(owner)).owner], ['admin', true]);
-    const list = await call(owner, '/api/v1/admin/admins');
+    const list = await call(owner, path);
     assert.equal(list.statusCode, 200);
-    // Plex friends and Plex Home together.
-    assert.deepEqual(list.json().users.map((u: {accountId: string}) => u.accountId).sort(), ['1', '2', '3']);
-    assert.equal((await call(owner, '/api/v1/admin/admins', {accountId: '1', name: 'Owner', admin: true})).statusCode, 400);
-    assert.equal((await call(owner, '/api/v1/admin/admins', {accountId: '2', name: 'Viewer', admin: true})).json().admins.length, 1);
+    assert.doesNotMatch(list.body, /private-share-token|private-invite/);
+    assert.deepEqual(list.json().users.map((u: {key: string; access: string}) => [u.key, u.access]).sort(),
+      [['1', 'granted'], ['2', 'granted'], ['3', 'none'], ['4', 'granted'], ['share-105', 'pending']]);
+    assert.equal((await call(owner, '/api/v1/admin/admins')).statusCode, 200);
+    assert.equal((await call(owner, path, {accountId: '1', admin: true})).statusCode, 400);
+    assert.equal((await revoke(owner, '1')).statusCode, 400);
+    assert.equal((await call(owner, path, {accountId: '3', admin: true})).statusCode, 409);
+    assert.equal((await call(owner, path, {accountId: '2', admin: true})).json().admins.length, 1);
     assert.deepEqual([(await me(viewer)).role, (await me(viewer)).owner], ['admin', false]);
     assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 200);
-    assert.equal((await call(viewer, '/api/v1/admin/admins')).statusCode, 403);
-    assert.equal((await call(viewer, '/api/v1/admin/admins', {accountId: '3', name: 'Kid', admin: true})).statusCode, 403);
-    await call(owner, '/api/v1/admin/admins', {accountId: '2', name: 'Viewer', admin: false});
+    assert.equal((await call(viewer, path)).statusCode, 403);
+    assert.equal((await call(viewer, path, {accountId: '3', admin: true})).statusCode, 403);
+    assert.equal((await revoke(viewer, '4')).statusCode, 403);
+    await call(owner, path, {accountId: '2', admin: false});
     assert.equal((await me(viewer)).role, 'viewer');
     assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 403);
+    await call(owner, path, {accountId: '2', admin: true});
+    assert.equal((await revoke(owner, '2')).statusCode, 502);
+    assert.equal((await me(viewer)).role, 'admin');
+    plexRejects = false;
+    assert.equal((await revoke(owner, '2')).statusCode, 200);
+    assert.equal((await call(viewer, '/api/v1/me')).statusCode, 401);
+    assert.deepEqual((await call(owner, path)).json().admins, []);
+    assert.equal((await revoke(owner, '4')).statusCode, 200);
+    assert.equal((await revoke(owner, 'share-105')).statusCode, 200);
+    assert.deepEqual(removed.sort(), [
+      '/api/v2/shared_items/106', '/api/v2/shared_servers/101', '/api/v2/shared_servers/101',
+      '/api/v2/shared_servers/104', '/api/v2/shared_servers/105',
+    ]);
   } finally {await app.close(); db.close();}
 });
 
