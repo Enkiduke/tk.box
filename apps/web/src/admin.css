@@ -1,4 +1,5 @@
 /* Admin console: the shared settings layout, with grouped navigation. */
+.settings.admin{max-width:1634px}
 .admin-title{display:flex;justify-content:space-between;align-items:center;gap:20px}
 .admin-title h1{margin:0}
 .admin-nav{gap:20px}
