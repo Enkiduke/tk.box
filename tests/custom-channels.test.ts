@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { CustomChannelStore, entryIssue, mainTitle, type Selection } from '../apps/server/src/persistence/custom-channels.js';
 import { arrange, insertNew, type ArrangeEntry } from '../apps/server/src/services/arrange.js';
 import type { ChannelMedia } from '../apps/server/src/providers/plex.js';
@@ -48,7 +48,7 @@ test('channel compatibility follows the encode policy', () => {
 });
 
 test('drafts expand shows in order, skip repeats, and publish at the next program boundary', () => {
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db);
   try {
     const channel = store.create('admin', { name: 'Sitcoms', number: 5 }, 0);
     assert.throws(() => store.create('admin', { name: 'Clash', number: 5 }, 0), { code: 'NUMBER_CONFLICT' });
@@ -102,7 +102,7 @@ test('new episodes join their show in order, or after it once curated', () => {
 });
 
 test('automatic new episodes add only genuinely new playable episodes and publish at the boundary', () => {
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db);
   try {
     const channel = store.create('admin', { name: 'Sitcom' }, 0);
     const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2), episode('e3', 1, 3)] };
@@ -131,7 +131,7 @@ test('automatic new episodes add only genuinely new playable episodes and publis
 });
 
 test('auto-add merges into a waiting publication and seeds older selections without adding', () => {
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db);
   try {
     const channel = store.create('admin', { name: 'Mix' }, 0);
     const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] };
@@ -155,7 +155,7 @@ test('auto-add merges into a waiting publication and seeds older selections with
   } finally { db.close(); }
 });
 test('collections and categories add movies and shows, keep up with new titles, and can be removed whole', () => {
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db);
   try {
     const channel = store.create('admin', { name: 'Holiday' }, 0);
     const other = (id: string, season: number, n: number) => media(id, { kind: 'episode', showId: 'other', showTitle: 'Other', season, episode: n });
@@ -180,12 +180,12 @@ test('collections and categories add movies and shows, keep up with new titles, 
 test('the source migration keeps every source and its seen episodes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tk-migrate-')), path = join(dir, 'db.sqlite');
   try {
-    let db = openDatabase(path);
+    let db = openMigratedDatabase(path);
     const store = new CustomChannelStore(db), channel = store.create('admin', { name: 'Sitcom' }, 0);
     store.addItems('admin', channel.id, { expectedRevision: channel.revision, ids: ['100'] }, [{ root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] }], 0);
-    // Run version 14 again on reopen: dropping the old table must not cascade the seen episodes away.
-    db.prepare('DELETE FROM migrations WHERE version=14').run(); db.close();
-    db = openDatabase(path);
+    // Run the rebuild again on reopen: dropping the old table must not cascade the seen episodes away.
+    db.prepare("DELETE FROM schema_migrations WHERE owner='custom-channels' AND name='collection-genre-sources'").run(); db.close();
+    db = openMigratedDatabase(path);
     const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
     assert.equal(count('SELECT COUNT(*) AS n FROM custom_sources'), 1);
     assert.equal(count('SELECT COUNT(*) AS n FROM custom_source_episodes'), 2);
@@ -202,7 +202,7 @@ test('a channel uses its logo address, else its chosen or main Plex title', () =
   // Under half the channel is no main show.
   assert.equal(mainTitle([ep('A', 1, 1), movie('M'), ep('B', 1, 1)]), undefined);
   assert.equal(mainTitle([]), undefined);
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db);
   try {
     let channel = store.create('admin', { name: 'Shows', number: 9 }, 0);
     const show: Selection = { root: { id: '100', type: 'show', title: 'Show' }, items: [episode('e1', 1, 1), episode('e2', 1, 2)] };

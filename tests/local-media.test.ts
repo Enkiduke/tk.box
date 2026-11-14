@@ -9,7 +9,7 @@ import {loadConfig} from '../apps/server/src/config.js';
 import {LocalMedia,byteRange} from '../apps/server/src/providers/local-media.js';
 import {PlexAdapter,type PlexGrant,type PlexMetadata} from '../apps/server/src/providers/plex.js';
 import {SubtitleService} from '../apps/server/src/services/subtitles.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {buildApp} from '../apps/server/src/app.js';
 import {fakePlex} from './fixtures.js';
@@ -116,7 +116,7 @@ test('subtitles outside the media roots use the Plex HTTP path',{skip:noFfmpeg},
 });
 
 async function signedIn(env:Record<string,string>,file:string){
-  const f=fakePlex({file}),config=loadConfig({...base,...env}),db=openDatabase(':memory:');
+  const f=fakePlex({file}),config=loadConfig({...base,...env}),db=openMigratedDatabase(':memory:');
   const app=await buildApp(config,db,new Vault(randomBytes(32)),new PlexAdapter(config,'local-test',f.transport),false),origin='http://127.0.0.1:3000';
   const start=await app.inject({method:'POST',url:'/api/v1/auth/plex/start',payload:{},headers:{origin}}),binding=start.cookies[0]!;
   const finish=await app.inject({method:'POST',url:'/api/v1/auth/plex/status',payload:{},headers:{origin,cookie:`${binding.name}=${binding.value}`}});

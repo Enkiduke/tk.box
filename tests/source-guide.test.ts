@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import Fastify from 'fastify';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {SourceRefresh} from '../apps/server/src/services/source-refresh.js';
@@ -13,7 +13,7 @@ const playlist=Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="station",Station\nhttps:
 const xml=Buffer.from('<tv><channel id="guide"><display-name>Station</display-name></channel><programme channel="guide" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Programme</title></programme></tv>');
 const endpoint={url:'https://provider.invalid/guide.xml.gz?token=fixture-secret',headers:{Authorization:'Bearer fixture-secret'},allowInsecureHttp:false};
 function fixture() {
-  const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));
+  const db=openMigratedDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));
   const add=(name:string)=>{
     const source=store.create('owner',{kind:'m3u',name});store.ingest('owner',source.id,0,playlist);
     const channel=store.adminChannels(source.id)[0]!;store.editChannel('owner',channel.id,{expectedRevision:1,listing:'always'});

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase, SettingsStore } from '../apps/server/src/persistence/database.js';
+import { SettingsStore } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault, digest } from '../apps/server/src/security/vault.js';
 import { PlexAdapter } from '../apps/server/src/providers/plex.js';
 import { IdentityService } from '../apps/server/src/services/identity.js';
@@ -29,7 +30,7 @@ test('Plex identity does not grant access; owner ID determines administrator', a
   for (const options of [{authorized: false}, {missingLibrary: true}]) await assert.rejects(new PlexAdapter(config(), 'test', fakePlex(options).transport).authorize('fixture'), {code: 'PLEX_ACCESS_DENIED'});
 });
 test('PIN binding, encrypted persistence, polling bounds and revoked access fail closed', async () => {
-  const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex, 0, [0, 0]);
+  const db = openMigratedDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex, 0, [0, 0]);
   try {
     const link = await identity.start(10000);
     await assert.rejects(identity.finish('other-browser', 13000), {code: 'AUTH_EXPIRED'});
@@ -42,7 +43,7 @@ test('PIN binding, encrypted persistence, polling bounds and revoked access fail
   } finally {db.close();}
 });
 test('a session ends only after 7 days unused, and each use renews it', async () => {
-  const db = openDatabase(':memory:'), plex = new PlexAdapter(config(), 'test', fakePlex().transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex);
+  const db = openMigratedDatabase(':memory:'), plex = new PlexAdapter(config(), 'test', fakePlex().transport), identity = new IdentityService(db, new Vault(randomBytes(32)), plex);
   try {
     const day = 86400000, signed = await identity.finish((await identity.start(0)).binding, 3000); assert.ok(signed);
     await identity.authenticate(signed.cookie, 6 * day);
@@ -54,7 +55,7 @@ test('a session ends only after 7 days unused, and each use renews it', async ()
 test('a Plex check that is refused once is asked again and passes', async () => {
   const f = fakePlex(); let refusals = 0;
   const transport = (async (input: string | URL | Request, init?: RequestInit) => new URL(String(input)).pathname === '/api/v2/user' && refusals-- > 0 ? new Response('', {status: 401}) : f.transport(input, init)) as typeof fetch;
-  const db = openDatabase(':memory:'), identity = new IdentityService(db, new Vault(randomBytes(32)), new PlexAdapter(config(), 'test', transport), 0, [0, 0]);
+  const db = openMigratedDatabase(':memory:'), identity = new IdentityService(db, new Vault(randomBytes(32)), new PlexAdapter(config(), 'test', transport), 0, [0, 0]);
   try {
     const signed = await identity.finish((await identity.start(0)).binding, 3000); assert.ok(signed);
     refusals = 1; await identity.authenticate(signed.cookie, 4000);
@@ -64,7 +65,7 @@ test('a Plex check that is refused once is asked again and passes', async () => 
   } finally {db.close();}
 });
 test('immutable stored mode and ownership guard all history writes', async () => {
-  const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport);
+  const db = openMigratedDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport);
   const playback = new PlaybackService(db, plex), grant = await plex.authorize('fixture');
   try {
     db.prepare('INSERT INTO users VALUES(?,1)').run('2');
@@ -83,7 +84,7 @@ test('immutable stored mode and ownership guard all history writes', async () =>
   } finally {db.close();}
 });
 test('HTTP health, CSRF, cookie login, role checks, settings revisions and secret-free responses', async () => {
-  const db = openDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), vault = new Vault(randomBytes(32));
+  const db = openMigratedDatabase(':memory:'), f = fakePlex(), plex = new PlexAdapter(config(), 'test', f.transport), vault = new Vault(randomBytes(32));
   const app = await buildApp(config(), db, vault, plex, false), origin = 'http://127.0.0.1:3000';
   try {
     assert.equal((await app.inject({url: '/health', headers: {'x-forwarded-proto': 'https', host: 'attacker.invalid'}})).statusCode, 200);
@@ -114,7 +115,7 @@ test('HTTP health, CSRF, cookie login, role checks, settings revisions and secre
 });
 
 test('preview authentication uses separate cookie names and cannot replace the real app session',async()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex(),plex=new PlexAdapter(config(),'cookie-isolation',fixture.transport);
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex(),plex=new PlexAdapter(config(),'cookie-isolation',fixture.transport);
   const app=await buildApp(config(),db,vault,plex,false),preview=await buildApp(config(),db,vault,plex,false,'tk.box_ui_preview'),origin='http://127.0.0.1:3000';
   try {
     const login=async(server:typeof app,namespace:string)=>{
@@ -137,7 +138,7 @@ test('preview authentication uses separate cookie names and cannot replace the r
 
 test('Plex preview accepts same-origin sign-in on loopback aliases only',async()=>{
   const c={...config(),APP_HOST:'localhost',APP_PORT:3012,browserOrigin:'http://localhost:3012'};
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex();
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex();
   const plex=new PlexAdapter(c,'plex-preview',fixture.transport);
   const preview=await buildApp(c,db,vault,plex,false,'tk.box_readonly');
   const regular=await buildApp(c,db,vault,plex,false);
@@ -161,7 +162,7 @@ test('Plex preview accepts same-origin sign-in on loopback aliases only',async()
 test('rebranding preserves existing Plex links and sessions with secure and preview cookie isolation', async () => {
   for (const secure of [false, true]) for (const preview of [false, true]) {
     const c = secure ? {...config(), PUBLIC_BASE_URL: 'https://media.example.com', secureCookies: true, browserOrigin: 'https://media.example.com'} : config();
-    const db = openDatabase(':memory:'), vault = new Vault(randomBytes(32)), fixture = fakePlex(), plex = new PlexAdapter(c, 'rebrand', fixture.transport);
+    const db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32)), fixture = fakePlex(), plex = new PlexAdapter(c, 'rebrand', fixture.transport);
     const namespace = preview ? 'tk.box_ui_preview_3012' : 'tk.box', legacy = preview ? 'enki_ui_preview_3012' : 'enki';
     const sessionName = secure ? `__Host-${namespace}` : `${namespace}_local`, oldSession = secure ? `__Host-${legacy}` : `${legacy}_local`;
     const app = await buildApp(c, db, vault, plex, false, namespace), identity = new IdentityService(db, vault, plex), origin = c.browserOrigin;
@@ -185,7 +186,7 @@ test('rebranding preserves existing Plex links and sessions with secure and prev
 });
 
 test('the server owner makes Plex users admins; they get Admin but not the admin list', async () => {
-  const db = openDatabase(':memory:'), vault = new Vault(randomBytes(32)), f = fakePlex(), plex = new PlexAdapter(config(), 'admins', f.transport);
+  const db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32)), f = fakePlex(), plex = new PlexAdapter(config(), 'admins', f.transport);
   const app = await buildApp(config(), db, vault, plex, false), id = new IdentityService(db, vault, plex), origin = 'http://127.0.0.1:3000';
   // The fake Plex answers for one account at a time, so each request first says whose it is.
   const session = async (accountId: number) => { f.options.accountId = accountId; const s = await id.finish((await id.start()).binding); assert.ok(s); return {accountId, headers: {origin, cookie: `tk.box_local=${s.cookie}`}}; };

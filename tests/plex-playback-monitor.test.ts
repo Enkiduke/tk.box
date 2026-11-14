@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { HistoryStore } from '../apps/server/src/persistence/history-store.js';
 import { PlexAdapter, type PlexGrant, type PlexSession } from '../apps/server/src/providers/plex.js';
 import { PlaybackHistory } from '../apps/server/src/services/playback-history.js';
@@ -23,7 +23,7 @@ test('Plex playback parser handles both envelopes and skips malformed members', 
 });
 
 test('external collection uses identity from one shared snapshot and excludes paused and disconnected time', async () => {
-  const db = openDatabase(':memory:'), store = new HistoryStore(db), history = new PlaybackHistory(store);
+  const db = openMigratedDatabase(':memory:'), store = new HistoryStore(db), history = new PlaybackHistory(store);
   let time = 1700000000000, reads = 0, rows: PlexSession[] = [{ ...movie, viewOffset: 1000 }];
   const monitor = new PlexPlaybackMonitor({ sessionSnapshot: async () => { reads++; return { rows, local: [] }; } },
     history, async () => grant, () => 'machine', undefined, () => time);
@@ -55,7 +55,7 @@ test('external collection uses identity from one shared snapshot and excludes pa
 });
 
 test('Plex startup and reconnect only read current sessions', async () => {
-  const db = openDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
+  const db = openMigratedDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
   const requests: string[] = [];
   const plex = new PlexAdapter(config(), 'tk-box-client', (async (input: string | URL | Request) => {
     requests.push(new URL(String(input)).pathname);
@@ -74,7 +74,7 @@ test('Plex startup and reconnect only read current sessions', async () => {
 });
 
 test('external collection resumes the same Plex session after process restart', async () => {
-  const db = openDatabase(':memory:'), store = new HistoryStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new HistoryStore(db);
   const first = new PlaybackHistory(store), second = new PlaybackHistory(store);
   let now = 1700000000000, offset = 0;
   const plex = { sessionSnapshot: async () => ({ rows: [{ ...movie, User: { id: '1' }, viewOffset: offset }], local: [] }) };

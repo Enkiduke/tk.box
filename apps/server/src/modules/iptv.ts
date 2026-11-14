@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from './module.js';
+import { iptvMigrations } from './migrations/iptv.js';
 import { viewer } from './access.js';
 import { IptvStore } from '../persistence/iptv-store.js';
 import { SourceRefresh } from '../services/source-refresh.js';
@@ -23,6 +24,7 @@ const list = (value: string | undefined, fallback: string[]) => { const items = 
 // relays that play them. The guide also lists custom channels, so it reads their store.
 export const iptvModule = defineModule({
   name: 'iptv',
+  migrations: iptvMigrations,
   setup(routes, { config, db, vault, plex, bus, budget, serviceKeys, log }, { custom }: { custom: CustomChannelStore }) {
     const iptv = new IptvStore(db, vault), refresh = new SourceRefresh(iptv);
     refresh.published = sourceId => bus.emit('iptv.source.published', { sourceId });

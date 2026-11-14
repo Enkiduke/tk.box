@@ -8,7 +8,7 @@ import {registerExplore} from '../apps/server/src/explore-api.js';
 import {installAccess} from '../apps/server/src/modules/access.js';
 import {ExploreRecommendations,rankCandidates,selectSeeds} from '../apps/server/src/explore-recommendations.js';
 import {ExploreStore,tmdbRowOrder} from '../apps/server/src/persistence/explore-store.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {PlexAdapter,type PlexGrant} from '../apps/server/src/providers/plex.js';
 import {TmdbExplore,tmdbCandidate} from '../apps/server/src/providers/tmdb-explore.js';
@@ -64,7 +64,7 @@ test('Title credits use exact external ID matches and related rows stay usable w
       default: return Response.json({}, {status:404});
     }
   }) as typeof fetch);
-  const db=openDatabase(':memory:'),app=Fastify();
+  const db=openMigratedDatabase(':memory:'),app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
   const auth=async (request:{headers:{authorization?:string}})=>{
@@ -146,7 +146,7 @@ test('Related card details expose a direct Plex match only for the viewer with a
     }
     return Response.json({MediaContainer:{Metadata:[]}});
   }) as typeof fetch);
-  const db=openDatabase(':memory:'),app=Fastify();
+  const db=openMigratedDatabase(':memory:'),app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   const auth=async (request:{headers:{authorization?:string}})=>request.headers.authorization==='restricted'
     ? {hash:'restricted',grant:{...grant,accountId:'2',libraries:[]}}
@@ -179,7 +179,7 @@ test('TMDB routes validate auth and regional providers, combine media types, app
     if(page===2&&!failed){failed=true;return Response.json({}, {status:503});}
     return Response.json({total_pages:2,results:[movie(page),movie(page)]});
   }) as typeof fetch);
-  const db=openDatabase(':memory:'), app=Fastify();
+  const db=openMigratedDatabase(':memory:'), app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
   const auth=async (request:{headers:{authorization?:string}})=>{
@@ -288,7 +288,7 @@ test('Upcoming rows merge the three weighted date ranges before paginating',asyn
 });
 
 test('Excluded Plex shelves are absent from browsing, admin controls and direct row requests',async t=>{
-  const db=openDatabase(':memory:'),app=Fastify();
+  const db=openMigratedDatabase(':memory:'),app=Fastify();
   t.after(async()=>{await app.close();db.close();});
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
   const excludedHubs=[

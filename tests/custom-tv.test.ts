@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { CustomChannelStore } from '../apps/server/src/persistence/custom-channels.js';
 import { CustomTv, segmentStart } from '../apps/server/src/services/custom-tv.js';
 import { LocalMedia } from '../apps/server/src/providers/local-media.js';
@@ -40,7 +40,7 @@ test('a station joins mid-program, plays the next program on time and cleans up'
     '2': { ratingKey: '2', librarySectionID: '10', title: 'B', duration: 6000, type: 'movie', Media: [{ container: 'mkv', videoCodec: 'mpeg4', audioCodec: 'aac', width: 640, height: 360, Part: [{ key: '/library/parts/2/2/file.mkv', file: join(media, 'b.mkv'), Stream: [{ id: '2', streamType: 1 }] }] }] },
   };
   const plex = { metadata: async (_g: PlexGrant, id: string) => items[id]! } as unknown as PlexAdapter;
-  const db = openDatabase(':memory:'), store = new CustomChannelStore(db), budget = new EncoderBudget(() => 2), logs: string[] = [];
+  const db = openMigratedDatabase(':memory:'), store = new CustomChannelStore(db), budget = new EncoderBudget(() => 2), logs: string[] = [];
   let retention = 30 * 60000;
   const tv = new CustomTv(store, plex, new LocalMedia({ roots: [media], pathMap: [] }), new PartProxy(plex), budget, cache, () => retention, 64 * 1024 * 1024, ffmpeg, (m, d) => logs.push(m + JSON.stringify(d)));
   tv.historyServerId = 'fixture-plex';

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { parseM3u } from '../apps/server/src/providers/iptv.js';
@@ -9,7 +9,7 @@ import { parseM3u } from '../apps/server/src/providers/iptv.js';
 const entry=(name:string,path:string,id='cnn.us',group='News')=>`#EXTINF:-1 tvg-id="${id}" group-title="${group}",${name}\nhttps://streams.invalid/${path}?token=fixture-secret`;
 const playlist=(...entries:string[])=>Buffer.from('#EXTM3U\n'+entries.join('\n'));
 function fixture() {
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault),s=store.create('owner',{kind:'m3u',name:'Feeds'});
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault),s=store.create('owner',{kind:'m3u',name:'Feeds'});
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const ingest=(...entries:string[])=>store.ingest('owner',s.id,store.status(s.id).revision,playlist(...entries));
   const list=()=>store.setListingPolicy('owner',s.id,{...store.listingPolicy(s.id),requireCheck:false,expectedRevision:store.status(s.id).revision});

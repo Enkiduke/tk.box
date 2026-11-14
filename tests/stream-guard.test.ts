@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StreamGuard, ffmpegEnv, protocols } from '../apps/server/src/streaming/stream-guard.js';
 import { args } from '../apps/server/src/services/stream-probe.js';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 
@@ -64,7 +64,7 @@ test('FFmpeg runs through the proxy, without no_proxy, only when one is given', 
 });
 
 test('sources block local-network streams until an administrator allows them', () => {
-  const store = new IptvStore(openDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Tuner' });
+  const store = new IptvStore(openMigratedDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Tuner' });
   store.ingest('owner', source.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",A\nhttp://192.168.1.20:5004/auto/v1\n'));
   const channel = store.adminChannels(source.id)[0]!.id;
   assert.equal(store.status(source.id).allowPrivateStreams, false);

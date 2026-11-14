@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {resolve} from 'node:path';
 import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {ArtworkSchedule} from '../apps/server/src/services/artwork-schedule.js';
 import {finishedSections} from '../apps/server/src/services/plex-notifications.js';
@@ -15,7 +15,7 @@ const start=Date.UTC(2026,9,1)/1000;
 // A schedule with artwork's newly added check on for library 1, a Plex whose recently added list is `titles`
 // (addedAt in seconds) and an engine that records what it queued.
 async function setup(titles:{id:string;addedAt:number}[],streaming=async()=>0) {
-  const store=new ArtworkStore(openDatabase(':memory:'),new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'));
+  const store=new ArtworkStore(openMigratedDatabase(':memory:'),new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'));
   const {revision,...settings}=store.settings();
   await store.update('admin',revision,{...settings,libraries:['1'],schedules:{...settings.schedules,added:{enabled:true,schedule:{kind:'every',minutes:60}}}},async()=>{});
   const queued:string[]=[],plex={fail:false,addedSince:async(_:PlexGrant,__:string,since:number)=>{

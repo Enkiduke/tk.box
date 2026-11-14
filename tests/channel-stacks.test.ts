@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { stackKey, quality, feedRank } from '../apps/server/src/services/channel-stacks.js';
@@ -11,7 +11,7 @@ import type { ProbeResult } from '../apps/server/src/services/stream-probe.js';
 const entry=(name:string,id='')=>`#EXTINF:-1${id?` tvg-id="${id}"`:''} group-title="US News",${name}\nhttps://streams.invalid/${encodeURIComponent(name)}`;
 const playlist=(...lines:string[])=>Buffer.from('#EXTM3U\n'+lines.join('\n'));
 const cnn=['US: CNN SD','US CNN (S)','USA  CNN','US: CNN FHD (Backup)','US: CNN HD (Backup)','US: CNN FHD'];
-function fixture() {const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');return {db,store};}
+function fixture() {const db=openMigratedDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');return {db,store};}
 // No channel checks run here, so list channels without waiting for a first passing check.
 function listAll(store:IptvStore,source:string) {store.setListingPolicy('owner',source,{...store.listingPolicy(source),requireCheck:false,expectedRevision:store.status(source).revision});}
 

@@ -4,13 +4,13 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import type { HistoryListRow, HistoryRank, HistorySummary } from '../packages/contracts/src/index.js';
 import { registerHistory } from '../apps/server/src/history-api.js';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { HistoryStore, type HistorySession } from '../apps/server/src/persistence/history-store.js';
 import { AppError } from '../apps/server/src/errors.js';
 import { installAccess } from '../apps/server/src/modules/access.js';
 
 test('Admin History scopes its lists and live media totals', async () => {
-  const db = openDatabase(':memory:'), store = new HistoryStore(db), app = Fastify();
+  const db = openMigratedDatabase(':memory:'), store = new HistoryStore(db), app = Fastify();
   const today = new Date(), now = today.getTime(), day = [today.getFullYear(), today.getMonth() + 1, today.getDate()].map(n => String(n).padStart(2, '0')).join('-');
   const movie = { serverId: 'machine', ratingKey: '42', libraryId: '10', title: 'Test film', type: 'movie' as const, durationMs: 60000 };
   const session: HistorySession = { id: randomUUID(), generation: 'private-generation', accountId: '2', accountName: 'Viewer',
@@ -67,7 +67,7 @@ test('Admin History scopes its lists and live media totals', async () => {
 });
 
 test('Admin History checks authorization before reading or returning cached results', async () => {
-  const db = openDatabase(':memory:'), app = Fastify();
+  const db = openMigratedDatabase(':memory:'), app = Fastify();
   let authorized = true;
   installAccess(app, { admin: async () => {
     if (!authorized) throw new AppError('FORBIDDEN', 'Administrator access required.', 403);

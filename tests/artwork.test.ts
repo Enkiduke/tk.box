@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {resolve} from 'node:path';
 import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {artworkConfig} from '../apps/server/src/services/artwork-engine.js';
 
-const seeded=()=>{const db=openDatabase(':memory:');return {db,store:new ArtworkStore(db,new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'))};};
+const seeded=()=>{const db=openMigratedDatabase(':memory:');return {db,store:new ArtworkStore(db,new Vault(randomBytes(32)),resolve('apps/artwork/defaults.json'))};};
 const ok=async()=>{};
 
 test('artwork starts from the engine’s bundled layouts, local-only',()=>{
@@ -44,7 +44,7 @@ test('artwork layouts in use cannot be removed, and a name is created once',asyn
   assert.equal((await store.saveLayout('admin','posters-2',1,{width:1000},ok)).value.width,1000);
 });
 test('season and episode options inside a layout become templates of their own, once, and tk-movies loses its seasons',async()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
   db.prepare('INSERT INTO artwork_state VALUES(?,?)').run('layouts:seed','2');
   insert.run('tk-movies',2,JSON.stringify({width:2000,season_options:{font_size:10}}));
   insert.run('tk-tv',4,JSON.stringify({width:2000,season_options:{font_size:20},episode_options:{width:3200}}));
@@ -116,7 +116,7 @@ test('artwork collections keep the Radarr key sealed and out of the engine confi
   assert.equal(store.collections().franchise.franchises,true);
 });
 test('a database seeded with the earlier layouts gets the tk-* set, and settings follow the renames',()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),insert=db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)');
   for(const name of ['tk-movies','tk-tv','collection-tmdb','streaming-collection','chart-collection'])insert.run(name,1,'{"width":1000}');
   insert.run('mine',3,'{"width":1200}');
   db.prepare('INSERT INTO artwork_settings VALUES(1,4,?)').run(JSON.stringify({libraries:['1'],defaultLayout:'tk-movies',layoutByLibrary:{'1':'tk-tv','2':'mine'},layoutByType:{collection:'collection-tmdb'},keys:{}}));
@@ -132,7 +132,7 @@ test('a database seeded with the earlier layouts gets the tk-* set, and settings
   assert.ok(!store.layoutNames().includes('tk-charts'));
 });
 test('a saved tk-custom that draws the title as text draws a logo instead, keeping its other settings, once',()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32));
   db.prepare('INSERT INTO artwork_state VALUES(?,?)').run('layouts:seed','2');
   db.prepare('INSERT INTO artwork_layouts VALUES(?,?,?,0)').run('tk-custom',2,JSON.stringify({logo_mode:'none',text_overlay_enabled:true,custom_text:'{title_lines}',font_size:300,text_color:'#FFFFFF',position_y:0.5,width:1000}));
   const store=new ArtworkStore(db,vault,resolve('apps/artwork/defaults.json'));

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
 import { SportsStore } from '../apps/server/src/persistence/sports-store.js';
@@ -20,7 +20,7 @@ function guide(programs: Program[]) {
   return Buffer.from(`<tv>${ids.map(id => `<channel id="${escape(id)}"><display-name>${escape(id)}</display-name></channel>`).join('')}${programs.map(p => `<programme channel="${escape(p.channelId)}" start="${stamp(p.start)}" stop="${stamp(p.end)}"><title>${escape(p.title)}</title>${p.subtitle ? `<sub-title>${escape(p.subtitle)}</sub-title>` : ''}</programme>`).join('')}</tv>`);
 }
 function fixture(t: { after: (fn: () => void) => void }) {
-  const db = openDatabase(':memory:'), store = new IptvStore(db, new Vault(randomBytes(32)));
+  const db = openMigratedDatabase(':memory:'), store = new IptvStore(db, new Vault(randomBytes(32)));
   t.after(() => db.close()); db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const feed = store.create('owner', { kind: 'xmltv', name: 'Guide' });
   const publish = (programs: Program[]) => store.ingest('owner', feed.id, store.status(feed.id).revision, guide(programs));

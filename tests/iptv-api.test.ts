@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { PlexAdapter } from '../apps/server/src/providers/plex.js';
 import { IdentityService } from '../apps/server/src/services/identity.js';
@@ -16,7 +16,7 @@ import { SourceRefresh } from '../apps/server/src/services/source-refresh.js';
 import { RestrictedSourceFetcher } from '../apps/server/src/providers/source-fetch.js';
 
 test('identity review exposes sanitized choices and accepts only a current candidate from that source',async()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
   const identity=new IdentityService(db,vault,plex),owner=await identity.finish((await identity.start()).binding);assert.ok(owner);
   const headers={origin:'http://127.0.0.1:3000',cookie:`tk.box_local=${owner.cookie}`},store=new IptvStore(db,vault);
   const source=store.create('owner',{kind:'m3u',name:'Identity review'});
@@ -40,7 +40,7 @@ test('identity review exposes sanitized choices and accepts only a current candi
 });
 
 test('EPG URL creation, immediate refresh and channel linking publish compressed XMLTV without exposing credentials',async()=>{
-  const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32))),app=Fastify();
+  const db=openMigratedDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32))),app=Fastify();
   const xml='<tv><channel id="station"><display-name>Station</display-name></channel><programme channel="station" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Remote programme</title></programme></tv>';
   let calls=0,fail=false;
   const fetcher=new RestrictedSourceFetcher(async()=>[{address:'8.8.8.8',family:4}],async(url,_address,headers)=>{
@@ -74,7 +74,7 @@ test('EPG URL creation, immediate refresh and channel linking publish compressed
 });
 
 test('IPTV HTTP boundaries enforce owner mutations, unlisted isolation, scoped guides and viewer-local favorites',async()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false);
   const identity=new IdentityService(db,vault,plex),ownerLink=await identity.start(),owner=await identity.finish(ownerLink.binding);assert.ok(owner);
   fixture.options.accountId=2;const viewerLink=await identity.start(),viewer=await identity.finish(viewerLink.binding);assert.ok(viewer);
   const headers=(role:'owner'|'viewer')=>{fixture.options.accountId=role==='owner'?1:2;return {origin:'http://127.0.0.1:3000',cookie:`tk.box_local=${role==='owner'?owner.cookie:viewer.cookie}`};};

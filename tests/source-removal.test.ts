@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { SourceRefresh } from '../apps/server/src/services/source-refresh.js';
@@ -13,7 +13,7 @@ import { config, fakePlex } from './fixtures.js';
 const playlist=Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="station",Station\nhttps://streams.invalid/live');
 const xml=Buffer.from('<tv><channel id="guide"><display-name>Station</display-name></channel><programme channel="guide" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Programme</title></programme></tv>');
 function fixture() {
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault);
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault);
   db.prepare('INSERT INTO users(account_id) VALUES(?)').run('owner');
   const feed=store.create('owner',{kind:'xmltv',name:'Shared EPG'});
   store.ingest('owner',feed.id,0,xml);
@@ -70,7 +70,7 @@ test('EPG removal unlinks every playlist, invalidates stale revisions and keeps 
 });
 
 test('removing an actively refreshing source cancels only its fetch and prevents late publication',async()=>{
-  const db=openDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));
+  const db=openMigratedDatabase(':memory:'),store=new IptvStore(db,new Vault(randomBytes(32)));
   const endpoint={url:'https://provider.invalid/playlist'},first=store.create('owner',{kind:'m3u',name:'First',endpoint}),second=store.create('owner',{kind:'m3u',name:'Second',endpoint});
   const pending:{signal:AbortSignal;finish:(bytes:Buffer)=>void}[]=[];
   const refresh=new SourceRefresh(store,{fetch:async(_endpoint,signal)=>new Promise<Buffer>(finish=>pending.push({signal:signal!,finish}))});
@@ -89,7 +89,7 @@ test('removing an actively refreshing source cancels only its fetch and prevents
 });
 
 test('source removal HTTP requires administrator, exact origin and current revision for M3U and EPG',async()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false),identity=new IdentityService(db,vault,plex);
+  const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex({accountId:1}),plex=new PlexAdapter(config(),'test',fixture.transport),app=await buildApp(config(),db,vault,plex,false),identity=new IdentityService(db,vault,plex);
   const ownerLink=await identity.start(),owner=await identity.finish(ownerLink.binding);assert.ok(owner);
   fixture.options.accountId=2;const viewerLink=await identity.start(),viewer=await identity.finish(viewerLink.binding);assert.ok(viewer);
   const headers=(isOwner=true)=>{fixture.options.accountId=isOwner?1:2;return {origin:'http://127.0.0.1:3000',cookie:`tk.box_local=${isOwner?owner.cookie:viewer.cookie}`};};

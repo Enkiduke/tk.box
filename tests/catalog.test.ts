@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {PlexAdapter,type PlexGrant} from '../apps/server/src/providers/plex.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
@@ -122,7 +122,7 @@ test('artwork cache enforces byte/entry bounds, LRU eviction and expiry',()=>{
   cache.set('huge',{...image,bytes:Buffer.alloc(9)},10);assert.equal(cache.get('huge',11),undefined);
 });
 test('watch-state actions write as the viewer, verify library scope and validate input',async()=>{
-  const f=catalogFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=catalogFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     const start=await identity.start(),signed=await identity.finish(start.binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'},post=(id:string,payload:Record<string,unknown>,h:Record<string,string>=headers)=>app.inject({method:'POST',url:`/api/v1/catalog/items/${id}/state`,headers:h,payload});
     assert.equal((await post('42',{action:'watched'},{origin:headers.origin})).statusCode,401);
@@ -136,7 +136,7 @@ test('watch-state actions write as the viewer, verify library scope and validate
   }finally{await app.close();db.close();}
 });
 test('catalog HTTP routes protect listings/details/images; VOD resume/beginning preparation never writes history',async()=>{
-  const f=catalogFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=catalogFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     const start=await identity.start(),signed=await identity.finish(start.binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'};
     for(const url of ['/api/v1/catalog/libraries/10/items','/api/v1/catalog/libraries/10/index','/api/v1/catalog/libraries/10/genres','/api/v1/catalog/items/42','/api/v1/catalog/items/42/artwork'])assert.equal((await app.inject({url})).statusCode,401);
@@ -164,7 +164,7 @@ test('catalog HTTP routes protect listings/details/images; VOD resume/beginning 
   }finally{await app.close();db.close();}
 });
 test('overlapping authentication checks coalesce without a grant TTL and recheck local revocation before returning',async()=>{
-  const f=fakePlex(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));let held=false,release:()=>void=()=>{},requests=0;
+  const f=fakePlex(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32));let held=false,release:()=>void=()=>{},requests=0;
   const transport=(async(input:string|URL|Request,init?:RequestInit)=>{if(new URL(String(input)).pathname==='/api/v2/user'){requests++;if(held)await new Promise<void>(resolve=>{release=resolve;});}return f.transport(input,init);}) as typeof fetch;
   const identity=new IdentityService(db,vault,new PlexAdapter(config(),'test',transport));
   try {
@@ -177,7 +177,7 @@ test('overlapping authentication checks coalesce without a grant TTL and recheck
 });
 
 test('a passed Plex check is reused for the recheck window, while sign-out and Plex refusals apply at once',async()=>{
-  const f=fakePlex(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));let requests=0;
+  const f=fakePlex(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32));let requests=0;
   const transport=(async(input:string|URL|Request,init?:RequestInit)=>{if(new URL(String(input)).pathname==='/api/v2/user')requests++;return f.transport(input,init);}) as typeof fetch;
   const identity=new IdentityService(db,vault,new PlexAdapter(config(),'test',transport),60000,[0,0]);
   try {

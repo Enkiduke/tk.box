@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
 import { SportsStore, allowed, type SportsSettings } from '../apps/server/src/persistence/sports-store.js';
@@ -77,7 +77,7 @@ test('names and listings: written dates, EPG events and provider placeholders', 
 });
 
 test('an event-driven source shows only channels whose event is on, numbers them and lists the event in the guide', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db);
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db);
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   const names = ['NFL 03: Texans vs Jaguars', 'NFL 04: Falcons vs Bears', 'PPV 2: Texans vs Jaguars 08/16', 'ESPN+ 041', 'PPV 1: UFC 333'];
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="ev${i}" group-title="Sports",${n}\nhttps://streams.invalid/${i}`).join('\n')));
@@ -103,7 +103,7 @@ test('an event-driven source shows only channels whose event is on, numbers them
 });
 
 test('viewer visibility and checks follow the window in real time', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",PPV 1: Texans vs Jaguars\nhttps://streams.invalid/a\n#EXTINF:-1 tvg-id="b",PPV 2: Falcons vs Bears\nhttps://streams.invalid/b'));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
@@ -160,7 +160,7 @@ test('real provider names: league shows count while the league plays, team-chann
 });
 
 test('feeds of one event combine into one selectable row, with or without a scheduled event', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' }), day = new Date(t);
   const when = `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][day.getUTCMonth()]} ${day.getUTCDate()} ${String(day.getUTCHours()).padStart(2, '0')}:00 UTC`;
@@ -186,7 +186,7 @@ test('feeds of one event combine into one selectable row, with or without a sche
 });
 
 test('a watched event stays on, with every feed of its event, until 15 minutes after its last viewer', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   const names = ['NFL 02: Jaguars vs Texans', 'NFL | 02 Texans at Jaguars', 'NFL 02: Houston Texans @ Jacksonville Jaguars | Away Stream'];
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n' + names.map((n, i) => `#EXTINF:-1 tvg-id="f${i}",${n}\nhttps://streams.invalid/${i}`).join('\n')));
@@ -211,7 +211,7 @@ test('a watched event stays on, with every feed of its event, until 15 minutes a
 });
 
 test('the guide leads into an event with "starting soon" and is blank after it, for event matches only', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   db.prepare('INSERT INTO users VALUES(?,1)').run('viewer');
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",NFL 02: Texans vs Jaguars\nhttps://streams.invalid/a'));
@@ -228,7 +228,7 @@ test('the guide leads into an event with "starting soon" and is blank after it, 
 });
 
 test('a sports source is checked and numbered only while live or starting soon, then retired; nothing is flagged on import', () => {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
   // Mostly idle event slots and old listings, like a real sports category.
@@ -296,7 +296,7 @@ test('event channels without a logo get an icon for their sport', async () => {
   assert.match(sportIcon('soccer'), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>.*<\/svg>$/);
   assert.doesNotMatch(Object.values({ a: sportIcon('boxing'), b: sportIcon('sports') }).join(''), /<script|on\w+=|href/i);
   // The store reports the sport of a visible event channel's window.
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const s = iptv.create('owner', { kind: 'm3u', name: 'Sports' });
   iptv.ingest('owner', s.id, 0, Buffer.from('#EXTM3U\n#EXTINF:-1 tvg-id="a",NFL 02: Texans vs Jaguars\nhttps://streams.invalid/a'));
   store.setPolicy('owner', s.id, { enabled: true, leadMinutes: 30 });
@@ -307,7 +307,7 @@ test('event channels without a logo get an icon for their sport', async () => {
 
 // Live Events settings: three leagues airing now plus a channel known only by the time in its name.
 function liveSports() {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id)), health = new HealthStore(db), t = Date.now();
   const at = new Date(t - 20 * 60_000), written = `${at.getUTCMonth() + 1}/${at.getUTCDate()} ${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
   const team = (name: string, abbreviation: string) => ({ team: { displayName: name, shortDisplayName: name, name, location: name, abbreviation } });
   const epl = espnEvents('soccer/eng.1', { leagues: [{ abbreviation: 'EPL' }], events: [{ id: '9001', name: 'Chelsea at Arsenal', date: new Date(t - 30 * 60_000).toISOString(), status: { type: { state: 'in' } }, competitions: [{ competitors: [team('Arsenal', 'ARS'), team('Chelsea', 'CHE')] }] }] });
@@ -358,7 +358,7 @@ test('league logos prefer the dark version and are downloaded again when their a
   assert.equal(espnLeagueLogo({ leagues: [{ logos: [{ href: 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png', rel: ['full', 'default'] }, { href: 'https://a.espncdn.com/i/teamlogos/leagues/500-dark/nfl.png', rel: ['full', 'dark'] }] }] }), 'https://a.espncdn.com/i/teamlogos/leagues/500-dark/nfl.png');
   assert.equal(espnLeagueLogo({ leagues: [{ logos: [{ href: 'http://insecure/nfl.png' }] }] }), undefined);
   assert.equal(tsdbLeagueLogo({ leagues: [{ strBadge: null, strLogo: 'https://r2.thesportsdb.com/images/media/league/logo/wwe.png' }] }), 'https://r2.thesportsdb.com/images/media/league/logo/wwe.png');
-  const store = new SportsStore(openDatabase(':memory:')), image = { type: 'image/png', bytes: Buffer.from('png') };
+  const store = new SportsStore(openMigratedDatabase(':memory:')), image = { type: 'image/png', bytes: Buffer.from('png') };
   store.setLogoUrl('football/nfl', 'https://a/1.png');
   assert.deepEqual(store.logosMissing(), [{ key: 'football/nfl', url: 'https://a/1.png' }]);
   store.saveLogo('football/nfl', 'https://a/1.png', image);

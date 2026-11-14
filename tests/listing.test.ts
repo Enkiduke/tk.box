@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
 import { SportsStore } from '../apps/server/src/persistence/sports-store.js';
@@ -14,7 +14,7 @@ const HOUR = 3600_000;
 const entry = (id: string, name: string, group = '') => `#EXTINF:-1 tvg-id="${id}"${group ? ` group-title="${group}"` : ''},${name}\nhttps://streams.invalid/${id}`;
 const playlist = (...lines: string[]) => Buffer.from('#EXTM3U\n' + lines.join('\n'));
 function fixture() {
-  const db = openDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), health = new HealthStore(db), sports = new SportsStore(db, id => iptv.relist(id));
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), health = new HealthStore(db), sports = new SportsStore(db, id => iptv.relist(id));
   return { db, iptv, health, sports };
 }
 const states = (iptv: IptvStore, source: string) => Object.fromEntries(iptv.adminChannels(source).map(c => [c.tvgId, c.state]));
@@ -131,7 +131,7 @@ test('every category of a sports source follows events unless marked regular, an
 
 test('older databases convert approval: ignored or disabled channels are hidden, check exemptions are always listed', () => {
   const folder = mkdtempSync(join(resolve('.local'), 'listing-')), file = join(folder, 'state.sqlite'), vault = new Vault(randomBytes(32));
-  let db = openDatabase(file);
+  let db = openMigratedDatabase(file);
   try {
     let iptv = new IptvStore(db, vault);
     const s = iptv.create('owner', { kind: 'm3u', name: 'Old' });
@@ -144,8 +144,8 @@ test('older databases convert approval: ignored or disabled channels are hidden,
     db.prepare("UPDATE iptv_channels SET approval='ignored' WHERE id=?").run(ignored);
     db.prepare('UPDATE iptv_channels SET enabled=0 WHERE id=?').run(disabled);
     db.prepare('INSERT INTO iptv_channel_health(channel_id,exempt) VALUES(?,1)').run(exempt);
-    db.prepare('DELETE FROM migrations WHERE version=9').run();
-    db.close(); db = openDatabase(file); iptv = new IptvStore(db, vault);
+    db.prepare("DELETE FROM schema_migrations WHERE owner='iptv' AND name='listing'").run();
+    db.close(); db = openMigratedDatabase(file); iptv = new IptvStore(db, vault);
     assert.deepEqual(Object.fromEntries(iptv.adminChannels(s.id).map(c => [c.tvgId, c.listing])), { ignored: 'hidden', disabled: 'hidden', exempt: 'always', plain: 'auto' });
     assert.deepEqual(iptv.visible().map(c => c.name), ['Exempt']);
   } finally { db.close(); rmSync(folder, { recursive: true, force: true }); }

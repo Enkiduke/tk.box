@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import Fastify from 'fastify';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
@@ -20,7 +20,7 @@ import { ProviderConnections } from '../apps/server/src/streaming/provider-conne
 
 const ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg', available = spawnSync(ffmpeg, ['-version']).status === 0;
 function lineup(count: number) {
-  const db = openDatabase(':memory:'), store = new IptvStore(db, new Vault(randomBytes(32))), health = new HealthStore(db), source = store.create('owner', { kind: 'm3u', name: 'Live' });
+  const db = openMigratedDatabase(':memory:'), store = new IptvStore(db, new Vault(randomBytes(32))), health = new HealthStore(db), source = store.create('owner', { kind: 'm3u', name: 'Live' });
   store.ingest('owner', source.id, 0, Buffer.from('#EXTM3U\n' + Array.from({ length: count }, (_, i) => `#EXTINF:-1 tvg-id="c${i}",Channel ${i}\nhttps://streams.invalid/${i}.ts`).join('\n')));
   // These tests are about hiding failures, so channels list before their first check.
   store.setListingPolicy('owner', source.id, { ...store.listingPolicy(source.id), requireCheck: false, expectedRevision: store.status(source.id).revision });

@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {CleanupStore} from '../apps/server/src/persistence/cleanup-store.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {cleanupCollections,cleanupConfig,cleanupMissing,holdUntil,withHolds,withKept,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
 
-const store=()=>new CleanupStore(openDatabase(':memory:'),new Vault(randomBytes(32)));
+const store=()=>new CleanupStore(openMigratedDatabase(':memory:'),new Vault(randomBytes(32)));
 const services:CleanupServices={seerr:{url:'http://seerr:5055',apiKey:'seerr-key'},tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
 
 test('clean up starts as a preview and writes the script’s config without keys',()=>{

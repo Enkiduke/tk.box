@@ -6,7 +6,8 @@ import { mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildApp } from '../apps/server/src/app.js';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { type Db } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { HistoryStore } from '../apps/server/src/persistence/history-store.js';
 import { PlexAdapter } from '../apps/server/src/providers/plex.js';
 import { digest, Vault } from '../apps/server/src/security/vault.js';
@@ -24,12 +25,12 @@ const delivery = {
 };
 const sample = (sequence: number, elapsedMs: number, positionMs: number, state: PlaybackObservation['state'] = 'playing', rate = 1) =>
   ({ sequence, elapsedMs, positionMs, state, rate });
-const sessions = (db: ReturnType<typeof openDatabase>) => db.prepare(
+const sessions = (db: Db) => db.prepare(
   'SELECT generation,started_at,observed_at,ended_at,end_reason,watch_ms FROM history_sessions ORDER BY started_at'
 ).all();
 
 test('Custom Channel allocations follow displayed segments across airings, pauses and Go Live', () => {
-  const db = openDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
+  const db = openMigratedDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
   const now = new Date(2026, 10, 15, 12).getTime(), delayed = now - 120000;
   const segment = (sequence: number, airingId: string, start: number, end: number): Segment =>
     ({ id: String(sequence), uri: String(sequence), airingId, start, end, sequence, bytes: 1, programId: '10', revision: 0, discontinuity: false });
@@ -64,7 +65,7 @@ test('Custom Channel allocations follow displayed segments across airings, pause
 });
 
 test('IPTV keeps one view for verified feed failover and starts another for a new station', () => {
-  const db = openDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
+  const db = openMigratedDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
   const now = new Date(2026, 10, 15, 12).getTime();
   const feed = (id: string) => ({ ...delivery, id, media: { type: 'channel' as const, serverId: 'iptv' as const, ratingKey: id, title: id, number: 2 } });
   const guide = { id: 'guide-event', start: now - 60000, end: now + 60000, guide: { title: 'Recorded guide title', estimated: true as const } };
@@ -95,7 +96,7 @@ test('IPTV keeps one view for verified feed failover and starts another for a ne
 });
 
 test('VOD history only credits advancing playback and splits it at server midnight', () => {
-  const db = openDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
+  const db = openMigratedDatabase(':memory:'), history = new PlaybackHistory(new HistoryStore(db));
   const start = new Date(2026, 10, 14, 23, 59, 55).getTime();
   const observe = (value: PlaybackObservation) => history.observe('first', delivery.owner, value, start + value.elapsedMs);
   try {
@@ -124,7 +125,7 @@ test('VOD history only credits advancing playback and splits it at server midnig
 
 test('VOD replacement preserves one view across release and restart without crediting downtime', () => {
   const directory = mkdtempSync(join(tmpdir(), 'tkbox-history-'));
-  const db = openDatabase(join(directory, 'history.sqlite')), store = new HistoryStore(db);
+  const db = openMigratedDatabase(join(directory, 'history.sqlite')), store = new HistoryStore(db);
   const start = Date.now() - 100000;
   const first = new PlaybackHistory(store), second = new PlaybackHistory(store);
   try {
@@ -159,7 +160,7 @@ test('VOD replacement preserves one view across release and restart without cred
 });
 
 test('a failed SQLite checkpoint retries its time once and ignores abandoned startup', () => {
-  const db = openDatabase(':memory:'), store = new HistoryStore(db);
+  const db = openMigratedDatabase(':memory:'), store = new HistoryStore(db);
   let failed = false;
   const history = new PlaybackHistory({
     recover: since => store.recover(since),
@@ -184,7 +185,7 @@ test('a failed SQLite checkpoint retries its time once and ignores abandoned sta
 });
 
 test('the owned VOD progress route records history even when Plex timeline sync fails', async () => {
-  const db = openDatabase(':memory:'), f = fakePlex(), vault = new Vault(randomBytes(32));
+  const db = openMigratedDatabase(':memory:'), f = fakePlex(), vault = new Vault(randomBytes(32));
   const transport = (async (url: string | URL | Request, init?: RequestInit) => new URL(String(url)).pathname === '/:/timeline'
     ? new Response('', { status: 503 }) : f.transport(url, init)) as typeof fetch;
   const plex = new PlexAdapter(config(), 'test', transport), identity = new IdentityService(db, vault, plex);

@@ -35,12 +35,7 @@ export function exploreLayout(value: Partial<ExploreLayout> | undefined): Explor
 type Stored = { seerrUrl: string; seerrKey?: string };
 
 export class ExploreStore {
-  constructor(private db: Db, private vault: Vault) {
-    db.exec(`CREATE TABLE IF NOT EXISTS explore_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS explore_layout(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
-      DROP TABLE IF EXISTS explore_trakt_links;
-      UPDATE explore_settings SET value=json_remove(value,'$.traktClientId','$.traktSecret') WHERE json_type(value,'$.traktClientId') IS NOT NULL OR json_type(value,'$.traktSecret') IS NOT NULL;`);
-  }
+  constructor(private db: Db, private vault: Vault) {}
   private stored() {
     const row = this.db.prepare('SELECT revision,value FROM explore_settings WHERE id=1').get() as { revision: number; value: string } | undefined;
     return { revision: row?.revision ?? 0, value: row ? JSON.parse(row.value) as Stored : { seerrUrl: '' } };

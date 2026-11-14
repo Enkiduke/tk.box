@@ -7,7 +7,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { EncoderBudget } from '../apps/server/src/streaming/policy.js';
@@ -36,7 +36,7 @@ async function channelServer() {
   return { server, streams, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 function lineup(urls: string[]) {
-  const store = new IptvStore(openDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Live' });
+  const store = new IptvStore(openMigratedDatabase(':memory:'), new Vault(randomBytes(32))), source = store.create('owner', { kind: 'm3u', name: 'Live' });
   store.ingest('owner', source.id, 0, Buffer.from('#EXTM3U\n' + urls.map((url, i) => `#EXTINF:-1 tvg-id="c${i}",Channel ${i}\n${url}`).join('\n')));
   for (const c of store.adminChannels(source.id)) store.editChannel('owner', c.id, { expectedRevision: store.status(source.id).revision, listing: 'always' });
   const visible = store.visible();

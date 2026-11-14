@@ -8,7 +8,8 @@ import {tagArrTitle} from '../apps/server/src/providers/arr-tags.js';
 import {config} from './fixtures.js';
 import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore-store.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase, migrateModules } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {ExploreCache,exploreFilter,interleave,lacking,passes,plexRowTtl,rowShown,shownSources} from '../apps/server/src/explore-api.js';
 import {exploreGenresOf,tmdbGenres} from '../apps/server/src/providers/explore-genres.js';
@@ -102,9 +103,11 @@ test('Plex Discover titles carry their external ids and only proxy catalog hosts
   assert.ok(imagePath('https://images.plex.tv/photo?url=x'));
 });
 test('Explore settings keep the Seerr key sealed and drop the Trakt connection saved before Trakt was removed',()=>{
-  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));new ExploreStore(db,vault);
+  // An install from before Trakt was removed, then migrated.
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32));
+  db.exec('CREATE TABLE explore_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL); CREATE TABLE explore_trakt_links(account_id TEXT PRIMARY KEY)');
   db.prepare('INSERT INTO explore_settings VALUES(1,1,?)').run(JSON.stringify({seerrUrl:'https://seerr.test',traktClientId:'abc',traktSecret:'sealed'}));
-  db.exec('CREATE TABLE explore_trakt_links(account_id TEXT PRIMARY KEY)');
+  migrateModules(db);
   const store=new ExploreStore(db,vault);
   assert.deepEqual(JSON.parse((db.prepare('SELECT value FROM explore_settings').get() as {value:string}).value),{seerrUrl:'https://seerr.test'});
   assert.equal(db.prepare(`SELECT name FROM sqlite_master WHERE name='explore_trakt_links'`).get(),undefined);
@@ -233,7 +236,7 @@ test('Explore layout keeps the administrator order, lists missing sources last a
   assert.deepEqual(exploreLayout({order:['trakt','seerr','plex','tmdb'],hidden:['trakt','plex','seerr'],hiddenRows:['trakt:watchlist','seerr:trending','plex:watchlist']} as never),{order:['plex','tmdb'],hidden:['plex'],hiddenRows:['plex:watchlist']});
   // A damaged saved value falls back to the default.
   assert.deepEqual(exploreLayout({order:['plex','plex'] as never}).order,['tmdb','plex']);
-  const db=openDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
+  const db=openMigratedDatabase(':memory:'),store=new ExploreStore(db,new Vault(randomBytes(32)));
   const saved=store.updateLayout('1',0,{order:['plex','tmdb'],hidden:['plex'],hiddenRows:['tmdb:upcoming-shows']});
   assert.equal(saved.revision,1);
   assert.deepEqual(shownSources(saved),['tmdb']);

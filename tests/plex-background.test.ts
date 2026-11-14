@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {ServiceKeys} from '../apps/server/src/persistence/service-keys.js';
 import {PlexBackground} from '../apps/server/src/services/plex-background.js';
@@ -10,7 +10,7 @@ import type {PlexAdapter,PlexGrant} from '../apps/server/src/providers/plex.js';
 
 const grant=(role:'admin'|'viewer'):PlexGrant=>({accountId:'1',role,serverToken:'t',libraries:[]});
 function setup() {
-  const keys=new ServiceKeys(openDatabase(':memory:'),new Vault(randomBytes(32)));
+  const keys=new ServiceKeys(openMigratedDatabase(':memory:'),new Vault(randomBytes(32)));
   const plex={calls:0,answer:(_token:string):Promise<PlexGrant>=>Promise.resolve(grant('admin')),authorize(token:string){plex.calls++;return plex.answer(token);}};
   return {keys,plex,background:new PlexBackground(keys,plex as unknown as PlexAdapter)};
 }

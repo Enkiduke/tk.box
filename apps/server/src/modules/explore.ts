@@ -1,4 +1,5 @@
 import { defineModule } from './module.js';
+import { exploreMigrations } from './migrations/explore.js';
 import { registerExplore } from '../explore-api.js';
 import { ExploreStore } from '../persistence/explore-store.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
@@ -14,6 +15,7 @@ type Deps = {
 // and settings. Its Seerr connection also serves Clean Up (`store.seerr`).
 export const exploreModule = defineModule({
   name: 'explore',
+  migrations: exploreMigrations,
   setup(routes, { db, vault, plex }, { accountToken, titles, transports }: Deps) {
     const store = new ExploreStore(db, vault);
     registerExplore(routes, plex, store, accountToken, titles, transports);

@@ -14,7 +14,6 @@ const samples: { table: string; query: string; context: (row: Record<string, str
 // fresh one made after the real key went missing) stops startup with a clear reason instead of failing feature by
 // feature. The database keeps a sealed marker; an install from before the marker is checked against a value it holds.
 export function checkKey(db: Db, vault: Vault) {
-  db.exec('CREATE TABLE IF NOT EXISTS key_check(id INTEGER PRIMARY KEY CHECK(id=1), sealed TEXT NOT NULL)');
   const opens = (sealed: string, context: string) => { try { vault.open(sealed, context); return true; } catch { return false; } };
   const marker = db.prepare('SELECT sealed FROM key_check WHERE id=1').get() as { sealed: string } | undefined;
   if (marker) { if (!opens(marker.sealed, CONTEXT)) throw mismatch(); return; }

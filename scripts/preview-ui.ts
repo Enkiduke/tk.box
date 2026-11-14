@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {deflateSync} from 'node:zlib';
 import {buildApp} from '../apps/server/src/app.js';
 import {loadConfig} from '../apps/server/src/config.js';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
 import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
 import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
@@ -31,7 +31,7 @@ function artwork(seed:number) {
 }
 // --port=<n> runs a second harness beside another; its own cookie namespace keeps both sign-ins.
 const port=Number(process.argv.find(arg=>arg.startsWith('--port='))?.slice(7)??3011),namespace=port===3011?'tk.box_ui_preview':`tk.box_ui_preview_${port}`;
-const config=loadConfig({APP_PORT:String(port),PLEX_MACHINE_ID:'machine',PLEX_OWNER_ACCOUNT_ID:'1',PLEX_REQUIRED_LIBRARY_IDS:'10,20'}),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),base=fakePlex({accountId:1});
+const config=loadConfig({APP_PORT:String(port),PLEX_MACHINE_ID:'machine',PLEX_OWNER_ACCOUNT_ID:'1',PLEX_REQUIRED_LIBRARY_IDS:'10,20'}),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),base=fakePlex({accountId:1});
 const titles=['The Quiet Frontier','After the Rain','A Place Between Stars','The Long Way Home','Wild at Heart','Beyond the Blue','Midnight in Motion','A Different Light','Into the Valley','The Last Summer','Northern Skies','Small Hours'];
 const nodes=titles.map((title,i)=>({ratingKey:String(42+i),librarySectionID:'10',type:'movie',title,summary:'A journey through unfamiliar places becomes a story about the people and moments that make us feel at home. An independent film from your personal collection.',year:2020+i%6,duration:6600000+i*60000,viewOffset:i<3?(i+1)*600000:0,viewCount:i===5?1:0,thumb:`/library/metadata/${42+i}/thumb/1`,art:`/library/metadata/${42+i}/art/1`,rating:7+i%3*.7,contentRating:'PG-13',Genre:[{tag:i%2?'Drama':'Adventure'}],Media:[{container:'mp4',videoCodec:'h264',audioCodec:'aac',width:1920,height:1080,Part:[{key:'/library/parts/7/123/file.mp4'}]}]}));
 const shows=titles.slice(0,6).map((title,i)=>({...nodes[i]!,ratingKey:String(100+i),librarySectionID:'20',type:'show',title:`${title}: The Series`,leafCount:8,viewOffset:0}));

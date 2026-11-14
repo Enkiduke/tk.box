@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { SourceSnapshots } from '../apps/server/src/persistence/source-snapshots.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { parseM3u, parseXmltv } from '../apps/server/src/providers/iptv.js';
@@ -13,7 +13,7 @@ import { AppError } from '../apps/server/src/errors.js';
 import { SharedPipelines } from '../apps/server/src/streaming/pipelines.js';
 
 test('independent source intervals and encrypted last-good snapshots survive failures and restart', () => {
-  const path = mkdtempSync(join(tmpdir(),'tk.box-sources-')), file = join(path,'cache.sqlite'), vault = new Vault(randomBytes(32)); let db = openDatabase(file);
+  const path = mkdtempSync(join(tmpdir(),'tk.box-sources-')), file = join(path,'cache.sqlite'), vault = new Vault(randomBytes(32)); let db = openMigratedDatabase(file);
   try {
     let cache = new SourceSnapshots(db,vault); cache.create('m3u','m3u',true,0); cache.create('xml','xmltv',true,0); cache.create('upload','xmltv',false,0);
     assert.equal(cache.status('m3u').interval_hours,12); assert.equal(cache.status('xml').interval_hours,6); assert.equal(cache.status('upload').next_due,null);
@@ -23,7 +23,7 @@ test('independent source intervals and encrypted last-good snapshots survive fai
     const guide = parseXmltv(readFileSync(new URL('./fixtures/guide.xml',import.meta.url),'utf8')); cache.commit('xml',0,guide,true,100);
     cache.setInterval('m3u',24,300); assert.equal(cache.status('xml').interval_hours,6);
     assert.throws(()=>cache.setInterval('m3u',.5,400)); assert.equal(cache.status('m3u').interval_hours,24);
-    db.close(); db=openDatabase(file); cache=new SourceSnapshots(db,vault); assert.deepEqual(cache.snapshot('xml'),guide); assert.equal(cache.status('m3u').interval_hours,24);
+    db.close(); db=openMigratedDatabase(file); cache=new SourceSnapshots(db,vault); assert.deepEqual(cache.snapshot('xml'),guide); assert.equal(cache.status('m3u').interval_hours,24);
     const raw=db.prepare('SELECT encrypted_snapshot FROM source_snapshots WHERE id=?').get('m3u') as {encrypted_snapshot:string}; assert.ok(!raw.encrypted_snapshot.includes('provider.invalid'));
   } finally {db.close();rmSync(path,{recursive:true,force:true});}
 });

@@ -8,6 +8,7 @@ import type { ServiceKeys } from '../persistence/service-keys.js';
 import type { PlexBackground } from '../services/plex-background.js';
 import type { EventBus } from './bus.js';
 import type { AccessLevel } from './access.js';
+import { migrate, type Migration } from '../persistence/migrate.js';
 
 // What every module is given: the shared services, built once by buildApp.
 export type ModuleContext = {
@@ -26,7 +27,9 @@ export type ModuleContext = {
 // and before the stops of modules mounted earlier.
 export type ModuleInstance<Api> = { api: Api; start?: () => void | Promise<void>; stop?: () => void | Promise<void> };
 // `access`, when set, is the level of every route of the module that declares none (a module whose routes are all admin).
-export type AppModule<Deps, Api> = { name: string; access?: AccessLevel; setup: (routes: FastifyInstance, ctx: ModuleContext, deps: Deps) => ModuleInstance<Api> | Promise<ModuleInstance<Api>> };
+// `migrations` are the module's own tables, applied by name before setup (persistence/migrate.ts); list them in
+// modules/migrations/index.ts too, for tests and scripts that open the database without mounting.
+export type AppModule<Deps, Api> = { name: string; access?: AccessLevel; migrations?: readonly Migration[]; setup: (routes: FastifyInstance, ctx: ModuleContext, deps: Deps) => ModuleInstance<Api> | Promise<ModuleInstance<Api>> };
 export const defineModule = <Deps, Api>(module: AppModule<Deps, Api>) => module;
 
 // Modules stop in reverse mount order, so a module stops before the modules it depends on (live sessions before the
@@ -35,6 +38,7 @@ const stops = new WeakMap<FastifyInstance, (() => void | Promise<void>)[]>();
 
 // Routes a module adds live in their own scope, where each one must declare an access level or the server won't start.
 export async function mountModule<Deps, Api>(app: FastifyInstance, ctx: ModuleContext, module: AppModule<Deps, Api>, deps: Deps): Promise<Api> {
+  if (module.migrations) migrate(ctx.db, module.name, module.migrations);
   let instance: ModuleInstance<Api> | undefined;
   await app.register(async routes => {
     routes.addHook('onRoute', route => {

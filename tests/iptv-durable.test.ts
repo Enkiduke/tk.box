@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { gzipSync } from 'node:zlib';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { RestrictedSourceFetcher, exchangeSource, publicAddress, validateEndpoint, SourceFetchError, type SourceEndpoint } from '../apps/server/src/providers/source-fetch.js';
@@ -13,7 +13,7 @@ import { SourceRefresh } from '../apps/server/src/services/source-refresh.js';
 
 const endpoint={url:'https://provider.invalid/list?credential=fixture-secret',headers:{authorization:'Bearer fixture-secret'},allowInsecureHttp:false};
 const playlist=(ids:string[],suffix='')=>Buffer.from('#EXTM3U\n'+ids.map(id=>`#EXTINF:-1 tvg-id="${id}",Station ${id}${suffix}\nhttps://streams.invalid/${id}?key=fixture-secret`).join('\n'));
-function fixture() {const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault);return {db,vault,store};}
+function fixture() {const db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),store=new IptvStore(db,vault);return {db,vault,store};}
 // No channel checks run here, so list channels without waiting for a first passing check.
 function openListing(store:IptvStore,source:string) {store.setListingPolicy('owner',source,{...store.listingPolicy(source),requireCheck:false,expectedRevision:store.status(source).revision});}
 const revision=(store:IptvStore,id:string)=>store.status(id).revision;
@@ -188,13 +188,13 @@ test('DNS is revalidated after redirects and provider Retry-After delays are san
   await assert.rejects(limited.fetch(endpoint),(error:unknown)=>error instanceof SourceFetchError&&error.code==='SOURCE_RATE_LIMITED'&&error.retryAt!>Date.now()&&error.retryAt!<=Date.now()+7*86400000);
 });
 test('encrypted source/channel state and mapping intent survive database reopen without credentials in diagnostics or audit',()=>{
-  const folder=mkdtempSync(join(resolve('.local'),'iptv-state-')),file=join(folder,'state.sqlite'),vault=new Vault(randomBytes(32));let db=openDatabase(file);
+  const folder=mkdtempSync(join(resolve('.local'),'iptv-state-')),file=join(folder,'state.sqlite'),vault=new Vault(randomBytes(32));let db=openMigratedDatabase(file);
   try {
     let store=new IptvStore(db,vault);const s=store.create('owner',{kind:'m3u',name:'Remote',endpoint},0);store.ingest('owner',s.id,0,playlist(['a']),1);openListing(store,s.id);const id=store.visible()[0]!.id;
     const feed=store.create('owner',{kind:'xmltv',name:'Retained guide'});
     store.ingest('owner',feed.id,0,Buffer.from('<tv><channel id="guide"><display-name>Station a</display-name></channel><programme channel="guide" start="20261017120000 +0000" stop="20261017130000 +0000"><title>Retained programme</title></programme></tv>'));
     store.bindFeed('owner',s.id,feed.id,revision(store,s.id));store.map('owner',id,feed.id,'guide',0);
     const raw=JSON.stringify({sources:db.prepare('SELECT * FROM iptv_sources').all(),channels:db.prepare('SELECT * FROM iptv_channels').all(),audit:db.prepare('SELECT * FROM audit').all()});assert.ok(!raw.includes('fixture-secret'));assert.ok(!JSON.stringify(store.list()).includes('provider.invalid'));assert.ok(!JSON.stringify(store.adminChannels(s.id)).includes('streams.invalid'));
-    db.close();db=openDatabase(file);store=new IptvStore(db,vault);assert.equal(store.visible()[0]!.id,id);assert.deepEqual(store.endpoint(s.id),endpoint);assert.equal(store.status(s.id).intervalHours,12);assert.equal(store.mappingReview(id,feed.id).mapping!.method,'admin');assert.equal(store.mappingReview(id,feed.id).reviewRevision,1);
+    db.close();db=openMigratedDatabase(file);store=new IptvStore(db,vault);assert.equal(store.visible()[0]!.id,id);assert.deepEqual(store.endpoint(s.id),endpoint);assert.equal(store.status(s.id).intervalHours,12);assert.equal(store.mappingReview(id,feed.id).mapping!.method,'admin');assert.equal(store.mappingReview(id,feed.id).reviewRevision,1);
   }finally{db.close();rmSync(folder,{recursive:true,force:true});}
 });

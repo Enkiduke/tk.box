@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {openDatabase} from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {EncoderBudget} from '../apps/server/src/streaming/policy.js';
 import {LocalMediaWorker,runProcess} from '../apps/server/src/streaming/ffmpeg.js';
 import {DiskSegments} from '../apps/server/src/streaming/disk-segments.js';
@@ -11,7 +11,7 @@ import {renderManifest} from '../apps/server/src/streaming/buffer.js';
 import {FixtureBroadcast} from './lib/fixture-broadcast.js';
 
 const root=resolve('.local/live-spike');await mkdir(root,{recursive:true});const run=await mkdtemp(join(root,'check-'));
-const db=openDatabase(':memory:'),budget=new EncoderBudget(()=>2),store=new DiskSegments(join(run,'cache'),2*1024*1024,()=>30000,0);await store.initialize();
+const db=openMigratedDatabase(':memory:'),budget=new EncoderBudget(()=>2),store=new DiskSegments(join(run,'cache'),2*1024*1024,()=>30000,0);await store.initialize();
 const worker=new LocalMediaWorker(budget,process.env.FFMPEG_PATH??'ffmpeg',process.env.FFPROBE_PATH??'ffprobe');
 const broadcast=new FixtureBroadcast(db,join(run,'work'),store,worker,{a:join(root,'source-a.mp4'),b:join(root,'source-b.avi')});
 const viewers=new LiveViewers(store,()=>30000,async()=>{}),a=viewers.create('a',Date.now()),b=viewers.create('b',Date.now());

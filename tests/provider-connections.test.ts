@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { IptvSettingsStore } from '../apps/server/src/persistence/iptv-settings.js';
 import { Vault } from '../apps/server/src/security/vault.js';
@@ -71,11 +71,11 @@ test('A viewer lease says whether a connection was let go just before it', async
 
 test('The server-wide limit starts from the highest per-source limit set before it existed', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tk-iptv-settings-')), file = join(dir, 'db.sqlite');
-  let db = openDatabase(file);
+  let db = openMigratedDatabase(file);
   const store = new IptvStore(db, new Vault(randomBytes(32))), a = store.create('owner', { kind: 'm3u', name: 'A' }), b = store.create('owner', { kind: 'm3u', name: 'B' });
   db.prepare('INSERT INTO iptv_health_policies(source_id,interval_hours,connections,hide_failing) VALUES(?,24,2,1),(?,24,3,1)').run(a.id, b.id);
-  db.exec('DROP TABLE iptv_settings; DELETE FROM migrations WHERE version=10'); db.close();
-  db = openDatabase(file);
+  db.exec("DROP TABLE iptv_settings; DELETE FROM schema_migrations WHERE owner='iptv' AND name='connection-limit'"); db.close();
+  db = openMigratedDatabase(file);
   try {
     const settings = new IptvSettingsStore(db);
     assert.equal(settings.get().maxConnections, 3);

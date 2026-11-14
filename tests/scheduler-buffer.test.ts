@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDatabase, SettingsStore } from '../apps/server/src/persistence/database.js';
+import { SettingsStore } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { ChannelScheduler, type Entry } from '../apps/server/src/services/scheduler.js';
 import { SegmentBuffer, ViewerCursor, renderManifest } from '../apps/server/src/streaming/buffer.js';
 
 const entry = (id: string, mediaId = id): Entry => ({occurrenceId: id, mediaId, title: id, durationMs: 10000, mediaOffsetMs: 0});
 test('persistent deterministic clock joins, exact boundaries, wrap and safe successor publications', () => {
-  const path = mkdtempSync(join(tmpdir(), 'tk.box-scheduler-')); const file = join(path, 'db.sqlite'); let db = openDatabase(file);
+  const path = mkdtempSync(join(tmpdir(), 'tk.box-scheduler-')); const file = join(path, 'db.sqlite'); let db = openMigratedDatabase(file);
   try {
     let scheduler = new ChannelScheduler(db); const a = entry('A'), b = entry('B'), c = entry('C'), x = entry('X');
     scheduler.publish('channel', [a,b,c], 0, 100000, 'admin');
@@ -19,7 +20,7 @@ test('persistent deterministic clock joins, exact boundaries, wrap and safe succ
     assert.equal(scheduler.current('channel', 119999).entry.occurrenceId, 'B'); assert.equal(scheduler.current('channel', 120000).entry.occurrenceId, 'X');
     assert.equal(scheduler.current('channel', 121000).offsetMs, 1000);
     assert.equal(scheduler.current('channel', 160000).entry.occurrenceId, 'X');
-    db.close(); db = openDatabase(file); scheduler = new ChannelScheduler(db);
+    db.close(); db = openMigratedDatabase(file); scheduler = new ChannelScheduler(db);
     assert.equal(scheduler.current('channel', 121000).offsetMs, 1000);
     const preview = scheduler.guide('channel', 115000, 145000);
     assert.deepEqual(preview.map(s => s.entry.occurrenceId), ['B', 'X', 'C', 'A']);
@@ -28,7 +29,7 @@ test('persistent deterministic clock joins, exact boundaries, wrap and safe succ
   } finally {db.close(); rmSync(path, {recursive: true, force: true});}
 });
 test('removed occurrence fallback, duplicate media identity, wrap, and pending supersession', () => {
-  const db = openDatabase(':memory:'), scheduler = new ChannelScheduler(db);
+  const db = openMigratedDatabase(':memory:'), scheduler = new ChannelScheduler(db);
   try {
     const a = entry('A', 'same-plex-item'), b = entry('B', 'same-plex-item'), c = entry('C');
     scheduler.publish('channel', [a,b,c], 0, 0, 'admin');
@@ -40,12 +41,12 @@ test('removed occurrence fallback, duplicate media identity, wrap, and pending s
   } finally {db.close();}
 });
 test('settings defaults, validation, transactional revision and restart persistence', () => {
-  const path = mkdtempSync(join(tmpdir(), 'tk.box-settings-')), file = join(path, 'db.sqlite'); let db = openDatabase(file);
+  const path = mkdtempSync(join(tmpdir(), 'tk.box-settings-')), file = join(path, 'db.sqlite'); let db = openMigratedDatabase(file);
   try {
     const store = new SettingsStore(db); assert.deepEqual(store.get(), {revision: 0, maxConcurrentCpuVideoTranscodes: 2, pauseRetentionMinutes: 30});
     assert.throws(() => store.update('admin', 0, {maxConcurrentCpuVideoTranscodes: 2.5, pauseRetentionMinutes: 0}));
     store.update('admin', 0, {maxConcurrentCpuVideoTranscodes: 3, pauseRetentionMinutes: 15});
-    db.close(); db = openDatabase(file); assert.equal(new SettingsStore(db).get().maxConcurrentCpuVideoTranscodes, 3);
+    db.close(); db = openMigratedDatabase(file); assert.equal(new SettingsStore(db).get().maxConcurrentCpuVideoTranscodes, 3);
   } finally {db.close(); rmSync(path, {recursive: true, force: true});}
 });
 test('independent Pause/Resume across program boundary, retained delay and explicit Go Live', () => {

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {PlexAdapter} from '../apps/server/src/providers/plex.js';
 import {chooseRoute} from '../apps/server/src/streaming/policy.js';
-import {openDatabase,SettingsStore} from '../apps/server/src/persistence/database.js';
+import { SettingsStore } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {IdentityService} from '../apps/server/src/services/identity.js';
 import {buildApp} from '../apps/server/src/app.js';
@@ -39,7 +40,7 @@ function transcoderFixture() {
 const caps={videoCodecs:['h264:8'],audioCodecs:['aac'],containers:['mp4','hls']};
 
 test('incompatible Plex VOD plays through a token-free Plex transcoder HLS proxy',async()=>{
-  const f=transcoderFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=transcoderFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     const signed=await identity.finish((await identity.start()).binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'};
     // MKV + AC3: video is copied (remux), audio converted, no encoder permit.
@@ -70,7 +71,7 @@ test('incompatible Plex VOD plays through a token-free Plex transcoder HLS proxy
 });
 
 test('Plex VOD CPU transcodes hold one shared encoder permit with immediate capacity errors',async()=>{
-  const f=transcoderFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=transcoderFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     new SettingsStore(db).update('1',0,{maxConcurrentCpuVideoTranscodes:1,pauseRetentionMinutes:30});
     const signed=await identity.finish((await identity.start()).binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'};
@@ -88,7 +89,7 @@ test('Plex VOD CPU transcodes hold one shared encoder permit with immediate capa
 test('switching audio restarts a direct-play title as Plex HLS at the requested position with that track',async()=>{
   // Browsers only play a file's default audio, so a non-default track can never be direct played.
   assert.equal(chooseRoute({codec:'h264',container:'mp4',audioCodec:'aac'},caps,'auto',false,false).kind,'remux');
-  const f=transcoderFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=transcoderFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     const signed=await identity.finish((await identity.start()).binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'};
     const create=(extra:object)=>app.inject({method:'POST',url:'/api/v1/playback/sessions',headers,payload:{mode:'plex_vod',ratingKey:'60',capabilities:caps,...extra}});
@@ -117,7 +118,7 @@ test('switching audio restarts a direct-play title as Plex HLS at the requested 
 });
 
 test('a transcoder that ignores the chosen audio track fails closed and leaves no session',async()=>{
-  const f=transcoderFixture(),db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
+  const f=transcoderFixture(),db=openMigratedDatabase(':memory:'),vault=new Vault(randomBytes(32)),plex=new PlexAdapter(config(),'test',f.transport),identity=new IdentityService(db,vault,plex),app=await buildApp(config(),db,vault,plex,false);
   try {
     const signed=await identity.finish((await identity.start()).binding);assert.ok(signed);const headers={cookie:`tk.box_local=${signed.cookie}`,origin:'http://127.0.0.1:3000'};
     const refused=await app.inject({method:'POST',url:'/api/v1/playback/sessions',headers,payload:{mode:'plex_vod',ratingKey:'62',capabilities:caps,audioStreamId:'3'}});
