@@ -228,7 +228,7 @@ test('the server owner manages tk.box admins and Plex shares scoped to this serv
     {id: 104, machineIdentifier: 'machine', invited: {id: 4, title: 'Library guest'}},
     {id: 204, machineIdentifier: 'other-server', invited: {id: 4, title: 'Library guest'}},
   ];
-  const invitations = [{id: 105, machineIdentifier: 'machine', invitedEmail: 'invite@example.test', inviteToken: 'private-invite'}];
+  const invitations = [{id: 105, machineIdentifier: 'machine'}, {id: 205, machineIdentifier: 'other-server'}];
   const sharedItems = [{id: 106, uri: 'server://machine/library/metadata/1'}, {id: 206, uri: 'server://other-server/library/metadata/1'}];
   const removed: string[] = [];
   let plexRejects = true;
@@ -246,8 +246,11 @@ test('the server owner manages tk.box admins and Plex shares scoped to this serv
       return new Response(null, {status: 204});
     }
     if (path === '/api/v2/shared_servers/owned/accepted') return Response.json(accepted);
-    if (path === '/api/v2/shared_servers/invites/owned/pending') return Response.json(invitations);
+    if (path === '/api/v2/shared_servers/invites/owned/pending') return Response.json([
+      {invitedEmail: 'invite@example.test', inviteToken: 'private-invite', sharedServers: invitations},
+    ]);
     if (path === '/api/v2/shared_sources/owned') return Response.json([{id: 1006, status: 'accepted', invited: {id: 2}, origin: 'machine', sharedItems}]);
+    if (path === '/api/v2/shared_sources/invites/owned/pending') return Response.json([]);
     throw new Error(`Unexpected Plex path ${path}`);
   });
   const app = await buildApp(config(), db, vault, plex, false), id = new IdentityService(db, vault, plex), origin = 'http://127.0.0.1:3000';
