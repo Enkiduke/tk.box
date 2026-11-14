@@ -3,6 +3,7 @@ import { AppError, requireThat, requireWritable } from '../errors.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import { flagImage, tmdbImage } from './explore-images.js';
 import { exploreGenresOf, tmdbGenres } from './explore-genres.js';
+import { TtlCache } from '../lib/ttl-cache.js';
 
 // Seerr (Overseerr, Jellyseerr): title search, metadata and media requests. Each viewer signs in to Seerr with
 // their own Plex account token, so requests are made as, and limited to, their Seerr user.
@@ -85,7 +86,7 @@ export type SeerrConnection = { url: string; apiKey?: string };
 export class Seerr {
   private sessions = new Map<string, Session>();
   private signing = new Map<string, Promise<Session>>();
-  private settings = new Map<string, { value: SeerrPublic; until: number }>();
+  private settings = new TtlCache<SeerrPublic>(64);
   private index?: { key: string; until: number; value: Promise<Map<string, ExploreStatus>> };
   constructor(private connection: () => SeerrConnection | undefined, private transport: typeof fetch = fetch) {}
   configured() { return !!this.connection(); }
@@ -99,12 +100,12 @@ export class Seerr {
   private current() { const connection = this.connection(); requireThat(connection, 'SEERR_NOT_CONFIGURED', 'Seerr is not set up. An administrator can add it in Admin › Connections.', 409); return connection; }
   // Unauthenticated: proves the address is an initialized Seerr. Cached briefly, since every row reads it.
   async publicSettings(base = this.current().url, fresh = false, now = Date.now()) {
-    const cached = this.settings.get(base); if (cached && cached.until > now && !fresh) return cached.value;
+    const cached = this.settings.get(base, now); if (cached && !fresh) return cached;
     const response = await remoteJson(this.url(base, '/settings/public'), {}, 'Seerr', this.transport, 8000);
     const data = response.data as SeerrPublic | undefined;
     requireThat(response.status === 200 && data && typeof data.initialized === 'boolean', 'SEERR_UNAVAILABLE', 'No Seerr answered at that address.', 502);
     requireThat(data.initialized, 'SEERR_UNAVAILABLE', 'Seerr has not finished its first-run setup.', 502);
-    this.settings.set(base, { value: data, until: now + 600000 });
+    this.settings.set(base, data, 600000, now);
     return data;
   }
   // Settings check: the key opens Seerr's API.

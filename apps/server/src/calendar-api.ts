@@ -9,6 +9,7 @@ import { remoteJson } from './providers/remote-json.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
 import { viewer } from './modules/access.js';
+import { TtlCache } from './lib/ttl-cache.js';
 
 const day = z.iso.date();
 const query = z.object({from: day, to: day, zone: z.string().min(1).max(100).default('UTC'), account: z.string().optional()}).strict();
@@ -80,22 +81,18 @@ function episodeEntry(raw: unknown): Scheduled[] {
 export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, connections: () => {radarr: ArrService; sonarr: ArrService},
   transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales'>) {
   // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
-  const cache = new Map<string, {until: number; rows: Promise<Scheduled[]>}>();
+  const cache = new TtlCache<Promise<Scheduled[]>>(100);
   const read = (source: Source, connection: ArrService, start: string, end: string) => {
     const key = createHash('sha256').update(JSON.stringify([source, connection.url, connection.key, start, end])).digest('hex');
-    const now = Date.now(), hit = cache.get(key);
-    if (hit && hit.until > now) return hit.rows;
-    const url = new URL(`${connection.url.replace(/\/+$/, '')}/api/v3/calendar`);
-    url.search = new URLSearchParams({start, end, unmonitored: 'true', ...(source === 'Sonarr' ? {includeSeries: 'true', includeEpisodeImages: 'true'} : {})}).toString();
-    const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, source, transport, 10_000, 16 * 1024 * 1024).then(response => {
-      requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', `${source} could not load its calendar.`, 502);
-      return response.data.flatMap(source === 'Radarr' ? movieEntry : episodeEntry);
+    return cache.remember(key, 5 * 60_000, () => {
+      const url = new URL(`${connection.url.replace(/\/+$/, '')}/api/v3/calendar`);
+      url.search = new URLSearchParams({start, end, unmonitored: 'true', ...(source === 'Sonarr' ? {includeSeries: 'true', includeEpisodeImages: 'true'} : {})}).toString();
+      const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, source, transport, 10_000, 16 * 1024 * 1024).then(response => {
+        requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', `${source} could not load its calendar.`, 502);
+        return response.data.flatMap(source === 'Radarr' ? movieEntry : episodeEntry);
+      });
+      return rows;
     });
-    cache.delete(key);
-    cache.set(key, {until: now + 5 * 60_000, rows});
-    rows.catch(() => { if (cache.get(key)?.rows === rows) cache.delete(key); });
-    while (cache.size > 100) cache.delete(cache.keys().next().value!);
-    return rows;
   };
 
   app.get('/api/v1/calendar', {config: {access: 'viewer', rateLimit: {max: 60, timeWindow: 60_000}}}, async (request, reply): Promise<CalendarPage> => {

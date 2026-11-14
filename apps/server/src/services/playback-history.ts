@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PlaybackObservation } from '../../../../packages/contracts/src/index.js';
 import type { HistoryAiring, HistoryDay, HistoryEnd, HistorySession, HistoryStore, HistoryTarget, LiveAllocation } from '../persistence/history-store.js';
 import { digest } from '../security/vault.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 type Delivery = Pick<HistorySession, 'source' | 'accountId' | 'accountName' | 'media' | 'client' | 'stream'> & { id: string; owner: string };
 type LiveObservation = { epoch: number; airings?: Airings; stream?: HistorySession['stream']; replacing?: boolean };
@@ -84,7 +85,7 @@ export class PlaybackHistory {
   private active = new Map<string, View>();
   private resumable = new Map<string, Resume>();
   private pending = new Set<View>();
-  private timer?: NodeJS.Timeout;
+  private timer?: Repeating;
   private scheduled?: NodeJS.Immediate;
   private recovered = false;
   private retryAt = 0;
@@ -95,8 +96,7 @@ export class PlaybackHistory {
 
   start(now = Date.now()) {
     this.flush(now);
-    this.timer = setInterval(() => this.tick(), CHECKPOINT_MS);
-    this.timer.unref();
+    this.timer = every(CHECKPOINT_MS, () => this.tick(), e => this.log(`watch history checkpoint failed: ${errorDetail(e).error}`));
   }
 
   open(delivery: Delivery, previousId?: string, now = Date.now(), sameStation?: (from: string, to: string) => boolean) {
@@ -242,7 +242,7 @@ export class PlaybackHistory {
   close() {
     if (this.closed) return;
     this.closed = true;
-    clearInterval(this.timer);
+    this.timer?.stop();
     for (const id of this.active.keys()) this.end(id, 'interrupted');
     clearImmediate(this.scheduled);
     this.scheduled = undefined;

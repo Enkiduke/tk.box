@@ -13,12 +13,13 @@ import type { PartProxy } from '../providers/part-proxy.js';
 import type { Slot } from './scheduler.js';
 import type { LiveDelivery, LiveSource } from './live-tv.js';
 import { plexHistoryMedia, type HistoryAiring, type HistoryMedia } from '../persistence/history-store.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 type Station = {
   key: string; channelId: string; dir: string; viewers: Set<string>; grant: PlexGrant; stopped: boolean; child?: ChildProcess;
   ready: Promise<void>; output: boolean; stderr: string; library?: string; encode: boolean; source?: LiveSource;
   // The retained window, indexed by broadcast time. `buffer` mirrors it for viewer cursors.
-  segments: Segment[]; buffer: SegmentBuffer; lastSequence: number; discontinuities: number; indexer?: NodeJS.Timeout; indexing: boolean; pressure: boolean; checkedDisk: number;
+  segments: Segment[]; buffer: SegmentBuffer; lastSequence: number; discontinuities: number; indexer?: Repeating; indexing: boolean; pressure: boolean; checkedDisk: number;
   airings: Airing[]; opening?: Omit<Airing, 'start'>;
 };
 // One run of a program (or the blank slate) on the station, from its first segment's broadcast time. `mediaStartMs`
@@ -76,13 +77,13 @@ export class CustomTv {
   private stations = new Map<string, Station>();
   private viewers = new Map<string, Viewer>();
   private root: string;
-  private timer: NodeJS.Timeout;
+  private timer: Repeating;
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private local: LocalMedia, private parts: PartProxy, private budget: EncoderBudget, cacheDir: string,
     private retentionMs: () => number, private maxBytes: number, private ffmpeg = 'ffmpeg', private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private options = { maxStations: 6, maxPerViewer: 4, idleMs: 45000, readyMs: 30000, indexMs: 1000, freeBytes: (dir: string) => statfs(dir).then(s => s.bavail * s.bsize) }) {
     this.root = join(cacheDir, 'custom', `${process.pid}-${opaque().slice(0, 8)}`);
     void this.reapStale(join(cacheDir, 'custom'));
-    this.timer = setInterval(() => this.sweep(), 10000); this.timer.unref();
+    this.timer = every(10000, () => this.sweep(), e => this.log('custom channel sweep failed', errorDetail(e)));
   }
   has(id: string) { return this.viewers.has(id); }
   async start(hash: string, grant: PlexGrant, channelId: string) {
@@ -96,7 +97,7 @@ export class CustomTv {
         segments: [], buffer: new SegmentBuffer(this.maxBytes, () => this.retained(created)), lastSequence: -1, discontinuities: 0, indexing: false, pressure: false, checkedDisk: 0, airings: [] };
       this.stations.set(channelId, created);
       created.ready = mkdir(created.dir, { recursive: true, mode: 0o700 }).then(() => {
-        created.indexer = setInterval(() => void this.index(created), this.options.indexMs); created.indexer.unref();
+        created.indexer = every(this.options.indexMs, () => this.index(created), e => this.log('custom channel index failed', errorDetail(e)));
         void this.run(created); return this.waitReady(created);
       });
       created.ready.catch(() => this.destroy(created));
@@ -179,7 +180,7 @@ export class CustomTv {
     if (station && !station.viewers.size) this.destroy(station);
   }
   stopWhere(matches: (v: { id: string; hash: string }) => boolean) { for (const v of [...this.viewers.values()]) if (matches(v)) this.stop(v.id, v.hash); }
-  close() { clearInterval(this.timer); for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
+  close() { this.timer.stop(); for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
   get count() { return this.stations.size; }
   // Administrator activity: the program a viewer is seeing (at its own cursor when paused or behind) and how far into it.
@@ -352,7 +353,7 @@ export class CustomTv {
   }
   private destroy(s: Station) {
     if (s.stopped) return;
-    s.stopped = true; clearInterval(s.indexer);
+    s.stopped = true; s.indexer?.stop();
     if (this.stations.get(s.channelId) === s) this.stations.delete(s.channelId);
     for (const id of s.viewers) { this.viewers.get(id)?.cursor.stop(); if (this.viewers.delete(id)) this.onViewerEnded?.(id); }
     const child = s.child;

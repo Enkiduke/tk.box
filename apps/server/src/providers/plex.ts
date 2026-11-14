@@ -6,6 +6,7 @@ import type { Config } from '../config.js';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import {type CatalogNode,catalogContainer,catalogDto,catalogQuery,groupRecentEpisodes,applyCatalogFilters,artworkPath,logoPath,versioned,type ArtworkKind,collectionsContainer,collectionDto,collectionArtwork,sortIndex,promotedHubs,promotedCollectionIds,type CatalogQuery,type CatalogAction,type CatalogCollection} from './plex-catalog.js';
 import {languageKey,type CatalogItem,type CatalogPage} from '../../../../packages/contracts/src/index.js';
+import { TtlCache } from '../lib/ttl-cache.js';
 
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
 export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
@@ -128,7 +129,7 @@ export class PlexAdapter {
   private imageRequests=new Map<string,Promise<{bytes:Buffer;type:string}>>();
   // Metadata reads behind artwork and collections, per viewer token, reused briefly so a grid of posters asks Plex once per
   // title. Library scope is still checked against the grant on every use.
-  private nodes=new Map<string,{until:number;read:Promise<unknown>}>();
+  private nodes=new TtlCache<Promise<unknown>>(5000);
   constructor(private config: Config, private clientId: string, private transport: typeof fetch = fetch) {}
   private headers(token?: string) {
     return { Accept: 'application/json', 'X-Plex-Product': 'tk.box', 'X-Plex-Version': '0.0.1',
@@ -363,16 +364,12 @@ export class PlexAdapter {
     requireThat(library,'PLEX_ACCESS_DENIED','Library is not accessible to this account.',403);return library;
   }
   private remembered<T>(key:string,read:()=>Promise<T>,ttl=60000,now=Date.now()):Promise<T> {
-    const hit=this.nodes.get(key);if(hit&&hit.until>now)return hit.read as Promise<T>;
-    const pending=read();this.nodes.delete(key);this.nodes.set(key,{until:now+ttl,read:pending});
-    pending.catch(()=>{if(this.nodes.get(key)?.read===pending)this.nodes.delete(key);});
-    while(this.nodes.size>5000)this.nodes.delete(this.nodes.keys().next().value!);
-    return pending;
+    return this.nodes.remember(key,ttl,read,now);
   }
   // Drops remembered metadata (after artwork or cleanup jobs change the library).
   forgetMetadata() {this.nodes.clear();}
   // Drops remembered sort indexes (after Plex reports a finished library scan or newly processed titles).
-  forgetIndexes() {for(const key of this.nodes.keys())if(key.startsWith(SORTED_INDEX))this.nodes.delete(key);}
+  forgetIndexes() {this.nodes.deleteWhere(key=>key.startsWith(SORTED_INDEX));}
   private async catalogNode(grant:PlexGrant,id:string,includeGuids=false) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex media identifier.');
     const url=new URL(`/library/metadata/${id}`,this.config.PLEX_URL);

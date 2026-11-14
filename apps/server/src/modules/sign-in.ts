@@ -5,6 +5,7 @@ import { digest } from '../security/vault.js';
 import { registerSetup, type CookieOptions } from '../setup-api.js';
 import type { IdentityService } from '../services/identity.js';
 import type { AdminStore } from '../persistence/admin-store.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 type Deps = {
   identity: IdentityService; admins: AdminStore;
@@ -15,7 +16,7 @@ type Deps = {
 // stops everything that browser session was watching.
 export const signInModule = defineModule({
   name: 'sign-in',
-  setup(routes, { config, plex, bus }, { identity, admins, cookies }: Deps) {
+  setup(routes, { config, plex, bus, log }, { identity, admins, cookies }: Deps) {
     registerSetup(routes, config, plex, identity, { setup: cookies.setup, session: cookies.session, options: cookies.options, sessionAge: cookies.sessionAge });
     routes.post('/api/v1/auth/plex/start', { config: { access: 'public', rateLimit: { max: 10, timeWindow: 60000 } } }, async (_req, reply) => {
       requireThat(config.plexConfigured, 'SETUP_REQUIRED', 'Configure Plex owner, machine and library IDs.', 503);
@@ -41,11 +42,11 @@ export const signInModule = defineModule({
       const { grant } = viewer(req), item = await plex.metadata(grant, req.params.id);
       return { ratingKey: item.ratingKey, title: item.title, durationMs: item.duration, viewOffsetMs: item.viewOffset ?? 0 };
     });
-    let reaper: NodeJS.Timeout | undefined;
+    let reaper: Repeating | undefined;
     return {
       api: {},
-      start() { reaper = setInterval(() => identity.reap(), 30000); reaper.unref(); },
-      stop() { clearInterval(reaper); }
+      start() { reaper = every(30000, () => identity.reap(), e => log.warn('session reaper failed', errorDetail(e))); },
+      stop() { reaper?.stop(); }
     };
   }
 });

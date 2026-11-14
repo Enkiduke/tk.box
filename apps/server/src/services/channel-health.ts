@@ -6,6 +6,7 @@ import { ProviderConnections, type ConnectionLease } from '../streaming/provider
 import { probeStream, type Prober } from './stream-probe.js';
 import type { StreamGuard } from '../streaming/stream-guard.js';
 import { requireThat } from '../errors.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 // What the live relay layer tells the checker. Connections themselves are shared through
 // ProviderConnections: a check only starts on a free one, and a new viewer cancels checks.
@@ -17,7 +18,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // where it stopped and a large lineup is spread over the source's interval instead of bursting.
 export class ChannelHealth {
   private checks = new Map<string, Check>();
-  private timer?: NodeJS.Timeout;
+  private timer?: Repeating;
   private closed = false;
   private dir: string;
   relays: RelayUsage = { live: () => false };
@@ -29,7 +30,7 @@ export class ChannelHealth {
     private options: {maxChecks?:number;sampleSeconds?:number;tickMs?:number;enabled?:boolean} = {}, private probe: Prober = probeStream) {
     this.dir = join(cacheDir, 'channel-health');
     if (this.enabled) {
-      this.timer = setInterval(() => this.pump(), options.tickMs ?? 5000); this.timer.unref();
+      this.timer = every(options.tickMs ?? 5000, () => this.pump(), e => this.log('channel checks failed', errorDetail(e)));
       void this.prune();
     }
   }
@@ -88,5 +89,5 @@ export class ChannelHealth {
     const ids = this.health.channelIds();
     for (const name of await readdir(this.dir).catch(() => [] as string[])) if (!ids.has(name.slice(0, 36))) await rm(join(this.dir, name), { force: true }).catch(() => {});
   }
-  close() { this.closed = true; clearInterval(this.timer); for (const check of this.checks.values()) check.abort.abort(); this.checks.clear(); }
+  close() { this.closed = true; this.timer?.stop(); for (const check of this.checks.values()) check.abort.abort(); this.checks.clear(); }
 }

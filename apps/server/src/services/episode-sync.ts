@@ -1,6 +1,7 @@
 import { AppError } from '../errors.js';
 import type { CustomChannelStore, SyncResult } from '../persistence/custom-channels.js';
 import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 // Automatic new episodes for custom channels. Each enabled show or season selection is read from Plex now and then
 // (and on demand), and genuinely new playable episodes are added through CustomChannelStore.applySync, which
@@ -8,11 +9,14 @@ import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 // (services/plex-background.ts); the background check waits while there is no working one.
 export class EpisodeSync {
   private running = new Map<string, Promise<SyncResult>>();
-  private timer?: NodeJS.Timeout;
+  private timer?: Repeating;
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private intervalMs = 3600000) {}
-  start() { this.timer = setInterval(() => void this.tick(), this.intervalMs); this.timer.unref(); void this.tick(); }
-  close() { clearInterval(this.timer); }
+  start() {
+    const failed = (e: unknown) => this.log('automatic new episodes failed', errorDetail(e));
+    this.timer = every(this.intervalMs, () => this.tick(), failed); void this.tick().catch(failed);
+  }
+  close() { this.timer?.stop(); }
   // One check per selection at a time; a second request joins the running one.
   source(source: { id: string; plexId: string }, grant: PlexGrant, actor: string) {
     let work = this.running.get(source.id);

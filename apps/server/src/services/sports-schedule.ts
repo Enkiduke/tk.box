@@ -5,6 +5,7 @@ import { SourceFetchError } from '../providers/source-fetch.js';
 import { espnEvents, espnDay, espnUrl, espnLeagueLogo, tsdbEvents, tsdbUrls, tsdbDayUrl, tsdbLeagueUrl, tsdbLeagueLogo, fetchJson } from '../providers/sports-feeds.js';
 import { ChannelLogos } from '../providers/channel-logos.js';
 import { channelWindow, learnZones, type SportsEvent, type Window } from './sports-match.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: () => string; zone: string; nameHours: number; tickMs: number };
 // A job may also name its league's logo, read from the same response.
@@ -20,7 +21,7 @@ const logos = new ChannelLogos();
 export class SportsSchedule {
   private due = new Map<string, number>();
   private backoff = { espn: 0, tsdb: 0 };
-  private timer: NodeJS.Timeout;
+  private timer: Repeating;
   private running = false;
   private closed = false;
   private lastMatch = 0;
@@ -30,7 +31,7 @@ export class SportsSchedule {
   constructor(private iptv: IptvStore, private store: SportsStore, private health: HealthStore | undefined, private pump: () => void,
     private options: SportsOptions, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     private get: (url: string) => Promise<unknown> = fetchJson(), private image: (url: string) => Promise<Image> = url => logos.get(url)) {
-    this.timer = setInterval(() => { void this.tick(); }, options.tickMs); this.timer.unref();
+    this.timer = every(options.tickMs, () => this.tick(), e => this.log('sports schedule failed', errorDetail(e)));
   }
   private jobs(now: number): Job[] {
     const days = [-1, 0, 1, 2].map(d => espnDay(now + d * DAY)), today = espnDay(now);
@@ -108,5 +109,5 @@ export class SportsSchedule {
     }
     this.lastMatch = now; this.stale = false;
   }
-  close() { this.closed = true; clearInterval(this.timer); }
+  close() { this.closed = true; this.timer.stop(); }
 }

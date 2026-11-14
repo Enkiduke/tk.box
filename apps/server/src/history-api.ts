@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { historySources, type HistoryListRow, type HistoryMediaRank, type HistoryRank, type HistorySessionDetail, type HistorySummary } from '../../../packages/contracts/src/index.js';
 import type { Db } from './persistence/database.js';
 import { requireThat } from './errors.js';
+import { TtlCache } from './lib/ttl-cache.js';
 
 const periods = z.enum(['7', '30', '90', '365', 'all']);
 const rangeQuery = z.object({ days: periods.default('30'), source: z.enum(historySources).optional(),
@@ -44,15 +45,8 @@ function scope(range: Range, days = false) {
 // Admin › History. Every route is admin-only, checked before the cache is read.
 export function registerHistory(app: FastifyInstance, db: Db) {
   const asAdmin = { config: { access: 'admin' as const } };
-  const cache = new Map<string, { value: unknown; until: number }>();
-  function cached<T>(key: string, load: () => T): T {
-    const now = Date.now(), hit = cache.get(key);
-    if (hit && hit.until > now) return hit.value as T;
-    const value = load();
-    if (cache.size >= 32) cache.delete(cache.keys().next().value!);
-    cache.set(key, { value, until: now + 30000 });
-    return value;
-  }
+  const cache = new TtlCache<unknown>(32);
+  const cached = <T>(key: string, load: () => T): T => cache.remember(key, 30000, load) as T;
   app.get('/api/v1/admin/history/summary', asAdmin, async req => {
     const filter = rangeQuery.parse(req.query);
     return cached(`summary:${JSON.stringify(filter)}`, (): HistorySummary => {

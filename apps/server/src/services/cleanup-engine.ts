@@ -11,6 +11,7 @@ import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
 import { collectionKey } from './hidden-downloads.js';
 import type { KeptCollections } from './artwork-engine.js';
+import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 // Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
 // a time. tk.box writes the script's JSON config from its settings and passes the Plex token and service keys in the
@@ -112,7 +113,7 @@ export class CleanupEngine {
   private current?: Running;
   private known?: { at: number; ready: boolean; version?: string; error?: string };
   private checking?: Promise<NonNullable<CleanupEngine['known']>>;
-  private timer?: NodeJS.Timeout;
+  private timer?: Repeating;
   private ticking = false;
   readonly workDir: string;
   // Called after each job that ran: it may have removed titles or changed their posters in Plex.
@@ -183,8 +184,8 @@ export class CleanupEngine {
     } catch { return { updated: null, dryRun: true, complete: true, items: [] }; }
   }
   scheduleState() { return this.store.state<{ lastRun?: number; note?: string }>('schedule') ?? {}; }
-  start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); }
-  close() { clearInterval(this.timer); this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
+  start() { this.timer = every(60000, () => this.tick(), e => this.log('clean up schedule failed', errorDetail(e))); }
+  close() { this.timer?.stop(); this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
   // On its schedule (server local time), or up to two hours late if tk.box was down then.
   async tick(now = new Date()) {
     if (this.ticking) return; this.ticking = true;

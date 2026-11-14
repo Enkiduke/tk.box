@@ -3,6 +3,7 @@ import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import { Vault, opaque, digest } from '../security/vault.js';
 import { AppError, requireThat } from '../errors.js';
 import { prepared } from '../persistence/statements.js';
+import { TtlCache } from '../lib/ttl-cache.js';
 
 // A sign-in lasts while it's used: each use pushes its end to a week out, so it ends only after 7 days unused.
 // The row is written at most hourly, not on every video segment.
@@ -12,7 +13,7 @@ export class IdentityService {
   private authorizing = new Map<string,Promise<PlexGrant>>();
   // A Plex check that passed is reused for `recheckMs` (0 checks every request), so a page of artwork doesn't
   // wait on plex.tv for each image. Sign-out and disabled accounts still apply at once: the session row is read every time.
-  private grants = new Map<string,{grant:PlexGrant;until:number}>();
+  private grants = new TtlCache<PlexGrant>(1000);
   // plex.tv now and then refuses or drops a check it passes a moment later, so a failed check is asked again after
   // each of `retryDelays` before the request fails; that keeps a brief Plex hiccup from stopping playback.
   constructor(private db: Db, private vault: Vault, private plex: PlexAdapter, private recheckMs = 0, private retryDelays = [500, 1500]) {}
@@ -68,8 +69,8 @@ export class IdentityService {
     const row = prepared(this.db, 'SELECT s.*,u.allowed FROM sessions s JOIN users u ON u.account_id=s.account_id WHERE hash=? AND expires>?').get(hash, now) as {account_id: string; encrypted_credential: string; expires: number; allowed: number} | undefined;
     requireThat(row?.allowed, 'UNAUTHENTICATED', 'Session expired or revoked.', 401);
     this.renew(hash, row.expires, now);
-    const recent=this.grants.get(hash);
-    if(recent&&recent.until>now&&recent.grant.accountId===row.account_id)return { hash, grant: recent.grant };
+    const recent=this.grants.get(hash,now);
+    if(recent&&recent.accountId===row.account_id)return { hash, grant: recent };
     // Overlapping checks (e.g. a grid of artwork requests) share one Plex call.
     let pending=this.authorizing.get(hash);
     if(!pending){pending=this.authorize(this.vault.open(row.encrypted_credential,hash)).finally(()=>this.authorizing.delete(hash));this.authorizing.set(hash,pending);}
@@ -78,8 +79,7 @@ export class IdentityService {
     requireThat(current?.allowed&&current.account_id===row.account_id,'UNAUTHENTICATED','Session expired or revoked.',401);
     requireThat(grant.accountId === row.account_id, 'ACCESS_DENIED', 'Plex account identity changed.', 403);
     if(this.recheckMs>0){
-      this.grants.delete(hash);this.grants.set(hash,{grant,until:now+this.recheckMs});
-      while(this.grants.size>1000)this.grants.delete(this.grants.keys().next().value!);
+      this.grants.set(hash,grant,this.recheckMs,now);
     }
     return { hash, grant };
   }
@@ -106,7 +106,7 @@ export class IdentityService {
   }
   logout(cookie?: string) { if (cookie) { prepared(this.db, 'DELETE FROM sessions WHERE hash=?').run(digest(cookie)); this.forget(cookie); } }
   reap(now = Date.now()) {
-    for (const [hash, entry] of this.grants) if (entry.until <= now) this.grants.delete(hash);
+    this.grants.prune(now);
     prepared(this.db, 'DELETE FROM sessions WHERE expires<=?').run(now);
     prepared(this.db, 'DELETE FROM auth_challenges WHERE expires<=?').run(now);
     prepared(this.db, 'DELETE FROM playback_sessions WHERE expires<=?').run(now);
