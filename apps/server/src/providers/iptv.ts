@@ -154,6 +154,18 @@ export function approveMapping(input: { role: 'admin' | 'viewer'; accountId: str
 }
 // "24/7 Marvel Movies" style channels loop one theme and rarely ship XMLTV; their name is the listing.
 const continuousTitle = (name?: string) => name && /\b24\s*\/\s*7\b/.test(name) ? name.replace(/^[A-Z]{2,3}\s*[:|]\s*/, '') : undefined;
+// One guide channel's programs, grouped once per parsed snapshot (parseXmltv already orders them by channel, then start).
+const programIndex = new WeakMap<XmlSnapshot, Map<string, Program[]>>();
+export function channelPrograms(xml: XmlSnapshot | undefined, xmlId: string | undefined): Program[] {
+  if (!xml || !xmlId) return [];
+  let index = programIndex.get(xml);
+  if (!index) {
+    index = new Map();
+    for (const p of xml.programs) { const list = index.get(p.channelId); if (list) list.push(p); else index.set(p.channelId, [p]); }
+    programIndex.set(xml, index);
+  }
+  return index.get(xmlId) ?? [];
+}
 export function guideWindow(programs: Program[], xmlId: string | undefined, start: number, end: number, channelName?: string) {
   requireThat(Number.isSafeInteger(start) && Number.isSafeInteger(end) && start < end, 'INVALID_WINDOW', 'Invalid guide window.');
   const title = continuousTitle(channelName);

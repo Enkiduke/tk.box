@@ -23,7 +23,7 @@ const num = z.coerce.number().optional().catch(undefined), str = z.coerce.string
 // Plex's now-playing list. Every field is optional: clients report what they can, and one odd value must not hide every stream.
 const sessionsSchema = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({
   type: str, title: str, grandparentTitle: str, parentTitle: str, ratingKey: str, grandparentRatingKey: str, parentRatingKey: str,
-  year: num, index: num, parentIndex: num, duration: num, viewOffset: num, live: num,
+  year: num, index: num, parentIndex: num, duration: num, viewOffset: num, live: num, sessionKey: str, librarySectionID: str,
   User: z.object({ id: str, title: str }).optional().catch(undefined),
   Player: z.object({ title: str, product: str, platform: str, state: str, address: str, remotePublicAddress: str, local: z.union([z.boolean(), z.coerce.number()]).optional().catch(undefined), machineIdentifier: str }).optional().catch(undefined),
   Session: z.object({ id: str, bandwidth: num, location: str }).optional().catch(undefined),
@@ -38,6 +38,7 @@ export const metadataSchema = z.object({
   ratingKey: z.string(), librarySectionID: z.union([z.string(), z.number()]).transform(String),
   title: z.string(), duration: z.number().positive(), type: z.enum(['movie', 'episode']),
   year: z.number().int().optional(), grandparentTitle: z.string().max(500).optional(), grandparentRatingKey: z.union([z.string(), z.number()]).transform(String).optional(),
+  parentRatingKey: z.union([z.string(), z.number()]).transform(String).optional().catch(undefined),
   parentIndex: z.number().int().nonnegative().optional(), index: z.number().int().nonnegative().optional(),
   viewOffset: z.number().optional(),
   viewCount: z.number().int().nonnegative().optional(), lastViewedAt: z.number().optional(),
@@ -118,6 +119,7 @@ export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'vie
 type CalendarMedia = {id: string; showId?: string; posterUrl?: string; backdropUrl?: string; season?: number; episode?: number};
 
 // Cache keys name a viewer's server token by digest, never the token itself.
+const SORTED_INDEX='sorted-index:';
 const tokenScope=(grant:PlexGrant)=>createHash('sha256').update(grant.serverToken).digest('hex');
 export class PlexAdapter {
   // Artwork paths end in when the art last changed, so one path at one size is always the same picture,
@@ -134,7 +136,17 @@ export class PlexAdapter {
   }
   // `sameOrigin` follows redirects that stay on the requested origin (Discover adds the viewer's preferred
   // services to some shelves that way); any other redirect is refused, so the token never leaves that host.
+  // Told the duration and outcome of every Plex API read (server metrics).
+  observe?: (ms: number, ok: boolean) => void;
   private async json(url: URL, token?: string, method = 'GET', sameOrigin = false) {
+    const started = performance.now();
+    try {
+      const result = await this.readJson(url, token, method, sameOrigin);
+      this.observe?.(performance.now() - started, true);
+      return result;
+    } catch (e) { this.observe?.(performance.now() - started, false); throw e; }
+  }
+  private async readJson(url: URL, token: string | undefined, method: string, sameOrigin: boolean) {
     try {
       let response = await this.transport(url, { method, headers: this.headers(token), redirect: sameOrigin ? 'manual' : 'error', signal: AbortSignal.timeout(10000) });
       for (let hops = 0; sameOrigin && response.status >= 300 && response.status < 400; hops++) {
@@ -235,6 +247,7 @@ export class PlexAdapter {
   }
   // Plex's cloud catalog (watchlist, Discover shelves, search), read with the viewer's own Plex account token.
   async discover(accountToken: string, path: string, query: Record<string, string | number> = {}, method = 'GET') {
+    if (method !== 'GET') requireWritable();
     const url = new URL(path, 'https://discover.provider.plex.tv');
     requireThat(url.origin === 'https://discover.provider.plex.tv', 'INVALID_REQUEST', 'Discover requests stay on Plex.');
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
@@ -358,6 +371,8 @@ export class PlexAdapter {
   }
   // Drops remembered metadata (after artwork or cleanup jobs change the library).
   forgetMetadata() {this.nodes.clear();}
+  // Drops remembered sort indexes (after Plex reports a finished library scan or newly processed titles).
+  forgetIndexes() {for(const key of this.nodes.keys())if(key.startsWith(SORTED_INDEX))this.nodes.delete(key);}
   private async catalogNode(grant:PlexGrant,id:string,includeGuids=false) {
     requireThat(/^\d+$/.test(id),'INVALID_MEDIA','Invalid Plex media identifier.');
     const url=new URL(`/library/metadata/${id}`,this.config.PLEX_URL);
@@ -436,7 +451,9 @@ export class PlexAdapter {
   async catalogIndex(grant:PlexGrant,libraryId:string,input:Partial<CatalogQuery>) {
     const library=this.library(grant,libraryId),query=catalogQuery.parse(input);
     requireThat(['all','unwatched'].includes(query.shelf),'INVALID_INDEX','Jump navigation requires a full library listing.');
-    if(query.sort!=='title')return this.sortedIndex(grant,libraryId,library.type,query,query.sort);
+    // Other sorts read the whole library, so the result is kept per viewer: ten minutes for the full listing (a finished
+    // library scan clears it sooner), one minute for Unwatched, which shifts as the viewer watches.
+    if(query.sort!=='title'){const sort=query.sort;return this.remembered(`${SORTED_INDEX}${tokenScope(grant)}:${libraryId}:${JSON.stringify(query)}`,()=>this.sortedIndex(grant,libraryId,library.type,query,sort),query.shelf==='unwatched'?60000:600000);}
     const url=new URL(`/library/sections/${libraryId}/firstCharacter`,this.config.PLEX_URL);
     applyCatalogFilters(url,query,library.type);if(query.shelf==='unwatched')url.searchParams.set('unwatched','1');
     const result=z.object({MediaContainer:z.object({Directory:z.array(z.object({title:z.string().max(16),size:z.coerce.number().int().nonnegative().max(1000000)})).max(512).default([])})}).parse(await this.json(url,grant.serverToken));
@@ -851,9 +868,17 @@ export class PlexAdapter {
   }
   // Everything playing on the Plex server, from any Plex app (owner token only), for Admin › Activity. tk.box's own
   // streams appear too (its transcodes and timeline reports), so they are left out here; tk.box tracks them itself.
-  async sessions(grant: PlexGrant) {
+  async sessionSnapshot(grant: PlexGrant) {
     const data = sessionsSchema.parse(await this.json(new URL('/status/sessions', this.config.PLEX_URL), grant.serverToken));
-    return data.MediaContainer.Metadata.filter(m => m.Player?.machineIdentifier !== this.clientId);
+    const rows: PlexSession[] = [], local: { sessionKey: string; ratingKey: string }[] = [];
+    for (const item of data.MediaContainer.Metadata) {
+      if (item.Player?.machineIdentifier !== this.clientId && item.Player?.product !== 'tk.box') rows.push(item);
+      else if (item.sessionKey && item.ratingKey) local.push({ sessionKey: item.sessionKey, ratingKey: item.ratingKey });
+    }
+    return { rows, local };
+  }
+  async sessions(grant: PlexGrant) {
+    return (await this.sessionSnapshot(grant)).rows;
   }
   async terminateSession(grant: PlexGrant, sessionId: string, reason: string) {
     requireWritable();
