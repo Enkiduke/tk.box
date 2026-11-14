@@ -12,7 +12,7 @@ import { stackKey, quality, feedRank } from '../services/channel-stacks.js';
 import { scheduleStackKeys } from '../services/schedule-stacks.js';
 import { entryKey, planFeeds } from '../services/feed-identity.js';
 import type { CustomChannelStore } from './custom-channels.js';
-import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
+import { parseM3u, parseXmltv, resolveGuideMapping, approveMapping, mappingCandidates, guideWindow, channelPrograms, type GuideMapping, type M3uChannel, type M3uSnapshot, type Program, type XmlSnapshot } from '../providers/iptv.js';
 
 type Kind='m3u'|'xmltv';
 type SourceRow={id:string;kind:Kind;name:string;revision:number;interval_hours:number;encrypted_endpoint:string|null;encrypted_snapshot:string|null;encrypted_candidate:string|null;candidate_digest:string|null;last_attempt:number|null;last_success:number|null;next_due:number|null;last_error:string|null;retry_after:number|null;allow_private_streams:number;schedule:string|null};
@@ -40,15 +40,29 @@ export const identityResolution=z.object({expectedRevision:z.number().int().nonn
 const GUIDE_FILLER=/^\s*(no (program(me)?s?|programming|information|info|data|listings?|epg)( available)?|to be (announced|determined)|tba|tbd|off ?air|sign ?off|close ?down|channel off ?air)\s*\.?\s*$/i;
 export class IptvStore {
   private scheduleStackCache=new Map<string,{version:string;keys:Map<string,string>}>();
+  // Decrypted snapshots and channel records, reused while their stored ciphertext is unchanged: a guide is megabytes, so
+  // decrypting and parsing it once per request was most of a guide page's cost. Callers treat these objects as read-only.
+  private decodedSnapshots=new Map<string,{sealed:string;value:unknown}>();
+  private decodedProviders=new Map<string,{sealed:string;value:M3uChannel}>();
   constructor(private db:Db,private vault:Vault) {}
   private source(id:string) {const row=this.db.prepare('SELECT * FROM iptv_sources WHERE id=?').get(id) as SourceRow|undefined;requireThat(row,'SOURCE_NOT_FOUND','Source not found.',404);return row;}
   private channel(id:string) {const row=this.db.prepare('SELECT c.*,n.number,n.position FROM iptv_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE c.id=?').get(id) as ChannelRow|undefined;requireThat(row,'CHANNEL_NOT_FOUND','Channel not found.',404);return row;}
   private channels(sourceId:string) {return this.db.prepare('SELECT c.*,n.number,n.position FROM iptv_channels c LEFT JOIN lineup_numbers n ON n.channel_id=c.id WHERE source_id=? ORDER BY first_seen,c.rowid').all(sourceId) as ChannelRow[];}
-  private provider(c:ChannelRow) {return JSON.parse(this.vault.open(c.encrypted_provider,`iptv:channel:${c.id}`)) as M3uChannel;}
+  private provider(c:Pick<ChannelRow,'id'|'encrypted_provider'>) {
+    const hit=this.decodedProviders.get(c.id);if(hit?.sealed===c.encrypted_provider)return hit.value;
+    const value=JSON.parse(this.vault.open(c.encrypted_provider,`iptv:channel:${c.id}`)) as M3uChannel;
+    if(this.decodedProviders.size>=100000)this.decodedProviders.clear();
+    this.decodedProviders.set(c.id,{sealed:c.encrypted_provider,value});return value;
+  }
   private identityPlan(sourceId:string,snapshot:M3uSnapshot) {return planFeeds(this.channels(sourceId).map(c=>({id:c.id,identity:c.identity,provider:this.provider(c)})),snapshot.channels);}
   private audit(actor:string,event:string,id:string,now:number) {this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor,event,now,JSON.stringify({id}));}
   private check(row:SourceRow,expected:number) {requireThat(row.revision===expected,'REVISION_CONFLICT','Source changed. Reload and retry.',409);}
-  private snapshot<T>(row:SourceRow):T|undefined {return row.encrypted_snapshot ? JSON.parse(this.vault.open(row.encrypted_snapshot,`iptv:snapshot:${row.id}`)) as T : undefined;}
+  private snapshot<T>(row:SourceRow):T|undefined {
+    if(!row.encrypted_snapshot){this.decodedSnapshots.delete(row.id);return undefined;}
+    const hit=this.decodedSnapshots.get(row.id);if(hit?.sealed===row.encrypted_snapshot)return hit.value as T;
+    const value=JSON.parse(this.vault.open(row.encrypted_snapshot,`iptv:snapshot:${row.id}`)) as T;
+    this.decodedSnapshots.set(row.id,{sealed:row.encrypted_snapshot,value});return value;
+  }
   status(id:string) {const r=this.source(id),feed=this.db.prepare('SELECT feed_id FROM iptv_source_feeds WHERE source_id=?').get(id) as {feed_id:string}|undefined;return {id:r.id,kind:r.kind,name:r.name,revision:r.revision,intervalHours:r.interval_hours,schedule:refreshOf(r),remote:!!r.encrypted_endpoint,lastAttempt:r.last_attempt,lastSuccess:r.last_success,nextDue:r.next_due,lastError:r.last_error,retryAfter:r.retry_after,candidateDigest:r.candidate_digest,allowPrivateStreams:!!r.allow_private_streams,feedId:feed?.feed_id};}
   private sourceOrder() {return (this.db.prepare('SELECT id FROM iptv_sources ORDER BY sort_order,rowid').all() as {id:string}[]).map(r=>r.id);}
   list() {return this.sourceOrder().map(id=>this.status(id));}
@@ -283,9 +297,7 @@ export class IptvStore {
       if(snapshot&&xml) {
         const candidates=channels.map(c=>{const p=this.provider(c),mapping=c.stack_key===null?resolveGuideMapping({sourceId,feedId:link.feed_id!,channelId:c.id},p,snapshot.channels,xml,manual.get(c.id)):undefined;
           return {id:c.id,key:this.stackOf(c,p),automatic:c.stack_key===null,xmlId:mapping?.xmlId};});
-        const ids=new Set(candidates.flatMap(c=>c.xmlId?[c.xmlId]:[])),programs=new Map<string,Program[]>();
-        for(const p of xml.programs)if(ids.has(p.channelId)){const list=programs.get(p.channelId);if(list)list.push(p);else programs.set(p.channelId,[p]);}
-        keys=scheduleStackKeys(candidates.map(c=>({...c,...(c.xmlId?{programs:programs.get(c.xmlId)??[]}:{} )})),now);
+        keys=scheduleStackKeys(candidates.map(c=>({...c,...(c.xmlId?{programs:channelPrograms(xml,c.xmlId)}:{} )})),now);
       }
     }
     if(this.scheduleStackCache.size>=64)this.scheduleStackCache.clear();
@@ -412,7 +424,7 @@ export class IptvStore {
     const cache=new Map<string,M3uSnapshot|XmlSnapshot|undefined>(),feedId=this.status(sourceId).feedId;
     return this.channels(sourceId).filter(c=>c.event&&c.present&&!c.conflict&&c.listing!=='hidden').map(c=>{
       const p=this.provider(c),data=feedId?this.guideData(c.id,feedId,cache):undefined,xmlId=data?.mapping?.xmlId;
-      const programs=xmlId?(data!.xml?.programs??[]).filter(x=>x.channelId===xmlId&&x.end>from&&x.start<to).map(x=>({start:x.start,end:x.end,title:x.title,...(x.subtitle?{subtitle:x.subtitle}:{})})):[];
+      const programs=xmlId?channelPrograms(data!.xml,xmlId).filter(x=>x.end>from&&x.start<to).map(x=>({start:x.start,end:x.end,title:x.title,...(x.subtitle?{subtitle:x.subtitle}:{})})):[];
       return {id:c.id,name:p.name,group:p.group,programs};
     });
   }
@@ -541,7 +553,42 @@ export class IptvStore {
   guide(id:string,feedId:string|undefined,start:number,end:number) {
     requireThat(this.isVisible(id),'CHANNEL_NOT_FOUND','Channel not found.',404);
     const event=this.eventRows(id,start,end);if(event||!feedId)return event??guideWindow([],undefined,start,end);
-    const {c,xml,mapping}=this.guideData(id,feedId);return guideWindow(xml?.programs??[],mapping?.xmlId,start,end,c.display_name??this.provider(c).name);
+    const {c,xml,mapping}=this.guideData(id,feedId);return guideWindow(channelPrograms(xml,mapping?.xmlId),mapping?.xmlId,start,end,c.display_name??this.provider(c).name);
+  }
+  private historyGuideCache = new Map<string, { version: string; since: number; until: number; programs: Program[] }>();
+  historyGuide(id: string, start: number, end: number) {
+    const row = this.db.prepare(`SELECT s.revision AS sourceRevision,g.id AS feedId,g.revision AS guideRevision,m.value AS mapping
+      FROM iptv_channels c JOIN iptv_sources s ON s.id=c.source_id
+      JOIN iptv_source_feeds f ON f.source_id=s.id JOIN iptv_sources g ON g.id=f.feed_id
+      LEFT JOIN iptv_mappings m ON m.channel_id=c.id AND m.feed_id=g.id
+      WHERE c.id=? AND c.present=1 AND c.conflict=0`).get(id) as
+      { sourceRevision: number; feedId: string; guideRevision: number; mapping: string | null } | undefined;
+    if (!row) return [];
+    const version = JSON.stringify(row), cached = this.historyGuideCache.get(id);
+    if (cached?.version === version && cached.since <= start && cached.until >= end) return cached.programs.filter(p => p.start < end && p.end > start);
+    const since = start - 60000, until = end + 60000;
+    const { xml, mapping } = this.guideData(id, row.feedId);
+    const programs = mapping ? channelPrograms(xml, mapping.xmlId).filter(p => p.start < until && p.end > since)
+      .sort((a, b) => a.start - b.start) : [];
+    // Drop implausible boundaries, overlaps and placeholders rather than guessing which program played.
+    const usable = programs.filter((p, i) => !GUIDE_FILLER.test(p.title) && !p.continuous && p.status !== 'starting_soon' &&
+      (i === 0 || programs[i - 1]!.end <= p.start) && (i === programs.length - 1 || p.end <= programs[i + 1]!.start));
+    if (this.historyGuideCache.size >= 64) this.historyGuideCache.clear();
+    this.historyGuideCache.set(id, { version, since, until, programs: usable });
+    return usable.filter(p => p.start < end && p.end > start);
+  }
+
+  sameHistoryStation(from: string, to: string) {
+    const lookup = this.db.prepare(`SELECT c.id,c.source_id,c.display_name,c.stack_key,c.encrypted_provider,c.event,
+      (SELECT w.stack_key FROM sports_windows w WHERE w.channel_id=c.id) AS event_stack
+      FROM iptv_channels c WHERE c.id=? AND c.present=1 AND c.conflict=0`);
+    type Row = Pick<ChannelRow, 'id' | 'source_id' | 'display_name' | 'stack_key' | 'encrypted_provider' | 'event'> & { event_stack?: string };
+    const previous = lookup.get(from) as Row | undefined, next = lookup.get(to) as Row | undefined;
+    if (!previous || !next || previous.source_id !== next.source_id || previous.event !== next.event) return false;
+    if (previous.event) return !!previous.event_stack && previous.event_stack === next.event_stack;
+    const keys = this.automaticStackKeys(previous.source_id);
+    const group = (row: Row) => keys.get(row.id) ?? this.stackOf(row, this.provider(row));
+    return group(previous) === group(next);
   }
   // A live sports event an event channel carries, as its guide listing: the event itself, led in by a
   // "starting soon" slot from when the channel appears, and blank afterwards rather than "No guide data".
@@ -580,7 +627,7 @@ export class IptvStore {
       for(const feed of channel.feeds){const feedId=this.feedFor(feed.id),candidate=feedId?this.guideData(feed.id,feedId,cache):undefined;data??=candidate;if(candidate?.mapping){data=candidate;break;}}
       // Any channel may match the logo library, so the logo route decides; the UI falls back to a monogram.
       const {hasLogo:_,...rest}=channel,logo=true;
-      return {...rest,group:r.group,logo,type:'iptv' as const,favorite:r.favorite,programs:this.eventRows(channel.id,start,end)??guideWindow(data?.xml?.programs??[],data?.mapping?.xmlId,start,end,channel.name)};
+      return {...rest,group:r.group,logo,type:'iptv' as const,favorite:r.favorite,programs:this.eventRows(channel.id,start,end)??guideWindow(channelPrograms(data?.xml,data?.mapping?.xmlId),data?.mapping?.xmlId,start,end,channel.name)};
     })};
   }
 }
