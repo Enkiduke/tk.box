@@ -1,7 +1,7 @@
 # Handoff: backend modularization and efficiency work
 
-Status as of 2026-11-14. Nothing below is committed yet. It sits in the working tree alongside other uncommitted work
-from earlier sessions, so a commit must be split into honest per-work commits.
+Status as of 2026-11-14. The module move is committed (20a7ba2, 31c1c6d). Per-module migrations (next step 2) are in
+the working tree, not committed.
 
 ## Goal
 
@@ -38,6 +38,7 @@ is testing it now (see the checklist below).
   - `requireDeclaredAccess(app)` is the app-wide default deny. Every route must declare a level, or `onReady` throws
     and lists them. It checks at `onReady` so module defaults (filled in by the module's own `onRoute`, which runs after
     the root's) count. Fastify's automatic HEAD routes inherit the level (tested).
+- **Migrations** (`persistence/migrate.ts`, `modules/migrations/`): see the section below.
 - **`bus.ts`**: a typed `EventBus`. Listeners run synchronously in subscription order. A failing listener is logged
   and the rest still run.
 
@@ -100,14 +101,64 @@ scope and no auth callbacks. Catalog, Explore, calendar, setup, IPTV, health, sp
 access on each route rather than by module default. That way the tests that register them on a bare Fastify with
 `installAccess` keep their checks. Artwork, cleanup and admin rely on the module default.
 
+## Migrations
+
+Each module owns its tables. `defineModule({..., migrations})` takes a list of named migrations, and `mountModule`
+applies the ones not yet recorded before the module's `setup`.
+- **`persistence/migrate.ts`**: `Migration = {name, legacy?, up}`. `up` is SQL or a function. `migrate(db, owner,
+  list)` applies the owner's unrecorded migrations in list order, in one transaction (all or none), and records each
+  in `schema_migrations(owner, name, applied_at)`. Duplicate names are refused. Never edit a shipped migration; add a
+  new one after it.
+- **`legacy`** bridges the old single numbered list (`migrations(version)`, versions 1–25): if that table recorded the
+  number, the migration is marked applied without running. The old table is left in existing databases and is not
+  created in new ones.
+- **Core** (`coreMigrations` in `persistence/database.ts`, run by `openDatabase`): tables shared across the app:
+  `settings`, `audit`, `users`, `sessions`, `auth_challenges`, `playback_sessions` (and its trigger), `lineup_numbers`
+  (IPTV and custom channels share the number lineup), `service_keys`, `extra_admins`, `key_check`.
+- **Modules** (`modules/migrations/<module>.ts`):
+
+  | Owner | Tables | Old versions |
+  | --- | --- | --- |
+  | `watch-history` | `history_*` | 23–25 |
+  | `custom-channels` | `channels`, `publications` (the scheduler), `custom_*` | 1 (part), 12–15 |
+  | `iptv` | `iptv_*`, `sports_*`; `snapshot-version` (new) | 2 (part), 3–11, 16, 19–22 |
+  | `artwork` | `artwork_*` | 17–18 |
+  | `explore` | `explore_settings`, `explore_layout`; drops Trakt | none |
+  | `cleanup` | `cleanup_config`, `cleanup_jobs` | none |
+
+- Four of the five store constructors (`AdminStore`, `ServiceKeys`, `ExploreStore`, `CleanupStore`) and `checkKey` no longer
+  create tables. Those migrations have no `legacy` number and keep `IF NOT EXISTS`, since existing databases already
+  have the tables. `SourceSnapshots` (`source_snapshots`) still creates its own: it is a prototype only
+  `refresh-recovery.test.ts` uses, and no module mounts it.
+- **`modules/migrations/index.ts`**: `moduleMigrations` (every module's list by name, in mount order),
+  `migrateModules(db)` and `openMigratedDatabase(path)`. Tests and scripts that use stores without mounting their
+  modules open the database with `openMigratedDatabase`. `index.ts` keeps `openDatabase`: modules migrate as they mount.
+  `scripts/migrate.ts` applies everything and prints the count per owner.
+- Checked once (scratch script, not kept): a fresh database has the same tables, columns, foreign keys, indexes and
+  seeded rows as before, and a database made by the old code upgrades with no schema change and all 33 migrations
+  recorded as applied.
+- Changed behaviour: the Trakt cleanup in Explore runs once instead of on every start. A database is migrated in
+  steps (core, then each module as it mounts) instead of one transaction.
+
 ### Adding a feature
-1. Write `modules/<feature>.ts` with `defineModule`, building its services in `setup`.
+1. Write `modules/<feature>.ts` with `defineModule`, building its services in `setup`. Put its tables in
+   `modules/migrations/<feature>.ts`, pass them as `migrations`, and add them to `moduleMigrations`.
 2. Give every route an access level, or set a module `access` default when all of them share one.
 3. Take other modules' APIs as deps for direct calls. Use bus events for reactions ("X happened"), adding the event
    to `BusEvents` in `bus.ts`.
 4. Mount it in `app.ts` after the modules it depends on.
 
 ## Tests
+- `tests/lib.test.ts`: TtlCache expiry, cap order, shared and retried `remember`; `every` skipping overlap, errors, stop.
+- `tests/xmltv-worker.test.ts`: the worker's result matches the in-thread parse; errors keep code and status; abort.
+  `source-guide` refreshes a remote guide through the real worker (success, failure, abort on removal).
+- `tests/migrations.test.ts` covers: each migration runs once, in order, per owner; a failing batch applies nothing;
+  `legacy` skips; duplicate names; `mountModule` migrates before setup; the registry matches the module definitions.
+- Tests that re-ran an old migration (`custom-channels`, `listing`, `provider-connections`) now delete its
+  `schema_migrations` row. The Explore Trakt test builds the pre-removal tables and then migrates.
+- Run after the migrations change: migrations, modules, playback-history, custom-channels, iptv-durable, sports,
+  explore, cleanup, artwork, key-check, security, refresh-recovery, plex-background, iptv-api, provider-connections
+  and listing. All pass but the known IPTV failure.
 - `tests/modules.test.ts` covers:
   - a route with no access fails startup;
   - session vs escalated checks;
@@ -140,32 +191,76 @@ access on each route rather than by module default. That way the tests that regi
   live/custom and VOD stop. Before, history ended last. Sessions end as `revoked` either way.
 - The session reaper timer starts on `onReady` instead of at build time.
 
-## Testing checklist (the user is running this)
+## Testing checklist (run by the user on 2026-11-14)
 If something fails, the module that owns the route is the place to look; mount order and bus wiring are in `app.ts`.
 
-- [ ] Sign in with Plex; sign out; first-run setup (if practical).
-- [ ] VOD: direct play, a transcoded title, switching audio track or quality, subtitles, resume, stop.
-- [ ] IPTV channel: start, play a while, stop. Custom channel: start, pause, resume, Go Live, subtitles.
-- [ ] Admin › Activity: tk.box streams and Plex app streams listed; Stop on a VOD, an IPTV and a custom stream.
-- [ ] Sign out while something is playing: playback stops and the history session ends.
-- [ ] Admin › History: summary, users, media, sessions, session detail.
-- [ ] Admin › Artwork: titles, previews, a job; Clean Up: settings, a preview job; library pages reload after a job.
-- [ ] Explore rows, details, a Seerr request; calendar; library pages and collections.
-- [ ] Admin › Connections keys save (Plex token reconnects the notification feed); Admin › Admins; playback settings.
-- [ ] Server shuts down cleanly (Ctrl+C) with a stream playing.
+- [x] Start on the existing database after the migrations change; everything loads as before.
+- [x] Sign in with Plex; sign out.
+- [x] VOD: audio switch, subtitles, pause, resume, stop.
+- [x] IPTV channel: starts. One channel had audio out of sync; other channels were fine, so probably that channel's
+  stream (to confirm: is it out of sync in another player too?).
+- [x] Custom channel: start, subtitles, pause, Go Live.
+- [x] Admin › Activity; sign out while playing; Admin › History; Artwork and Clean Up.
+- [x] Explore, calendar, library pages: work. The first load felt slow (probably cold TMDB/Seerr caches after the
+  restart; not looked into).
+- [x] Connections keys, Admins, playback settings.
+- [ ] Shutdown with a stream playing: the player showed "Request failed" (a failed progress beat), then buffering, and
+  did not resume after the server came back. That is how the player already worked: it retries a few times (3 for VOD,
+  8 at 1.5 s for live) and playback sessions and transcodes live in memory, so a restarted server has no session to
+  continue. Not a regression from the move. Still to confirm: Ctrl+C exits promptly with no errors in the log.
 
 ## Next steps, in order
-1. **Fix what the app test turns up.**
-2. **Per-module migrations**: tables are still created in `persistence/database.ts` (and in five store constructors).
-   Give each module named migrations run by `mountModule`.
-3. **Cheap efficiency gaps found but not fixed**:
-   - `IptvStore.source()` is `SELECT *` and reads the multi-megabyte `encrypted_snapshot` even for `.name` or
-     `.revision` (e.g. `guidePage` category names). Add narrow metadata queries.
-   - Stores call `db.prepare(...)` inline on every call (112 in `iptv-store.ts`). Prepare once per store.
+1. **Fix what the app test turns up.** Nothing traced to the move so far (see the checklist notes).
+2. **Per-module migrations**: done (see Migrations). Not yet tried on the real database: the first start should log
+   nothing new and leave the schema unchanged. Running `npx tsx scripts/migrate.ts` against a copy shows the counts.
+3. **Cheap efficiency gaps**: done, not committed or tried in the app.
+   - `IptvStore.source()` now selects every column but `encrypted_snapshot` and `encrypted_candidate` (it returns
+     `has_snapshot` and `snapshot_version` instead). `snapshot(row)` and `candidate(row)` read the sealed text only to
+     decode it. The decoded-snapshot cache is keyed on `snapshot_version`, a counter that the trigger
+     `iptv_snapshot_version` bumps on any write of the snapshot by anyone (iptv migration `snapshot-version`). Before,
+     the cache compared the whole sealed string, so every guide request read megabytes just to check the cache.
+   - Stores prepare each SQL text once: `prepared(db, sql)` (`persistence/statements.ts`) keeps one statement cache per
+     connection, shared by every store on it, capped at 1000 (cleared, not grown, if SQL ever varies per call).
+     `IptvStore` (`q(sql)`), custom-channels, sports, artwork, channel-health, cleanup, identity and the scheduler use
+     it. All their SQL is constants or fixed fragments; the channel-health upsert's column list varies only by caller
+     shape. Nothing calls `.pluck()`, `.raw()` or `.iterate()`, which would change or tie up a shared statement.
+     `HistoryStore` already prepared its statements up front; the smaller stores (settings, admins, service keys,
+     explore, listing helpers) still prepare inline.
+   - Not measured: no before/after timing.
 4. **Later**:
-   - XMLTV parse in a worker thread, with the main thread staying the only SQLite writer (chunked transactions; a second
-     writer connection would block on `busy_timeout`).
-   - Shared scheduler and cache utilities.
+   - **XMLTV parse in a worker thread**: done, not committed or tried in the app.
+     - Measured on a synthetic 11 MB guide (800 channels, 57,600 programs): a refresh blocked the main thread about
+       600 ms, 400 of it `parseXmltv`; JSON encode/decode about 40 ms each, coverage writes about 50 ms. With the
+       worker, the main thread spends about 195 ms (seal, write, coverage) and stalls at most 14 ms during the parse.
+       Chunked transactions were not worth it at these sizes, so writes stay one transaction.
+     - `providers/xmltv-parse.ts`: `parseXmltvOffThread(bytes, signal)` starts one worker per refresh
+       (`providers/xmltv-worker.ts`), which returns the snapshot as JSON text plus its channel count. AppErrors come
+       back with their code and status; abort terminates the worker. Run from source, the worker registers tsx's
+       loader itself (`tsx/esm/api`), since Node 22 workers don't get the main thread's tsx hooks; built, it loads the
+       `.js` file directly (checked by compiling to a temporary folder and running it with plain node).
+     - `SourceRefresh` parses remote XMLTV downloads in the worker (constructor's third argument, default
+       `parseXmltvOffThread`) and calls `IptvStore.ingestGuide(actor, id, expected, parsed)`, which does the writes
+       on the main thread, still the only SQLite writer. `ingest` keeps parsing in-thread for uploads (64 KB body
+       limit) and M3U playlists. `publish` now takes the snapshot's JSON text (plus the parsed playlist for M3U).
+     - Not moved: M3U parsing; the main-thread JSON.parse of the new snapshot when coverage first reads it.
+   - **Shared scheduler and cache utilities**: done, not committed or tried in the app.
+     - `lib/ttl-cache.ts`: `TtlCache<V>(max, now?)` with `get`, `set(key, value, ttlMs)`, `remember(key, ttlMs, make)`
+       (callers share one pending promise; a rejected one is dropped so the next call retries), `delete`,
+       `deleteWhere`, `clear`, `prune`. Past `max`, the oldest written goes first; a hit doesn't refresh age. Same
+       behaviour as the hand-rolled caches it replaces: Plex metadata (`remembered`, 5000), Explore (`ExploreCache`,
+       2000), calendar (100), Admin › History (32), artwork pictures (400), sign-in grants (1000). Seerr's public
+       settings now have a cap (64; before, unbounded).
+     - Left as they were, since they expire on something other than time: Explore's library snapshot (expiry set
+       from the result), artwork folder rows (mtime), the IPTV guide-history cache (version), `ArtworkCache` (byte cap).
+     - `lib/every.ts`: `every(ms, task, onError)` returns `{stop}`. It skips a run while the last one's promise is
+       still going, sends thrown or rejected errors to `onError`, and unrefs the timer. Used by the IPTV refresh tick,
+       session reaper, artwork and clean-up schedules, automatic new episodes, channel checks, watch-history
+       checkpoints, sports schedule, live and custom channel sweeps, and each custom channel's indexer.
+     - Changed behaviour: a failing tick is now logged instead of being an unhandled error (Node exits on those).
+       `EpisodeSync.tick` had no catch at all, and its runs could overlap; now they can't.
+     - Left on plain `setInterval`: the per-connection SSE heartbeat, the VOD session recheck, and
+       `VodTranscodes.sweep`. A sweep there waits on Plex for every session, so skipping overlapping runs would delay
+       idle stops while Plex is slow.
    - A durable job queue together with the Radarr/Sonarr replacement.
 
 ## Conventions to keep
