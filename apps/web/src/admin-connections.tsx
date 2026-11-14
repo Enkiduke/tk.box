@@ -29,7 +29,7 @@ type Connection={
   keyLabel?:string;
   keyHint?:string;
   settings?:SavedSettings;
-  unavailable?:boolean;
+  settingsError?:string;
   refreshing?:boolean;
   retry?:()=>void;
   builtIn?:boolean;
@@ -47,7 +47,7 @@ const artworkProviders=[
 function readSettings<T>(view:ReturnType<typeof useApi<T>>,read:(data:T)=>SavedSettings) {
   return {
     settings:view.data===undefined?undefined:read(view.data),
-    unavailable:!!view.error,
+    settingsError:view.error?.message,
     refreshing:view.loading,
     retry:view.reload,
   };
@@ -58,9 +58,9 @@ function isConfigured(settings:SavedSettings|undefined) {
 }
 
 function connectionStatus(connection:Connection):HealthStatus {
-  const {settings,unavailable,health}=connection;
+  const {settings,settingsError,health}=connection;
+  if(settingsError)return {label:'Settings unavailable',tone:'warning',detail:settingsError};
   if(health)return health;
-  if(unavailable)return {label:'Settings unavailable',tone:'warning',detail:'Could not load the saved settings.'};
   if(!settings)return {label:'Loading…'};
   if(isConfigured(settings))return {label:'Checking…'};
   if(settings.address?.value)return {label:'API key missing',tone:'warning',detail:'Add an API key to complete setup.'};
@@ -94,7 +94,7 @@ function feedStatus({state,lastSuccess,lastChecked,failedRequests,retryAt}:FeedH
 }
 
 function readHealth<T>(view:ReturnType<typeof useApi<T>>,read:(data:T)=>HealthStatus):HealthStatus {
-  if(view.error)return {label:'Status unavailable',tone:'warning',detail:'Use Refresh status to try again.'};
+  if(view.error)return {label:'Status unavailable',tone:'warning',detail:view.error.message};
   if(view.data===undefined)return {label:'Checking…'};
   return read(view.data);
 }
@@ -102,6 +102,17 @@ function readHealth<T>(view:ReturnType<typeof useApi<T>>,read:(data:T)=>HealthSt
 function editAction(connection:Connection,settings:SavedSettings) {
   if(connection.builtIn)return 'Manage';
   return settings.keySaved||settings.address?.value?'Edit':'Add';
+}
+
+function categoryStatus(connections:Connection[]) {
+  const statuses=connections.map(connectionStatus);
+  const issues=statuses.filter(status=>status.tone==='warning').length;
+  const working=statuses.some(status=>status.tone==='success');
+  const configured=connections.filter(item=>item.builtIn||isConfigured(item.settings)).length;
+  const loading=statuses.some(status=>['Checking…','Loading…','Awaiting check','Awaiting sync'].includes(status.label));
+  const tone=issues?'warning':loading?'checking':working?'success':'idle';
+  const summary=issues?`${issues} ${issues===1?'issue':'issues'}`:loading?'Checking status':working?'Working':'Idle or not set up';
+  return {tone,summary,configured,count:configured?`${configured}/${connections.length}`:'–'};
 }
 
 export function ConnectionsSettings({params}:{params:URLSearchParams}) {
@@ -222,7 +233,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const categoryLink=(id:string)=>link('admin',{section:'connections',category:id});
   const issues=groups.flatMap(({id,connections})=>connections.flatMap(connection=>{
     const status=connectionStatus(connection);
-    if(connection.unavailable&&status.tone!=='warning')return [{id,name:connection.name,label:'Settings unavailable',detail:undefined}];
     return status.tone==='warning'?[{id,name:connection.name,label:status.label,detail:status.detail}]:[];
   }));
   const refresh=()=>{
@@ -250,15 +260,14 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       <div className="connections-layout">
         <nav className="connections-nav" aria-label="Connection categories">
           {groups.map(({id,title,icon,connections})=>{
-            const known=connections.every(item=>item.builtIn||item.settings&&!item.unavailable);
-            const count=connections.filter(item=>item.builtIn||isConfigured(item.settings)).length;
-            const issueCount=issues.filter(item=>item.id===id).length;
+            const {tone,summary,configured,count}=categoryStatus(connections);
             return <a key={id} aria-current={id===group.id?'page':undefined} href={categoryLink(id)}>
               <span className="connections-icon"><Icon name={icon} size={16}/></span>
               <span>{title}</span>
-              {issueCount>0
-                ? <span className="connections-count" data-warning="true">{issueCount} {issueCount===1?'issue':'issues'}</span>
-                : known&&<span className="connections-count" aria-label={`${count} of ${connections.length} set up`}>{count}/{connections.length}</span>}
+              <span className="connections-count" data-tone={tone} title={summary}>
+                <span aria-hidden="true">{count}</span>
+                <span className="sr-only">{configured} of {connections.length} set up. {summary}</span>
+              </span>
             </a>;
           })}
         </nav>
@@ -266,7 +275,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
           <h4 id="connections-category">{group.title}</h4>
           <ul className="connections-list">
             {group.connections.map(connection=>{
-              const {name,description,settings,unavailable,refreshing,retry}=connection;
+              const {name,description,settings,settingsError,refreshing,retry}=connection;
               const {label,tone,detail,timestamp}=connectionStatus(connection);
               const action=settings&&editAction(connection,settings);
               return <li className="connections-row" data-selected={params.get('service')===name||undefined} key={name}>
@@ -279,7 +288,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
                   {timestamp&&<small className="connections-address">{timestamp}</small>}
                 </div>
                 <span className={`badge connections-status ${tone??''}`}>{label}</span>
-                {unavailable
+                {settingsError
                   ? <button type="button" disabled={refreshing} aria-label={`Retry loading ${name} settings`} onClick={retry}>Retry</button>
                   : action&&<button type="button" disabled={refreshing} aria-label={`${action} ${name}`} onClick={()=>{setSaved(undefined);setEditing(connection);}}>
                     {action}

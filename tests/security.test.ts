@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SettingsStore } from '../apps/server/src/persistence/database.js';
 import { ServiceKeys } from '../apps/server/src/persistence/service-keys.js';
 import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
@@ -113,6 +116,38 @@ test('HTTP health, CSRF, cookie login, role checks, settings revisions and secre
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM audit').all()).includes('token'));
     assert.equal(digest(owner.cookie).length, 64);
   } finally {await app.close(); db.close();}
+});
+
+test('preview asset and channel logo requests leave the Connections API budget available', async () => {
+  const web = await mkdtemp(join(tmpdir(), 'tk-box-rate-limit-'));
+  await mkdir(join(web,'assets'));
+  await writeFile(join(web,'index.html'),'<html></html>');
+  await writeFile(join(web,'assets','fixture.js'),'export {};');
+  const c = {...config(), WEB_DIR: web}, db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32));
+  const plex = new PlexAdapter(c, 'rate-limits', fakePlex({accountId:1}).transport);
+  const app = await buildApp(c, db, vault, plex, false, 'tk.box_readonly');
+  try {
+    const signed = await new IdentityService(db, vault, plex).signIn('fixture-account-token');
+    const headers = {cookie: `tk.box_readonly_local=${signed.cookie}`};
+    for (let i = 0; i < 61; i++) {
+      assert.equal((await app.inject({url:'/assets/fixture.js'})).statusCode, 200);
+      assert.equal((await app.inject({url:'/api/v1/iptv/channels/not-a-channel/logo', headers})).statusCode, 400);
+    }
+    assert.equal((await app.inject({url:'/api/v1/admin/connections/services', headers})).statusCode, 200);
+    for (let i = 0; i < 120; i++) await app.inject({url:'/api/v1/libraries', headers});
+    const limited = await app.inject({url:'/api/v1/admin/keys', headers});
+    assert.equal(limited.statusCode, 429);
+    assert.ok(Number(limited.headers['retry-after']) > 0);
+    assert.match(limited.json().message, /Try again in \d+ seconds?\./);
+    assert.equal(limited.json().retryable, true);
+    assert.equal((await app.inject({url:'/'})).statusCode, 200);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(join(web,'assets','fixture.js'));
+    await rm(join(web,'index.html'));
+    await rm(web,{recursive:true});
+  }
 });
 
 test('preview authentication uses separate cookie names and cannot replace the real app session',async()=>{
