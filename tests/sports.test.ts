@@ -6,6 +6,7 @@ import { IptvStore } from '../apps/server/src/persistence/iptv-store.js';
 import { HealthStore } from '../apps/server/src/persistence/channel-health-store.js';
 import { SportsStore, allowed, type SportsSettings } from '../apps/server/src/persistence/sports-store.js';
 import { SportsSchedule } from '../apps/server/src/services/sports-schedule.js';
+import { SourceFetchError } from '../apps/server/src/providers/source-fetch.js';
 import { Vault } from '../apps/server/src/security/vault.js';
 import { channelWindow, eventScore, nameTime, cleanTitle, eventChannelName, type SportsEvent } from '../apps/server/src/services/sports-match.js';
 import { espnEvents, tsdbEvents, espnLeagueLogo, tsdbLeagueLogo } from '../apps/server/src/providers/sports-feeds.js';
@@ -24,6 +25,48 @@ const boxing = tsdbEvents({ events: [{ idEvent: '1', strEvent: 'Dalton Smith vs 
 const events: SportsEvent[] = [...nfl, ...ufc, ...boxing];
 const opts = { zone: 'America/New_York', nameHours: 3 };
 const win = (name: string, programs: { start: number; end: number; title: string }[] = []) => channelWindow({ id: 'x', name, group: 'Sports', programs }, events, now, opts);
+
+test('schedule health tracks providers separately and rechecks after a key change', async ({mock}) => {
+  const db = openMigratedDatabase(':memory:'), iptv = new IptvStore(db, new Vault(randomBytes(32))), store = new SportsStore(db, id => iptv.relist(id));
+  const source = iptv.create('owner', {kind: 'm3u', name: 'Sports'});
+  let key = '123';
+  mock.timers.enable({apis: ['Date', 'setTimeout'], now});
+  const schedule = new SportsSchedule(iptv, store, undefined, () => {},
+    {espn: ['football/nfl'], tsdb: [], tsdbKey: () => key, zone: 'UTC', nameHours: 3, tickMs: HOUR},
+    undefined, async url => {
+      if (url.includes('/123/')) throw new SourceFetchError('SOURCE_RATE_LIMITED', Date.now() + 60_000);
+      return {events: url.includes('espn.com') ? [] : null};
+    });
+  const tick = async () => {
+    const pending = schedule.tick();
+    for (let i = 0; i < 10; i++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      mock.timers.tick(2500);
+    }
+    await pending;
+  };
+  try {
+    assert.equal(schedule.feedStatus().espn.state, 'idle');
+    store.setPolicy('owner', source.id, {enabled: true, leadMinutes: 30});
+    assert.equal(schedule.feedStatus().tsdb.state, 'waiting');
+    await tick();
+    const {espn, tsdb} = schedule.feedStatus();
+    assert.equal(espn.state, 'working');
+    assert.ok(espn.lastSuccess);
+    assert.equal(tsdb.state, 'backoff');
+    assert.equal(tsdb.failedRequests, 1);
+    assert.equal(tsdb.lastSuccess, null);
+    assert.ok(tsdb.retryAt);
+    key = 'custom-key';
+    assert.equal(schedule.feedStatus().tsdb.state, 'waiting');
+    mock.timers.tick(60_000);
+    await tick();
+    assert.equal(schedule.feedStatus().tsdb.state, 'working');
+    assert.ok(schedule.feedStatus().tsdb.lastSuccess);
+    store.setPolicy('owner', source.id, {enabled: false, leadMinutes: 30});
+    assert.equal(schedule.feedStatus().tsdb.state, 'idle');
+  } finally { schedule.close(); mock.timers.reset(); db.close(); }
+});
 
 test('channel names match events by teams, abbreviations, fighters and numbered cards', () => {
   assert.equal(win('NFL 03: Texans vs Jaguars')?.eventId, 'espn:401872996');

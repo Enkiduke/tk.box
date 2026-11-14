@@ -8,10 +8,12 @@ import { plexAccountId, type AdminStore } from '../persistence/admin-store.js';
 import type { SettingsStore } from '../persistence/database.js';
 import type { ServerMetrics } from '../services/metrics.js';
 import type { IdentityService } from '../services/identity.js';
+import type { connectionHealth } from '../services/connection-health.js';
 
 type Deps = {
   admins: AdminStore; settings: SettingsStore; metrics: ServerMetrics;
   identity: Pick<IdentityService, 'accountToken'>;
+  checkConnections: ReturnType<typeof connectionHealth>;
   // Custom channels' segment buffer use, shown with the playback settings.
   customBuffer: () => unknown;
 };
@@ -21,12 +23,29 @@ type Deps = {
 export const adminModule = defineModule({
   name: 'admin',
   access: 'admin',
-  setup(routes, { plex, bus, budget, serviceKeys, background }, { admins, settings, metrics, identity, customBuffer }: Deps) {
+  setup(routes, { plex, bus, budget, serviceKeys, background }, { admins, settings, metrics, identity, customBuffer, checkConnections }: Deps) {
     // Admin › metrics: event-loop delay, route timings and Plex reads since the server started.
     routes.get('/api/v1/admin/metrics', async () => metrics.snapshot());
     // Admin › Connections: keys no feature's own settings hold. A new TheSportsDB key is used from the next download on,
     // a new Plex admin token from the next background task (and the Plex notification feed reconnects).
     routes.get('/api/v1/admin/keys', async () => serviceKeys.view());
+    routes.get('/api/v1/admin/connections/services', async () => checkConnections());
+    routes.get('/api/v1/admin/connections/plex', async req => {
+      const { hash, grant } = viewer(req);
+      const accountToken = identity.accountToken(hash), adminToken = serviceKeys.get('plex');
+      const accountCheck = plex.accountAccess(accountToken);
+      const serverCheck = plex.serverAccess(grant.serverToken);
+      const tokenCheck = !adminToken ? undefined : (adminToken === accountToken ? accountCheck : plex.accountAccess(adminToken))
+        .then(async account => {
+          if (!account.isOwner) return false;
+          await (account.serverToken === grant.serverToken ? serverCheck : plex.serverAccess(account.serverToken));
+          return true;
+        });
+      const [account, server, token] = await Promise.allSettled([accountCheck, serverCheck, tokenCheck]);
+      const admin = !adminToken ? 'missing' : token.status === 'fulfilled' ? (token.value ? 'working' : 'failed')
+        : account.status === 'rejected' || server.status === 'rejected' ? 'unverified' : 'failed';
+      return { account: account.status === 'fulfilled', server: server.status === 'fulfilled', admin, checkedAt: Date.now() };
+    });
     // A Plex admin token is saved only once Plex vouches for it as the server owner's.
     routes.put('/api/v1/admin/keys', async req => {
       const { grant } = viewer(req), input = serviceKeysInput.parse(req.body);

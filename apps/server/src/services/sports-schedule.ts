@@ -9,7 +9,10 @@ import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 export type SportsOptions = { espn: string[]; tsdb: string[]; tsdbKey: () => string; zone: string; nameHours: number; tickMs: number };
 // A job may also name its league's logo, read from the same response.
-type Job = { url: string; provider: 'espn' | 'tsdb'; every: number; parse: (body: unknown) => SportsEvent[]; logo?: { key: string; read: (body: unknown) => string | undefined } };
+type Provider = 'espn' | 'tsdb';
+type Job = { url: string; provider: Provider; every: number; parse?: (body: unknown) => SportsEvent[]; logo?: { key: string; read: (body: unknown) => string | undefined } };
+type FeedHealth = { lastSuccess: number | null; lastChecked: number | null; failures: Set<string> };
+const feedHealth = (): FeedHealth => ({ lastSuccess: null, lastChecked: null, failures: new Set() });
 type Image = { type: string; bytes: Buffer };
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // TheSportsDB allows 30 requests a minute on the free key; ESPN publishes no limit, so stay gentle.
@@ -19,13 +22,15 @@ const logos = new ChannelLogos();
 // Keeps a rolling schedule (yesterday through the day after tomorrow) and turns it into per-channel
 // air windows for event-driven sources. Fetching only happens while some source uses sports events.
 export class SportsSchedule {
-  private due = new Map<string, number>();
+  private due = { espn: new Map<string, number>(), tsdb: new Map<string, number>() };
   private backoff = { espn: 0, tsdb: 0 };
   private timer: Repeating;
   private running = false;
   private closed = false;
   private lastMatch = 0;
   private stale = true;
+  private feeds = { espn: feedHealth(), tsdb: feedHealth() };
+  private lastTsdbKey?: string;
   lastSync: number | null = null;
   lastError: string | null = null;
   constructor(private iptv: IptvStore, private store: SportsStore, private health: HealthStore | undefined, private pump: () => void,
@@ -33,18 +38,36 @@ export class SportsSchedule {
     private get: (url: string) => Promise<unknown> = fetchJson(), private image: (url: string) => Promise<Image> = url => logos.get(url)) {
     this.timer = every(options.tickMs, () => this.tick(), e => this.log('sports schedule failed', errorDetail(e)));
   }
-  private jobs(now: number): Job[] {
+  private tsdbKey() {
+    const key = this.options.tsdbKey();
+    if (key !== this.lastTsdbKey) {
+      this.lastTsdbKey = key;
+      this.feeds.tsdb = feedHealth();
+      this.due.tsdb = new Map();
+    }
+    return key;
+  }
+  feedStatus(now = Date.now()) {
+    this.tsdbKey();
+    const active = this.store.sources().length > 0;
+    const status = (provider: Provider) => {
+      const { lastSuccess, lastChecked, failures } = this.feeds[provider];
+      const state = !active ? 'idle' : failures.size && this.backoff[provider] > now ? 'backoff'
+        : failures.size ? 'warning' : lastSuccess === null ? 'waiting' : 'working';
+      return { state, lastSuccess, lastChecked, failedRequests: failures.size, retryAt: state === 'backoff' ? this.backoff[provider] : null };
+    };
+    return { espn: status('espn'), tsdb: status('tsdb') };
+  }
+  private jobs(now: number, key: string): Job[] {
     const days = [-1, 0, 1, 2].map(d => espnDay(now + d * DAY)), today = espnDay(now);
     const espn = this.options.espn.flatMap(path => days.map(day => ({ url: espnUrl(path, day), provider: 'espn' as const, every: day === today ? 10 * MINUTE : HOUR, parse: (b: unknown) => espnEvents(path, b),
       logo: { key: path, read: espnLeagueLogo } })));
     const iso = [0, 1, 2].map(d => new Date(now + d * DAY).toISOString().slice(0, 10));
-    // The key is read for every pass, so a key saved in Admin › Connections is used from the next fetch on.
-    const key = this.options.tsdbKey();
     const tsdb = [...this.options.tsdb.flatMap(id => tsdbUrls(key, id)), ...iso.map(day => tsdbDayUrl(key, day, 'Fighting'))]
       .map(url => ({ url, provider: 'tsdb' as const, every: 6 * HOUR, parse: tsdbEvents }));
     // TheSportsDB badges: the configured leagues and any league a fight card turned up, looked up weekly.
     const ids = new Set([...this.options.tsdb, ...this.store.leagues(0).flatMap(l => /^tsdb:\d+$/.test(l.key) ? [l.key.slice(5)] : [])]);
-    const badges = [...ids].map(id => ({ url: tsdbLeagueUrl(key, id), provider: 'tsdb' as const, every: 7 * DAY, parse: () => [], logo: { key: `tsdb:${id}`, read: tsdbLeagueLogo } }));
+    const badges = [...ids].map(id => ({ url: tsdbLeagueUrl(key, id), provider: 'tsdb' as const, every: 7 * DAY, logo: { key: `tsdb:${id}`, read: tsdbLeagueLogo } }));
     return [...espn, ...tsdb, ...badges];
   }
   // Rematching decrypts every channel and its listings, so it runs after new data or every five minutes.
@@ -56,17 +79,34 @@ export class SportsSchedule {
       const sources = this.store.sources();
       if (!sources.length) return;
       let fetched = 0;
-      for (const job of this.jobs(now)) {
+      const jobs = this.jobs(now, this.tsdbKey()), feeds = { ...this.feeds }, dues = { ...this.due };
+      const urls = new Set(jobs.map(job => job.url));
+      for (const due of Object.values(dues)) for (const url of due.keys()) if (!urls.has(url)) due.delete(url);
+      for (const feed of Object.values(feeds)) for (const url of feed.failures.keys()) if (!urls.has(url)) feed.failures.delete(url);
+      for (const job of jobs) {
         if (this.closed) return;
-        if ((this.due.get(job.url) ?? 0) > Date.now() || this.backoff[job.provider] > Date.now()) continue;
+        if (job.provider === 'tsdb' && feeds.tsdb !== this.feeds.tsdb) continue;
+        const feed = feeds[job.provider], due = dues[job.provider];
+        if ((due.get(job.url) ?? 0) > Date.now() || this.backoff[job.provider] > Date.now()) continue;
         try {
-          const body = await this.get(job.url), events = job.parse(body), logo = job.logo?.read(body);
-          this.store.upsert(events); this.due.set(job.url, Date.now() + job.every); fetched++;
+          const body = await this.get(job.url), logo = job.logo?.read(body);
+          if (job.parse) {
+            const events = (body as { events?: unknown } | null)?.events;
+            if (!Array.isArray(events) && !(job.provider === 'tsdb' && events === null)) throw new Error('Invalid schedule response');
+            this.store.upsert(job.parse(body));
+            feed.lastChecked = feed.lastSuccess = Date.now();
+            feed.failures.delete(job.url);
+          }
+          due.set(job.url, Date.now() + job.every); fetched++;
           if (job.logo && logo) this.store.setLogoUrl(job.logo.key, logo);
         } catch (error) {
           // Rate limited: the whole provider waits. Anything else: this request alone retries later.
           if (error instanceof SourceFetchError && error.retryAt) this.backoff[job.provider] = error.retryAt;
-          else this.due.set(job.url, Date.now() + 15 * MINUTE);
+          else due.set(job.url, Date.now() + 15 * MINUTE);
+          if (job.parse) {
+            feed.lastChecked = Date.now();
+            feed.failures.add(job.url);
+          }
           this.lastError = (error as { code?: string }).code ?? 'SPORTS_FETCH_FAILED';
           this.log('sports schedule request failed', { provider: job.provider, code: this.lastError });
         }

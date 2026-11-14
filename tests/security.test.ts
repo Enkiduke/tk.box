@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { SettingsStore } from '../apps/server/src/persistence/database.js';
+import { ServiceKeys } from '../apps/server/src/persistence/service-keys.js';
 import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { Vault, digest } from '../apps/server/src/security/vault.js';
 import { PlexAdapter } from '../apps/server/src/providers/plex.js';
@@ -211,4 +212,41 @@ test('the server owner makes Plex users admins; they get Admin but not the admin
     assert.equal((await me(viewer)).role, 'viewer');
     assert.equal((await call(viewer, '/api/v1/admin/settings/playback')).statusCode, 403);
   } finally {await app.close(); db.close();}
+});
+
+test('Plex connection status reports each part of the connection through an admin-only route', async () => {
+  const c = loadConfig({ PLEX_MACHINE_ID: 'machine', PLEX_OWNER_ACCOUNT_ID: '1', PLEX_REQUIRED_LIBRARY_IDS: '10,20' });
+  const db = openMigratedDatabase(':memory:'), vault = new Vault(randomBytes(32)), fixture = fakePlex({accountId: 1});
+  let accountDown = false, serverDown = false;
+  const plex = new PlexAdapter(c, 'status', (async (url, init) => {
+    const path = new URL(String(url)).pathname, token = new Headers(init?.headers).get('X-Plex-Token');
+    if ((accountDown && path === '/api/v2/user') || (serverDown && path === '/library/sections')) return new Response(null, {status: 503});
+    if (token === 'rejected-token') return new Response(null, {status: 401});
+    return fixture.transport(url, init);
+  }) as typeof fetch);
+  const app = await buildApp(c, db, vault, plex, false);
+  const url = '/api/v1/admin/connections/plex', keys = new ServiceKeys(db, vault);
+  try {
+    assert.equal((await app.inject({url})).statusCode, 401);
+    const identity = new IdentityService(db, vault, plex);
+    const signed = await identity.signIn('fixture-account-token');
+    const headers = {cookie: `tk.box_local=${signed.cookie}`};
+    const status = async () => {
+      const response = await app.inject({url, headers});
+      assert.equal(response.statusCode, 200);
+      const {checkedAt, ...result} = response.json();
+      assert.equal(typeof checkedAt, 'number');
+      return result;
+    };
+    assert.deepEqual(await status(), {account: true, server: true, admin: 'missing'});
+    keys.update('1', {plex: 'fixture-account-token'});
+    assert.deepEqual(await status(), {account: true, server: true, admin: 'working'});
+    keys.update('1', {plex: 'rejected-token'});
+    assert.deepEqual(await status(), {account: true, server: true, admin: 'failed'});
+    accountDown = true;
+    assert.deepEqual(await status(), {account: false, server: true, admin: 'unverified'});
+    accountDown = false;
+    serverDown = true;
+    assert.deepEqual(await status(), {account: true, server: false, admin: 'unverified'});
+  } finally { await app.close(); db.close(); }
 });
