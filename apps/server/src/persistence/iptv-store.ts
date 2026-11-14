@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from './database.js';
 import { prepared } from './statements.js';
+import type { ParsedXmltv } from '../providers/xmltv-parse.js';
 import { Vault, digest } from '../security/vault.js';
 import { requireThat } from '../errors.js';
 import { nextRun, scheduleEvery, type Schedule } from '../../../../packages/contracts/src/schedule.js';
@@ -151,26 +152,33 @@ export class IptvStore {
   }
   ingest(actor:string,id:string,expected:number,bytes:Buffer,now=Date.now()) {
     const row=this.source(id);this.check(row,expected);
-    const parsed=row.kind==='m3u'?parseM3u(new TextDecoder('utf-8',{fatal:true}).decode(bytes)):parseXmltv(bytes);
+    if(row.kind==='xmltv'){const parsed=parseXmltv(bytes);return this.ingestGuide(actor,id,expected,{text:JSON.stringify(parsed),channels:parsed.channels.length},now);}
+    const parsed=parseM3u(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
     requireThat(parsed.channels.length<=20000,'IMPORT_LIMIT','Too many source channels.');
     return this.db.transaction(()=>{
       const current=this.source(id);this.check(current,expected);
-      if(current.kind==='m3u') {
-        const old=this.channels(id).filter(c=>c.present&&!c.conflict),plan=this.identityPlan(id,parsed as M3uSnapshot);
-        // A clean HTTP EOF cannot detect a logically truncated provider export.
-        // Hold a majority disappearance until the exact candidate is reviewed.
-        if(old.length>=2 && old.filter(c=>!plan.present.has(c.id)).length>old.length/2) {
-          const text=JSON.stringify(parsed),fingerprint=digest(text);
-          this.q('UPDATE iptv_sources SET revision=revision+1,encrypted_candidate=?,candidate_digest=?,last_attempt=?,last_error=?,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:candidate:${id}`),fingerprint,now,'SNAPSHOT_REVIEW_REQUIRED',nextDue(current,now),id);
-          this.audit(actor,'iptv_snapshot_held',id,now);return {status:'review_required' as const,source:this.status(id)};
-        }
+      const old=this.channels(id).filter(c=>c.present&&!c.conflict),plan=this.identityPlan(id,parsed);
+      // A clean HTTP EOF cannot detect a logically truncated provider export.
+      // Hold a majority disappearance until the exact candidate is reviewed.
+      if(old.length>=2 && old.filter(c=>!plan.present.has(c.id)).length>old.length/2) {
+        const text=JSON.stringify(parsed),fingerprint=digest(text);
+        this.q('UPDATE iptv_sources SET revision=revision+1,encrypted_candidate=?,candidate_digest=?,last_attempt=?,last_error=?,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:candidate:${id}`),fingerprint,now,'SNAPSHOT_REVIEW_REQUIRED',nextDue(current,now),id);
+        this.audit(actor,'iptv_snapshot_held',id,now);return {status:'review_required' as const,source:this.status(id)};
       }
-      this.publish(actor,current,parsed,now);return {status:'published' as const,source:this.status(id)};
+      this.publish(actor,current,JSON.stringify(parsed),now,parsed);return {status:'published' as const,source:this.status(id)};
+    })();
+  }
+  // An XMLTV guide already parsed (SourceRefresh parses downloads in a worker, parseXmltvOffThread).
+  ingestGuide(actor:string,id:string,expected:number,parsed:ParsedXmltv,now=Date.now()) {
+    requireThat(parsed.channels<=20000,'IMPORT_LIMIT','Too many source channels.');
+    return this.db.transaction(()=>{
+      const current=this.source(id);this.check(current,expected);requireThat(current.kind==='xmltv','INVALID_SOURCE','Only an XMLTV source takes a guide.');
+      this.publish(actor,current,parsed.text,now);return {status:'published' as const,source:this.status(id)};
     })();
   }
   acceptCandidate(actor:string,id:string,expected:number,fingerprint:string,now=Date.now()) {
     return this.db.transaction(()=>{const row=this.source(id);this.check(row,expected);const parsed=row.candidate_digest===fingerprint?this.candidate(row):undefined;requireThat(parsed,'CANDIDATE_CHANGED','Reload the source candidate before approving.',409);
-      this.publish(actor,row,parsed,now);return this.status(id);
+      this.publish(actor,row,JSON.stringify(parsed),now,parsed);return this.status(id);
     })();
   }
   candidateReview(id:string) {
@@ -178,9 +186,10 @@ export class IptvStore {
     const plan=this.identityPlan(id,snapshot);
     return {revision:row.revision,digest:row.candidate_digest,incoming:plan.entries.map(c=>({tvgId:c.tvgId,name:c.name,group:c.group})),missing:this.channels(id).filter(c=>!plan.present.has(c.id)).map(c=>({id:c.id,name:c.display_name??this.provider(c).name,number:c.number}))};
   }
-  private publish(actor:string,row:SourceRow,parsed:M3uSnapshot|XmlSnapshot,now:number) {
-    if(row.kind==='m3u')this.reconcile(row,parsed as M3uSnapshot,now);
-    this.q('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(JSON.stringify(parsed),`iptv:snapshot:${row.id}`),now,now,nextDue(row,now),row.id);
+  // `text` is the snapshot's JSON; a playlist also passes the parsed snapshot, to reconcile its channels.
+  private publish(actor:string,row:SourceRow,text:string,now:number,playlist?:M3uSnapshot) {
+    if(row.kind==='m3u'){requireThat(playlist,'INVALID_SOURCE','A playlist needs its parsed channels.');this.reconcile(row,playlist,now);}
+    this.q('UPDATE iptv_sources SET revision=revision+1,encrypted_snapshot=?,encrypted_candidate=NULL,candidate_digest=NULL,last_attempt=?,last_success=?,last_error=NULL,retry_after=NULL,next_due=? WHERE id=?').run(this.vault.seal(text,`iptv:snapshot:${row.id}`),now,now,nextDue(row,now),row.id);
     this.audit(actor,'iptv_snapshot_published',row.id,now);
     // New channels and new listings change what is listed.
     if(row.kind==='m3u')this.relist(row.id);
