@@ -1,4 +1,4 @@
-import type {FastifyInstance,FastifyRequest} from 'fastify';
+import type {FastifyInstance} from 'fastify';
 
 // Changes open pages should pick up without a reload, sent down one server-sent events stream per page. Only names
 // what changed; pages read the details again through the usual API, with the viewer's own access.
@@ -11,12 +11,10 @@ export class ClientEvents {
   publish(event:ClientEvent) {for(const listener of this.listeners)listener(event);}
 }
 
-export function registerEvents(app:FastifyInstance,events:ClientEvents,auth:(request:FastifyRequest)=>Promise<unknown>) {
-  // Open streams never finish on their own, so shutting down ends them first.
+// Open streams never finish on their own, so shutting down ends them first: call the returned function then.
+export function registerEvents(app:FastifyInstance,events:ClientEvents) {
   const open=new Set<()=>void>();
-  app.addHook('preClose',async()=>{for(const end of open)end();});
-  app.get('/api/v1/events',async(request,reply)=>{
-    await auth(request);
+  app.get('/api/v1/events',{config:{access:'viewer'}},async(request,reply)=>{
     // Proxies must pass each event straight on rather than buffer the response (X-Accel-Buffering is nginx's switch).
     reply.hijack();
     const out=reply.raw;
@@ -28,4 +26,5 @@ export function registerEvents(app:FastifyInstance,events:ClientEvents,auth:(req
     const end=()=>{open.delete(end);clearInterval(heartbeat);unsubscribe();out.end();};
     open.add(end);request.raw.once('close',end);
   });
+  return ()=>{for(const end of open)end();};
 }
