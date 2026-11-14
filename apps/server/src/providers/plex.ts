@@ -10,6 +10,8 @@ import { TtlCache } from '../lib/ttl-cache.js';
 
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
 export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
+// Plex dates are seconds since 1970.
+export type PlexAvailability = {titles:{kind:'movie'|'show';ratingKey:string;tmdbId?:number;tvdbId?:number;addedAt?:number}[];seasons:{showKey:string;season:number;addedAt?:number}[];complete:boolean};
 export type ExploreLocalWatch = ExploreWatchedTitle & {lastViewedAt:number};
 const communityItem = z.object({id:z.string(),guid:z.string().nullish(),type:z.string()});
 const communityHistory = z.object({data:z.object({user:z.object({watchHistory:z.object({
@@ -214,23 +216,29 @@ export class PlexAdapter {
     requireThat(/^\d+$/.test(account.id)&&required.every(id=>/^\d+$/.test(id)),'PLEX_INVALID_ID','Plex returned invalid account or library identifiers.',502);
     return {ownerAccountId:account.id,machineId,requiredLibraryIds:required,libraries};
   }
-  async authorize(accountToken: string): Promise<PlexGrant> {
+  async accountAccess(accountToken: string) {
     requireThat(this.config.plexConfigured, 'SETUP_REQUIRED', 'Configure Plex owner, machine and library IDs first.', 503);
     const [accountData,resourceData]=await Promise.all([this.json(new URL('https://plex.tv/api/v2/user'),accountToken),this.json(new URL('https://plex.tv/api/v2/resources?includeHttps=1'),accountToken)]);
     const account=accountSchema.parse(accountData),resources=resourceSchema.parse(resourceData);
     const matches = resources.filter(r => r.clientIdentifier === this.config.PLEX_MACHINE_ID && r.provides.split(',').includes('server'));
     requireThat(matches.length === 1 && matches[0]?.accessToken, 'PLEX_ACCESS_DENIED', 'This Plex account has no verified access to the configured server.', 403);
-    const resource = matches[0]!;
-    const serverToken = resource.accessToken!;
+    const resource = matches[0]!, isOwner = account.id === this.config.PLEX_OWNER_ACCOUNT_ID;
+    requireThat(!isOwner || resource.owned, 'PLEX_ACCESS_DENIED', 'Configured owner does not own this Plex server.', 403);
+    const name = account.title || account.username;
+    return { accountId: account.id, name, isOwner, serverToken: resource.accessToken! };
+  }
+  async serverAccess(serverToken: string) {
     const [identityData,libraryData]=await Promise.all([this.json(new URL('/identity',this.config.PLEX_URL),serverToken),this.json(new URL('/library/sections',this.config.PLEX_URL),serverToken)]);
     const identity = z.object({ MediaContainer: z.object({ machineIdentifier: z.string() }) }).parse(identityData);
     requireThat(identity.MediaContainer.machineIdentifier === this.config.PLEX_MACHINE_ID, 'PLEX_SERVER_MISMATCH', 'Configured Plex server identity does not match.', 403);
     const libraries = librariesSchema.parse(libraryData).MediaContainer.Directory;
     requireThat(this.config.requiredLibraries.every(id => libraries.some(l => l.key === id && ['movie', 'show'].includes(l.type))), 'PLEX_ACCESS_DENIED', 'Required Movies and TV library grants are missing.', 403);
-    const isOwner = account.id === this.config.PLEX_OWNER_ACCOUNT_ID;
-    requireThat(!isOwner || resource.owned, 'PLEX_ACCESS_DENIED', 'Configured owner does not own this Plex server.', 403);
-    const name = account.title || account.username;
-    return { accountId: account.id, ...(name ? { name } : {}), role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
+    return libraries;
+  }
+  async authorize(accountToken: string): Promise<PlexGrant> {
+    const { accountId, name, isOwner, serverToken } = await this.accountAccess(accountToken);
+    const libraries = await this.serverAccess(serverToken);
+    return { accountId, ...(name ? { name } : {}), role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
   }
   // The owner's Plex friends and Plex Home members, by Plex account, for choosing other admins. Read with the owner's
   // own account token; either list failing leaves it out.
@@ -513,12 +521,14 @@ export class PlexAdapter {
   }
   async exploreLibrary(grant:PlexGrant):Promise<{titles:ExploreLibraryTitle[]; complete:boolean; capped?:boolean}> {
     const libraries = grant.libraries.filter(library => library.type === 'movie' || library.type === 'show');
-    const pending = libraries.map(library => ({library, offset:0}));
+    // A library's first page gives its size, so the rest of its pages are queued at once and read four at a time,
+    // taking turns between libraries so the budget is shared. `last` marks the page that may find titles added since.
+    const pending:{library:typeof libraries[number]; offset:number; first?:boolean; last?:boolean}[] = libraries.map(library => ({library, offset:0, first:true}));
     const titles:ExploreLibraryTitle[] = [];
     let complete = true;
     for (let budget = 10000; pending.length && budget > 0;) {
-      const batch = pending.splice(0, Math.min(2, Math.ceil(budget/200)));
-      const reads = await Promise.allSettled(batch.map(async ({library, offset}) => {
+      const batch = pending.splice(0, Math.min(4, Math.ceil(budget/200)));
+      const reads = await Promise.allSettled(batch.map(async ({library, offset, first, last}) => {
         const size = Math.min(budget, 200); budget -= size;
         const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
         for (const [key,value] of Object.entries({type:library.type==='movie'?'1':'2', sort:'addedAt:desc', includeGuids:'1',
@@ -534,17 +544,63 @@ export class PlexAdapter {
           return {kind:library.type==='movie'?'movie':'show',title,year,genres,addedAt,tmdbId} satisfies ExploreLibraryTitle;
         });
         const next = offset + page.Metadata.length;
-        return {entries, library, next, more:next < (page.totalSize ?? (page.Metadata.length === size ? next+1 : next))};
+        return {entries, library, next, first, last, full:entries.length === size, total:page.totalSize,
+          more:next < (page.totalSize ?? (page.Metadata.length === size ? next+1 : next))};
       }));
+      const queued:typeof pending[] = [];
       for (const result of reads) {
         if (result.status === 'rejected') { complete = false; continue; }
-        const {entries,library,next,more} = result.value;
+        const {entries,library,next,first,last,full,total,more} = result.value;
         titles.push(...entries);
-        if (more && entries.length) pending.push({library,offset:next});
-        else if (more) complete = false;
+        if (!more) continue;
+        if (!entries.length) complete = false;
+        else if (first && full && total !== undefined) {
+          const count = Math.ceil((total - next) / 200);
+          queued.push(Array.from({length:count}, (_, i) => ({library, offset:next + i*200, ...(i === count-1 ? {last:true} : {})})));
+        } else if (first || last) queued.push([{library, offset:next, last:true}]);
+        // A queued page that came back short leaves a gap before the next one.
+        else if (!full) complete = false;
       }
+      for (let i = 0; queued.some(list => i < list.length); i++) for (const list of queued) if (list[i]) pending.push(list[i]!);
     }
     return {titles,complete:complete && !pending.length,...(complete && pending.length ? {capped:true} : {})};
+  }
+  // What the server holds, for request statuses: every movie and show with its TMDB/TVDB ids and date added, and
+  // every season of each show. Read 500 at a time; `complete` is false when a page failed, so callers keep what they had.
+  async availability(grant:PlexGrant):Promise<PlexAvailability> {
+    const libraries=grant.libraries.filter(l=>l.type==='movie'||l.type==='show');
+    const result:PlexAvailability={titles:[],seasons:[],complete:true};
+    const read=async(library:typeof libraries[number],type:'1'|'2'|'3')=>{
+      const nodes:CatalogNode[]=[];
+      for(let offset=0;offset<100000;){
+        const url=new URL(`/library/sections/${library.key}/all`,this.config.PLEX_URL);
+        for(const [key,value] of Object.entries({type,includeGuids:type==='3'?'0':'1',excludeElements:'Media,Role,Director,Writer,Country,Collection,Producer,Image,Genre',
+          'X-Plex-Container-Start':String(offset),'X-Plex-Container-Size':'500'}))url.searchParams.set(key,value);
+        const page=catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+        nodes.push(...page.Metadata.filter(n=>(n.librarySectionID??page.librarySectionID??library.key)===library.key));
+        offset+=page.Metadata.length;
+        if(!page.Metadata.length||offset>=(page.totalSize??(page.Metadata.length<500?offset:offset+1)))break;
+      }
+      return nodes;
+    };
+    const jobs=libraries.flatMap<{library:typeof libraries[number];type:'1'|'2'|'3'}>(library=>
+      library.type==='movie'?[{library,type:'1'}]:[{library,type:'2'},{library,type:'3'}]);
+    for(let i=0;i<jobs.length;i+=2){
+      const reads=await Promise.allSettled(jobs.slice(i,i+2).map(async job=>({job,nodes:await read(job.library,job.type)})));
+      for(const r of reads){
+        if(r.status==='rejected'){result.complete=false;continue;}
+        const {job,nodes}=r.value;
+        for(const node of nodes){
+          if(job.type==='3'){
+            if(node.type==='season'&&node.parentRatingKey&&node.index!==undefined&&(node.leafCount??1)>0)result.seasons.push({showKey:node.parentRatingKey,season:node.index,addedAt:node.addedAt});
+            continue;
+          }
+          const {tmdbId,tvdbId}=catalogDto(node,job.library.key);
+          if(node.type==='movie'||node.type==='show')result.titles.push({kind:node.type,ratingKey:node.ratingKey,...(tmdbId?{tmdbId}:{}),...(tvdbId?{tvdbId}:{}),...(node.addedAt?{addedAt:node.addedAt}:{})});
+        }
+      }
+    }
+    return result;
   }
   // Date Viewed is Plex's watch state for the token making the request. Query episodes in TV libraries
   // so a recently watched episode can seed its series even when the series is still in progress.

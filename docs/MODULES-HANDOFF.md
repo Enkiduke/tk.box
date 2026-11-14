@@ -1,7 +1,9 @@
 # Handoff: backend modularization and efficiency work
 
-Status as of 2026-11-14. The module move is committed (20a7ba2, 31c1c6d). Per-module migrations (next step 2) are in
-the working tree, not committed.
+Status as of 2026-11-14. Everything below is committed and pushed (module move 20a7ba2, 31c1c6d; migrations f7df7c0;
+IPTV snapshot reads and statement cache 297f006; XMLTV worker f65b3cf; shared cache and timers a4fdd8f). The two test
+fixes and the Explore first-load work (steps 5–7 under "Done in this pass") are in the working tree, not committed. What
+is left is under **Left to do**.
 
 ## Goal
 
@@ -12,9 +14,10 @@ declared route access, and modules talk through an in-process event bus instead 
 ## Where it stands
 
 The move is complete: every route is registered by a module under `apps/server/src/modules/`, and the server refuses
-to start if any route declares no access level. Typecheck passes and the targeted tests pass, except the IPTV guide
-filter test listed under Known issues. **None of it has been tried in the running app since the VOD move.** The user
-is testing it now (see the checklist below).
+to start if any route declares no access level. The user ran the app checklist after the move and the migrations
+(below); nothing traced to the move. The later commits (297f006, f65b3cf, a4fdd8f) are typechecked and covered by
+targeted tests but **not yet tried in the running app**, nor is the Explore first-load change. Typecheck passes and
+the targeted tests pass.
 
 ## Infrastructure (`apps/server/src/modules/`)
 
@@ -52,6 +55,7 @@ is testing it now (see the checklist below).
 | `plex.notifications.connecting` | plex-notifications | artwork (`schedule.notificationLibraries`) |
 | `plex.playback.states` / `plex.playback.connection` | plex-notifications | watch-history (monitor) |
 | `session.signed-out` | sign-in (logout) | watch-history, activity, live-sessions, vod-playback |
+| `requests.changed` | requests (every row change) | client-events (`requests` to that account's pages only) |
 
 `app.ts` subscribes the two Plex cache resets right after creating the bus, so they run before any module's listener
 for the same event (pages told to reload then read Plex anew).
@@ -73,20 +77,25 @@ for the same event (pages told to reload then read Plex anew).
 6. **`vod-playback.ts`**: PlaybackService, VodTranscodes, the open file `streams` set, all `/api/v1/playback/sessions`
    routes. Deps `{identity, activity, history, subtitles, localMedia}`. Registers the `vod` activity source.
 7. **`client-events.ts`**: the `/api/v1/events` SSE stream (viewer). Its stop ends open streams.
-8. **`artwork.ts`** (default admin): ArtworkStore, TmdbTitles, ArtworkEngine, ArtworkWorker, ArtworkSchedule and
-   routes. Deps `{streaming, tmdbTransport}`. API `{store, engine, titles}`.
-9. **`catalog.ts`**: library page routes. Deps `{hiddenRecent}` (artwork's engine).
-10. **`explore.ts`**: ExploreStore and routes. Deps `{accountToken, titles, transports}`. API `{store}` (cleanup reads
+8. **`arr.ts`** (default admin): ArrStore, the one Radarr and one Sonarr connection, and `/api/v1/admin/arr` (GET, PUT
+   `:name`). API `{connection(name)}`, read by artwork, cleanup and calendar (and requests, docs/REQUESTS.md).
+9. **`artwork.ts`** (default admin): ArtworkStore, TmdbTitles, ArtworkEngine, ArtworkWorker, ArtworkSchedule and
+   routes. Deps `{streaming, tmdbTransport, arr}`. API `{store, engine, titles}`.
+10. **`catalog.ts`**: library page routes. Deps `{hiddenRecent}` (artwork's engine).
+10a. **`requests.ts`**: RequestStore, ArrFulfiller, RequestAvailability (Plex index, owner's grant), Requests (create,
+    cancel, retry, the 60 s sweep) and the `/api/v1/requests` and `/api/v1/admin/requests` routes. Deps `{arr, titles}`.
+    API `{requests, store}`. See docs/REQUESTS.md.
+11. **`explore.ts`**: ExploreStore and routes. Deps `{accountToken, titles, transports}`. API `{store}` (cleanup reads
     `store.seerr()`).
-11. **`plex-notifications.ts`**: PlexNotifications, with no deps: it only emits and listens on the bus.
-12. **`cleanup.ts`** (default admin): CleanupStore, CleanupEngine and routes. Deps `{artwork, seerr}`. API
+12. **`plex-notifications.ts`**: PlexNotifications, with no deps: it only emits and listens on the bus.
+13. **`cleanup.ts`** (default admin): CleanupStore, CleanupEngine and routes. Deps `{artwork, arr, seerr}`. API
     `{services}`.
-13. **`calendar.ts`**: the calendar route. Deps `{connections, titles}`.
-14. **`sign-in.ts`**: setup (`registerSetup`, all `public`), Plex sign-in start/status and logout (`public`),
+14. **`calendar.ts`**: the calendar route. Deps `{connections, titles}`.
+15. **`sign-in.ts`**: setup (`registerSetup`, all `public`), Plex sign-in start/status and logout (`public`),
     `/api/v1/me`, `/api/v1/libraries`, `/api/v1/media/:id` (viewer), and the session reaper.
-15. **`admin.ts`** (default admin): metrics, Admin › Connections keys, Admin › Admins (`owner`), playback settings.
+16. **`admin.ts`** (default admin): metrics, Admin › Connections keys, Admin › Admins (`owner`), playback settings.
     Deps `{admins, settings, metrics, identity, customBuffer}`.
-16. **`web.ts`** (default public): `/health` and the built web files.
+17. **`web.ts`** (default public): `/health` and the built web files.
 
 What stays in `app.ts`:
 - Fastify and its plugins.
@@ -122,7 +131,9 @@ applies the ones not yet recorded before the module's `setup`.
   | `watch-history` | `history_*` | 23–25 |
   | `custom-channels` | `channels`, `publications` (the scheduler), `custom_*` | 1 (part), 12–15 |
   | `iptv` | `iptv_*`, `sports_*`; `snapshot-version` (new) | 2 (part), 3–11, 16, 19–22 |
+  | `arr` | `arr_connections`; moves Radarr's address/key out of `artwork_collections` and Sonarr's out of `cleanup_config` | none |
   | `artwork` | `artwork_*` | 17–18 |
+  | `requests` | `requests`, `request_seasons`, `requests_settings` | none |
   | `explore` | `explore_settings`, `explore_layout`; drops Trakt | none |
   | `cleanup` | `cleanup_config`, `cleanup_jobs` | none |
 
@@ -173,11 +184,12 @@ applies the ones not yet recorded before the module's `setup`.
   also ran explore-tmdb, explore, calendar, history-api, activity, plex-playback-monitor, the artwork tests and
   cleanup. No test calls the Admin › Activity, Artwork, Clean Up or events routes.
 
+- Files run after the test fixes and the Explore change: iptv-api, channel-health (five runs in a row), explore and
+  explore-tmdb. All pass.
+
 ## Known issues
-- `tests/iptv-api.test.ts` "IPTV HTTP boundaries…" fails. It calls `/api/v1/guide?filter=iptv`, which the route schema
-  rejects with a 400. It failed before this work too. Decide whether the test or the filter schema is wrong.
-- `tests/channel-health.test.ts` "The scheduler respects provider connections…" failed once, then passed on reruns:
-  it is timing-sensitive.
+None open. The stale IPTV guide filter test and the timing-sensitive channel-health test are fixed (Done in this pass,
+step 5).
 
 ### Behaviour changes from the move
 - Access is checked in `onRequest`, before body/query parsing. A bad request from someone without access now gets
@@ -209,11 +221,10 @@ If something fails, the module that owns the route is the place to look; mount o
   8 at 1.5 s for live) and playback sessions and transcodes live in memory, so a restarted server has no session to
   continue. Not a regression from the move. Still to confirm: Ctrl+C exits promptly with no errors in the log.
 
-## Next steps, in order
-1. **Fix what the app test turns up.** Nothing traced to the move so far (see the checklist notes).
-2. **Per-module migrations**: done (see Migrations). Not yet tried on the real database: the first start should log
-   nothing new and leave the schema unchanged. Running `npx tsx scripts/migrate.ts` against a copy shows the counts.
-3. **Cheap efficiency gaps**: done, not committed or tried in the app.
+## Done in this pass (reference)
+1. **App test after the move**: nothing traced to the move (see the checklist notes).
+2. **Per-module migrations**: done (see Migrations); the user started the app on the real database with no issues.
+3. **Cheap efficiency gaps** (297f006):
    - `IptvStore.source()` now selects every column but `encrypted_snapshot` and `encrypted_candidate` (it returns
      `has_snapshot` and `snapshot_version` instead). `snapshot(row)` and `candidate(row)` read the sealed text only to
      decode it. The decoded-snapshot cache is keyed on `snapshot_version`, a counter that the trigger
@@ -227,8 +238,8 @@ If something fails, the module that owns the route is the place to look; mount o
      `HistoryStore` already prepared its statements up front; the smaller stores (settings, admins, service keys,
      explore, listing helpers) still prepare inline.
    - Not measured: no before/after timing.
-4. **Later**:
-   - **XMLTV parse in a worker thread**: done, not committed or tried in the app.
+4. **Step 4**:
+   - **XMLTV parse in a worker thread** (f65b3cf):
      - Measured on a synthetic 11 MB guide (800 channels, 57,600 programs): a refresh blocked the main thread about
        600 ms, 400 of it `parseXmltv`; JSON encode/decode about 40 ms each, coverage writes about 50 ms. With the
        worker, the main thread spends about 195 ms (seal, write, coverage) and stalls at most 14 ms during the parse.
@@ -243,7 +254,7 @@ If something fails, the module that owns the route is the place to look; mount o
        on the main thread, still the only SQLite writer. `ingest` keeps parsing in-thread for uploads (64 KB body
        limit) and M3U playlists. `publish` now takes the snapshot's JSON text (plus the parsed playlist for M3U).
      - Not moved: M3U parsing; the main-thread JSON.parse of the new snapshot when coverage first reads it.
-   - **Shared scheduler and cache utilities**: done, not committed or tried in the app.
+   - **Shared scheduler and cache utilities** (a4fdd8f):
      - `lib/ttl-cache.ts`: `TtlCache<V>(max, now?)` with `get`, `set(key, value, ttlMs)`, `remember(key, ttlMs, make)`
        (callers share one pending promise; a rejected one is dropped so the next call retries), `delete`,
        `deleteWhere`, `clear`, `prune`. Past `max`, the oldest written goes first; a hit doesn't refresh age. Same
@@ -261,7 +272,72 @@ If something fails, the module that owns the route is the place to look; mount o
      - Left on plain `setInterval`: the per-connection SSE heartbeat, the VOD session recheck, and
        `VodTranscodes.sweep`. A sweep there waits on Plex for every session, so skipping overlapping runs would delay
        idle stops while Plex is slow.
-   - A durable job queue together with the Radarr/Sonarr replacement.
+   - A durable job queue: deferred, to be built together with the Radarr/Sonarr replacement.
+5. **Test fixes** (working tree):
+   - `tests/iptv-api.test.ts`: the guide loop used the removed `iptv` filter. It now uses the source's UUID, the
+     filter that replaced it. `custom` (the handoff's suggestion) lists no IPTV channels, so it would fail the loop's
+     one-channel assertions; the test already checks `custom` returns none a few lines down.
+   - `tests/channel-health.test.ts` "The scheduler respects provider connections…": each check awaits a real `mkdir`
+     before it reaches the probe, and the test waited a fixed 20 ms. When `mkdir` was slower, the viewer cancelled a
+     check whose probe had not yet added its abort listener, so the check never ended and the viewer waited out its
+     15 s timeout. The test now waits for the state itself (`until(…)`, 5 ms polls, 2 s ceiling) and checks "no check
+     while the viewer holds the connection" synchronously after `pump()`. Scheduler unchanged.
+6. **Explore first load** (working tree). Measured with a scratch harness (not kept): `registerExplore` on a bare
+   Fastify with fake Plex, Plex Discover, plex.tv, TMDB and Seerr transports with assumed latencies (Plex server
+   20 ms + 0.5 ms per title, Discover and plex.tv 150 ms, TMDB 90 ms, Seerr 40 ms and 120 ms per `/media` page), a
+   4,000-movie and 1,500-show library, 1,500 titles tracked in Seerr, 10 Discover shelves. One "load" is what the page
+   asks for: sources and both row lists, then the first 4 Plex and 5 TMDB row pages at once.
+
+   | Load | Before | After |
+   | --- | --- | --- |
+   | Cold, whole load (last row) | 3,161 ms | 1,565 ms |
+   | Cold, Plex and streaming rows | 2,535 ms | 558 ms |
+   | Cold, Top Picks / Because You Watched | 3,160 ms | 1,565 ms |
+   | Warm | 6–14 ms | 6–7 ms |
+   | Six minutes later (Seerr index expired) | 1,867 ms | 7 ms |
+
+   What dominated, and the fixes:
+   - **Seerr's status index** (`Seerr.statuses`): every row page, Plex or TMDB, waits on it for its labels. It read
+     `/media` pages one after another (15 pages, about 2 s) and expired after 5 minutes, after which every row waited
+     the full read again. Now the first page gives the count and the rest are read five at a time (`readIndex`).
+     After expiry the last index (up to an hour old) answers while a new one is read. A request drops both, so the
+     next read is waited for and the requested title shows as requested. `/explore/sources`, the page's first call,
+     starts the read so it overlaps the row reads.
+   - **The Plex library snapshot** for the personal TMDB rows (`PlexAdapter.exploreLibrary`): it read 200-title pages
+     two at a time, one per library, so a 4,000-movie library took 20 rounds. Now each library's first page gives its
+     size, the rest of its pages are queued at once, and four are read at a time, taking turns between libraries
+     (same 10,000-title budget, shared the same way). A queued page that comes back short marks the snapshot
+     incomplete, as an outage does. The snapshot is kept a day, so this is the cold load only.
+   - Not changed: the personal rows still wait on TMDB recommendation and genre lists after the snapshot (about
+     200 ms here), and TMDB reads stay limited to six at a time.
+   - Tests: `explore.test.ts` "Seerr labels…" (five at a time, the expired index answers while the new read finishes,
+     a request drops it); `explore-tmdb.test.ts` "Plex recommendation input queues each library pages…" (all pages
+     read once, four at a time, budget shared, short page).
+7. **Live TV guide on a large guide**: measured, no change. Scratch harness: 900 M3U channels linked to a 12.5 MB XMLTV
+   guide (64,800 programmes), `guidePage` 30 channels at a time, 4-hour window.
+   - Fresh store (after a restart): first page 270–350 ms (decrypting 44 ms and JSON-parsing 44 ms of that; the rest
+     is the program index and first-run JIT). After that 11–20 ms a page, searches and source filters included.
+     `stacks()` is about 6 ms.
+   - Right after a refresh: the refresh's coverage pass has already decoded the new snapshot, so the first page is
+     about 115 ms (rebuilding the program index), then back to 11–20 ms.
+   - That is one wait of a few hundred ms per restart, so it was left alone.
+
+
+## Left to do
+
+Steps 1–3 of the last list are done (Done in this pass, steps 5–7). What remains:
+
+1. **Optional architecture tidy**: route bodies still live in `*-api.ts` files outside `modules/` (see "Route files
+   outside `modules/`" above). Moving them is mechanical and low value; only do it for a module being changed anyway.
+2. **Durable job queue**: waits for the Radarr/Sonarr replacement.
+
+For the user to check in the running app (not for the next session to do):
+- First start applies the iptv `snapshot-version` migration; the Live TV guide loads and changes after a guide
+  refresh (Admin › IPTV › Refresh now on an XMLTV source), in both `npm run dev` and a built `npm start`.
+- Ctrl+C with a stream playing exits promptly with no errors in the log.
+- Background work still runs: a scheduled source refresh, channel checks, artwork and clean-up schedules.
+- Explore after a restart: rows fill in sooner, labels (Requested, Available) still show, and a request shows its
+  title as Requested on the next load.
 
 ## Conventions to keep
 - Per CLAUDE.md: `npm run typecheck`, run only the affected test files, and don't start the app to check UI.

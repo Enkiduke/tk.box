@@ -9,6 +9,7 @@ import {ConnectionsSettings} from './admin-connections.js';
 import {ExploreAdmin} from './explore-settings.js';
 import {ArtworkAdmin,CollectionsAdmin} from './artwork-admin.js';
 import {CleanupAdmin} from './cleanup-admin.js';
+import {RequestsAdmin} from './requests-admin.js';
 import {ActivityAdmin} from './activity-admin.js';
 import {HistoryAdmin} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
@@ -19,7 +20,7 @@ import './admin.css';
 // It is its own bundle, loaded only when an administrator opens it, so none of it reaches viewers or the player.
 const groups=[
   ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Events','star']]],
-  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore']]],
+  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['requests','Requests','download']]],
   ['Server',[['activity','Activity','play'],['admins','Admins','shield'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash']]]
 ] as const;
 type Section=typeof groups[number][1][number][0];
@@ -47,7 +48,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='explore'?<ExploreAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='admins'?<AdminsAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='admins'?<AdminsAdmin/>:<PlaybackSection/>}</div>
     </div>
     <AdminConsole/>
   </div>;

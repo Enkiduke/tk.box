@@ -9,7 +9,9 @@ import { EventBus } from '../apps/server/src/modules/bus.js';
 import { watchHistoryModule } from '../apps/server/src/modules/watch-history.js';
 import { customChannelsModule } from '../apps/server/src/modules/custom-channels.js';
 import { iptvModule } from '../apps/server/src/modules/iptv.js';
+import { arrModule } from '../apps/server/src/modules/arr.js';
 import { artworkModule } from '../apps/server/src/modules/artwork.js';
+import { requestsModule } from '../apps/server/src/modules/requests.js';
 import { exploreModule } from '../apps/server/src/modules/explore.js';
 import { cleanupModule } from '../apps/server/src/modules/cleanup.js';
 
@@ -59,7 +61,7 @@ test('mountModule applies the module migrations before setup', async () => {
 });
 
 test('the migration registry matches the modules that own tables', () => {
-  const owners = [watchHistoryModule, customChannelsModule, iptvModule, artworkModule, exploreModule, cleanupModule];
+  const owners = [watchHistoryModule, customChannelsModule, iptvModule, arrModule, artworkModule, requestsModule, exploreModule, cleanupModule];
   assert.deepEqual(Object.keys(moduleMigrations), owners.map(m => m.name));
   for (const m of owners) assert.equal(moduleMigrations[m.name], m.migrations, m.name);
 });

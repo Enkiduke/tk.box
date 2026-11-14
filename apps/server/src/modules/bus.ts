@@ -1,5 +1,6 @@
 import type { Finished, PlexPlaybackState } from '../services/plex-notifications.js';
 import type { PlexGrant } from '../providers/plex.js';
+import type { RequestChange } from '../services/requests.js';
 
 // In-process events between modules. A module announces what changed; others react, without either holding the other.
 // Listeners run synchronously in subscription order, and one listener's failure is logged without stopping the rest.
@@ -21,6 +22,8 @@ export type BusEvents = {
   'plex.playback.connection': { connected: boolean };
   // A browser session signed out: everything it was watching stops.
   'session.signed-out': { hash: string };
+  // A request was made, sent, moved on (Plex, Radarr/Sonarr), cancelled or removed. `accountId` is the requester's.
+  'requests.changed': RequestChange;
 };
 type Listener<K extends keyof BusEvents> = (payload: BusEvents[K]) => void;
 
