@@ -43,6 +43,7 @@ test('a station joins mid-program, plays the next program on time and cleans up'
   const db = openDatabase(':memory:'), store = new CustomChannelStore(db), budget = new EncoderBudget(() => 2), logs: string[] = [];
   let retention = 30 * 60000;
   const tv = new CustomTv(store, plex, new LocalMedia({ roots: [media], pathMap: [] }), new PartProxy(plex), budget, cache, () => retention, 64 * 1024 * 1024, ffmpeg, (m, d) => logs.push(m + JSON.stringify(d)));
+  tv.historyServerId = 'fixture-plex';
   // The service's own timers are unref'd (the server keeps the process alive); this stands in for the server.
   const keep = setInterval(() => {}, 1000);
   try {
@@ -69,6 +70,8 @@ test('a station joins mid-program, plays the next program on time and cleans up'
     const aired = tv.airings(second.id, 'viewer');
     assert.equal(aired.length, 2);
     assert.deepEqual(aired.map(a => tv.airingMedia(second.id, 'viewer', a.id)), ['1', '2']);
+    assert.deepEqual(tv.historyViewer(second.id, 'viewer').airings(aired[0]!.start, aired[1]!.start + 1000).map(a => a.media?.ratingKey), ['1', '2']);
+    assert.throws(() => tv.historyViewer(second.id, 'someone-else'), { code: 'SESSION_NOT_FOUND' });
     assert.equal(aired[0]!.mediaStartMs, 2000);
     assert.ok(aired[1]!.start > aired[0]!.start && aired[1]!.mediaStartMs < 1000);
     assert.throws(() => tv.airingMedia(second.id, 'viewer', 'missing'), { code: 'SUBTITLE_NOT_FOUND' });

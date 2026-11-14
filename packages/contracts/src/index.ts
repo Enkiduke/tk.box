@@ -2,6 +2,38 @@ import { z } from 'zod';
 
 export const playbackMode = z.enum(['plex_vod', 'custom_linear', 'iptv_live']);
 export type PlaybackMode = z.infer<typeof playbackMode>;
+export const playbackObservation = z.object({
+  sequence: z.number().int().positive(),
+  elapsedMs: z.number().int().nonnegative(),
+  positionMs: z.number().int().nonnegative(),
+  presentationUtc: z.number().int().positive().optional(),
+  rate: z.number().min(0.25).max(4),
+  state: z.enum(['playing', 'paused', 'buffering', 'seeking', 'ended', 'stopped'])
+}).strict();
+export type PlaybackObservation = z.infer<typeof playbackObservation>;
+export const historySources = ['vod', 'plex', 'iptv', 'custom'] as const;
+export type HistorySource = typeof historySources[number];
+export type HistoryListRow = {
+  id: string; source: HistorySource; accountId: string; accountName: string | null; title: string;
+  kind: string; ratingKey: string; showTitle?: string; startedAt: number; endedAt: number | null;
+  year?: number; season?: number; episode?: number; channelNumber?: number;
+  watchMs: number; positionMs: number; durationMs?: number; client: string;
+  stream: { delivery: string; video?: string; audio?: string; sourceHeight?: number; outputHeight?: number; maxHeight?: number };
+  endReason: string | null; serverId: string;
+};
+export type HistorySessionDetail = {
+  session: HistoryListRow;
+  observedAt: number;
+  deliveryMs: Record<'direct' | 'remux' | 'transcode', number>;
+  allocations: { day: string; feedId: string; watchMs: number; title: string | null; estimated: number }[];
+};
+export type HistoryRank = { id: string; title: string; sessions: number; watchMs: number; viewers: number };
+export type HistoryMediaRank = HistoryRank & { kind: 'movie' | 'show' | 'episode' | 'channel' | 'program' };
+export type HistorySummary = {
+  sessions: number; viewers: number; watchMs: number;
+  days: { day: string; watchMs: number }[];
+  delivery: { direct: number; remux: number; transcode: number };
+};
 // Conversion choices, Plex's ladder from 20 Mbps down to 480p. Each caps output height and video bitrate.
 export const qualityTiers = [
   { id: '1080p-20', label: '1080p HD (High)', height: 1080, bitrateKbps: 20000 },
@@ -55,7 +87,7 @@ export type CatalogItem = {
   // Detail fields Plex sends on a single item (lists usually omit them).
   ratings?: ExternalRating[]; logoUrl?: string; tagline?: string; airDate?: string; studio?: string; directors?: string[]; cast?: string[];
   // A movie's or show's TMDB id, which lets its cast and crew link to the right people, and the item's own IMDb id.
-  tmdbId?: number; imdbId?: string;
+  tmdbId?: number; imdbId?: string; tvdbId?: number;
   // The Plex collections a movie or show belongs to (detail only).
   collections?: { id: string; title: string; count?: number; kind: 'movie' | 'show'; posterUrl?: string }[];
 };
@@ -93,6 +125,15 @@ export type ExploreItem = {
   status?: ExploreStatus;
 };
 export type ExplorePage = { items: ExploreItem[]; page: number; hasMore: boolean; total?: number; title?: string };
+export type TitleCredit = {
+  personId?: number; name: string; role: 'actor' | 'director' | 'creator'; character?: string; portraitUrl?: string;
+};
+export type TitleCredits = {tmdbId?: number; credits: TitleCredit[]};
+export type RelatedRowKind = 'similar' | 'maker' | 'actor';
+export type TitleRelated = {
+  rows: {kind: RelatedRowKind; person?: TitleCredit; items: ExploreItem[]}[];
+  failed: RelatedRowKind[];
+};
 export type CalendarEpisodeLabel = 'series-premiere' | 'season-premiere' | 'season-finale' | 'series-finale';
 export type CalendarEntry = {
   key: string; title: string; day: string; year?: number; airTime?: string;
@@ -128,6 +169,8 @@ export type ExploreDetails = {
   links: { site: 'tmdb' | 'tvdb' | 'imdb' | 'rottentomatoes'; url: string }[];
   // This server's library copy, when the viewer can open it.
   libraryId?: string;
+  // A library copy verified by external GUID, for direct navigation from a related card.
+  matchedLibraryId?: string;
   // Plex Discover watchlist state; undefined when Discover does not know the title.
   watchlisted?: boolean;
   // What is still open to request (4K only when Seerr has 4K on). The viewer's own permissions are checked when they request.

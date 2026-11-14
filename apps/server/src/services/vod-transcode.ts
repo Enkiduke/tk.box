@@ -35,8 +35,9 @@ export class VodTranscodes {
       // A transcoder that ignored the chosen track would silently play the wrong language.
       requireThat(!audio || !decision.audioStreamId || decision.audioStreamId === audio.id, 'AUDIO_SELECTION_FAILED', 'Plex did not switch to the chosen audio track.', 502);
       if (decision.video === 'copy') { release(); release = () => {}; }
+      this.active.set(id, { id, hash, ratingKey: item.ratingKey, plexSession, params, grant, seen: Date.now(), release, kind: route.kind, checking: false });
+      return decision;
     } catch (e) { release(); throw e; }
-    this.active.set(id, { id, hash, ratingKey: item.ratingKey, plexSession, params, grant, seen: Date.now(), release, checking: false, kind: route.kind });
   }
   has(id: string, hash: string) { return this.active.get(id)?.hash === hash; }
   touch(id: string, hash: string, grant?: PlexGrant) {

@@ -1,7 +1,7 @@
 import type { ArtworkStore, CollectionScheduleName, ScheduleName } from '../persistence/artwork-store.js';
 import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import type { ArtworkEngine } from './artwork-engine.js';
-import { PlexNotifications, type Finished } from './plex-notifications.js';
+import type { Finished } from './plex-notifications.js';
 import { WAITING } from './plex-background.js';
 import { dueAt, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 
@@ -40,20 +40,12 @@ export class ArtworkSchedule {
   private ticking = false;
   private again = false;
   private libraries: PlexGrant['libraries'] = [];
-  private notifications: PlexNotifications;
   constructor(private store: ArtworkStore, private engine: ArtworkEngine, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
-    private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private streaming: (grant: PlexGrant) => Promise<number> = async () => 0) {
-    this.notifications = new PlexNotifications(() => this.openNotifications(), sections => this.finished(sections), log);
-  }
-  start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); this.notifications.start(); }
-  close() { clearInterval(this.timer); clearTimeout(this.settle); this.notifications.close(); }
-  // The feed is open only while a newly added check is on.
-  private async openNotifications() {
-    if (!this.store.settings().schedules.added.enabled && !this.store.collections().schedules.added.enabled) return undefined;
-    const grant = await this.adminGrant().catch(() => undefined);
-    if (!grant) return undefined;
+    private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private streaming: (grant: PlexGrant) => Promise<number> = async () => 0) {}
+  start() { this.timer = setInterval(() => void this.tick(), 60000); this.timer.unref(); }
+  close() { clearInterval(this.timer); clearTimeout(this.settle); }
+  notificationLibraries(grant: PlexGrant) {
     this.libraries = grant.libraries;
-    return this.plex.notificationSocket(grant);
   }
   // The library sections the newly added checks that are on read.
   private watched() {
@@ -67,6 +59,7 @@ export class ArtworkSchedule {
   }
   // Plex finished adding something: if it was in a watched library, check once things settle.
   finished(sections: Finished, now = Date.now()) {
+    if (!this.store.settings().schedules.added.enabled && !this.store.collections().schedules.added.enabled) return;
     if (sections !== 'any') { const watched = this.watched(); if (![...sections].some(s => watched.has(s))) return; }
     this.settleSince ??= now;
     clearTimeout(this.settle);

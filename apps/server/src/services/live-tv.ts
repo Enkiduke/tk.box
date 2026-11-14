@@ -35,6 +35,7 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 // Upstream URIs stay server-side; the browser only sees this session's paths. Each relay holds
 // one of the server's provider connections (shared with channel checks) until FFmpeg exits.
 export class LiveTv {
+  onViewerEnded?: (id: string) => void;
   private relays = new Map<string, Relay>();
   private viewers = new Map<string, Viewer>();
   private root: string;
@@ -102,6 +103,7 @@ export class LiveTv {
   stop(id: string, hash: string) {
     const viewer = this.viewers.get(id); if (!viewer || viewer.hash !== hash) return;
     this.viewers.delete(id);
+    this.onViewerEnded?.(id);
     const relay = this.relays.get(viewer.channelId);
     relay?.viewers.delete(id);
     if (relay && !relay.viewers.size) this.destroy(relay);
@@ -164,7 +166,7 @@ export class LiveTv {
     else args.push('-c:v', 'copy');
     args.push('-c:a', 'aac', '-b:a', '160k', '-ac', '2',
       '-f', 'hls', '-hls_time', '4', '-hls_list_size', '8', '-hls_delete_threshold', '4',
-      '-hls_flags', `delete_segments+independent_segments+omit_endlist+temp_file${append ? '+append_list+discont_start' : ''}`,
+      '-hls_flags', `delete_segments+independent_segments+omit_endlist+temp_file+program_date_time${append ? '+append_list+discont_start' : ''}`,
       '-hls_segment_filename', join(relay.dir, 'seg-%06d.ts').replaceAll('\\', '/'), join(relay.dir, 'index.m3u8').replaceAll('\\', '/'));
     return args;
   }
@@ -215,7 +217,7 @@ export class LiveTv {
     relay.stopped = true; relay.release(); relay.cancel.abort();
     const lease = relay.lease; lease?.closing();
     if (this.relays.get(relay.channelId) === relay) this.relays.delete(relay.channelId);
-    for (const id of relay.viewers) this.viewers.delete(id);
+    for (const id of relay.viewers) if (this.viewers.delete(id)) this.onViewerEnded?.(id);
     // The connection is only free once FFmpeg has exited and closed its upstream socket.
     void this.kill(relay).finally(() => lease?.release()).then(() => rm(relay.dir, { recursive: true, force: true, maxRetries: 5 })).catch(() => {});
   }

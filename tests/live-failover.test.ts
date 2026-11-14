@@ -25,6 +25,8 @@ test('live failover releases the failed session, skips broken backups, and prese
   assert.equal(result?.channel.id,'third');assert.equal(result?.program,'Now airing');assert.equal(result?.channel.stack,'source:station');
   assert.deepEqual(calls.map(c=>[c.method,c.path]),[['GET','/iptv/channels'],['DELETE','/live/sessions/session-primary'],['POST','/live/sessions'],['POST','/live/sessions']]);
   assert.deepEqual(calls.filter(c=>c.method==='POST').map(tuned),['backup','third']);
+  assert.deepEqual(calls[1]?.body,{replacing:true});
+  assert.ok(calls.filter(c=>c.method==='POST').every(c=>(c.body as {previousDeliveryId?:string}).previousDeliveryId==='session-primary'));
 });
 
 test('subsequent failures try each feed only once, and a deliberate tune starts a new budget',async()=>{

@@ -8,6 +8,7 @@ import {api,ApiClientError} from './api.js';
 const FRESH_MS=30000,CATALOG_FRESH_MS=180000,MAX_ENTRIES=150;
 const freshFor=(path:string)=>path.startsWith('/catalog/')?CATALOG_FRESH_MS:FRESH_MS;
 const cache=new Map<string,{data:unknown;time:number}>(),inflight=new Map<string,Promise<unknown>>();
+const privateHistory=(path?:string)=>path?.startsWith('/admin/history/')===true;
 let sessionGeneration=0;
 // The signed-in viewer and their catalog reads are kept in this browser, so a reload or a new tab draws the last
 // pages at once and refreshes them in the background. Sign-out, an expired session or another account clears it.
@@ -45,7 +46,7 @@ export function fetchCached<T>(path:string):Promise<T> {
       // Another account signed in: nothing kept for the previous one may show.
       const previous=path==='/me'?accountOf(cache.get('/me')?.data):undefined,switched=previous!==undefined&&previous!==accountOf(data);
       if(switched){forgetStored();sessionGeneration++;inflight.clear();for(const key of [...cache.keys()])if(key!=='/me')cache.delete(key);}
-      cache.delete(path);cache.set(path,{data,time:Date.now()});while(cache.size>MAX_ENTRIES)cache.delete(cache.keys().next().value!);
+      if(!privateHistory(path)){cache.delete(path);cache.set(path,{data,time:Date.now()});while(cache.size>MAX_ENTRIES)cache.delete(cache.keys().next().value!);}
       if(persisted(path))scheduleSave();
       if(switched)for(const watcher of watchers){watcher('/catalog');watcher('/libraries');watcher('/explore');}
       return data;
@@ -72,7 +73,7 @@ export function useApi<T>(path:string|undefined) {
     if(force)cache.delete(path);
     let live=true;
     setResult(previous=>({path,data:(hit?.data as T|undefined)??(previous.path===path?previous.data:undefined),loading:true}));
-    fetchCached<T>(path).then(data=>{if(live)setResult({path,data,loading:false});}).catch(error=>{if(live)setResult(previous=>({path,data:previous.path===path?previous.data:undefined,error,loading:false}));});
+    fetchCached<T>(path).then(data=>{if(live)setResult({path,data,loading:false});}).catch(error=>{if(live)setResult(previous=>({path,data:previous.path===path&&!privateHistory(path)?previous.data:undefined,error,loading:false}));});
     return()=>{live=false;};
   },[path,version]);
   useInvalidation([path],()=>setVersion(v=>v+1),path??'');

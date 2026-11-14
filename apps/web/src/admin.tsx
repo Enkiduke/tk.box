@@ -10,6 +10,7 @@ import {ExploreAdmin} from './explore-settings.js';
 import {ArtworkAdmin,CollectionsAdmin} from './artwork-admin.js';
 import {CleanupAdmin} from './cleanup-admin.js';
 import {ActivityAdmin} from './activity-admin.js';
+import {HistoryAdmin} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
 import {AdminsAdmin} from './admins-admin.js';
 import './admin.css';
@@ -29,18 +30,24 @@ function PlaybackSection() {
 }
 export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
   const sectionIds=groups.flatMap(([,items])=>items.map(([id])=>id as string)).filter(id=>me.owner||!ownerOnly.has(id));
-  const asked=(s=>s==='keys'?'connections':s)(params.get('section')??remembered('admin','iptv')),current=(sectionIds.includes(asked)?asked:'iptv') as Section;
+  const section=params.get('section');
+  const requested=section??remembered('admin','iptv');
+  const asked=requested==='keys'?'connections':requested==='history'?'activity':requested;
+  const current=(sectionIds.includes(asked)?asked:'iptv') as Section;
   const open=(id:string)=>{remember('admin',id);const next=new URLSearchParams();next.set('section',id);window.location.hash=`admin?${next}`;};
   // The open section is always in the address, so a reload or a shared link lands on it.
-  useEffect(()=>{if(params.get('section')!==current)replaceRoute(`#admin?section=${current}`);},[current]);
+  const query=section==='history'?new URLSearchParams(params):new URLSearchParams();
+  query.set('section',current);
+  const canonicalRoute=section===current?undefined:`#admin?${query}`;
+  useEffect(()=>{if(canonicalRoute)replaceRoute(canonicalRoute);},[canonicalRoute]);
   if(me.role!=='admin')return <Empty title="Administrator access required"><a href="#settings">Open your settings</a></Empty>;
   return <div className="settings admin">
-    <div className="settings-title admin-title"><h1>Admin</h1><a href="#settings" className="small">Your settings</a></div>
+    <div className="settings-title admin-title"><h1>Admin</h1></div>
     <div className="settings-layout">
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
-        {items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div>)}</nav>
+        <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='explore'?<ExploreAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<ActivityAdmin/>:current==='admins'?<AdminsAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings/>:current==='explore'?<ExploreAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='admins'?<AdminsAdmin/>:<PlaybackSection/>}</div>
     </div>
     <AdminConsole/>
   </div>;
