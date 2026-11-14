@@ -113,6 +113,7 @@ export class Seerr {
     requireThat(response.status === 200, 'SEERR_KEY_REJECTED', 'Seerr did not accept that API key.', 400);
   }
   private async signIn(base: string, plexToken: string): Promise<Session> {
+    requireWritable();
     const response = await remoteJson(this.url(base, '/auth/plex'), { method: 'POST', body: { authToken: plexToken } }, 'Seerr', this.transport, 20000);
     if (response.status === 401 || response.status === 403) throw new AppError('SEERR_ACCESS_DENIED', remoteMessage(response.data) ?? 'Seerr did not let this Plex account sign in. Ask the administrator to import you in Seerr or allow new Plex sign-ins.', 403);
     requireThat(response.status === 200, 'SEERR_UNAVAILABLE', remoteMessage(response.data) ?? 'Seerr sign-in failed.', 502);

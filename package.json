@@ -12,6 +12,7 @@
     "dev:readonly": "tsx watch apps/server/src/index.ts --read-only",
     "dev:web": "vite --config apps/web/vite.config.ts",
     "preview:ui": "tsx scripts/preview-ui.ts",
+    "preview:plex": "tsx scripts/preview-plex.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts",
     "start": "node dist/apps/server/src/index.js",

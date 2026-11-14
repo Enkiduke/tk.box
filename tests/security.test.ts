@@ -135,6 +135,29 @@ test('preview authentication uses separate cookie names and cannot replace the r
   }finally{await app.close();await preview.close();db.close();}
 });
 
+test('Plex preview accepts same-origin sign-in on loopback aliases only',async()=>{
+  const c={...config(),APP_HOST:'localhost',APP_PORT:3012,browserOrigin:'http://localhost:3012'};
+  const db=openDatabase(':memory:'),vault=new Vault(randomBytes(32)),fixture=fakePlex();
+  const plex=new PlexAdapter(c,'plex-preview',fixture.transport);
+  const preview=await buildApp(c,db,vault,plex,false,'tk.box_readonly');
+  const regular=await buildApp(c,db,vault,plex,false);
+  try {
+    const start=(server:typeof preview,host:string,origin:string,remoteAddress='127.0.0.1')=>server.inject({
+      method:'POST',url:'/api/v1/auth/plex/start',headers:{host,origin},remoteAddress,payload:{}
+    });
+    for(const host of ['localhost:3012','127.0.0.1:3012','[::1]:3012']){
+      const origin=`http://${host}`;
+      const response=await start(preview,host,origin,host.startsWith('[')?'::1':'127.0.0.1');
+      assert.equal(response.statusCode,200);
+      assert.equal(response.cookies[0]?.name,'tk.box_readonly_link');
+    }
+    assert.equal((await start(preview,'localhost:3012','http://127.0.0.1:3012')).statusCode,403);
+    assert.equal((await start(preview,'localhost:3012','http://localhost:3012','192.0.2.1')).statusCode,403);
+    assert.equal((await start(preview,'example.test:3012','http://example.test:3012')).statusCode,403);
+    assert.equal((await start(regular,'127.0.0.1:3012','http://127.0.0.1:3012')).statusCode,403);
+  } finally {await preview.close();await regular.close();db.close();}
+});
+
 test('rebranding preserves existing Plex links and sessions with secure and preview cookie isolation', async () => {
   for (const secure of [false, true]) for (const preview of [false, true]) {
     const c = secure ? {...config(), PUBLIC_BASE_URL: 'https://media.example.com', secureCookies: true, browserOrigin: 'https://media.example.com'} : config();

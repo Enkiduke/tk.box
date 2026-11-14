@@ -10,6 +10,8 @@ const schema = z.object({
   PUBLIC_BASE_URL: optionalText(z.string().url()),
   DATA_DIR: z.string().default('./data'),
   CACHE_DIR: z.string().default('./data/cache'),
+  WEB_DIR: z.string().default('./dist/web'),
+  CHANNEL_HEALTH_CHECKS: z.enum(['0', '1']).default('1').transform(value => value === '1'),
   SECRET_KEY_FILE: optionalText(z.string()),
   PLEX_URL: z.string().url().default('http://127.0.0.1:32400'),
   PLEX_MACHINE_ID: optionalText(z.string().min(1)),
@@ -55,7 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   });
   if (mediaRoots.some(root => !isAbsolute(root))) throw new Error('MEDIA_ROOTS must list absolute directories');
   if (pathMap.length && !mediaRoots.length) throw new Error('PLEX_PATH_MAP requires MEDIA_ROOTS');
-  return { ...c, DATA_DIR: resolve(c.DATA_DIR), CACHE_DIR: resolve(c.CACHE_DIR), trustedProxies,
+  return { ...c, DATA_DIR: resolve(c.DATA_DIR), CACHE_DIR: resolve(c.CACHE_DIR), WEB_DIR: resolve(c.WEB_DIR), trustedProxies,
     requiredLibraries: c.PLEX_REQUIRED_LIBRARY_IDS.split(',').map(v => v.trim()).filter(Boolean),
     secureCookies: !!c.PUBLIC_BASE_URL,
     localMedia: mediaRoots.length ? { roots: mediaRoots.map(root => resolve(root)), pathMap } : undefined,

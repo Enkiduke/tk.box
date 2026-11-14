@@ -1,4 +1,4 @@
-import { AppError } from '../errors.js';
+import { AppError, requireWritable } from '../errors.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 
 // Clean Up's Keep: puts a tag on a movie in Radarr or a show in Sonarr, made if Radarr or Sonarr doesn't have it yet.
@@ -7,6 +7,7 @@ import { remoteJson, remoteMessage } from './remote-json.js';
 export type ArrService = { url: string; key?: string };
 
 export async function tagArrTitle(kind: 'movie' | 'tv', service: ArrService, tmdbId: number, label: string, transport: typeof fetch = fetch) {
+  requireWritable();
   const name = kind === 'movie' ? 'Radarr' : 'Sonarr';
   if (!service.url || !service.key) throw new AppError('CLEANUP_ARR_MISSING', `Connect ${name} in Admin › Connections to keep titles by tag.`, 409);
   const call = async (path: string, init: { method?: string; body?: unknown } = {}, maxBytes?: number) => {
