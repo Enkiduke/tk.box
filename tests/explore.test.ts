@@ -2,13 +2,45 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {Seerr,matchPerson,seerrFacts,seerrItem,seerrRatings,seerrSeasons,seerrStatus,statusIndex} from '../apps/server/src/providers/seerr.js';
-import {discoverIds,discoverItem} from '../apps/server/src/providers/plex-discover.js';
+import {discoverIds,discoverItem,PlexDiscover} from '../apps/server/src/providers/plex-discover.js';
+import {PlexAdapter} from '../apps/server/src/providers/plex.js';
+import {tagArrTitle} from '../apps/server/src/providers/arr-tags.js';
+import {config} from './fixtures.js';
 import {imagePath} from '../apps/server/src/providers/explore-images.js';
 import {ExploreStore,exploreLayout} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {ExploreCache,exploreFilter,interleave,lacking,passes,plexRowTtl,rowShown,shownSources} from '../apps/server/src/explore-api.js';
 import {exploreGenresOf,tmdbGenres} from '../apps/server/src/providers/explore-genres.js';
+
+test('read-only mode can browse Plex and Seerr while blocking watchlist, Arr tags, and Seerr sign-ins',async t=>{
+  const previous=process.env.TKBOX_READ_ONLY;
+  process.env.TKBOX_READ_ONLY='1';
+  t.after(()=>{
+    if(previous===undefined)delete process.env.TKBOX_READ_ONLY;
+    else process.env.TKBOX_READ_ONLY=previous;
+  });
+  const calls:string[]=[];
+  const transport:typeof fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    calls.push(`${init?.method??'GET'} ${url.pathname}`);
+    return Response.json(url.hostname==='discover.provider.plex.tv'
+      ? {MediaContainer:{UserState:{watchlistedAt:1}}}
+      : {id:297,title:'Meet Joe Black'});
+  };
+  const discover=new PlexDiscover(new PlexAdapter(config(),'preview',transport));
+  assert.equal(await discover.watchlisted('token','297'),true);
+  for(const add of [true,false]){
+    await assert.rejects(discover.setWatchlisted('token','297',add),{code:'READ_ONLY'});
+  }
+  for(const kind of ['movie','tv'] as const){
+    await assert.rejects(tagArrTitle(kind,{url:'https://arr.example',key:'key'},297,'keep',transport),{code:'READ_ONLY'});
+  }
+  const seerr=new Seerr(()=>({url:'https://seerr.example',apiKey:'key'}),transport);
+  assert.equal((await seerr.details('viewer','token','movie',297)).title,'Meet Joe Black');
+  await assert.rejects(seerr.account('viewer','token'),{code:'READ_ONLY'});
+  assert.deepEqual(calls,['GET /library/metadata/297/userState','GET /api/v1/movie/297','GET /api/v1/settings/public']);
+});
 
 test('Seerr status shows availability, and downloads and open requests as Requested, per quality',()=>{
   assert.equal(seerrStatus(undefined),undefined);

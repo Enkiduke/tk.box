@@ -1,21 +1,12 @@
 /* Explore catalog rows and title dialog. */
 .explore-page{padding-bottom:64px}
-.browse-controls.explore-controls{flex-wrap:nowrap}
-.browse-search.explore-search{order:0;flex:1 1 0;min-width:0;max-width:none}
-.explore-search input{min-width:0}
-.explore-search>svg,.explore-search .icon-button{flex:none}
-.segmented.explore-content-type{flex:none;margin:0}
-.explore-content-type button{padding-inline:10px}
-.explore-controls .active-filters{min-width:0;flex-wrap:nowrap;margin:0;padding:5px;overflow-x:auto;scrollbar-width:thin}
-.explore-controls .active-filters button{flex-shrink:0}
-@media(max-width:760px){
-  .explore-controls .browse-popup{position:static}
-  .explore-controls .explore-filter-menu{top:100%;right:0;left:auto;width:min(360px,100%)}
-}
-@media(max-width:420px){
-  .explore-content-type button{padding-inline:5px}
-  .browse-search.explore-search{gap:4px;padding-inline:7px}
-  .explore-controls .browse-popup>summary>span{display:none}
+.browse-search.explore-search{min-width:0;max-width:none}
+.explore-search .icon-button{flex:none}
+.explore-page .active-filters button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:520px){
+  .page-toolbar.explore-controls{display:grid;grid-template-columns:minmax(0,1fr) auto auto}
+  .explore-content-type{grid-column:1/-1;justify-self:start}
+  .browse-search.explore-search{margin:0}
 }
 .explore-note{margin:0 0 18px;font-size:14px}
 /* Rows pad themselves to the gutter, as on Home. */
@@ -48,24 +39,10 @@
 .explore-hero .detail-facts{flex-direction:column;align-items:flex-start;gap:10px}
 .explore-hero .detail-meta{margin:0}
 .explore-badges{display:flex;flex-wrap:wrap;gap:8px;margin:0}
-.explore-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,340px);gap:clamp(20px,3vw,36px);align-items:start;padding:8px clamp(20px,4vw,40px) 28px}
 .explore-main{display:flex;flex-direction:column;gap:14px;min-width:0}
 .explore-main .synopsis,.explore-main .tagline{margin:0}
 .explore-done{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:600}
 
-/* Facts: the library's label-over-value list, with flags, small service logos and a line of text links. */
-.explore-facts{display:flex;flex-direction:column;gap:16px;font-size:14px}
-.explore-facts .detail-people{gap:14px}
-.explore-countries{display:flex;flex-wrap:wrap;gap:4px 12px}
-.explore-countries>span{display:inline-flex;align-items:center;gap:7px}
-.explore-flag{width:18px;height:auto;border-radius:2px;box-shadow:0 0 0 1px rgba(255,255,255,.12)}
-.explore-providers{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
-.explore-providers img{display:block;width:30px;height:30px;border-radius:7px;object-fit:cover;box-shadow:0 0 0 1px rgba(255,255,255,.1)}
-.explore-providers>span{font-size:13px}
-.explore-links{display:flex;flex-wrap:wrap;gap:4px 0;margin:0;font-size:12px;font-weight:600}
-.explore-links a{color:var(--muted)}
-.explore-links a:hover{color:var(--text)}
-.explore-links a+a:before{content:'·';margin:0 8px;color:var(--dim)}
 
 .explore-chips{display:flex;flex-wrap:wrap;gap:8px}
 .explore-chip{gap:6px;height:34px;padding:0 14px;border-radius:17px;border-color:var(--line-strong);background:transparent;color:var(--text);font-size:13px;font-weight:600}
@@ -104,7 +81,6 @@
 .request-season-name small{font-size:12px;font-weight:400;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .explore-status.open{color:var(--muted)}
 .request-foot{display:flex;justify-content:flex-end;gap:10px;padding-top:4px}
-@media(max-width:760px){.explore-body{grid-template-columns:1fr}}
 /* A hairline in the label's colour around titles that are available or requested; hover keeps the usual outline. */
 .explore-card.is-available .poster-art:after{box-shadow:inset 0 0 0 1px #7fd8a0}
 .explore-card.is-partial .poster-art:after{box-shadow:inset 0 0 0 1px #b8e07a}

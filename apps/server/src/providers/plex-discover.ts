@@ -44,11 +44,12 @@ const hubKey = (id: string) => { const key = Buffer.from(id.slice(4), 'base64url
 // Shelves of categories (genres, decades) and trailers hold nothing to open.
 const unlisted = new Set(['directory', 'clip']);
 const serviceTitle = /\byour\s+(?:(?:favorite|favourite|selected|streaming|watch)\s+)*(?:services?|providers?)\b|\b(?:streaming|watch)\s+(?:services?|providers?)\b|\b(?:on|across)\s+streaming\b/i;
-const namedService = /(?:\b(?:on|to|from)\s+|^)(?:netflix|(?:amazon\s+)?prime video|disney\s*(?:\+|plus)|hulu|(?:hbo\s+)?max|apple tv(?:\s*(?:\+|plus))?|paramount\s*(?:\+|plus)|peacock|crunchyroll|discovery\s*(?:\+|plus)|starz|shudder|mubi|tubi|pluto tv|(?:the\s+)?roku channel|britbox|amc\s*(?:\+|plus))(?=$|\s*[:–—(]|[!,]|\s+(?:this|today|now|originals)\b)/i;
+// Match Plex's provider shelf wording without depending on a catalog of service names.
+const providerShelf = /^(?:trending|popular|top\s+\d+|available|new|(?:just|recently)\s+(?:added|released)|coming\s+soon)\b(?:\s+(?:movies|films|shows|tv(?:\s+shows)?|series|titles|now))?\s+(?:on|to|from)\s+\S/i;
 const excludedShelfName = /\b(?:followers?\s+favou?rites|most\s+watchlisted|released\s+this\s+week\s+in\s+history)\b/i;
 function isExcludedShelf(hub: DiscoverHub, title: string) {
   const label = title.normalize('NFKC').trim().replace(/\s+/g, ' ');
-  if (excludedShelfName.test(label) || serviceTitle.test(label) || namedService.test(label) || /\bon plex\s*$/i.test(label)) return true;
+  if (excludedShelfName.test(label) || serviceTitle.test(label) || providerShelf.test(label) || /\bon plex\s*$/i.test(label)) return true;
   // Plex can change or localize display names. Also check shelf identifiers.
   return [hub.hubIdentifier, hub.hubKey, hub.key].some(value => {
     if (!value) return false;

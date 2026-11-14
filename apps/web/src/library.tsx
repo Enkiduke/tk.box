@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import type {CatalogItem,CatalogPage,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
+import type {CatalogItem,CatalogPage,ExploreDetails,ExternalRating,Library} from '../../../packages/contracts/src/index.js';
 import {useApi,useApiAll,useDebounced,useNearViewport,duration,link,cachedListItem} from './hooks.js';
 import {Empty,ErrorNotice,FadeImage,Loading,Posters,Poster,WideCard,Row,RowSkeleton,Pagination,Modal,Icon,People,meta,useMediaMenu,artworkKey,editArtwork,type PlayFn} from './components.js';
 import {useOverrides,useWithOverride} from './media-actions.js';
@@ -7,6 +7,9 @@ import {LiveEventsNow,LiveNow,shuffled,type WatchChannel} from './live.js';
 import {api} from './api.js';
 import {plural} from './settings-ui.js';
 import {liveSpeedPx,useHomeSettings} from './home-settings.js';
+import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
+import {TitleFacts} from './title-facts.js';
+import {useExplorePrefs} from './explore-prefs.js';
 
 type BrowseProps={libraries:Library[];onOpen:(id:string)=>void};
 type PlayProps={onPlay:PlayFn;busy:boolean};
@@ -120,7 +123,7 @@ export function Search({libraries,params,onOpen,onPlay,onSearchChange}:BrowsePro
   // Library hooks are keyed by query, so each result set remounts with a fresh page offset.
   return <div className="page search-page">
     <h1 className="search-heading">Search</h1>
-    <form className="search-box" role="search" onSubmit={e=>{e.preventDefault();onSearchChange(text.trim());}}><Icon name="search" size={22}/><input autoFocus={window.matchMedia('(max-width:760px)').matches} aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} onChange={e=>onSearchChange(e.target.value)}/>{text&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>onSearchChange('')}><Icon name="close" size={18}/></button>}</form>
+    <form className="browse-search search-box" role="search" onSubmit={e=>{e.preventDefault();onSearchChange(text.trim());}}><Icon name="search"/><input autoFocus={window.matchMedia('(max-width:760px)').matches} aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} onChange={e=>onSearchChange(e.target.value)}/>{text&&<button type="button" className="icon-button" aria-label="Clear search" onClick={()=>onSearchChange('')}><Icon name="close"/></button>}</form>
     {q?<>{matches.length>0&&<section className="search-group"><h2>Channels</h2><div className="channel-chips">{matches.map(c=><a href={link('live',{channel:c.id})} key={c.id}>{c.name}</a>)}</div></section>}
       {channels.error&&<ErrorNotice message="Channels could not be searched." retry={channels.reload}/>}
       {libraries.map(l=><SearchLibrary key={`${q}-${l.key}`} library={l} q={q} onOpen={onOpen} onPlay={onPlay}/>)}</>
@@ -145,28 +148,47 @@ const ratingIcons={
   tomatometer:new URL('./assets/ratings/tomatometer-fresh.svg',import.meta.url).href,tomatometerRotten:new URL('./assets/ratings/tomatometer-rotten.svg',import.meta.url).href,
   popcornmeter:new URL('./assets/ratings/popcornmeter-upright.svg',import.meta.url).href,popcornmeterRotten:new URL('./assets/ratings/popcornmeter-spilled.svg',import.meta.url).href
 };
-function RatingMark({rating}:{rating:ExternalRating}) {
-  const icon=rating.fresh===false&&rating.source==='tomatometer'?ratingIcons.tomatometerRotten:rating.fresh===false&&rating.source==='popcornmeter'?ratingIcons.popcornmeterRotten:ratingIcons[rating.source];
-  return <img className={`rating-mark ${rating.source}`} src={icon} alt="" aria-hidden="true"/>;
+function RatingMark({source,fresh}:{source:ExternalRating['source'];fresh?:boolean}) {
+  const icon=fresh===false&&source==='tomatometer'?ratingIcons.tomatometerRotten:fresh===false&&source==='popcornmeter'?ratingIcons.popcornmeterRotten:ratingIcons[source];
+  return <img className={`rating-mark ${source}`} src={icon} alt="" aria-hidden="true"/>;
 }
 export type RatingLinks=Partial<Record<'imdb'|'rottentomatoes'|'tmdb',string>>;
-// Each score links to the title on its site when the page is known.
-export function Ratings({ratings,links={}}:{ratings:ExternalRating[];links?:RatingLinks}) {
-  return <ul className="ratings">{ratings.map(rating=>{
-    const value=rating.source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`,href=links[rating.source==='imdb'||rating.source==='tmdb'?rating.source:'rottentomatoes'];
-    const content=<><RatingMark rating={rating}/><span className="sr-only">{ratingNames[rating.source]}</span>{value}</>;
-    return <li key={rating.source} title={ratingNames[rating.source]}>{href?<a className="rating-link" href={href} target="_blank" rel="noreferrer">{content}</a>:content}</li>;
-  })}</ul>;
+export function Ratings({ratings=[],links}:{ratings?:ExternalRating[];links:RatingLinks}) {
+  const scores=new Map(ratings.map(rating=>[rating.source,rating]));
+  const marks=(['imdb','tomatometer','popcornmeter','tmdb'] as const).map(source=>{
+    const rating=scores.get(source),tomatoes=source==='tomatometer'||source==='popcornmeter';
+    const href=links[tomatoes?'rottentomatoes':source];
+    // One Rotten Tomatoes icon covers the site when neither score is available.
+    if(!rating&&(!href||source==='popcornmeter'||source==='tomatometer'&&scores.has('popcornmeter')))return null;
+    const name=tomatoes&&!rating?'Rotten Tomatoes':ratingNames[source];
+    const value=rating?(source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`):'N/A';
+    const content=<><RatingMark source={source} fresh={rating?.fresh}/><span className="sr-only">{name}</span>{value}</>;
+    return <li key={source} title={name}>{href?<a className="rating-link" href={href} target="_blank" rel="noreferrer">{content}</a>:content}</li>;
+  });
+  return marks.some(Boolean)?<ul className="ratings">{marks}</ul>:null;
 }
-// A library title's pages on the rating sites. Rotten Tomatoes' address comes from the server, which asks Seerr.
-const ratingLinks=(item:CatalogItem):RatingLinks=>{
-  const kind=item.type==='movie'||item.type==='show'?item.type:undefined;
-  return {...(item.imdbId?{imdb:`https://www.imdb.com/title/${item.imdbId}/`}:{}),...(kind&&item.tmdbId?{tmdb:`https://www.themoviedb.org/${kind==='movie'?'movie':'tv'}/${item.tmdbId}`}:{}),
-    ...(kind?{rottentomatoes:`/api/v1/explore/rottentomatoes?${new URLSearchParams({title:item.title,...(item.tmdbId?{kind,tmdb:String(item.tmdbId)}:{})})}`}:{})};
+// Use direct title links when IDs are available and search by title otherwise.
+export const ratingLinks=({title,kind,tmdb,imdb}:{title:string;kind?:'movie'|'show';tmdb?:number;imdb?:string}):RatingLinks=>{
+  const exactImdb=imdb?`https://www.imdb.com/title/${imdb}/`:undefined;
+  if(!kind)return {imdb:exactImdb};
+  const query=encodeURIComponent(title),type=kind==='movie'?'movie':'tv';
+  return {
+    imdb:exactImdb??`https://www.imdb.com/find/?q=${query}&s=tt`,
+    tmdb:tmdb?`https://www.themoviedb.org/${type}/${tmdb}`:`https://www.themoviedb.org/search/${type}?query=${query}`,
+    rottentomatoes:`/api/v1/explore/rottentomatoes?${new URLSearchParams({title,...(tmdb?{kind,tmdb:String(tmdb)}:{})})}`
+  };
 };
 // Year (or air date for an episode), content rating and runtime. Plex's own score shows only when no third-party ones came.
-const facts=(item:CatalogItem)=>[item.type==='episode'?airDate(item.airDate)??item.year:item.year,item.contentRating,playable(item)?duration(item.durationMs):undefined,
-  !item.ratings&&item.rating!==undefined?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
+const facts=(item:CatalogItem,info?:ExploreDetails)=>{
+  const count=item.episodeCount??info?.item.episodeCount;
+  return [
+    item.type==='episode'?airDate(item.airDate)??item.year:item.year??info?.item.year,
+    item.contentRating??info?.contentRating,
+    item.type==='show'?(count?`${count} episodes`:'TV series'):playable(item)?duration(item.durationMs??info?.item.durationMs):undefined,
+    info?.status,
+    !item.ratings?.length&&!info?.ratings.length&&item.rating!==undefined?`★ ${item.rating.toFixed(1)}`:undefined
+  ].filter(Boolean);
+};
 function EpisodeRow({episode:source,current,onPlay,onOpen,busy}:{episode:CatalogItem;current?:boolean;onOpen:(id:string)=>void}&PlayProps) {
   const episode=useWithOverride(source),actions=useMediaMenu(episode,'episode',onOpen,onPlay,'episode-more');
   const kicker=[episode.episodeNumber!==undefined?`Episode ${episode.episodeNumber}`:undefined,airDate(episode.airDate),duration(episode.durationMs)].filter(Boolean).join(' · ');
@@ -229,13 +251,13 @@ function SeasonEpisodes({season,onUpNext,...play}:{season:CatalogItem;onOpen:(id
   return <section className="detail-episodes"><div className="episodes-heading"><h2>Episodes</h2>{list.length>1&&<SeasonPicker seasons={list} current={list.find(s=>s.id===season.id)??season} onPick={s=>play.onOpen(s.id)}/>}</div>
     <Episodes seasonId={season.id} onUpNext={onUpNext} {...play}/></section>;
 }
-type DetailProps={id:string;onOpen:(id:string)=>void;error?:string;admin?:boolean}&PlayProps;
+type DetailProps={id:string;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTitle;error?:string;admin?:boolean}&PlayProps;
 // One dialog stays open while it moves from title to title (show, season, episode); only its contents change.
 export function Details({onClose,...props}:{onClose:()=>void}&DetailProps) {
   const item=useApi<CatalogItem>(`/catalog/items/${props.id}`);
   return <Modal title={item.data?.title??'Media details'} onClose={onClose} variant="media" scrollKey={props.id}><DetailBody key={props.id} {...props}/></Modal>;
 }
-function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
+function DetailBody({id,onOpen,onOpenRelated,onPlay,busy,error,admin}:DetailProps) {
   // A title from a list on screen draws at once; the full record fills in cast, ratings and the rest.
   const [seed]=useState(()=>cachedListItem<CatalogItem>(id));
   const item=useApi<CatalogItem>(`/catalog/items/${id}`),media=useWithOverride(item.data??(item.error?undefined:seed)),actions=useMediaMenu(media??{id,libraryId:'',type:'movie',title:'',summary:'',viewOffsetMs:0,watched:false,genres:[]},'detail',onOpen,onPlay,'secondary large icon-only'),[upNext,setUpNext]=useState<CatalogItem>();
@@ -243,9 +265,16 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
   // An episode leads with its own still, uncovered, since the still often carries the episode's title card.
   const still=media?.type==='episode'?media.posterUrl:undefined,art=still??media?.backdropUrl??media?.posterUrl;
   const parent=media?.type==='episode'?{id:media.showId??media.parentId,title:media.showTitle??media.parentTitle}:media?.type==='season'?{id:media.parentId,title:media.parentTitle}:undefined;
-  const credits=media&&(media.type==='movie'||media.type==='show')?{kind:media.type,tmdb:media.tmdbId}:{};
-  const people=media&&([
-    ['Starring',!!media.cast?.length&&<People names={media.cast.slice(0,5)} {...credits}/>],[media.directors&&media.directors.length>1?'Directors':'Director',!!media.directors?.length&&<People names={media.directors} {...credits}/>],
+  const titleKind=media?.type==='movie'||media?.type==='show'?media.type:undefined;
+  const titleIds={tmdb:media?.tmdbId,imdb:media?.imdbId,tvdb:media?.tvdbId};
+  const {region}=useExplorePrefs();
+  const info=useApi<ExploreDetails>(media&&titleKind&&(titleIds.tmdb||titleIds.imdb||titleIds.tvdb)
+    ?detailsPath({kind:titleKind,title:media.title,year:media.year,ids:titleIds},region,true):undefined).data;
+  const ratings=new Map(info?.ratings.map(rating=>[rating.source,rating]));
+  for(const rating of media?.ratings??[])ratings.set(rating.source,rating);
+  const heroFacts=media&&facts(media,info);
+  const people=media&&!titleKind&&([
+    ['Starring',!!media.cast?.length&&<People names={media.cast.slice(0,5)}/>],[media.directors&&media.directors.length>1?'Directors':'Director',!!media.directors?.length&&<People names={media.directors}/>],
     ['Genres',media.genres.join(', ')],['Studio',media.studio]
   ] as [string,ReactNode][]).filter(row=>!!row[1]);
   const progress=media?.episodeCount!==undefined&&media.type!=='episode'?Math.min(1,(media.watchedEpisodeCount??0)/Math.max(1,media.episodeCount)):undefined;
@@ -253,9 +282,9 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
     {parent?.id&&<button className="crumb" onClick={()=>onOpen(parent.id!)}><Icon name="back" size={14}/>{parent.title??'Back'}</button>}
     {media.type==='episode'&&<p className="detail-eyebrow">{media.seasonNumber!==undefined&&media.parentId?<button className="text-button" onClick={()=>onOpen(media.parentId!)}>Season {media.seasonNumber}</button>:null}{media.episodeNumber!==undefined&&<span>Episode {media.episodeNumber}</span>}</p>}
     <h1 className="detail-title">{media.logoUrl&&failedLogo!==media.logoUrl?<img className="detail-logo" src={media.logoUrl} alt={media.title} decoding="async" fetchPriority="high" onError={()=>setFailedLogo(media.logoUrl)}/>:media.title}</h1>
-    {(facts(media).length>0||media.ratings||media.watched)&&<div className="detail-facts">
-      {facts(media).length>0&&<p className="detail-meta">{facts(media).map((fact,i)=><span key={i}>{fact}</span>)}{media.watched&&<span className="badge">Watched</span>}</p>}
-      {media.ratings&&<Ratings ratings={media.ratings} links={ratingLinks(media)}/>}
+    {(!!heroFacts?.length||ratings.size>0||media.watched||titleKind||media.imdbId)&&<div className="detail-facts">
+      {(!!heroFacts?.length||media.watched)&&<p className="detail-meta">{heroFacts?.map((fact,i)=><span key={i}>{fact}</span>)}{media.watched&&<span className="badge">Watched</span>}</p>}
+      <Ratings ratings={[...ratings.values()]} links={{...ratingLinks({title:media.title,kind:titleKind,...titleIds}),...Object.fromEntries(info?.links.map(l=>[l.site,l.url])??[])}}/>
     </div>}
     {progress!==undefined&&<p className="detail-progress"><span className="detail-progress-bar"><span style={{width:`${progress*100}%`}}/></span>{media.watchedEpisodeCount??0} of {media.episodeCount} episodes watched</p>}
     {error&&<ErrorNotice message={error}/>}
@@ -273,10 +302,10 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
         {!still&&<div className="detail-hero-content">{heading}</div>}
       </div>
       {still&&<div className="detail-head">{heading}</div>}
-      <div className="detail-body">
+      <div className={titleKind?'detail-body title-detail-body':'detail-body'}>
         <div className="detail-main">
-          {media.tagline&&<p className="tagline">{media.tagline}</p>}
-          <p className="synopsis">{media.summary||'No synopsis available.'}</p>
+          {(media.tagline||info?.tagline)&&<p className="tagline">{media.tagline||info?.tagline}</p>}
+          <p className="synopsis">{media.summary||info?.item.summary||'No synopsis available.'}</p>
           {/* Each collection the title is in opens that collection under Movies or TV Shows, closing this dialog. */}
           {media.collections?.map(c=><a key={c.id} className="detail-collection" href={link(c.kind==='show'?'shows':'movies',{view:'collections',collection:c.id,library:media.libraryId})}>
             <span className="detail-collection-art">{c.posterUrl?<FadeImage src={c.posterUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>:null}<Icon name="collection" size={18}/></span>
@@ -284,9 +313,12 @@ function DetailBody({id,onOpen,onPlay,busy,error,admin}:DetailProps) {
             <Icon name="next" size={18}/>
           </a>)}
         </div>
-        {people&&people.length>0&&<dl className="detail-people">{people.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
+        {titleKind?<TitleFacts kind={titleKind} info={info} studio={media.studio} released={media.airDate} genres={media.genres}/>
+          :people&&people.length>0&&<dl className="detail-people">{people.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
       </div>
       {media.type==='show'&&<Seasons show={media} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/>}
+      {titleKind&&<TitleDiscovery kind={titleKind} ids={{...titleIds,...info?.item.ids}}
+        cast={media.cast?.length?media.cast:info?.cast} directors={media.directors} onOpen={onOpenRelated}/>}
       {media.type==='season'&&<SeasonEpisodes key={media.id} season={media} onUpNext={setUpNext} onPlay={onPlay} onOpen={onOpen} busy={busy}/>}
       {media.type==='episode'&&media.parentId&&<section className="detail-episodes"><div className="episodes-heading"><h2>{media.seasonNumber!==undefined?`Season ${media.seasonNumber}`:'More episodes'}</h2></div><Episodes seasonId={media.parentId} current={media.id} onUpNext={()=>{}} onPlay={onPlay} onOpen={onOpen} busy={busy}/></section>}
     </>}

@@ -1,4 +1,4 @@
-import {memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode,type PointerEvent as ReactPointerEvent,type FocusEvent as ReactFocusEvent} from 'react';
+import {createContext,memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode,type PointerEvent as ReactPointerEvent,type FocusEvent as ReactFocusEvent} from 'react';
 import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/index.js';
 import {duration} from './hooks.js';
 import {fullyWatched,partlyWatched,updateWatchState,useNotice,useWithOverride} from './media-actions.js';
@@ -54,9 +54,10 @@ export function Icon({name,size=20}:{name:string;size?:number}) {
 export function ErrorNotice({message,retry,dismiss}:{message:string;retry?:()=>void;dismiss?:()=>void}) {return <div className="notice error" role="alert"><span>{message}</span>{retry&&<button onClick={retry}>Try again</button>}{dismiss&&<button className="icon-button" aria-label="Dismiss error" onClick={dismiss}><Icon name="close" size={16}/></button>}</div>;}
 // Cast and crew names, each opening the person's IMDb page. The server looks them up when clicked, in the title's
 // credits when its TMDB id is known.
+export const personHref=(name:string,kind?:'movie'|'show',tmdb?:number)=>
+  `/api/v1/explore/person?${new URLSearchParams({name,...(kind&&tmdb?{kind,tmdb:String(tmdb)}:{})})}`;
 export function People({names,kind,tmdb}:{names:string[];kind?:'movie'|'show';tmdb?:number}) {
-  const href=(name:string)=>`/api/v1/explore/person?${new URLSearchParams({name,...(kind&&tmdb?{kind,tmdb:String(tmdb)}:{})})}`;
-  return <>{names.map((name,i)=><span key={name}>{i>0&&', '}<a className="person-link" href={href(name)} target="_blank" rel="noreferrer">{name}</a></span>)}</>;
+  return <>{names.map((name,i)=><span key={name}>{i>0&&', '}<a className="person-link" href={personHref(name,kind,tmdb)} target="_blank" rel="noreferrer">{name}</a></span>)}</>;
 }
 export function Empty({title,children}:{title:string;children?:ReactNode}) {return <div className="empty"><h3>{title}</h3>{children&&<p>{children}</p>}</div>;}
 export function Loading({cards=false}:{cards?:boolean}) {return cards?<div className="poster-grid" aria-label="Loading titles" role="status">{Array.from({length:8},(_,i)=><div key={i} className="skeleton poster-skeleton"/>)}</div>:<div className="loading" role="status"><span className="spinner"/><span className="sr-only">Loading…</span></div>;}
@@ -211,7 +212,7 @@ export function Row({title,href,children,className='',drift=0,headerActions}:{ti
   const ref=useRef<HTMLDivElement>(null),track=useRef<HTMLDivElement>(null),[edges,setEdges]=useState({start:true,end:false}),[loops,setLoops]=useState(false);
   // Only re-renders when an edge changes.
   const update=()=>{const el=ref.current;if(!el)return;const start=el.scrollLeft<8,end=el.scrollLeft+el.clientWidth>=el.scrollWidth-8;atStart.current=start;setEdges(e=>e.start===start&&e.end===end?e:{start,end});};
-  useEffect(()=>{update();const el=ref.current;if(!el)return;const resize=new ResizeObserver(update);resize.observe(el);return()=>resize.disconnect();},[]);
+  useEffect(()=>{update();const el=ref.current;if(!el)return;const resize=new ResizeObserver(update);resize.observe(el);if(track.current)resize.observe(track.current);return()=>resize.disconnect();},[]);
   const looping=drift>0&&loops,endless=useEndless(ref,track,looping,drift),atStart=useBump(ref,track,!looping,children);
   // Loop only when the cards overflow; a short row stays still and is not repeated.
   useEffect(()=>{
@@ -360,16 +361,24 @@ export function Pagination({page,onChange}:{page:CatalogPage;onChange:(offset:nu
   return <div className="pagination"><span>{page.total!==undefined?`${page.total.toLocaleString()} titles`:''}{page.items.length?` · ${page.offset+1}–${page.offset+page.items.length}`:''}</span><div><button disabled={!page.offset} onClick={()=>onChange(Math.max(0,page.offset-page.limit))}>Previous</button><button disabled={!page.hasMore} onClick={()=>onChange(page.offset+page.limit)}>Next</button></div></div>;
 }
 const MODAL_CLOSE_MS=160;
+export const MediaModalEdge=createContext<HTMLDivElement|null>(null);
 // scrollKey: content that changes in place (one title's details to another's) starts at the top again.
 export function Modal({title,onClose,children,variant,scrollKey}:{title:string;onClose:()=>void;children:ReactNode;variant?:'media'|'wide';scrollKey?:string}) {
-  const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
+  const ref=useRef<HTMLDialogElement>(null),scroller=useRef<HTMLDivElement>(null),close=useRef(onClose);close.current=onClose;
+  const [edge,setEdge]=useState<HTMLDivElement|null>(null);
   useEffect(()=>{const dialog=ref.current!;dialog.showModal();document.documentElement.classList.add('modal-open');return()=>{dialog.close();document.documentElement.classList.remove('modal-open');};},[]);
-  useEffect(()=>{ref.current!.scrollTop=0;},[scrollKey]);
+  useEffect(()=>{(scroller.current??ref.current)!.scrollTop=0;},[scrollKey]);
   // Fades out before the owner unmounts it. An owner that refuses (busy) gets the dialog back once the fade is over.
   const dismiss=()=>{
     const dialog=ref.current!;if(dialog.classList.contains('closing'))return;
     dialog.classList.add('closing');
     setTimeout(()=>{close.current();setTimeout(()=>{if(dialog.isConnected)dialog.classList.remove('closing');},250);},MODAL_CLOSE_MS);
   };
-  return <dialog ref={ref} className={variant==='media'?'media-dialog':variant==='wide'?'wide-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();dismiss();}} onClick={e=>{if(e.target===ref.current)dismiss();}}><div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={dismiss}><Icon name="close"/></button>{children}</div></dialog>;
+  const content=<div className="modal-content"><button className="icon-button modal-close" aria-label="Close" onClick={dismiss}><Icon name="close"/></button>{children}</div>;
+  return <dialog ref={ref} className={variant==='media'?'media-dialog':variant==='wide'?'wide-dialog':''} aria-label={title} onCancel={e=>{e.preventDefault();dismiss();}} onClick={e=>{if(e.target===ref.current)dismiss();}}>
+    {variant==='media'?<MediaModalEdge.Provider value={edge}>
+      <div ref={scroller} className="media-dialog-scroll">{content}</div>
+      <div ref={setEdge} className="media-dialog-edge"/>
+    </MediaModalEdge.Provider>:content}
+  </dialog>;
 }

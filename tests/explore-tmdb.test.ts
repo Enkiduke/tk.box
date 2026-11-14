@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import {ZodError} from 'zod';
 import {AppError} from '../apps/server/src/errors.js';
 import {registerExplore} from '../apps/server/src/explore-api.js';
+import {installAccess} from '../apps/server/src/modules/access.js';
 import {ExploreRecommendations,rankCandidates,selectSeeds} from '../apps/server/src/explore-recommendations.js';
 import {ExploreStore,tmdbRowOrder} from '../apps/server/src/persistence/explore-store.js';
 import {openDatabase} from '../apps/server/src/persistence/database.js';
@@ -18,6 +19,146 @@ import {config} from './fixtures.js';
 const now = Date.parse('2026-11-13T00:00:00Z');
 const grant: PlexGrant = {accountId:'1', role:'admin', serverToken:'server', libraries:[{key:'10',title:'Movies',type:'movie'},{key:'20',title:'Shows',type:'show'}]};
 const movie = (id:number,title=`Movie ${id}`) => ({id,title,release_date:'2026-10-01',genre_ids:[18],vote_average:8,vote_count:100,popularity:10,original_language:'en'});
+
+test('Title credits use exact external ID matches and related rows stay usable when a filmography fails',async t=>{
+  const calls:string[]=[];
+  let key:string|undefined='fixture',failDirector=true;
+  const client=new TmdbTitles(()=>key,(async input=>{
+    const url=new URL(String(input)),path=url.pathname;
+    calls.push(path);
+    switch(path){
+      case '/3/find/tt0119643': return Response.json({movie_results:[{id:297}],tv_results:[{id:30}]});
+      case '/3/find/tt123': return Response.json({movie_results:[{id:297},{id:298}],tv_results:[]});
+      case '/3/find/555': return Response.json({tv_results:[{id:30}]});
+      case '/3/movie/297': return Response.json({id:297,title:'Meet Joe Black',release_date:'1998-11-13',
+        runtime:178,vote_average:7.3,original_language:'en',genres:[{id:18,name:'Drama'}],
+        production_companies:[{name:'Universal Pictures'}],production_countries:[{iso_3166_1:'US',name:'United States'}],
+        external_ids:{imdb_id:'tt0119643'},release_dates:{results:[{iso_3166_1:'US',release_dates:[{certification:'PG-13'}]}]},
+        'watch/providers':{results:{US:{flatrate:[{provider_name:'US Service'}]},CA:{flatrate:[{provider_name:'CA Service',logo_path:'/service.jpg'}]}}},
+        credits:{
+        cast:[{name:'Unidentified actor'},{id:287,name:'Brad Pitt',character:'Joe Black',profile_path:'/brad.jpg'},
+          {id:4173,name:'Anthony Hopkins',character:'William Parrish',profile_path:'https://example.com/not-a-path.jpg'},
+          ...Array.from({length:10},(_,id)=>({id:3000+id,name:`Actor ${id}`}))],
+        crew:[{id:1,name:'Another crew member',job:'Producer'},{id:42,name:'Martin Brest',job:'Director',profile_path:'/martin.jpg'}]
+      }});
+      case '/3/tv/30':
+        assert.equal(url.searchParams.get('append_to_response'),'aggregate_credits,credits,content_ratings,external_ids,watch/providers');
+        return Response.json({id:30,name:'Fixture show',first_air_date:'2020-01-01',number_of_episodes:19,networks:[{name:'Fixture Network'}],
+          content_ratings:{results:[{iso_3166_1:'US',rating:'TV-14'}]},origin_country:['CA'],
+          created_by:[{id:43,name:'Series creator'}],aggregate_credits:{cast:[
+          {id:287,name:'Brad Pitt',roles:[{character:'Lead'}]},
+          {id:288,name:'Earlier season regular',roles:[{character:'First character'},{character:'Second character'}]}
+        ]},credits:{cast:[{id:287,name:'Brad Pitt'},{id:289,name:'Current regular',character:'Current character'}]}});
+      case '/3/movie/297/recommendations': return Response.json({results:[movie(297)]});
+      case '/3/movie/297/similar': return Response.json({results:[movie(1),movie(1),{...movie(2),adult:true},movie(3)]});
+      case '/3/tv/30/recommendations': return Response.json({results:[{id:31,name:'Another show'}]});
+      case '/3/person/42/movie_credits':
+        return failDirector?Response.json({}, {status:503}):Response.json({crew:[
+          ...[297,2,4,5,6].map(id=>({...movie(id),job:'Director'})),{...movie(9),job:'Producer'}
+        ]});
+      case '/3/person/287/movie_credits':
+        return Response.json({cast:[...Array.from({length:12},(_,index)=>({...movie(index+1),popularity:20-index})),movie(1)]});
+      case '/3/person/287/external_ids': return Response.json({imdb_id:'nm0000093'});
+      case '/3/person/43/tv_credits':
+        return Response.json({crew:[30,31,32,33].map(id=>({id,name:`Show ${id}`,job:'Executive Producer'}))});
+      default: return Response.json({}, {status:404});
+    }
+  }) as typeof fetch);
+  const db=openDatabase(':memory:'),app=Fastify();
+  t.after(async()=>{await app.close();db.close();});
+  app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
+  const auth=async (request:{headers:{authorization?:string}})=>{
+    if(!request.headers.authorization)throw new AppError('AUTH_REQUIRED','Sign in first.',401);
+    return {hash:'viewer',grant};
+  };
+  installAccess(app,{viewer:auth as never,admin:auth as never});
+  registerExplore(app,new PlexAdapter(config(),'title-discovery',(async()=>Response.json({MediaContainer:{}})) as typeof fetch),
+    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client);
+  const get=(path:string)=>app.inject({url:`/api/v1/explore/${path}`,headers:{authorization:'fixture'}});
+  assert.equal((await app.inject('/api/v1/explore/title-credits?kind=movie&tmdb=297')).statusCode,401);
+  assert.equal((await app.inject('/api/v1/explore/title-related?kind=movie&tmdb=297')).statusCode,401);
+  assert.equal((await get('title-credits?kind=episode&tmdb=297')).statusCode,400);
+  assert.equal((await get('title-related?kind=movie&tmdb=-1')).statusCode,400);
+  const {tmdbId,credits}=(await get('title-credits?kind=movie&imdb=tt0119643')).json();
+  assert.equal(tmdbId,297);
+  assert.equal(credits.length,11);
+  assert.deepEqual(credits[1],{name:'Brad Pitt',role:'actor',personId:287,character:'Joe Black',
+    portraitUrl:'/api/v1/explore/image?u=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw185%2Fbrad.jpg'});
+  assert.equal(credits[2].portraitUrl,undefined);
+  assert.equal(credits[10].name,'Martin Brest');
+  assert.deepEqual(calls,['/3/find/tt0119643','/3/movie/297']);
+  const library=(await get('details?kind=movie&imdb=tt0119643&region=CA&library=true')).json();
+  assert.equal(library.item.durationMs,178*60000);
+  assert.equal(library.contentRating,'PG-13');
+  assert.equal(library.released,'1998-11-13');
+  assert.deepEqual(library.genres,['Drama']);
+  assert.deepEqual(library.studios,['Universal Pictures']);
+  assert.equal(library.countries[0].code,'US');
+  assert.deepEqual(library.ratings,[{source:'tmdb',score:7.3}]);
+  assert.equal(library.providers[0].name,'CA Service');
+  const explore=(await get('details?kind=movie&tmdb=297')).json();
+  assert.equal(explore.providers[0].name,'US Service');
+  assert.equal(explore.links.find((link:{site:string})=>link.site==='imdb').url,'https://www.imdb.com/title/tt0119643/');
+  assert.equal((await get('person?name=Brad%20Pitt&kind=movie&tmdb=297')).headers.location,'https://www.imdb.com/name/nm0000093/');
+  assert.deepEqual((await get('title-credits?kind=movie&imdb=tt123')).json(),{credits:[]});
+  const show=(await get('title-credits?kind=show&imdb=tt123&tvdb=555')).json();
+  assert.equal(show.tmdbId,30);
+  const series=(await get('details?kind=show&tvdb=555&library=true')).json();
+  assert.equal(series.network,'Fixture Network');
+  assert.equal(series.contentRating,'TV-14');
+  assert.equal(series.item.episodeCount,19);
+  assert.deepEqual(show.credits,[
+    {name:'Brad Pitt',role:'actor',personId:287,character:'Lead'},
+    {name:'Earlier season regular',role:'actor',personId:288,character:'First character'},
+    {name:'Current regular',role:'actor',personId:289,character:'Current character'},
+    {name:'Series creator',role:'creator',personId:43}
+  ]);
+  const path='title-related?kind=movie&tmdb=297';
+  const partial=(await get(path)).json();
+  assert.deepEqual(partial.failed,['maker']);
+  assert.deepEqual(partial.rows.map((row:{kind:string})=>row.kind),['similar','actor']);
+  assert.deepEqual(partial.rows[0].items.map((item:{ids:{tmdb:number}})=>item.ids.tmdb),[1,3]);
+  assert.equal(partial.rows[1].items.length,8);
+  failDirector=false;
+  const complete=(await get(path)).json();
+  assert.deepEqual(complete.failed,[]);
+  assert.deepEqual(complete.rows[1].items.map((item:{ids:{tmdb:number}})=>item.ids.tmdb),[2,4,5,6]);
+  assert.deepEqual(complete.rows[2].items.map((item:{ids:{tmdb:number}})=>item.ids.tmdb),[1,3,7,8,9,10,11,12]);
+  assert.equal(calls.filter(path=>path==='/3/person/287/movie_credits').length,1);
+  const tv=(await get('title-related?kind=show&tmdb=30')).json();
+  assert.deepEqual(tv.rows.map((row:{kind:string})=>row.kind),['similar','actor']);
+  assert.ok(calls.includes('/3/person/43/tv_credits'));
+  assert.ok(!calls.includes('/3/tv/30/similar'));
+  key=undefined;
+  assert.deepEqual((await get('title-credits?kind=movie&tmdb=297')).json(),{credits:[]});
+});
+
+test('Related card details expose a direct Plex match only for the viewer with a matching GUID in their libraries',async t=>{
+  const sections:string[]=[];
+  const plex=new PlexAdapter(config(),'related-match',(async input=>{
+    const url=new URL(String(input));
+    if(url.pathname.startsWith('/library/sections/')){
+      sections.push(url.pathname);
+      return Response.json({MediaContainer:{Metadata:[
+        {ratingKey:'77',Guid:[{id:'tmdb://297'}]},
+        {ratingKey:'78',Guid:[{id:'tmdb://555'}]}
+      ]}});
+    }
+    return Response.json({MediaContainer:{Metadata:[]}});
+  }) as typeof fetch);
+  const db=openDatabase(':memory:'),app=Fastify();
+  t.after(async()=>{await app.close();db.close();});
+  const auth=async (request:{headers:{authorization?:string}})=>request.headers.authorization==='restricted'
+    ? {hash:'restricted',grant:{...grant,accountId:'2',libraries:[]}}
+    : {hash:'owner',grant};
+  installAccess(app,{viewer:auth as never,admin:auth as never});
+  registerExplore(app,plex,new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',new TmdbTitles(()=>undefined));
+  const path='/api/v1/explore/details?kind=movie&tmdb=297&title=Meet+Joe+Black';
+  assert.equal((await app.inject(path)).json().matchedLibraryId,'77');
+  assert.equal((await app.inject({url:path,headers:{authorization:'restricted'}})).json().matchedLibraryId,undefined);
+  assert.equal((await app.inject(path.replace('297','298'))).json().matchedLibraryId,undefined);
+  assert.deepEqual(sections,['/library/sections/10/all','/library/sections/10/all']);
+});
 
 test('TMDB routes validate auth and regional providers, combine media types, apply filters and retry failed pages',async t=>{
   const calls:URL[]=[];
@@ -45,11 +186,17 @@ test('TMDB routes validate auth and regional providers, combine media types, app
     if(!request.headers.authorization)throw new AppError('AUTH_REQUIRED','Sign in first.',401);
     return {hash:'viewer',grant};
   };
+  installAccess(app,{viewer:auth as never,admin:auth as never});
   registerExplore(app,new PlexAdapter(config(),'explore-test',(async()=>Response.json({MediaContainer:{}})) as typeof fetch),
-    new ExploreStore(db,new Vault(randomBytes(32))),auth,auth,()=> 'account-token',client);
+    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client);
   const get=(path:string)=>app.inject({url:`/api/v1/explore/${path}`,headers:{authorization:'fixture'}});
   assert.equal((await app.inject('/api/v1/explore/tmdb/providers')).statusCode,401);
-  assert.deepEqual((await get('tmdb/providers')).json().defaults,[8,9,10,16,12,14,15]);
+  const catalog=(await get('tmdb/providers')).json();
+  assert.deepEqual(catalog.defaults,[8,9,10,16,12,14,15]);
+  const names=new Map<number,string>(catalog.providers.map((provider:{id:number;name:string})=>[provider.id,provider.name]));
+  assert.deepEqual(catalog.defaults.map((id:number)=>names.get(id)),['Netflix','Prime Video','Disney+','Peacock','Paramount+','MGM+','Discovery+']);
+  assert.equal(names.get(11),'Peacock');
+  assert.equal(names.get(13),'Paramount Plus Amazon Channel');
   assert.equal((await get('tmdb/providers?region=ZZ')).statusCode,400);
   const path='tmdb/rows/popular-streaming';
   assert.equal((await get(`${path}?provider=99`)).statusCode,400);
@@ -146,7 +293,11 @@ test('Excluded Plex shelves are absent from browsing, admin controls and direct 
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof AppError?error.status:error instanceof ZodError?400:500).send({message:(error as Error).message}));
   const excludedHubs=[
     {key:'/hubs/netflix',title:'Trending on Netflix',type:'movie'},
+    {key:'/hubs/network-42',title:'Trending on A&E',type:'show'},
     {key:'/hubs/hulu',title:'Popular Shows on Hulu',type:'show'},
+    {key:'/hubs/provider-101',title:'Popular TV Shows on Example Network',type:'show'},
+    {key:'/hubs/provider-102',title:'Recently Added to Example+',type:'movie'},
+    {key:'/hubs/provider-103',title:'Available on Example Streaming',type:'show'},
     {key:'/hubs/trending-1',title:'Trending On Your Services',type:'movie'},
     {key:'/hubs/trending-2',title:'Trending Your Service',type:'show'},
     {key:'/hubs/available',title:'Available on Your Services',type:'show'},
@@ -176,19 +327,23 @@ test('Excluded Plex shelves are absent from browsing, admin controls and direct 
     order:['plex','tmdb'],hidden:[],hiddenRows:['tmdb:acclaimed'],showPlexStreaming:true
   }));
   const auth=async()=>({hash:'viewer',grant});
-  registerExplore(app,plex,store,auth,auth,()=> 'account-token',new TmdbTitles(()=> 'fixture-key'),{seerr:(async input=>{
+  const tmdb=new TmdbTitles(()=> 'fixture-key',async input=>{
     const path=new URL(String(input)).pathname;
-    return Response.json({results:path.endsWith('/search')?[
-      {id:99,mediaType:'movie',title:'Seerr search result'},{id:100,mediaType:'tv',name:'Seerr show result'}
-    ]:[]});
-  }) as typeof fetch});
+    return Response.json({results:path.endsWith('/search/movie')?[movie(99,'TMDB search result')]
+      :path.endsWith('/search/tv')?[{id:100,name:'TMDB show result'}]:[]});
+  });
+  installAccess(app,{viewer:auth as never,admin:auth as never});
+  registerExplore(app,plex,store,()=> 'account-token',tmdb,{seerr:async input=>{
+    assert.equal(new URL(String(input)).pathname,'/api/v1/media');
+    return Response.json({results:[]});
+  }});
   const get=(url:string)=>app.inject(`/api/v1/explore/${url}`);
   assert.deepEqual((await get('sources')).json().order,['plex','tmdb']);
   assert.equal((await get('sources')).json().seerr.configured,true);
   assert.equal((await get('seerr/rows')).statusCode,400);
   assert.equal((await get('seerr/rows/trending')).statusCode,400);
-  assert.equal((await get('search?q=test&sources=seerr')).json().items[0]?.title,'Seerr search result');
-  assert.deepEqual((await get('search?q=test&sources=seerr&kind=show')).json().items.map((item:{kind:string})=>item.kind),['show']);
+  assert.equal((await get('search?q=test&sources=tmdb')).json().items[0]?.title,'TMDB search result');
+  assert.deepEqual((await get('search?q=test&sources=tmdb&kind=show')).json().items.map((item:{kind:string})=>item.kind),['show']);
   const expected=['Watchlist','Plex Picks','Trending Movies'];
   assert.deepEqual((await get('plex/rows')).json().rows.map((row:{title:string})=>row.title),expected);
   const admin=(await app.inject('/api/v1/admin/explore/layout')).json();

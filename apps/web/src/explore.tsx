@@ -1,12 +1,14 @@
-import {memo,useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
+import {memo,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {exploreGenres,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
-import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,People,Row,RowSkeleton} from './components.js';
-import {Ratings} from './library.js';
+import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';
+import {ratingLinks,Ratings} from './library.js';
 import {RequestDialog} from './request-dialog.js';
 import {rowKey,useExplorePrefs} from './explore-prefs.js';
 import {StreamingSelector,StreamingStatus,useStreamingSelection} from './explore-streaming.js';
+import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
+import {displayName,TitleFacts} from './title-facts.js';
 import './explore.css';
 
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves), and Seerr, on one page:
@@ -201,7 +203,7 @@ function ActiveFilters({filters,onChange}:{filters:Filters;onChange:(next:Filter
   </div>;
 }
 
-export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:boolean;onOpen:(id:string)=>void}) {
+export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:boolean;onSelect:(item:ExploreItem)=>void}) {
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,prefs=useExplorePrefs();
   // Sources in the administrator's order, leaving out those switched off (by the administrator or the viewer) or not set up.
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
@@ -209,7 +211,6 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
   const [filters,setFilters]=useState(loadFilters),[contentType,setContentType]=useState(loadContentType);
   const fq=filterQuery(filters)+(contentType==='all'?'':`&kind=${contentType}`);
-  const [selected,setSelected]=useState<ExploreItem>();
   const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
   const changeContentType=(next:ContentType)=>{
     setContentType(next);
@@ -219,59 +220,36 @@ export function Explore({params,admin,onOpen}:{params:URLSearchParams;admin:bool
   useEffect(()=>{if(q!==query)replaceRoute(link('explore',{q}));},[q]);
   if(sources.error)return <div className="page"><ErrorNotice message={sources.error.message} retry={sources.reload}/></div>;
   if(!data)return <div className="page"><Loading/></div>;
-  const searchable:ExploreSource[]=[...(available.includes('plex')?['plex' as const]:[]),...(data.seerr.configured?['seerr' as const]:[])];
+  const searchable=available;
   const searchLabel=searchable.length?`Search ${listed(searchable.map(s=>names[s]))}`:'Search Explore';
-  return <div className="page explore-page">
-    <div className="browse-controls explore-controls"><h1 className="sr-only">Explore</h1>
-      <div className="segmented explore-content-type" role="group" aria-label="Explore content type">
+  return <div className="page toolbar-page explore-page">
+    <div className="page-toolbar explore-controls"><h1 className="sr-only">Explore</h1>
+      <div className="toolbar-group explore-content-type" role="group" aria-label="Explore content type">
         {contentTypes.map(([type,label])=><button key={type} type="button" aria-pressed={contentType===type} onClick={()=>changeContentType(type)}>{label}</button>)}
       </div>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
-      <ActiveFilters filters={filters} onChange={changeFilters}/>
       <FilterMenu filters={filters} labels={data.seerr.configured} onChange={changeFilters}/>
-      <button className="icon-button browse-layout" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
+      <button className="icon-button toolbar-icon" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
+    <ActiveFilters filters={filters} onChange={changeFilters}/>
     {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
       {admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
     </p>}
     {/* Plex titles carry Seerr's labels only when the server can read Seerr's media list with the API key. */}
     {admin&&data.seerr.configured&&!data.seerr.statuses&&<p className="explore-note muted">Add the Seerr API key in <a href="#admin?section=connections">Admin › Connections</a> to show Available and Requested on Plex titles.</p>}
     {/* Plex Discover doesn't say a title's language; Seerr is where it is looked up. */}
-    {filters.languages.length>0&&!data.seerr.configured&&<p className="explore-note muted">Plex titles don’t list their language, so they are hidden while a language filter is on.</p>}
-    {query?<ExploreSearch key={`${query}${searchable.join()}${fq}`} q={query} sources={searchable} fq={fq} onSelect={setSelected}/>
-      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={setSelected}/>
-      :available.length?<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={setSelected}/>)}</div>
+    {filters.languages.length>0&&!data.tmdb.configured&&<p className="explore-note muted">Plex titles without a language are hidden while a language filter is on.</p>}
+    {query?<ExploreSearch key={`${query}${searchable.join()}${fq}`} q={query} sources={searchable} fq={fq} onSelect={onSelect}/>
+      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={onSelect}/>
+      :available.length?<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={onSelect}/>)}</div>
       :<Empty title="No browse sources"><a href="#settings?section=explore">Explore settings</a></Empty>}
-    {selected&&<ExploreDialog item={selected} seerrOn={data.seerr.configured} onClose={()=>setSelected(undefined)} onOpen={id=>{setSelected(undefined);onOpen(id);}}/>}
   </div>;
 }
 
-function detailsPath(item:ExploreItem) {
-  const q=new URLSearchParams({kind:item.kind,title:item.title});
-  if(item.year)q.set('year',String(item.year));
-  for(const key of ['tmdb','imdb','tvdb','plex'] as const){const value=item.ids[key];if(value!==undefined)q.set(key,String(value));}
-  return `/explore/details?${q}`;
-}
-const siteNames:Record<ExploreDetails['links'][number]['site'],string>={tmdb:'TMDB',tvdb:'TVDB',imdb:'IMDb',rottentomatoes:'Rotten Tomatoes'};
-const displayName=(type:'language'|'region',code:string)=>{try{return new Intl.DisplayNames(undefined,{type}).of(code)??code;}catch{return code;}};
-const longDate=(iso:string)=>new Intl.DateTimeFormat(undefined,{dateStyle:'long',timeZone:'UTC'}).format(new Date(`${iso}T00:00:00Z`));
-
-// Beside the synopsis, the same quiet label-over-value list as the library's details.
-function Facts({item,info}:{item:ExploreItem;info:ExploreDetails}) {
-  const rows:[string,ReactNode][]=[
-    [item.kind==='show'?'Network':info.studios.length>1?'Studios':'Studio',item.kind==='show'?info.network:info.studios.join(', ')],
-    [item.kind==='movie'?'Released':'Premiered',info.released&&longDate(info.released)],
-    [info.countries.length>1?'Countries':'Country',info.countries.length>0&&<span className="explore-countries">{info.countries.map(c=><span key={c.name}>{c.flagUrl&&<img src={c.flagUrl} alt="" className="explore-flag"/>}{c.code?displayName('region',c.code):c.name}</span>)}</span>],
-    ['Language',info.language&&displayName('language',info.language)],
-    ['Genres',info.genres.join(', ')],['Starring',info.cast.length>0&&<People names={info.cast.slice(0,5)} kind={item.kind} tmdb={item.ids.tmdb}/>],
-    ['Streaming on',info.providers.length>0&&<span className="explore-providers">{info.providers.map(p=>p.logoUrl?<img key={p.name} src={p.logoUrl} alt={p.name} title={p.name}/>:<span key={p.name}>{p.name}</span>)}</span>]];
-  return <aside className="explore-facts">
-    <dl className="detail-people">{rows.filter(([,value])=>!!value).map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    {info.links.length>0&&<p className="explore-links">{info.links.map(l=><a key={l.site} href={l.url} target="_blank" rel="noreferrer">{siteNames[l.site]}</a>)}</p>}
-  </aside>;
-}
-export function ExploreDialog({item:start,seerrOn=false,onClose,onOpen}:{item:ExploreItem;seerrOn?:boolean;onClose:()=>void;onOpen:(id:string)=>void}) {
-  const details=useApi<ExploreDetails>(detailsPath(start)),info=details.data,seerr=info?.seerr;
+export function ExploreDialog({item:start,onClose,onOpen,onOpenRelated}:{item:ExploreItem;onClose:()=>void;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
+  const {region}=useExplorePrefs();
+  const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,seerr=info?.seerr;
+  const sources=useApi<ExploreSources>('/explore/sources'),seerrOn=sources.data?.seerr.configured;
   // The card's own artwork and text show at once; details fill in what the card lacked.
   const item:ExploreItem={...start,...info?.item,posterUrl:start.posterUrl??info?.item.posterUrl,backdropUrl:info?.item.backdropUrl??start.backdropUrl,summary:info?.item.summary??start.summary,ids:{...start.ids,...info?.item.ids}};
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[done,setDone]=useState('');
@@ -291,7 +269,8 @@ export function ExploreDialog({item:start,seerrOn=false,onClose,onOpen}:{item:Ex
           <h1 className="detail-title">{item.title}</h1>
           <div className="detail-facts">
             {facts.length>0&&<p className="detail-meta">{facts.map((fact,i)=><span key={i}>{fact}</span>)}</p>}
-            {info&&info.ratings.length>0&&<Ratings ratings={info.ratings} links={Object.fromEntries(info.links.map(l=>[l.site,l.url]))}/>}
+            <Ratings ratings={info?.ratings} links={{...ratingLinks({title:item.title,kind:item.kind,...item.ids}),
+              ...Object.fromEntries(info?.links.map(l=>[l.site,l.url])??[])}}/>
             {(status||seerr?.status4k)&&<p className="explore-badges">{status&&<span className={`badge explore-status ${status}`}>{statusNames[status]}</span>}{seerr?.status4k&&<span className={`badge explore-status ${seerr.status4k}`}>4K · {statusNames[seerr.status4k]}</span>}</p>}
           </div>
           <div className="button-row">
@@ -303,7 +282,7 @@ export function ExploreDialog({item:start,seerrOn=false,onClose,onOpen}:{item:Ex
         </div>
       </div>
     </div>
-    <div className="explore-body">
+    <div className="detail-body title-detail-body">
       <div className="explore-main">
         {details.error&&<ErrorNotice message={details.error.message} retry={details.reload}/>}
         {info?.tagline&&<p className="tagline">{info.tagline}</p>}
@@ -311,8 +290,9 @@ export function ExploreDialog({item:start,seerrOn=false,onClose,onOpen}:{item:Ex
         {seerrOn&&info&&!seerr&&<p className="muted small">Seerr does not know this title, so it can’t be requested.</p>}
         {feedback}
       </div>
-      {info&&<Facts item={item} info={info}/>}
+      <TitleFacts kind={item.kind} info={info} genres={item.genres}/>
     </div>
+    <TitleDiscovery kind={item.kind} ids={item.ids} cast={info?.cast} onOpen={onOpenRelated}/>
     {requesting&&seerr&&<RequestDialog item={item} seerr={seerr} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
   </Modal>;
 }

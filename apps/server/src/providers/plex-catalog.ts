@@ -24,6 +24,9 @@ export const catalogNode=z.object({
 const tmdbId=(node:CatalogNode)=>{if(node.type!=='movie'&&node.type!=='show')return undefined;const id=node.Guid?.map(g=>/^tmdb:\/\/(\d{1,10})$/.exec(g.id)?.[1]).find(Boolean);return id?Number(id):undefined;};
 // The item's own IMDb title (tt…); an episode has one of its own.
 const imdbId=(node:CatalogNode)=>node.Guid?.map(g=>/^imdb:\/\/(tt\d{1,12})$/.exec(g.id)?.[1]).find(Boolean);
+const tvdbId=(node:CatalogNode)=>node.type==='show'
+  ? Number(node.Guid?.map(g=>/^tvdb:\/\/(\d{1,10})$/.exec(g.id)?.[1]).find(Boolean))||undefined
+  : undefined;
 export const catalogContainer=z.object({MediaContainer:z.object({Metadata:z.array(catalogNode).default([]),librarySectionID:identifier.optional(),offset:z.coerce.number().int().nonnegative().optional(),totalSize:z.coerce.number().int().nonnegative().optional()})});
 export type CatalogNode=z.infer<typeof catalogNode>;
 export const artworkPath=(value:string|undefined)=>value&&/^\/library\/metadata\/\d+\/(?:thumb|art)\/\d+$/.test(value)?value:undefined;
@@ -74,7 +77,7 @@ export function catalogDto(node:CatalogNode,libraryId:string):CatalogItem {
     showTitle:node.grandparentTitle,seasonNumber:node.type==='season'?node.index:node.parentIndex,episodeNumber:node.type==='episode'?node.index:undefined,
     episodeCount:node.leafCount,watchedEpisodeCount:node.viewedLeafCount,contentRating:node.contentRating,rating:node.rating,genres:node.Genre?.map(g=>g.tag)??[],addedAt:node.addedAt,
     ratings:externalRatings(node),logoUrl:logo?versioned(`/api/v1/catalog/items/${node.ratingKey}/artwork?kind=logo`,logo):undefined,tagline:node.tagline||undefined,airDate:node.originallyAvailableAt,
-    studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined,tmdbId:tmdbId(node),imdbId:imdbId(node)};
+    studio:node.studio||undefined,directors:node.Director?.length?node.Director.map(d=>d.tag):undefined,cast:node.Role?.length?node.Role.slice(0,8).map(r=>r.tag):undefined,tmdbId:tmdbId(node),imdbId:imdbId(node),tvdbId:tvdbId(node)};
 }
 // Plex lists recently added TV one episode at a time, newest first. Each show gets one card holding its episodes among the
 // first `window` in the list (the ones the row would show ungrouped): one episode stays itself, one season becomes a season
