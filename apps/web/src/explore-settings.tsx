@@ -8,7 +8,6 @@ import {rowKey,setExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs
 import {useStreamingCatalog} from './explore-streaming.js';
 import './explore.css';
 
-type Settings={revision:number;seerrUrl:string;seerrKeySet:boolean};
 type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreBrowseSource;configured:boolean;rows:ExploreRowInfo[];error?:string}[]};
 const sourceNames:Record<ExploreBrowseSource,string>={plex:'Plex',tmdb:'TMDB'};
 const tmdbLogoUrl=new URL('./assets/ratings/tmdb.svg',import.meta.url).href;
@@ -37,7 +36,7 @@ function StreamingSettings({configured,admin}:{configured:boolean;admin:boolean}
   const selected=catalog.services.map(p=>p.id);
   const toggle=(id:number)=>setStreamingProviders(selected.includes(id)?selected.filter(p=>p!==id):[...selected,id]);
   return <Card title="Streaming services" description="Choose which services appear in the streaming rows on Explore.">
-    {!configured?<p className="muted small">{admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a>.</>:'Ask the server administrator to set up TMDB.'}</p>
+    {!configured?<p className="muted small">{admin?<>Add a TMDB key in <a href="#admin?section=connections&category=metadata">Admin › Connections › Metadata &amp; artwork</a>.</>:'Ask the server administrator to set up TMDB.'}</p>
       :catalog.error?<ErrorNotice message={catalog.error.message} retry={catalog.reload}/>
       :!catalog.data?<Loading/>:<div className="form-stack narrow">
         <label>Streaming region<select value={catalog.region} onChange={e=>setStreamingRegion(e.target.value)}>
@@ -132,27 +131,6 @@ function ExploreLayoutSettings() {
       {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the Discover shelves and their order. Streaming-service rows come from TMDB.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
-    </form>
-  </Card>;
-}
-// Seerr, in Admin › Connections.
-export function ServerExploreSettings() {
-  const data=useApi<Settings>('/admin/explore/settings'),[seerrUrl,setSeerrUrl]=useState(''),[seerrKey,setSeerrKey]=useState(''),[saved,setSaved]=useState(false);
-  const mutation=useMutation(data.reload);
-  useEffect(()=>{if(data.data){setSeerrUrl(data.data.seerrUrl);setSeerrKey('');}},[data.data?.revision]);
-  if(data.loading&&!data.data)return <Loading/>;
-  if(data.error)return <ErrorNotice message={data.error.message} retry={data.reload}/>;
-  if(!data.data)return null;
-  const current=data.data;
-  return <Card title="Seerr" description="Requests on Explore.">
-    <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{
-      await api('/admin/explore/settings','PUT',{expectedRevision:current.revision,seerrUrl:seerrUrl.trim(),...(seerrKey.trim()||!seerrUrl.trim()?{seerrApiKey:seerrUrl.trim()?seerrKey.trim():''}:{})});
-      invalidate('/explore/');setSaved(true);
-    });}}>
-      <label>Seerr address<input type="url" placeholder="https://requests.example.com" value={seerrUrl} maxLength={300} onChange={e=>{setSeerrUrl(e.target.value);setSaved(false);}}/><small>Empty turns requests off.</small></label>
-      <label>Seerr API key<input type="password" autoComplete="off" value={seerrKey} maxLength={200} placeholder={current.seerrKeySet?'Saved — enter a new one to replace it':''} onChange={e=>{setSeerrKey(e.target.value);setSaved(false);}}/><small>Seerr › Settings › General</small></label>
-      {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Seerr</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
     </form>
   </Card>;
 }

@@ -18,7 +18,7 @@ type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;delet
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
 type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'seerr'|'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
-const connections=<a href="#admin?section=connections">Admin › Connections</a>;
+const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
 export function CleanupAdmin() {
   const overview=useApi<Overview>('/admin/cleanup'),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'status')(remembered('cleanupTab','status')));

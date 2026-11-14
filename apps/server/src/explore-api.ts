@@ -91,6 +91,8 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
     await viewer(request);
+    // The page asks for its rows next, and each waits on Seerr's labels: start reading them now.
+    void seerr.statuses().catch(()=>undefined);
     return {plex:true,order:shownSources(store.layout()),seerr:{configured:seerr.configured(),statuses:seerr.hasKey()},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
   });
   app.get('/api/v1/explore/tmdb/providers',{config:{access:'viewer'}},async request=>{
