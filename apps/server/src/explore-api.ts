@@ -4,15 +4,16 @@ import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSou
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
-import {Seerr,seerrFacts,seerrCertificate,seerrItem,seerrSeasons,seerrStatus,type SeerrDetails} from './providers/seerr.js';
+import {Seerr,seerrSeasons,seerrStatus,type SeerrDetails} from './providers/seerr.js';
 import {ExploreImages} from './providers/explore-images.js';
 import {ExploreStore,exploreLayoutInput,exploreSettingsInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
+import {viewer as caller} from './modules/access.js';
 import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
 import type {TmdbTitles} from './providers/tmdb-titles.js';
+import {TmdbTitleDiscovery} from './providers/tmdb-title-discovery.js';
 import {ExploreRecommendations} from './explore-recommendations.js';
 
-type Viewer={hash:string;grant:PlexGrant};
 const source=z.enum(exploreBrowseSources);
 const tmdbRow=z.enum(tmdbExploreRows);
 const kind=z.enum(['movie','show']);
@@ -32,7 +33,7 @@ const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.st
 // outside services again. A viewer's own change (watchlist, request, Refresh) drops their copies,
 // and a settings change drops everyone's. Failed reads are not kept.
 // Plex shelves change about daily. The watchlist can change outside tk.box, so it stays short.
-const ROWS_MS=12*3600000,PUBLIC_MS=12*3600000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000,PERSON_MS=24*3600000;
+const ROWS_MS=12*3600000,PUBLIC_MS=12*3600000,PAGE_MS=10*60000,DETAILS_MS=10*60000,SEARCH_MS=5*60000;
 export class ExploreCache {
   private entries=new Map<string,{until:number;value:Promise<unknown>}>();
   get<T>(account:string,key:string,ttl:number,read:()=>Promise<T>,now=Date.now()):Promise<T> {
@@ -81,14 +82,6 @@ export function interleave(lists:ExploreItem[][]) {
   }
   return [...merged.values()];
 }
-// Lookups run a few at a time across every viewer, so a filtered page doesn't flood Seerr.
-function limiter(slots:number) {
-  let active=0;const waiting:(()=>void)[]=[];
-  return async<T>(run:()=>Promise<T>)=>{
-    if(active<slots)active++;else await new Promise<void>(resolve=>waiting.push(resolve));
-    try{return await run();}finally{const next=waiting.shift();if(next)next();else active--;}
-  };
-}
 // A filtered row page reads this many of the source's pages, so filters that leave few titles still fill a row.
 const FILTER_SPAN=3;
 // The sources Explore shows, in the administrator's order, and whether one of a source's rows is hidden.
@@ -96,25 +89,25 @@ export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout
 export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
 
 // Explore: rows, search and details from Plex Discover and Seerr, plus Seerr requests and the Plex watchlist.
-export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,auth:(request:FastifyRequest)=>Promise<Viewer>,admin:(request:FastifyRequest)=>Promise<Viewer>,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,transports:{seerr?:typeof fetch; images?:typeof fetch}={}) {
-  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr(),transports.seerr),images=new ExploreImages(transports.images),cache=new ExploreCache(),lookups=limiter(6);
-  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb);
-  const viewer=async(request:FastifyRequest)=>{const {hash,grant}=await auth(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
-  app.get('/api/v1/explore/sources',async request=>{
+export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,transports:{seerr?:typeof fetch; images?:typeof fetch}={}) {
+  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr(),transports.seerr),images=new ExploreImages(transports.images),cache=new ExploreCache();
+  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb);
+  const viewer=async(request:FastifyRequest)=>{const {hash,grant}=caller(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
+  app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     // Nobody is signed in to Seerr here; that waits until they request something.
     await viewer(request);
     return {plex:true,order:shownSources(store.layout()),seerr:{configured:seerr.configured(),statuses:seerr.hasKey()},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
   });
-  app.get('/api/v1/explore/tmdb/providers',async request=>{
+  app.get('/api/v1/explore/tmdb/providers',{config:{access:'viewer'}},async request=>{
     await viewer(request);
     const {region}=z.object({region:regionCode.default('US')}).strict().parse(request.query);
     return tmdb.providers(region);
   });
-  app.get('/api/v1/explore/:source/rows',async request=>{
+  app.get('/api/v1/explore/:source/rows',{config:{access:'viewer'}},async request=>{
     const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request),layout=store.layout();
     return {rows:(await sourceRows(from,account,token)).filter(row=>rowShown(layout,from,row.id))};
   });
-  app.get('/api/v1/explore/:source/rows/:row',async request=>{
+  app.get('/api/v1/explore/:source/rows/:row',{config:{access:'viewer'}},async request=>{
     const params=z.object({source,row:z.string().max(800)}).parse(request.params),{account,token,grant}=await viewer(request);
     if (params.source==='tmdb') {
       const parsed=tmdbRow.safeParse(params.row);
@@ -162,69 +155,78 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     if(head.hasMore)for(const next of await Promise.all(Array.from({length:FILTER_SPAN-1},(_,i)=>read(firstPage+i+1).catch(()=>undefined)))){
       if(!next||!pages.at(-1)!.hasMore)break;pages.push(next);
     }
-    return {items:await filtered(interleave([pages.flatMap(p=>p.items)]),filter,account,token),page:at,hasMore:pages.length===FILTER_SPAN&&pages.at(-1)!.hasMore} satisfies ExplorePage;
+    return {items:await filtered(interleave([pages.flatMap(p=>p.items)]),filter),page:at,hasMore:pages.length===FILTER_SPAN&&pages.at(-1)!.hasMore} satisfies ExplorePage;
   });
   // One search across every source that is set up, best matches from each first. A source that fails leaves the others.
-  app.get('/api/v1/explore/search',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
+  app.get('/api/v1/explore/search',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async request=>{
     const {q,sources:only,...query}=z.object({q:z.string().trim().min(1).max(120),sources:z.string().max(40).optional(),...filterQuery}).strict().parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
     // `sources` narrows the search to the sources the viewer keeps on; without it every source on offer is searched.
     const wanted=only===undefined?undefined:only.split(',');
     const key=`search:${q.toLowerCase()}`,layout=store.layout();
-    const from=(['plex','seerr'] as const).filter(s=>(s==='plex'?shownSources(layout).includes('plex'):seerr.configured())&&(!wanted||wanted.includes(s)));
+    const from=shownSources(layout).filter(s=>(s==='plex'||tmdbClient.configured())&&(!wanted||wanted.includes(s)));
     const results=await Promise.allSettled(from.map(async s=>s==='plex'?(await labelled({items:await cache.get(account,`plex:${key}`,SEARCH_MS,()=>discover.search(token,q))})).items
-      :await cache.get(account,`seerr:${key}`,SEARCH_MS,()=>seerr.search(account,token,q))));
+      :(await labelled({items:await tmdb.search(q,filter.kind)})).items));
     const failed=from.filter((_,i)=>results[i]!.status==='rejected');
     requireThat(!from.length||failed.length<from.length,'EXPLORE_UNAVAILABLE','Search is unavailable right now. Try again in a moment.',502);
     const items=interleave(results.map(r=>r.status==='fulfilled'?r.value:[]));
-    return {items:filtering(filter)?await filtered(items,filter,account,token):items,failed} satisfies ExploreSearchResult;
+    return {items:filtering(filter)?await filtered(items,filter):items,failed} satisfies ExploreSearchResult;
   });
   // Signs the viewer in to Seerr (with their Plex account) when they go to request, and says what they may request.
-  app.get('/api/v1/explore/seerr/account',async request=>{const {account,token}=await viewer(request);return seerr.account(account,token);});
-  app.get('/api/v1/explore/seerr/options',async request=>{
+  app.get('/api/v1/explore/seerr/account',{config:{access:'viewer'}},async request=>{const {account,token}=await viewer(request);return seerr.account(account,token);});
+  app.get('/api/v1/explore/seerr/options',{config:{access:'viewer'}},async request=>{
     const input=z.object({kind,is4k:z.enum(['true','false']).default('false'),server:z.coerce.number().int().nonnegative().optional()}).strict().parse(request.query),{account,token}=await viewer(request);
     return seerr.options(account,token,input.kind,input.is4k==='true',input.server);
   });
-  app.get('/api/v1/explore/seerr/users',async request=>{const {account,token}=await viewer(request);return {users:await seerr.users(account,token)};});
-  app.get('/api/v1/explore/details',async request=>{
-    const input=ids.extend({kind,title:z.string().max(300).default(''),year:z.coerce.number().int().optional()}).strict().parse(request.query),{grant,account,token}=await viewer(request);
-    return cache.get(account,`details:${JSON.stringify(input)}`,DETAILS_MS,()=>details(input,grant,account,token));
+  app.get('/api/v1/explore/seerr/users',{config:{access:'viewer'}},async request=>{const {account,token}=await viewer(request);return {users:await seerr.users(account,token)};});
+  app.get('/api/v1/explore/details',{config:{access:'viewer'}},async request=>{
+    const input=ids.extend({kind,title:z.string().max(300).default(''),year:z.coerce.number().int().optional(),
+      region:regionCode.default('US'),library:z.enum(['true','false']).default('false')}).strict().parse(request.query),{grant,account,token}=await viewer(request);
+    return cache.get(account,`details:${tmdbClient.credentialGeneration()}:${JSON.stringify(input)}`,DETAILS_MS,()=>details(input,grant,account,token));
   });
-  app.post('/api/v1/explore/request',{config:{rateLimit:{max:20,timeWindow:60000}}},async request=>{
+  app.get('/api/v1/explore/title-credits',{config:{access:'viewer'}},async request=>{
+    
+    const {kind:media,...externalIds}=ids.pick({tmdb:true,imdb:true,tvdb:true}).extend({kind}).strict().parse(request.query);
+    return titleDiscovery.credits(media==='show'?'tv':'movie',externalIds);
+  });
+  app.get('/api/v1/explore/title-related',{config:{access:'viewer'}},async request=>{
+    
+    const {kind:media,tmdb}=z.object({kind,tmdb:z.coerce.number().int().positive()}).strict().parse(request.query);
+    return titleDiscovery.related(media==='show'?'tv':'movie',tmdb);
+  });
+  app.post('/api/v1/explore/request',{config:{access:'viewer',rateLimit:{max:20,timeWindow:60000}}},async request=>{
     const input=z.object({kind,tmdb:z.number().int().positive(),seasons:z.array(z.number().int().positive()).max(100).optional(),is4k:z.boolean().default(false),
       serverId:z.number().int().nonnegative().optional(),profileId:z.number().int().nonnegative().optional(),rootFolder:z.string().min(1).max(500).optional(),
       languageProfileId:z.number().int().nonnegative().optional(),tags:z.array(z.number().int().nonnegative()).max(50).optional(),userId:z.number().int().positive().optional()}).strict().parse(request.body),{account,token}=await viewer(request);
     const {kind:media,tmdb,seasons,is4k,...extras}=input;
     await seerr.request(account,token,media,tmdb,seasons,is4k,extras);cache.forget();return {status:'requested'};
   });
-  app.put('/api/v1/explore/watchlist',{config:{rateLimit:{max:60,timeWindow:60000}}},async request=>{
+  app.put('/api/v1/explore/watchlist',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async request=>{
     const input=z.object({plex:z.string().regex(/^[\w-]{1,64}$/),add:z.boolean()}).strict().parse(request.body),{account,token}=await viewer(request);
     await discover.setWatchlisted(token,input.plex,input.add);cache.forget(account);return {watchlisted:input.add};
   });
-  app.get('/api/v1/explore/image',{config:{rateLimit:{max:1200,timeWindow:60000}}},async(request,reply)=>{
-    const {u}=z.object({u:z.string().max(2000)}).strict().parse(request.query);await auth(request);
+  app.get('/api/v1/explore/image',{config:{access:'viewer',rateLimit:{max:1200,timeWindow:60000}}},async(request,reply)=>{
+    const {u}=z.object({u:z.string().max(2000)}).strict().parse(request.query);
     const image=await images.get(u);
     return reply.type(image.type).header('Cache-Control','private, max-age=86400').send(image.bytes);
   });
-  // A cast or crew name in a details view opens here and is sent on to the person's IMDb page, or to IMDb's search
-  // for the name when Seerr is not set up or does not know them. People don't change, so lookups are shared and kept a day.
-  app.get('/api/v1/explore/person',{config:{rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
-    const input=z.object({name:z.string().trim().min(1).max(200),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query),{account,token}=await viewer(request);
-    const title=input.kind&&input.tmdb?{kind:input.kind,tmdb:input.tmdb}:undefined;
-    const imdb=seerr.configured()?await cache.get('',`person:${input.name.toLowerCase()}:${title?`${title.kind}:${title.tmdb}`:''}`,PERSON_MS,()=>seerr.imdbPerson(account,token,input.name,title)).catch(()=>undefined):undefined;
+  // Resolve IMDb person IDs through TMDB, with an IMDb name-search fallback.
+  app.get('/api/v1/explore/person',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
+    const input=z.object({name:z.string().trim().min(1).max(200),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query);
+    
+    const imdb=await titleDiscovery.imdbPerson(input.name,input.kind==='show'?'tv':input.kind,input.tmdb).catch(()=>undefined);
     return reply.header('Cache-Control',imdb?'private, max-age=86400':'no-store').redirect(imdb?`https://www.imdb.com/name/${imdb}/`:`https://www.imdb.com/find/?q=${encodeURIComponent(input.name)}&s=nm&exact=true`);
   });
-  // A library title's Rotten Tomatoes score opens here and is sent on to its page, which only Seerr knows, or to
-  // Rotten Tomatoes' search for the title.
-  app.get('/api/v1/explore/rottentomatoes',{config:{rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
-    const input=z.object({title:z.string().trim().min(1).max(300),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query),{account,token}=await viewer(request);
-    const url=seerr.configured()&&input.kind&&input.tmdb?(await cache.get('',`rt:${input.kind}:${input.tmdb}`,PERSON_MS,()=>seerr.ratings(account,token,input.kind!,input.tmdb!)).catch(()=>undefined))?.url:undefined;
-    return reply.header('Cache-Control',url?'private, max-age=86400':'no-store').redirect(url??`https://www.rottentomatoes.com/search?search=${encodeURIComponent(input.title)}`);
+  // TMDB does not supply Rotten Tomatoes URLs. Search by the title.
+  app.get('/api/v1/explore/rottentomatoes',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
+    const {title}=z.object({title:z.string().trim().min(1).max(300),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query);
+    
+    return reply.redirect(`https://www.rottentomatoes.com/search?search=${encodeURIComponent(title)}`);
   });
   // Explore's Refresh button rebuilds the viewer's recommendations and Plex shelves.
-  app.post('/api/v1/explore/refresh',{config:{rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);personal.forget(account);return {status:'refreshed'};});
+  app.post('/api/v1/explore/refresh',{config:{access:'viewer',rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);personal.forget(account);return {status:'refreshed'};});
   // Admin › Explore: the source order and what is hidden, with every row each source has (Plex's as the administrator sees them).
-  app.get('/api/v1/admin/explore/layout',async request=>{
-    const {hash,grant}=await admin(request),account=grant.accountId,token=accountToken(hash);
+  app.get('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
+    const {hash,grant}=caller(request),account=grant.accountId,token=accountToken(hash);
     const sources=await Promise.all(exploreBrowseSources.map(async from=>{
       const configured=from==='plex'||tmdbClient.configured();
       const rows=await sourceRows(from,account,token).catch(()=>undefined);
@@ -232,13 +234,13 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     }));
     return {layout:store.layout(),sources};
   });
-  app.put('/api/v1/admin/explore/layout',async request=>{
-    const {grant}=await admin(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
+  app.put('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
     return store.updateLayout(grant.accountId,expectedRevision,value);
   });
-  app.get('/api/v1/admin/explore/settings',async request=>{await admin(request);return store.view();});
-  app.put('/api/v1/admin/explore/settings',async request=>{
-    const {grant}=await admin(request),{expectedRevision,...value}=exploreSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
+  app.get('/api/v1/admin/explore/settings',{config:{access:'admin'}},async request=>{return store.view();});
+  app.put('/api/v1/admin/explore/settings',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{expectedRevision,...value}=exploreSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
     // A Seerr address is checked before it is saved, so viewers never get a dead Explore source.
     if(value.seerrUrl){
       await seerr.publicSettings(value.seerrUrl,true);
@@ -251,13 +253,11 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     if(from==='plex')return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));
     return tmdbRowOrder(store.layout().tmdbOrder).map(id=>tmdbRows[id]);
   }
-  // Titles that pass the filter. Language, genres, year or score a title lacks comes from Seerr (TMDB) when its TMDB id is
-  // known; these are public facts, so they are kept a day for every viewer.
-  async function filtered(items:ExploreItem[],filter:ExploreFilter,account:string,token:string) {
+  // Use the cached TMDB title when Plex omits a field required by the filter.
+  async function filtered(items:ExploreItem[],filter:ExploreFilter) {
     const filled=await Promise.all(items.filter(item=>!filter.kind||item.kind===filter.kind).map(async item=>{
-      if(!lacking(item,filter)||!item.ids.tmdb||!seerr.configured())return item;
-      const tmdb=item.ids.tmdb,facts=await cache.get('',`facts:${item.kind}:${tmdb}`,PERSON_MS,()=>lookups(()=>seerr.details(account,token,item.kind,tmdb))
-        .then(info=>{const found=seerrItem(info,item.kind==='show'?'tv':'movie');return {language:found?.language,genres:found?.genres,year:found?.year,rating:found?.rating};})).catch(()=>undefined);
+      if(!lacking(item,filter)||!item.ids.tmdb||!tmdbClient.configured())return item;
+      const facts=(await titleDiscovery.details(item.kind==='show'?'tv':'movie',item.ids,'US').catch(()=>undefined))?.item;
       return facts?{...item,language:item.language??facts.language,genres:item.genres?.length?item.genres:facts.genres,year:item.year??facts.year,rating:item.rating??facts.rating}:item;
     }));
     return filled.filter(item=>passes(item,filter));
@@ -271,46 +271,48 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     })};
   }
   // One title's details from every source that knows it, its copy on this server, its watchlist state and what can be requested.
-  async function details(input:z.infer<typeof ids>&{kind:'movie'|'show';title:string;year?:number},grant:PlexGrant,account:string,token:string):Promise<ExploreDetails> {
+  async function details(input:z.infer<typeof ids>&{kind:'movie'|'show';title:string;year?:number;region:string;library:'true'|'false'},grant:PlexGrant,account:string,token:string):Promise<ExploreDetails> {
     const known:ExploreItem['ids']={...(input.tmdb?{tmdb:input.tmdb}:{}),...(input.imdb?{imdb:input.imdb}:{}),...(input.tvdb?{tvdb:input.tvdb}:{}),...(input.plex?{plex:input.plex}:{})};
-    // Seerr's reads and the watchlist state start as soon as their IDs are known: at once when the page sent them,
-    // otherwise once Plex Discover has matched the title.
-    const fromSeerr=(tmdb:number|undefined)=>seerr.configured()&&tmdb?[seerr.details(account,token,input.kind,tmdb).catch(()=>undefined),seerr.publicSettings().catch(()=>undefined),seerr.ratings(account,token,input.kind,tmdb)] as const:undefined;
+    const type=input.kind==='movie'?'movie':'tv',library=input.library==='true';
+    const tmdbDetails=(externalIds:ExploreItem['ids'])=>titleDiscovery.details(type,externalIds,input.region).catch(()=>undefined);
     const fromWatchlist=(plexId:string|undefined)=>plexId?discover.watchlisted(token,plexId).catch(()=>undefined):undefined;
-    const early=fromSeerr(known.tmdb),earlyWatchlist=fromWatchlist(known.plex);
-    const meta:DiscoverMetadata|undefined=await (input.plex?discover.metadata(token,input.plex):discover.match(token,input.kind,known)).catch(()=>undefined);
-    const merged={...(meta?discoverIds(meta):{}),...known};
-    const seerrReads=early??fromSeerr(merged.tmdb);
-    const [info,watchlisted,publicSettings,rt]=await Promise.all([seerrReads?.[0],earlyWatchlist??fromWatchlist(merged.plex),seerrReads?.[1],seerrReads?.[2]]);
+    const early=known.tmdb?tmdbDetails(known):undefined,earlyWatchlist=library?undefined:fromWatchlist(known.plex);
+    const meta:DiscoverMetadata|undefined=library?undefined:await (input.plex?discover.metadata(token,input.plex):discover.match(token,input.kind,known)).catch(()=>undefined);
+    const plexIds={...(meta?discoverIds(meta):{}),...known};
+    const tmdbInfo=await (early??tmdbDetails(plexIds));
+    const merged={...tmdbInfo?.item.ids,...plexIds};
+    const checkRequests=!library&&seerr.configured()&&merged.tmdb;
+    const [info,watchlisted,publicSettings]=await Promise.all([
+      checkRequests?seerr.details(account,token,input.kind,checkRequests).catch(()=>undefined):undefined,
+      library?undefined:earlyWatchlist??fromWatchlist(merged.plex),
+      checkRequests?seerr.publicSettings().catch(()=>undefined):undefined
+    ]);
     const allowed=publicSettings&&{movie:!!publicSettings.movie4kEnabled,show:!!publicSettings.series4kEnabled};
-    if(info?.externalIds?.imdbId&&!merged.imdb)merged.imdb=info.externalIds.imdbId;
-    if(info?.imdbId&&!merged.imdb)merged.imdb=info.imdbId;
-    if(info?.externalIds?.tvdbId&&!merged.tvdb)merged.tvdb=info.externalIds.tvdbId;
-    const base=(info&&seerrItem(info,input.kind==='show'?'tv':'movie'))??(meta&&discoverItem(meta));
+    const base=tmdbInfo?.item??(meta&&discoverItem(meta));
     const item:ExploreItem={...(base??{key:`${input.kind}:${merged.tmdb?`tmdb:${merged.tmdb}`:'unknown'}`,source:'plex',kind:input.kind,title:input.title,...(input.year?{year:input.year}:{})}),ids:merged};
+    const status=seerrStatus(info?.mediaInfo);
+    if(status)item.status=status;
     const guids=[merged.plexGuid,merged.imdb&&`imdb://${merged.imdb}`,merged.tmdb&&`tmdb://${merged.tmdb}`,merged.tvdb&&`tvdb://${merged.tvdb}`].filter((g):g is string=>!!g);
-    let libraryId=await plex.libraryMatch(grant,input.kind,item.title,guids).catch(()=>undefined);
+    const matchedLibraryId=library?undefined:await plex.libraryMatch(grant,input.kind,input.title||item.title,guids).catch(()=>undefined);
+    let libraryId=matchedLibraryId;
     // Seerr knows the server's rating key even when the title is named differently on the server.
     const ratingKey=info?.mediaInfo?.ratingKey;
     if(!libraryId&&ratingKey&&/^\d+$/.test(ratingKey))libraryId=await plex.catalogItem(grant,ratingKey).then(found=>found.id,()=>undefined);
-    const genres=info?.genres?.map(g=>g.name)??meta?.Genre?.flatMap(g=>g.tag?[g.tag]:[])??[];
-    const cast=(info?.credits?.cast?.flatMap(c=>c.name?[c.name]:[])??meta?.Role?.flatMap(r=>r.tag?[r.tag]:[])??[]).slice(0,8);
-    const runtime=info?.runtime??info?.episodeRunTime?.[0];
-    if(runtime&&!item.durationMs)item.durationMs=runtime*60000;
-    if(info?.numberOfEpisodes&&!item.episodeCount)item.episodeCount=info.numberOfEpisodes;
-    const contentRating=info?seerrCertificate(info,input.kind):meta?.contentRating,tagline=info?.tagline||meta?.tagline,network=info?.networks?.[0]?.name??meta?.studio;
-    // Plex's scores first, as in the library; Seerr fills in sources Plex did not send.
+    const genres=tmdbInfo?.genres.length?tmdbInfo.genres:meta?.Genre?.flatMap(g=>g.tag?[g.tag]:[])??[];
+    const cast=tmdbInfo?.cast.length?tmdbInfo.cast:meta?.Role?.flatMap(r=>r.tag?[r.tag]:[]).slice(0,8)??[];
+    const contentRating=tmdbInfo?.contentRating??meta?.contentRating,tagline=tmdbInfo?.tagline??meta?.tagline,network=tmdbInfo?.network??meta?.studio;
+    // IMDb and Rotten Tomatoes scores are available only when Plex supplies them.
     const scores=new Map<ExternalRating['source'],ExternalRating>();
-    for(const rating of [...(meta?externalRatings(meta as Parameters<typeof externalRatings>[0])??[]:[]),...(rt?.ratings??[]),...(info?.voteAverage?[{source:'tmdb' as const,score:info.voteAverage}]:[])])if(!scores.has(rating.source))scores.set(rating.source,rating);
+    for(const rating of [...(meta?externalRatings(meta as Parameters<typeof externalRatings>[0])??[]:[]),...(tmdbInfo?.item.rating?[{source:'tmdb' as const,score:tmdbInfo.item.rating}]:[])])if(!scores.has(rating.source))scores.set(rating.source,rating);
     const ratings=(['imdb','tomatometer','popcornmeter','tmdb'] as const).flatMap(source=>scores.get(source)??[]);
-    const type=input.kind==='movie'?'movie':'tv';
     const links:ExploreDetails['links']=[
       ...(merged.tmdb?[{site:'tmdb' as const,url:`https://www.themoviedb.org/${type}/${merged.tmdb}`}]:[]),
       ...(merged.tvdb&&input.kind==='show'?[{site:'tvdb' as const,url:`https://www.thetvdb.com/dereferrer/series/${merged.tvdb}`}]:[]),
-      ...(merged.imdb?[{site:'imdb' as const,url:`https://www.imdb.com/title/${merged.imdb}/`}]:[]),
-      ...(rt?.url?[{site:'rottentomatoes' as const,url:rt.url}]:[])];
-    const facts=info?seerrFacts(info,input.kind,publicSettings?.region||'US'):{...(meta?.originallyAvailableAt&&/^\d{4}-\d{2}-\d{2}$/.test(meta.originallyAvailableAt)?{released:meta.originallyAvailableAt}:{})};
-    return {item,genres,cast,countries:[],studios:[],providers:[],...facts,ratings,links,...(tagline?{tagline}:{}),...(network?{network}:{}),...(contentRating?{contentRating}:{}),...(libraryId?{libraryId}:{}),
+      ...(merged.imdb?[{site:'imdb' as const,url:`https://www.imdb.com/title/${merged.imdb}/`}]:[])];
+    const released=tmdbInfo?.released??(meta?.originallyAvailableAt&&/^\d{4}-\d{2}-\d{2}$/.test(meta.originallyAvailableAt)?meta.originallyAvailableAt:undefined);
+    return {...tmdbInfo,item,genres,cast,released,countries:tmdbInfo?.countries??[],studios:tmdbInfo?.studios??[],providers:tmdbInfo?.providers??[],
+      ratings,links,tagline,network,contentRating,...(libraryId?{libraryId}:{}),
+      ...(matchedLibraryId?{matchedLibraryId}:{}),
       ...(watchlisted!==undefined?{watchlisted}:{}),...(info&&merged.tmdb?{seerr:requestState(info,input.kind,allowed)}:{})};
   }
 }

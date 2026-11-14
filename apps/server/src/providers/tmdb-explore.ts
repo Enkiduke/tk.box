@@ -33,13 +33,15 @@ type Title = {
   vote_average?: number; vote_count?: number; popularity?: number;
 };
 const kinds = ['movie', 'tv'] as const;
-const services = [
-  ['netflix'], ['amazon prime video', 'prime video'], ['disney+'], ['hulu'], ['max', 'hbo max'], ['apple tv+', 'apple tv'],
-  ['peacock premium', 'peacock premium plus', 'peacock'],
-  ['paramount+', 'paramount+ essential', 'paramount+ premium', 'paramount+ with showtime', 'paramount+ showtime'],
-  ['mgm+'], ['discovery+']
-];
 const providerName = (name:string) => name.trim().toLowerCase().replace(/\s+/g,' ').replace(/\s+plus\b/g,'+').replace(/\s+\+/g,'+');
+const services = [
+  {names:['netflix']}, {names:['amazon prime video', 'prime video'], label:'Prime Video'},
+  {names:['disney+'], label:'Disney+'}, {names:['hulu']}, {names:['max', 'hbo max']}, {names:['apple tv+', 'apple tv']},
+  {names:['peacock premium', 'peacock premium+', 'peacock'], label:'Peacock'},
+  {names:['paramount+', 'paramount+ essential', 'paramount+ premium', 'paramount+ with showtime', 'paramount+ showtime'], label:'Paramount+'},
+  {names:['mgm+'], label:'MGM+'}, {names:['discovery+'], label:'Discovery+'}
+];
+const serviceLabels = new Map(services.flatMap(({names,label})=>label?names.map(name=>[name,label] as const):[]));
 const date = (value: number) => new Date(value).toISOString().slice(0, 10);
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
@@ -88,8 +90,10 @@ export class TmdbExplore {
       ? [[p.provider_id, {id:p.provider_id, name:p.provider_name, logoUrl:tmdbImage(typeof p.logo_path === 'string' ? p.logo_path : undefined, 'w92')}] as const] : [])).values()];
     providers.sort((a,b) => a.name.localeCompare(b.name) || a.id - b.id);
     const providerIds = new Map(providers.map(p=>[providerName(p.name),p.id]));
-    const defaults = services.flatMap(names => names.map(name=>providerIds.get(providerName(name))).find(id=>id!==undefined)??[]);
-    return {regions, providers, defaults};
+    const defaults = services.flatMap(({names}) => names.map(name=>providerIds.get(name)).find(id=>id!==undefined)??[]);
+    const labeledProviders=providers.map(p=>({...p,name:serviceLabels.get(providerName(p.name))??p.name}));
+    labeledProviders.sort((a,b)=>a.name.localeCompare(b.name)||a.id-b.id);
+    return {regions, providers:labeledProviders, defaults};
   }
   private async titles(type: TitleKind, path: string, params: Record<string, string>, ttl?: number, missingIsEmpty = false): Promise<Result> {
     const data = await this.client.get(path, params, ttl) as {results?: Title[]; total_pages?: number} | undefined;
@@ -99,6 +103,11 @@ export class TmdbExplore {
   }
   async trending(types:readonly TitleKind[]=kinds) {
     return mixCandidates(await Promise.all(types.map(type => this.titles(type, `/trending/${type}/week`, {}, 6 * HOUR).then(r => r.items))));
+  }
+  async search(query:string,kind?:ExploreItem['kind']) {
+    const types=kind?[kind==='show'?'tv':'movie'] as const:kinds;
+    const lists=await Promise.all(types.map(type=>this.titles(type,`/search/${type}`,{query,include_adult:'false'},15*60000)));
+    return mixCandidates(lists.map(list=>list.items)).map(({item})=>item);
   }
   async suggestions(type: TitleKind, id: number, similar = false) {
     return (await this.titles(type, `/${type}/${id}/${similar ? 'similar' : 'recommendations'}`, {}, undefined, true)).items;
