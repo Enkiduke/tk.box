@@ -5,7 +5,7 @@ import { cpus, platform } from 'node:os';
 import { runProcess, LocalMediaWorker, probeLocal, hlsArgs } from '../apps/server/src/streaming/ffmpeg.js';
 import { EncoderBudget } from '../apps/server/src/streaming/policy.js';
 import { SegmentBuffer, ViewerCursor, renderManifest, type Segment } from '../apps/server/src/streaming/buffer.js';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import { ChannelScheduler } from '../apps/server/src/services/scheduler.js';
 
 const root = resolve('.local/media-spike'), ffmpeg = process.env.FFMPEG_PATH ?? 'ffmpeg', ffprobe = process.env.FFPROBE_PATH ?? 'ffprobe';
@@ -15,7 +15,7 @@ const version = (await runProcess(ffmpeg, ['-version'])).stdout.split('\n')[0];
 const a = join(root, 'source-a.ts'), b = join(root, 'source-b.avi');
 await runProcess(ffmpeg, ['-hide_banner','-loglevel','error','-nostdin','-y','-f','lavfi','-i','testsrc2=size=320x180:rate=25','-f','lavfi','-i','sine=frequency=440:sample_rate=48000','-t','8','-c:v','libx264','-threads','2','-preset','veryfast','-pix_fmt','yuv420p','-g','50','-sc_threshold','0','-c:a','aac','-f','mpegts',a]);
 await runProcess(ffmpeg, ['-hide_banner','-loglevel','error','-nostdin','-y','-f','lavfi','-i','testsrc2=size=320x180:rate=25','-f','lavfi','-i','sine=frequency=880:sample_rate=48000','-t','8','-c:v','mpeg4','-q:v','4','-threads','2','-c:a','pcm_s16le',b]);
-const db = openDatabase(':memory:'), scheduler = new ChannelScheduler(db), anchor = Date.now();
+const db = openMigratedDatabase(':memory:'), scheduler = new ChannelScheduler(db), anchor = Date.now();
 scheduler.publish('fixture', [{occurrenceId: 'a', mediaId: 'fixture-a', title: 'Pattern A', durationMs: 8000, mediaOffsetMs: 0}, {occurrenceId: 'b', mediaId: 'fixture-b', title: 'Pattern B', durationMs: 8000, mediaOffsetMs: 0}], 0, anchor, 'fixture');
 const joinSlot = scheduler.current('fixture', anchor + 2000); assert.equal(joinSlot.offsetMs, 2000);
 const budget = new EncoderBudget(() => 2), worker = new LocalMediaWorker(budget, ffmpeg, ffprobe);

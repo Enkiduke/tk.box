@@ -12,9 +12,7 @@ const key = z.string().trim().max(200).regex(/^[\w-]*$/).optional();
 export const serviceKeysInput = z.object({ thesportsdb: key, plex: key }).strict();
 
 export class ServiceKeys {
-  constructor(private db: Db, private vault: Vault) {
-    db.exec('CREATE TABLE IF NOT EXISTS service_keys(name TEXT PRIMARY KEY, sealed TEXT NOT NULL)');
-  }
+  constructor(private db: Db, private vault: Vault) {}
   get(name: ServiceKey) {
     const row = this.db.prepare('SELECT sealed FROM service_keys WHERE name=?').get(name) as { sealed: string } | undefined;
     return row ? this.vault.open(row.sealed, `service-key:${name}`) : undefined;

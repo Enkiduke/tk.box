@@ -1,4 +1,5 @@
 import { defineModule } from './module.js';
+import { customChannelsMigrations } from './migrations/custom-channels.js';
 import { CustomChannelStore } from '../persistence/custom-channels.js';
 import { registerCustomChannels } from '../custom-api.js';
 import { EpisodeSync } from '../services/episode-sync.js';
@@ -12,6 +13,7 @@ type Deps = { localMedia: LocalMedia; pauseRetentionMs: () => number };
 // that play them. Their viewers share the live session routes with IPTV, so those routes stay with the app for now.
 export const customChannelsModule = defineModule({
   name: 'custom-channels',
+  migrations: customChannelsMigrations,
   setup(routes, { config, db, plex, bus, budget, background, log }, { localMedia, pauseRetentionMs }: Deps) {
     const store = new CustomChannelStore(db);
     const episodes = new EpisodeSync(store, plex, () => background.grant(), (message, detail) => log.info(message, detail));

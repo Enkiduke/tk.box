@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { defineModule } from './module.js';
+import { artworkMigrations } from './migrations/artwork.js';
 import { ArtworkStore } from '../persistence/artwork-store.js';
 import { ArtworkEngine } from '../services/artwork-engine.js';
 import { ArtworkWorker } from '../services/artwork-worker.js';
@@ -18,6 +19,7 @@ type Deps = {
 // apart from every playback path. Its TMDB key also serves Explore and the calendar (`titles`).
 export const artworkModule = defineModule({
   name: 'artwork',
+  migrations: artworkMigrations,
   access: 'admin',
   setup(routes, { config, db, vault, plex, bus, background, log }, { streaming, tmdbTransport }: Deps) {
     const store = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));

@@ -1,4 +1,5 @@
 import { defineModule } from './module.js';
+import { watchHistoryMigrations } from './migrations/watch-history.js';
 import { HistoryStore } from '../persistence/history-store.js';
 import { PlaybackHistory } from '../services/playback-history.js';
 import { PlexPlaybackMonitor } from '../services/plex-playback-monitor.js';
@@ -8,6 +9,7 @@ import { registerHistory } from '../history-api.js';
 // by the Plex playback monitor), and Admin › History, which reports on it.
 export const watchHistoryModule = defineModule({
   name: 'watch-history',
+  migrations: watchHistoryMigrations,
   setup(routes, { config, db, plex, bus, background, log }) {
     const store = new HistoryStore(db);
     const history = new PlaybackHistory(store, message => log.warn(message));

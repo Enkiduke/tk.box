@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { loadConfig } from '../apps/server/src/config.js';
-import { openDatabase } from '../apps/server/src/persistence/database.js';
-const c = loadConfig(), db = openDatabase(join(c.DATA_DIR,'tk.box.sqlite'));
-const row=db.prepare('SELECT MAX(version) AS version FROM migrations').get() as {version:number};
-db.close(); console.log(`SQLite schema is current (version ${row.version}).`);
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
+const c = loadConfig(), db = openMigratedDatabase(join(c.DATA_DIR,'tk.box.sqlite'));
+const rows = db.prepare('SELECT owner,COUNT(*) AS n FROM schema_migrations GROUP BY owner ORDER BY owner').all() as {owner:string; n:number}[];
+db.close(); console.log(`SQLite schema is current (${rows.map(r => `${r.owner} ${r.n}`).join(', ')}).`);

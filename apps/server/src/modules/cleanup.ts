@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { defineModule } from './module.js';
+import { cleanupMigrations } from './migrations/cleanup.js';
 import { CleanupStore } from '../persistence/cleanup-store.js';
 import { CleanupEngine, cleanupCollections, type CleanupServices } from '../services/cleanup-engine.js';
 import { registerCleanup } from '../cleanup-api.js';
@@ -17,6 +18,7 @@ type Deps = {
 // feed the calendar.
 export const cleanupModule = defineModule({
   name: 'cleanup',
+  migrations: cleanupMigrations,
   access: 'admin',
   setup(routes, { config, db, vault, bus, background, log }, { artwork, seerr }: Deps) {
     const store = new CleanupStore(db, vault);

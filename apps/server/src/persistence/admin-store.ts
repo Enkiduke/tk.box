@@ -8,9 +8,7 @@ export const plexAccountId = z.string().regex(/^\d{1,20}$/);
 export type ExtraAdmin = { accountId: string; name: string; addedBy: string; addedAt: number };
 
 export class AdminStore {
-  constructor(private db: Db) {
-    db.exec('CREATE TABLE IF NOT EXISTS extra_admins(account_id TEXT PRIMARY KEY, name TEXT NOT NULL, added_by TEXT NOT NULL, added_at INTEGER NOT NULL)');
-  }
+  constructor(private db: Db) {}
   has(accountId: string) { return !!this.db.prepare('SELECT 1 FROM extra_admins WHERE account_id=?').get(accountId); }
   list(): ExtraAdmin[] {
     return (this.db.prepare('SELECT account_id,name,added_by,added_at FROM extra_admins ORDER BY name COLLATE NOCASE').all() as Record<string, unknown>[])

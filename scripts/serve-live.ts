@@ -4,7 +4,8 @@ import {readFile,mkdir} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {openDatabase,SettingsStore} from '../apps/server/src/persistence/database.js';
+import { SettingsStore } from '../apps/server/src/persistence/database.js';
+import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {DiskSegments} from '../apps/server/src/streaming/disk-segments.js';
 import {LiveViewers} from '../apps/server/src/streaming/live-viewers.js';
 import {LocalMediaWorker} from '../apps/server/src/streaming/ffmpeg.js';
@@ -15,7 +16,7 @@ import {FixtureBroadcast} from './lib/fixture-broadcast.js';
 
 const port=z.coerce.number().int().min(1024).max(65535).parse(process.env.LIVE_SPIKE_PORT??8767);
 const root=resolve('.local/live-spike'),run=join(root,'runs',randomUUID());await mkdir(run,{recursive:true,mode:0o700});
-const db=openDatabase(join(root,'schedule.sqlite')),settings=new SettingsStore(db),budget=new EncoderBudget(()=>settings.get().maxConcurrentCpuVideoTranscodes);
+const db=openMigratedDatabase(join(root,'schedule.sqlite')),settings=new SettingsStore(db),budget=new EncoderBudget(()=>settings.get().maxConcurrentCpuVideoTranscodes);
 const store=new DiskSegments(join(run,'segments'),2*1024*1024,()=>30000);await store.initialize();
 const owners=new Set<string>();
 const viewers=new LiveViewers(store,()=>30000,async(owner,program)=>requireThat(owners.has(owner)&&['fixture-a','fixture-b'].includes(program),'FIXTURE_ACCESS_DENIED','Fixture access was revoked.',403));
