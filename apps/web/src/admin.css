@@ -1,10 +1,13 @@
 /* Admin console: the shared settings layout, with grouped navigation. */
-.admin-title{display:flex;justify-content:space-between;align-items:center;gap:20px;margin:4px 0 28px}
+.admin-title{display:flex;justify-content:space-between;align-items:center;gap:20px}
 .admin-title h1{margin:0}
 .admin-nav{gap:20px}
-.admin-nav-group{display:flex;flex-direction:column;gap:2px}
+.admin-nav-group,.admin-nav-items{display:flex;flex-direction:column;gap:2px}
 .admin-nav-heading{padding:0 12px 6px;color:var(--dim);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
-.admin-nav button{padding:8px 12px;font-size:14px}
+@media(max-width:860px){
+  .admin-nav-group{flex:none}
+  .admin-nav-items{flex-direction:row}
+}
 
 /* Quieter, denser settings: short one-line descriptions, small hints, compact cards. */
 .admin .settings-head{align-items:center;margin-bottom:18px}

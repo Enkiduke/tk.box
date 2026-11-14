@@ -34,7 +34,7 @@ export function HeaderStreams() {
   const label=!view?'Active streams':`${count} active ${count===1?'stream':'streams'}`;
   return <>
     <button ref={button} type="button" className={`nav-streams${count?' active':''}`} popoverTarget="header-streams" aria-label={label} title={label} aria-expanded={open}>
-      <Icon name="play" size={18}/><span>{view?count:'–'}</span>
+      <Icon name="play" size={20}/><span>{view?count:'–'}</span>
     </button>
     <div ref={pop} id="header-streams" popover="auto" className="streams-pop" role="dialog" aria-label="Active streams" onBeforeToggle={e=>{if((e.nativeEvent as ToggleEvent).newState==='open')place();}} onToggle={e=>setOpen((e.nativeEvent as ToggleEvent).newState==='open')}>
       <header><strong>{label}</strong>{view&&count>0&&<small>{[view.transcodes?`${view.transcodes} transcoding`:undefined,mbps(view.bandwidthKbps)].filter(Boolean).join(' · ')}</small>}</header>

@@ -17,7 +17,7 @@ export function HeaderSearch({page,query,onChange}:{page:string;query:string;onC
       onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();change('');}}}>
       <input ref={input} id="banner-search" type="text" aria-label="Search movies, shows and channels" placeholder="Titles, people, channels…" value={text} maxLength={120} tabIndex={open?0:-1} aria-hidden={!open} onChange={e=>change(e.target.value)}/>
       {open&&text&&<button className="icon-button nav-search-clear" type="button" aria-label="Clear search" onClick={()=>change('')}><Icon name="close" size={16}/></button>}
-      <button ref={toggle} className="icon-button nav-search-toggle" type="button" aria-label="Search (Ctrl K)" aria-expanded={open} aria-controls="banner-search" onClick={()=>{setOpen(true);input.current?.focus();}}><Icon name="search" size={22}/></button>
+      <button ref={toggle} className="icon-button nav-search-toggle" type="button" aria-label="Search (Ctrl K)" aria-expanded={open} aria-controls="banner-search" onClick={()=>{setOpen(true);input.current?.focus();}}><Icon name="search" size={20}/></button>
     </form>
   </div>;
 }

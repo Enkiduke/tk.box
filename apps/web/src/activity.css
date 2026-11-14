@@ -1,22 +1,47 @@
-/* Admin › Activity: one card per stream, like Tautulli's activity view. */
-.activity-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:16px}
-.activity-card{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
-.activity-body{position:relative;display:flex;gap:18px;padding:16px}
-.activity-poster{flex:none;display:grid;place-items:center;width:120px;aspect-ratio:2/3;border-radius:6px;background:var(--surface-2);color:var(--dim);overflow:hidden}
-.activity-poster img{width:100%;height:100%;object-fit:cover}
-.activity-poster.logo{aspect-ratio:1}
-.activity-poster.logo img{object-fit:contain;padding:12px}
-.activity-details{flex:1;min-width:0;display:grid;gap:5px;margin:0;padding-right:40px;font-size:13px;align-content:start}
-.activity-details>div{display:grid;grid-template-columns:96px 1fr;gap:12px}
-.activity-details dt{color:var(--dim);text-transform:uppercase;font-size:11px;letter-spacing:.04em;text-align:right;padding-top:2px}
-.activity-details dd{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.activity-stop{position:absolute;top:12px;right:12px;padding:6px}
-.activity-stop:hover{color:var(--danger);border-color:var(--danger)}
-.activity-progress{height:3px;background:var(--surface-3)}
-.activity-progress span{display:block;height:100%;background:var(--accent)}
-.activity-foot{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 16px}
-.activity-title,.activity-who{display:flex;flex-direction:column;gap:3px;min-width:0}
-.activity-who{align-items:flex-end;text-align:right;flex:none}
-.activity-who strong{display:flex;align-items:center;gap:8px}
-.activity-card.tkbox{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));box-shadow:inset 3px 0 0 var(--accent)}.activity-title strong{display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.activity-title small,.activity-who small{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17.5rem), 1fr));
+  align-items: start;
+  gap: .65rem;
+}
+.activity-card {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.activity-card.tkbox { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.activity-body { display: flex; align-items: flex-start; gap: .65rem; padding: .65rem .7rem .35rem; }
+.activity-poster {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 3.6rem;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+  overflow: hidden;
+}
+.activity-poster.logo { height: 2.4rem; }
+.activity-poster img { width: 100%; height: 100%; object-fit: cover; }
+.activity-poster.logo img { object-fit: contain; padding: 3px; }
+.activity-info { display: grid; align-self: center; gap: .12rem; flex: 1; min-width: 0; }
+.activity-info > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-info strong { font-size: .88rem; }
+.activity-info small { color: var(--muted); font-size: .75rem; }
+.activity-info .activity-state { white-space: normal; }
+.activity-state span[data-state="playing"] { color: var(--text); }
+.activity-state span[data-state="paused"], .activity-state span[data-state="buffering"] { color: var(--accent); }
+.activity-body .activity-stop { flex: none; padding: 5px; color: var(--muted); }
+.activity-body .activity-stop:hover { color: var(--danger); }
+.activity-disclosure { padding: 0 .7rem .55rem; color: var(--muted); font-size: .75rem; }
+.activity-disclosure summary { width: fit-content; cursor: pointer; }
+.activity-disclosure summary:hover { color: var(--text); }
+.activity-details { display: grid; gap: .25rem; margin: .45rem 0 0; }
+.activity-details > div { display: grid; grid-template-columns: 6.25rem 1fr; gap: .4rem; }
+.activity-details dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.activity-progress { position: absolute; inset: auto 0 0; height: 2px; background: var(--surface-3); }
+.activity-progress span { display: block; height: 100%; background: var(--accent); }

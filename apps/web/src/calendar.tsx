@@ -1,11 +1,10 @@
-import {lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
+import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import type {CalendarEntry, CalendarEpisodeLabel, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice, Icon, Loading} from './components.js';
 import {link, useApi} from './hooks.js';
 import {episodeRanges, groupCalendarEntries} from './calendar-episodes.js';
 import './calendar.css';
 
-const ExploreDialog = lazy(() => import('./explore.js').then(module => ({default: module.ExploreDialog})));
 const dayFormat = new Intl.DateTimeFormat(undefined, {dateStyle: 'full', timeZone: 'UTC'});
 const shortFormat = new Intl.DateTimeFormat(undefined, {month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'});
 const monthFormat = new Intl.DateTimeFormat(undefined, {month: 'long', year: 'numeric', timeZone: 'UTC'});
@@ -118,7 +117,7 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
   </li>;
 }
 
-type CalendarProps = {accountId: string; params: URLSearchParams; onOpen: (id: string) => void};
+type CalendarProps = {accountId: string; params: URLSearchParams; onOpen: (id: string) => void; onSelect: (item: ExploreItem) => void};
 
 export function Calendar(props: CalendarProps) {
   const current = localDayFormat.format(new Date());
@@ -126,14 +125,13 @@ export function Calendar(props: CalendarProps) {
   return <Agenda key={start} {...props} start={start} current={current}/>;
 }
 
-function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {start: string; current: string}) {
+function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarProps & {start: string; current: string}) {
   const firstWeek = weekOf(start);
   const [active, setActive] = useState(start);
   const [batches, setBatches] = useState<{from: string; page: CalendarPage}[]>([]);
   const [earlier, setEarlier] = useState<string>();
   const [later, setLater] = useState<string>();
   const [pickedDay, setPickedDay] = useState(start);
-  const [selected, setSelected] = useState<ExploreItem>();
   const agenda = useRef<HTMLDivElement>(null), controls = useRef<HTMLElement>(null), endMarker = useRef<HTMLDivElement>(null);
   const restore = useRef<{element: HTMLElement; top: number}>(null);
   const from = weekOf(active), previousWeek = validDay(addDays(from, -7)), nextWeek = validDay(addDays(from, 7));
@@ -253,29 +251,29 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
   const disconnected = sources.filter(([, status]) => status === 'disconnected').map(([source]) => source);
   const open = (entry: CalendarEntry, plexId?: string) => {
     if (plexId) {onOpen(plexId); return;}
-    setSelected({key: entry.key, title: entry.title, year: entry.year, summary: entry.summary, posterUrl: entry.posterUrl, backdropUrl: entry.backdropUrl,
+    onSelect({key: entry.key, title: entry.title, year: entry.year, summary: entry.summary, posterUrl: entry.posterUrl, backdropUrl: entry.backdropUrl,
       kind: entry.kind === 'episode' ? 'show' : 'movie', source: 'plex', ids: entry.ids});
   };
-  return <div className="page calendar-page">
-    <section ref={controls} className="calendar-controls" aria-label="Calendar controls">
+  return <div className="page toolbar-page calendar-page">
+    <section ref={controls} className="page-toolbar calendar-controls" aria-label="Calendar controls">
       <nav aria-label="Calendar dates" className="calendar-dates">
-        <div className="calendar-segment calendar-range">
+        <div className="toolbar-group calendar-range">
           <button type="button" disabled={!previousWeek} aria-label="Previous week" onClick={() => previousWeek && jump(previousWeek)}><Icon name="back" size={16}/></button>
           <MonthPicker from={from} active={active} current={current} onPick={day => jump(day, true)}/>
           <button type="button" disabled={!nextWeek} aria-label="Next week" onClick={() => nextWeek && jump(nextWeek)}><Icon name="next" size={16}/></button>
         </div>
-        {active !== current && <button type="button" className="calendar-today" aria-label="Back to today" title="Back to today"
+        {active !== current && <button type="button" className="icon-button toolbar-icon" aria-label="Back to today" title="Back to today"
           onClick={() => jump(current, true)}><Icon name="restart" size={16}/></button>}
       </nav>
       <div className="calendar-options">
-        <nav aria-label="Calendar media type" className="calendar-segment">
-          <a href={route({titles: undefined})} aria-current={filter !== 'movies' && filter !== 'shows' || undefined}>All</a>
-          <a href={route({titles: 'movies'})} aria-current={filter === 'movies' || undefined}>Movies</a>
-          <a href={route({titles: 'shows'})} aria-current={filter === 'shows' || undefined}>TV Shows</a>
+        <nav aria-label="Calendar media type" className="toolbar-group">
+          <a href={route({titles: undefined})} aria-current={filter !== 'movies' && filter !== 'shows' ? 'page' : undefined}>All</a>
+          <a href={route({titles: 'movies'})} aria-current={filter === 'movies' ? 'page' : undefined}>Movies</a>
+          <a href={route({titles: 'shows'})} aria-current={filter === 'shows' ? 'page' : undefined}>TV Shows</a>
         </nav>
-        <nav aria-label="Calendar layout" className="calendar-segment calendar-layout">
-          <a href={route({view: undefined})} aria-current={view === 'cards' || undefined}><Icon name="grid" size={15}/> Cards</a>
-          <a href={route({view: 'list'})} aria-current={view === 'list' || undefined}><Icon name="list" size={15}/> List</a>
+        <nav aria-label="Calendar layout" className="toolbar-group calendar-layout">
+          <a href={route({view: undefined})} aria-current={view === 'cards' ? 'page' : undefined}><Icon name="grid" size={16}/> Cards</a>
+          <a href={route({view: 'list'})} aria-current={view === 'list' ? 'page' : undefined}><Icon name="list" size={16}/> List</a>
         </nav>
       </div>
     </section>
@@ -311,6 +309,5 @@ function Agenda({accountId, params, onOpen, start, current}: CalendarProps & {st
           : canReadLater && <button type="button" onClick={() => setLater(nextBatch)}>Later dates</button>}
       </div>
     </>}
-    {selected && <Suspense fallback={<Loading/>}><ExploreDialog item={selected} onClose={() => setSelected(undefined)} onOpen={id => {setSelected(undefined); onOpen(id);}}/></Suspense>}
   </div>;
 }
