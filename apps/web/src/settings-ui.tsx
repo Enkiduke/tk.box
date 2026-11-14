@@ -33,8 +33,8 @@ export function useMutation(changed:()=>void) {
 // Remembered per browser: which settings section and tab were open last.
 export const remembered=(key:string,fallback:string)=>{try{return localStorage.getItem(`tk.settings.${key}`)??fallback;}catch{return fallback;}};
 export const remember=(key:string,value:string)=>{try{localStorage.setItem(`tk.settings.${key}`,value);}catch{/* private window */}};
-export function Switch({label,description,checked,disabled,onChange}:{label:string;description?:ReactNode;checked:boolean;disabled?:boolean;onChange:(value:boolean)=>void}) {
-  return <label className="switch-row"><span className="switch-text"><strong>{label}</strong>{description&&<small>{description}</small>}</span><input type="checkbox" role="switch" className="switch" checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/></label>;
+export function Switch({label,ariaLabel,description,checked,disabled,onChange}:{label:string;ariaLabel?:string;description?:ReactNode;checked:boolean;disabled?:boolean;onChange:(value:boolean)=>void}) {
+  return <label className="switch-row"><span className="switch-text"><strong>{label}</strong>{description&&<small>{description}</small>}</span><input type="checkbox" role="switch" className="switch" aria-label={ariaLabel} checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/></label>;
 }
 export function Stat({label,value,tone,hint}:{label:string;value:ReactNode;tone?:'ok'|'warning'|'danger';hint?:string}) {
   return <div className={`stat ${tone??''}`}><span>{label}</span><strong>{value}</strong>{hint&&<small>{hint}</small>}</div>;

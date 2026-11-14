@@ -34,6 +34,7 @@ const paths:Record<string,ReactNode>={
   explore:<><circle cx="12" cy="12" r="9.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></>,trending:<path d="m3 17 6-6 4 4 8-8m-5 0h5v5"/>,
   clock:<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
   shield:<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z"/>,
+  users:<><circle cx="9" cy="7.5" r="3"/><path d="M3 20v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2m3-7a5 5 0 0 1 3 5v2M16 4.7a3 3 0 0 1 0 5.6"/></>,
   image:<><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="m21 16-5-5-9 9"/></>,
   calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4m8-4v4"/></>,
   upload:<path d="M12 15V4m-4 4 4-4 4 4M5 15v4h14v-4"/>,download:<path d="M12 4v11m-4-4 4 4 4-4M5 15v4h14v-4"/>,

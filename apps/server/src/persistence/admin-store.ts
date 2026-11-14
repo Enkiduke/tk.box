@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import { AppError } from '../errors.js';
 
-// Admin › Server › Admins: Plex accounts the server owner made administrators of tk.box. Plex knows only the owner;
+// Admin › Server › Users: Plex accounts the server owner made administrators of tk.box. Plex knows only the owner;
 // these accounts are admins here alone. Only the owner changes the list.
 export const plexAccountId = z.string().regex(/^\d{1,20}$/);
 export type ExtraAdmin = { accountId: string; name: string; addedBy: string; addedAt: number };
@@ -29,5 +29,14 @@ export class AdminStore {
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'admin_removed', now, JSON.stringify({ accountId }));
     })();
     return this.list();
+  }
+  revokePlexAccess(actor: string, key: string, accountId: string | null, now = Date.now()) {
+    this.db.transaction(() => {
+      if (accountId) {
+        this.db.prepare('DELETE FROM extra_admins WHERE account_id=?').run(accountId);
+        this.db.prepare('DELETE FROM sessions WHERE account_id=?').run(accountId);
+      }
+      this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'plex_access_revoked', now, JSON.stringify({ key, accountId }));
+    })();
   }
 }
