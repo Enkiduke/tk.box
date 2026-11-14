@@ -1,6 +1,7 @@
 import { IptvStore } from '../persistence/iptv-store.js';
 import { RestrictedSourceFetcher, SourceFetchError } from '../providers/source-fetch.js';
 import { requireThat } from '../errors.js';
+import { parseXmltvOffThread } from '../providers/xmltv-parse.js';
 
 // One application process owns the SQLite state and this registry. No detached
 // work survives shutdown, and scheduled/manual requests share the same promise.
@@ -10,17 +11,19 @@ export class SourceRefresh {
   private abort=new AbortController();
   // Told about every successful import, e.g. to rematch sports events against the new channels.
   published:(id:string)=>void=()=>{};
-  constructor(private store:IptvStore,private fetcher:Pick<RestrictedSourceFetcher,'fetch'>=new RestrictedSourceFetcher()) {}
+  // Guides are parsed off the main thread; the store, on this thread, stays the only SQLite writer.
+  constructor(private store:IptvStore,private fetcher:Pick<RestrictedSourceFetcher,'fetch'>=new RestrictedSourceFetcher(),private parseGuide=parseXmltvOffThread) {}
   refresh(actor:string,id:string) {
     const active=this.running.get(id);if(active)return active;
     requireThat(!this.abort.signal.aborted,'REFRESH_STOPPED','Refresh service is stopped.',503);
     requireThat(this.running.size<4,'REFRESH_CAPACITY','Too many source refreshes are active.',429);
-    const revision=this.store.begin(id),endpoint=this.store.endpoint(id);
+    const revision=this.store.begin(id),endpoint=this.store.endpoint(id),guide=this.store.status(id).kind==='xmltv';
     const controller=new AbortController(),signal=AbortSignal.any([this.abort.signal,controller.signal]);
     this.controllers.set(id,controller);
     // Defer the worker so the map exists even when a test transport resolves immediately.
     const work=Promise.resolve().then(async()=>{
-      try {signal.throwIfAborted();const bytes=await this.fetcher.fetch(endpoint,signal);signal.throwIfAborted();const result=this.store.ingest(actor,id,revision,bytes);this.published(id);return result;}
+      try {signal.throwIfAborted();const bytes=await this.fetcher.fetch(endpoint,signal);signal.throwIfAborted();
+        const result=guide?this.store.ingestGuide(actor,id,revision,await this.parseGuide(bytes,signal)):this.store.ingest(actor,id,revision,bytes);this.published(id);return result;}
       catch(error) {if(!signal.aborted)this.store.failed(id,revision,error instanceof SourceFetchError?error.retryAt:undefined);throw error;}
     }).finally(()=>{this.running.delete(id);this.controllers.delete(id);});
     this.running.set(id,work);return work;
