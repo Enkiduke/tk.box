@@ -8,11 +8,14 @@ import { ArtworkSchedule } from '../services/artwork-schedule.js';
 import { registerArtwork } from '../artwork-api.js';
 import { TmdbTitles } from '../providers/tmdb-titles.js';
 import type { PlexGrant } from '../providers/plex.js';
+import type { ArrService } from '../providers/arr-tags.js';
 
 type Deps = {
   // How many streams are playing, in tk.box or any Plex app: anyone streaming holds back the nightly full collections run.
   streaming: (grant: PlexGrant) => Promise<number>;
   tmdbTransport?: typeof fetch;
+  // The arr module's connections: Collections' seasonal downloads use Radarr.
+  arr: { connection: (name: 'radarr' | 'sonarr') => ArrService };
 };
 
 // Admin › Artwork: posters, logos and collections made by the artwork engine, which runs as a separate Python process,
@@ -21,11 +24,11 @@ export const artworkModule = defineModule({
   name: 'artwork',
   migrations: artworkMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, plex, bus, background, log }, { streaming, tmdbTransport }: Deps) {
+  setup(routes, { config, db, vault, plex, bus, background, log }, { streaming, tmdbTransport, arr }: Deps) {
     const store = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
     const titles = new TmdbTitles(() => store.keys().tmdb, tmdbTransport);
     const engine = new ArtworkEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'),
-      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail));
+      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail), () => arr.connection('radarr'));
     const worker = new ArtworkWorker(engine, (message, detail) => log.warn(message, detail));
     engine.useWorker(worker);
     const schedule = new ArtworkSchedule(store, engine, plex, () => background.grant(), (message, detail) => log.warn(message, detail), streaming);

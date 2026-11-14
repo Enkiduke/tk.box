@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
 import { hiddenDownloads } from './hidden-downloads.js';
+import type { ArrService } from '../providers/arr-tags.js';
 
 // Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
 // their own Python processes: tk.box writes their shared JSON config from the database, passes credentials in the
@@ -27,7 +28,7 @@ const MAX_LINES = 5000, SAVED_LINES = 2000;
 
 // The engine's config for one run. Library titles come from the signed-in administrator's view of Plex, because the
 // engine matches its per-library layouts by title. Credentials are never written into it.
-export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections) {
+export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections, radarrUrl = '') {
   const title = (id: string) => libraries.find(l => l.key === id)?.title, f = collections?.franchise, radarr = collections?.radarr;
   return {
     plex: { url: paths.plexUrl, libraries: settings.libraries, upload: settings.upload, upload_logo: settings.uploadLogo, include_seasons: settings.includeSeasons,
@@ -42,7 +43,7 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     ...(collections?.definitions ? { collections: collections.definitions } : {}),
     ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {}),
     // The key itself arrives in the environment; the engine reads ${RADARR_API_KEY} from there.
-    ...(radarr?.url ? { radarr: { url: radarr.url, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
+    ...(radarr && radarrUrl ? { radarr: { url: radarrUrl, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
       ...(radarr.qualityProfileId ? { quality_profile_id: radarr.qualityProfileId } : {}) } } : {})
   };
 }
@@ -69,7 +70,9 @@ export class ArtworkEngine {
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
-  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
+  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
+    // The arr module's Radarr, for seasonal collections' downloads.
+    readonly radarr: () => ArrService = () => ({ url: '' })) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
     this.renameFiles();
@@ -94,7 +97,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
-  secrets(): EngineSecrets { const radarr = this.store.collectionsConfig().radarrKey; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
+  secrets(): EngineSecrets { const radarr = this.radarr().key; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
   // Whether Python and the engine's packages are installed. Asked again at most once a minute unless forced.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);
@@ -227,10 +230,10 @@ export class ArtworkEngine {
   // Written whole and then moved into place, so the engine never reads a half-written config.
   private writeConfig(libraries: ArtworkLibrary[], name: string, changes: Partial<Inputs> = {}) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
-    const { radarrKey: _, ...collections } = this.store.collectionsConfig();
+    const collections = this.store.collectionsConfig();
     const inputs: Inputs = { settings: this.store.settings(), layouts: this.store.layouts(), collections, ...changes };
     const file = join(this.workDir, name), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections, this.radarr().url), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

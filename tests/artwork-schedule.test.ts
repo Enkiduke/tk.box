@@ -83,7 +83,7 @@ test('the nightly full collections run waits while anyone is streaming, for up t
   const {revision,...settings}=store.settings();
   await store.update('admin',revision,{...settings,upload:true},async()=>{});
   const at=new Date(start*1000),time=`${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}`;
-  const {revision:collections,radarrKeySet:_,scheduleStates:__,...value}=store.collections() as ReturnType<ArtworkStore['collections']>&{scheduleStates?:unknown};
+  const {revision:collections,scheduleStates:__,...value}=store.collections() as ReturnType<ArtworkStore['collections']>&{scheduleStates?:unknown};
   await store.updateCollections('admin',{value:{...value,schedules:{...value.schedules,all:{enabled:true,time}}} as never,expectedRevision:collections},async()=>{});
   const full=()=>jobs.filter(j=>j[0]==='all');
   await schedule.tick(new Date((start+60)*1000));

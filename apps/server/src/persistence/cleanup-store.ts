@@ -5,9 +5,9 @@ import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { prepared } from './statements.js';
 
-// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its Tautulli and Sonarr
-// connections and its job history. The script reads none of this directly: before each run tk.box writes its JSON
-// config (cleanupConfig). Keys are sealed. Seerr's connection is Explore's and Radarr's is Collections'.
+// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its Tautulli connection
+// and its job history. The script reads none of this directly: before each run tk.box writes its JSON config
+// (cleanupConfig). Keys are sealed. Seerr's connection is Explore's; Radarr and Sonarr are the arr module's.
 const libraryId = z.string().regex(/^\d{1,10}$/);
 const days = z.number().int().min(0).max(3650);
 const label = z.string().trim().max(60).refine(value => ![...value].some(c => c.charCodeAt(0) < 32), 'No control characters');
@@ -33,8 +33,8 @@ export const cleanupSettings = z.object({
   schedule: scheduled(60)
 }).strict();
 export type CleanupSettings = z.infer<typeof cleanupSettings>;
-export const cleanupConnectionsInput = z.object({ tautulliUrl: origin, sonarrUrl: origin, tautulliKey: key.optional(), sonarrKey: key.optional() }).strict();
-type Connections = { tautulliUrl: string; sonarrUrl: string; tautulliKey?: string; sonarrKey?: string };
+export const cleanupConnectionsInput = z.object({ tautulliUrl: origin, tautulliKey: key.optional() }).strict();
+type Connections = { tautulliUrl: string; tautulliKey?: string };
 // Nothing is deleted until an administrator turns previews off; the retention days are the script's own defaults.
 const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromRadarr: false, deleteFromSonarr: false, deleteFromSeerr: false,
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
@@ -74,12 +74,12 @@ export class CleanupStore {
       return this.settings();
     })();
   }
-  private storedConnections() { return this.row<Connections>('connections') ?? { revision: 0, value: { tautulliUrl: '', sonarrUrl: '' } }; }
+  private storedConnections() { return this.row<Connections>('connections') ?? { revision: 0, value: { tautulliUrl: '' } }; }
   // What the Connections page shows: never the keys themselves.
-  connectionsView() { const { revision, value: v } = this.storedConnections(); return { revision, tautulliUrl: v.tautulliUrl, sonarrUrl: v.sonarrUrl, tautulliKeySet: !!v.tautulliKey, sonarrKeySet: !!v.sonarrKey }; }
+  connectionsView() { const { revision, value: v } = this.storedConnections(); return { revision, tautulliUrl: v.tautulliUrl, tautulliKeySet: !!v.tautulliKey }; }
   connections() {
     const { value: v } = this.storedConnections(), open = (sealed: string | undefined, name: string) => sealed ? this.vault.open(sealed, `cleanup:${name}-key`) : undefined;
-    return { tautulliUrl: v.tautulliUrl, sonarrUrl: v.sonarrUrl, tautulliKey: open(v.tautulliKey, 'tautulli'), sonarrKey: open(v.sonarrKey, 'sonarr') };
+    return { tautulliUrl: v.tautulliUrl, tautulliKey: open(v.tautulliKey, 'tautulli') };
   }
   // Omitted keeps a saved key; an empty string removes it.
   updateConnections(actor: string, expectedRevision: number, input: z.input<typeof cleanupConnectionsInput>, now = Date.now()) {
@@ -88,10 +88,10 @@ export class CleanupStore {
       const { revision, value } = this.storedConnections();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Connections changed. Reload and retry.', 409);
       const seal = (given: string | undefined, saved: string | undefined, name: string) => given === undefined ? saved : given ? this.vault.seal(given, `cleanup:${name}-key`) : undefined;
-      const tautulliKey = seal(valid.tautulliKey, value.tautulliKey, 'tautulli'), sonarrKey = seal(valid.sonarrKey, value.sonarrKey, 'sonarr');
-      this.write('connections', revision + 1, { tautulliUrl: valid.tautulliUrl, sonarrUrl: valid.sonarrUrl, ...(tautulliKey ? { tautulliKey } : {}), ...(sonarrKey ? { sonarrKey } : {}) });
+      const tautulliKey = seal(valid.tautulliKey, value.tautulliKey, 'tautulli');
+      this.write('connections', revision + 1, { tautulliUrl: valid.tautulliUrl, ...(tautulliKey ? { tautulliKey } : {}) });
       prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_connections_changed', now,
-        JSON.stringify({ tautulliUrl: valid.tautulliUrl, sonarrUrl: valid.sonarrUrl, tautulliKeySet: !!tautulliKey, sonarrKeySet: !!sonarrKey }));
+        JSON.stringify({ tautulliUrl: valid.tautulliUrl, tautulliKeySet: !!tautulliKey }));
       return this.connectionsView();
     })();
   }

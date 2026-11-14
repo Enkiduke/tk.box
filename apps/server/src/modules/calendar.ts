@@ -4,7 +4,7 @@ import type { ArrService } from '../providers/arr-tags.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 
 type Deps = {
-  // Radarr and Sonarr, from Clean Up's connections.
+  // Radarr and Sonarr, from the arr module.
   connections: () => { radarr: ArrService; sonarr: ArrService };
   titles: TmdbTitles;
 };

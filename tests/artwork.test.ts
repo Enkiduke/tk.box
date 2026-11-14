@@ -83,7 +83,7 @@ test('collection schedules saved with the artwork settings move to the collectio
   const {db,store}=seeded(),{revision:_,...settings}=store.settings(),vault=new Vault(randomBytes(32));
   const schedules={...settings.schedules,added:{enabled:true,minutes:20},seasonal:{enabled:true,time:'03:10'},collections:{enabled:false,time:'05:00'}};
   db.prepare('INSERT INTO artwork_settings VALUES(1,3,?)').run(JSON.stringify({...settings,schedules,keys:{}}));
-  const {revision:__,radarrKeySet:___,schedules:____,...collections}=store.collections();
+  const {revision:__,schedules:____,...collections}=store.collections();
   db.prepare('INSERT INTO artwork_collections VALUES(1,2,?)').run(JSON.stringify({...collections,definitions:[{name:'Halloween',library:'Movies',type:'movie'}]}));
   const moved=new ArtworkStore(db,vault).collections();
   assert.deepEqual(moved.schedules,{custom:{enabled:true,schedule:{kind:'times',times:['03:10'],days:[]}},all:{enabled:false,schedule:{kind:'times',times:['05:00'],days:[]}},added:{enabled:true,schedule:{kind:'every',minutes:20}}});
@@ -91,25 +91,23 @@ test('collection schedules saved with the artwork settings move to the collectio
   assert.deepEqual(Object.keys(JSON.parse((db.prepare('SELECT value FROM artwork_settings').get() as {value:string}).value).schedules),['scrub','added']);
   assert.equal(new ArtworkStore(db,vault).collections().revision,3);  // Only once
 });
-test('artwork collections keep the Radarr key sealed and out of the engine config',async()=>{
+test('artwork collections go to the engine config with the arr module’s Radarr address and never its key',async()=>{
   const {db,store}=seeded(),current=store.collections();
   assert.equal(current.definitions,null);
   const value={definitions:[{name:'Halloween',library:'Movies',type:'movie',members:[{tmdb_id:948}],schedule:'10/01-10/31',acquire:true}],franchise:{...current.franchise,sync:true},
-    radarr:{url:'http://radarr.local:7878/',rootFolder:'/movies',qualityProfileId:4,search:true},schedules:current.schedules};
+    radarr:{rootFolder:'/movies',qualityProfileId:4,search:true},schedules:current.schedules};
   let checked:unknown;
-  await store.updateCollections('admin',{value,radarrKey:'radarr-secret-1',expectedRevision:0},async v=>{checked=v;});
-  assert.equal((checked as {radarrKey?:string}).radarrKey,'radarr-secret-1');
-  assert.ok(!(db.prepare('SELECT value FROM artwork_collections').get() as {value:string}).value.includes('radarr-secret-1'));
-  assert.equal(store.collections().radarrKeySet,true);assert.equal(store.collections().radarr.url,'http://radarr.local:7878');
+  await store.updateCollections('admin',{value,expectedRevision:0},async v=>{checked=v;});
+  assert.deepEqual((checked as typeof value).radarr,value.radarr);
   await assert.rejects(store.updateCollections('admin',{value,expectedRevision:0},ok),{code:'REVISION_CONFLICT'});
-  const {radarrKey,...collections}=store.collectionsConfig();assert.equal(radarrKey,'radarr-secret-1');
-  const config=artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},collections);
+  const collections=store.collectionsConfig();
+  assert.equal('radarr' in artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},collections),false);  // Radarr not connected
+  const config=artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},collections,'http://radarr.local:7878');
   assert.equal(config.plex.sync_collections,true);assert.equal(config.plex.franchise_collections,true);assert.equal(config.collections?.length,1);
   assert.equal('automatic_collections' in config,false);  // Nothing set apart: the engine is given none
   const automatic=[{name:'Batman',library:'Movies',kind:'franchise' as const,enabled:false}];
   assert.deepEqual(artworkConfig(store.settings(),store.layouts(),[],{plexUrl:'http://plex.local:32400',cacheDir:'/cache'},{...collections,automatic}).automatic_collections,automatic);
   assert.deepEqual(config.radarr,{url:'http://radarr.local:7878',api_key:'${RADARR_API_KEY}',root_folder:'/movies',search:true,quality_profile_id:4});
-  assert.ok(!JSON.stringify(config).includes('radarr-secret-1'));
   // Collections saved before the franchise switch existed keep making them.
   const {franchises:_,...older}=value.franchise;
   db.prepare('UPDATE artwork_collections SET value=? WHERE id=1').run(JSON.stringify({...value,franchise:older}));

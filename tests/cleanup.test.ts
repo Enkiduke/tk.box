@@ -33,11 +33,11 @@ test('clean up says what it needs before it can run',()=>{
 
 test('clean up keys are sealed and a saved key survives a save without one',()=>{
   const s=store();
-  s.updateConnections('admin',0,{tautulliUrl:'http://tautulli:8181/',sonarrUrl:'',tautulliKey:'abc123'});
-  const view=s.updateConnections('admin',1,{tautulliUrl:'http://tautulli:8181',sonarrUrl:'http://sonarr:8989'});
-  assert.deepEqual(view,{revision:2,tautulliUrl:'http://tautulli:8181',sonarrUrl:'http://sonarr:8989',tautulliKeySet:true,sonarrKeySet:false});
+  s.updateConnections('admin',0,{tautulliUrl:'http://tautulli:8181/',tautulliKey:'abc123'});
+  const view=s.updateConnections('admin',1,{tautulliUrl:'http://tautulli:8181'});
+  assert.deepEqual(view,{revision:2,tautulliUrl:'http://tautulli:8181',tautulliKeySet:true});
   assert.equal(s.connections().tautulliKey,'abc123');
-  assert.throws(()=>s.updateConnections('admin',1,{tautulliUrl:'',sonarrUrl:''}),/changed/);
+  assert.throws(()=>s.updateConnections('admin',1,{tautulliUrl:''}),/changed/);
 });
 
 test('a hold keeps a title longer and the status shows it until the next run',()=>{

@@ -19,10 +19,10 @@ type Library={key:string;title:string;type:string};
 // A franchise or streaming collection set apart from how it's made: turned off, where it shows, or titles taken out (by Plex ID).
 type Automatic={name:string;library:string;kind:'franchise'|'streaming';enabled?:boolean;visibility?:Visibility;exclude?:string[]};
 type Franchise={sync:boolean;franchises:boolean;minItems:number;mode:'sync'|'append';streaming:'off'|'originals'|'available';region:string;recent:boolean;recentMovieDays:number;recentEpisodeDays:number};
-type Radarr={url:string;rootFolder:string;qualityProfileId:number;search:boolean};
+type Radarr={rootFolder:string;qualityProfileId:number;search:boolean};
 type Kept={name:string;library:string;kind:'franchise'|'streaming'|'custom';items:number;rating_key?:string;off?:boolean};
 type Schedules={custom:Scheduled;all:Scheduled;added:Scheduled};
-type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrKeySet:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
+type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrConnected:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
 type Draft={definitions:Definition[];automatic:Automatic[];franchise:Franchise;radarr:Radarr;schedules:Schedules};
 const tabs=[['collections','Collections'],['calendar','Calendar'],['schedules','Schedules'],['settings','Settings']] as const;
 // New collections start out of every Home screen and recommendation row.
@@ -100,7 +100,8 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
             <label>New Episodes: aired in the last (days)<input type="number" min="1" max="3650" value={draft.franchise.recentEpisodeDays} onChange={e=>franchise({recentEpisodeDays:Number(e.target.value)})}/></label></div>}
         </Card>
         <Card title="Radarr downloads" description="For seasonal collections that download missing movies.">
-          {!data.radarr.url&&<p className="muted small">Radarr isn’t connected. Add it in <a href="#admin?section=connections">Admin › Connections</a>.</p>}
+          {!data.radarrConnected&&<p className="muted small">Radarr isn’t connected. Add it in <a href="#admin?section=connections&category=downloads">Admin › Connections</a>.</p>}
+          <label>Root folder<input placeholder="/movies" maxLength={300} value={draft.radarr.rootFolder} onChange={e=>radarr({rootFolder:e.target.value})}/><small>Use the path as Radarr sees it.</small></label>
           <QualityProfile value={draft.radarr.qualityProfileId} set={qualityProfileId=>radarr({qualityProfileId})}/>
           <Switch label="Search for movies when added" checked={draft.radarr.search} onChange={v=>radarr({search:v})}/>
         </Card>
