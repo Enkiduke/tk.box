@@ -60,7 +60,6 @@ export class RequestStore {
       return row;
     });
   }
-  importedSeerrIds() { return new Set((prepared(this.db, 'SELECT seerr_id FROM requests WHERE seerr_id IS NOT NULL').all() as { seerr_id: number }[]).map(r => r.seerr_id)); }
   get(id: number) { return this.rows(prepared(this.db, 'SELECT * FROM requests WHERE id=?').all(id) as Raw[])[0]; }
   insert(input: NewRequest) {
     const now = this.now(), status = input.status ?? 'queued', created = input.createdAt ?? now;

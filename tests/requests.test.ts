@@ -6,7 +6,6 @@ import { ArrFulfiller, FulfilError, type FulfilKind, type FulfilTarget, type Ful
 import { RequestAvailability } from '../apps/server/src/services/request-availability.js';
 import { Requests, requestItem } from '../apps/server/src/services/requests.js';
 import type { PlexAvailability } from '../apps/server/src/providers/plex.js';
-import { importSeerr } from '../apps/server/src/services/seerr-import.js';
 
 const connected = () => ({ url: 'http://arr.test', key: 'key' });
 const me = { accountId: '11', name: 'Casey' }, other = { accountId: '22', name: 'Sam' };
@@ -195,35 +194,40 @@ test('ArrFulfiller adds a series with only the chosen seasons monitored, and mon
   await assert.rejects(arr.add({ ...target, tvdbId: undefined }), (e: FulfilError) => e.permanent);
 });
 
-test('the Seerr import copies requests once, maps requesters by Plex id, and skips declined ones', async () => {
+test('a request imported from Seerr is found in Sonarr by the sweep and followed', async () => {
   const { requests, store, fulfiller } = setup();
-  const seerr = [
-    { id: 1, status: 2, type: 'movie', createdAt: '2026-01-02T03:04:05.000Z', media: { tmdbId: 603, status: 5, mediaAddedAt: '2026-01-05T00:00:00.000Z' }, requestedBy: { plexId: 11, displayName: 'Casey' } },
-    { id: 2, status: 2, type: 'tv', createdAt: '2026-02-01T00:00:00.000Z', media: { tmdbId: 1399, tvdbId: 121361, status: 3 }, seasons: [{ seasonNumber: 1 }, { seasonNumber: 2 }], requestedBy: { plexId: 22, displayName: 'Sam' } },
-    { id: 3, status: 3, type: 'movie', media: { tmdbId: 604, status: 1 }, requestedBy: { plexId: 22 } },
-    { id: 4, status: 1, type: 'movie', media: { tmdbId: 605, status: 1 }, requestedBy: { email: 'local@seerr' } }
-  ];
-  const asked: string[] = [];
-  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input)); asked.push(`${url.searchParams.get('skip')} ${(init?.headers as Record<string, string>)['X-Api-Key']}`);
-    if ((init?.headers as Record<string, string>)['X-Api-Key'] !== 'seerr-key') return new Response('', { status: 401 });
-    return Response.json({ pageInfo: { results: seerr.length }, results: url.searchParams.get('skip') === '0' ? seerr : [] });
-  }) as typeof fetch;
-  const tmdb = { get: async (path: string) => tmdbTitles[path] };
-  await assert.rejects(importSeerr(store, tmdb, 'http://seerr.test', 'wrong', transport), { code: 'SEERR_KEY_REJECTED' });
-  assert.deepEqual(await importSeerr(store, tmdb, 'http://seerr.test/', 'seerr-key', transport), { imported: 3, skipped: 0, declined: 1, withoutPlexId: 1 });
-  requests.imported();
-  const [movie, show, pending] = store.list({ page: 1, size: 10 }).items.sort((a, b) => a.seerrId! - b.seerrId!);
-  assert.deepEqual([movie!.status, movie!.title, movie!.accountId, movie!.createdAt, movie!.availableAt], ['available', 'The Matrix', '11', Date.parse('2026-01-02T03:04:05.000Z'), Date.parse('2026-01-05T00:00:00.000Z')]);
-  assert.deepEqual([show!.status, show!.tvdbId, show!.accountName, show!.seasons.map(s => s.season)], ['requested', 121361, 'Sam', [1, 2]]);
-  assert.deepEqual([pending!.status, pending!.accountId, pending!.accountName, pending!.title], ['queued', undefined, 'local@seerr', 'TMDB 605']);
-  assert.equal(requests.labels().get('show:tmdb:1399'), 'requested');
-  // Run again: nothing new.
-  assert.deepEqual(await importSeerr(store, tmdb, 'http://seerr.test', 'seerr-key', transport), { imported: 0, skipped: 3, declined: 1, withoutPlexId: 0 });
-  // The sweep sends the request Seerr held for approval, and finds the imported show in Sonarr to follow it.
+  const show = store.insert({ kind: 'show', tmdbId: 1399, tvdbId: 121361, title: 'Game of Thrones', accountId: '22', accountName: 'Sam', status: 'requested', seerrId: 2, seasons: [{ season: 1 }] });
   fulfiller.known.set(1399, 42);
   fulfiller.queueState = { movies: new Set(), series: new Map([[42, new Set<number | undefined>([1])]]) };
   await requests.sweep();
-  assert.equal(store.get(pending!.id)!.status, 'requested');
-  assert.equal(store.get(show!.id)!.arrId, 42); assert.equal(store.get(show!.id)!.status, 'downloading');
+  assert.equal(store.get(show.id)!.arrId, 42); assert.equal(store.get(show.id)!.status, 'downloading');
+});
+
+test('a title\'s request state marks each regular season available, downloading or requested, and the rest open', async () => {
+  const { requests, fulfiller, plex } = setup();
+  await plex({ titles: [{ kind: 'show', ratingKey: '9', tmdbId: 1399 }], seasons: [{ showKey: '9', season: 1 }], complete: true });
+  const row = await requests.create(me, { kind: 'show', tmdb: 1399, seasons: [2] });
+  fulfiller.queueState = { movies: new Set(), series: new Map([[row.arrId!, new Set<number | undefined>([2])]]) };
+  await requests.sweep();
+  const state = await requests.titleState('show', 1399, 121361);
+  assert.deepEqual(state.seasons.map(s => [s.number, s.status]), [[1, 'available'], [2, 'downloading'], [3, undefined]]);
+  assert.equal(state.requestable, true);
+  assert.equal(requests.plexKey('show', 1399), '9');
+  assert.deepEqual(await requests.titleState('movie', 603), { requestable: true, seasons: [] });
+  await requests.create(me, { kind: 'movie', tmdb: 603 });
+  assert.equal((await requests.titleState('movie', 603)).requestable, false);
+});
+
+test('Clean Up gets the requests on the server, and a title it deleted has its requests removed', async () => {
+  const { requests, store, plex } = setup();
+  await plex({ titles: [{ kind: 'movie', ratingKey: '1', tmdbId: 603, addedAt: 500 }], seasons: [], complete: true });
+  const movie = store.insert({ kind: 'movie', tmdbId: 603, title: 'The Matrix', year: 1999, accountId: '11', accountName: 'Casey', status: 'available', availableAt: 500000 });
+  store.insert({ kind: 'show', tmdbId: 1399, tvdbId: 121361, title: 'Game of Thrones', accountName: 'Local', status: 'partial', seasons: [{ season: 1, availableAt: 600000 }, { season: 2 }] });
+  await requests.create(other, { kind: 'show', tmdb: 1399, seasons: [3] });
+  assert.deepEqual(requests.forCleanup(), [
+    { id: movie.id, kind: 'movie', tmdb: 603, tvdb: null, title: 'The Matrix', year: 1999, requester_plex_id: 11, available_at: new Date(500000).toISOString(), seasons: [] },
+    { id: 2, kind: 'tv', tmdb: 1399, tvdb: 121361, title: 'Game of Thrones', year: null, requester_plex_id: null, available_at: null, seasons: [1, 2] }]);
+  requests.removedByCleanup([{ kind: 'movie', tmdb: 603 }]);
+  assert.equal(store.get(movie.id)!.status, 'removed'); assert.equal(requestItem(store.get(movie.id)!).removedBy, 'cleanup');
+  assert.equal(requests.forCleanup().length, 1);
 });

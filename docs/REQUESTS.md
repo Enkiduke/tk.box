@@ -1,6 +1,6 @@
 # Requests: replacing Seerr
 
-Status: approved 2026-11-14. Steps 1–3 (the `arr` module, the `requests` module, the Seerr import and Admin › Requests) are built; steps 4–7 are not.
+Status: approved 2026-11-14. Steps 1–5 are built (arr, requests, Admin › Requests, Explore, Clean Up). The Seerr import was run on 2026-11-14 and then removed. Steps 6–7 are not done.
 
 ## Decisions (from the interview)
 
@@ -204,9 +204,9 @@ Each step is a commit that typechecks, with its targeted tests.
    - The config carries the requests; the Python `SeerrClient` and `delete_from_seerr` go; rows are marked removed after a job; the `drop-seerr` migration; copy.
    - Tests: `cleanup.test.ts` and the Python purge tests.
 6. **You:** run the import in Admin › Requests, check Explore labels, a movie and a show request, My requests, and a Clean Up dry run.
-7. **Remove Seerr:**
+7. **Remove Seerr and Tautulli:**
    - Code and settings:
-     - `providers/seerr.ts` and `services/seerr-import.ts` with its route.
+     - `providers/seerr.ts` (`services/seerr-import.ts` and its route are already gone).
      - The Seerr fields in `explore-store.ts` and its settings routes, plus an explore migration `drop-seerr` that deletes the `explore_settings` row.
      - `SEERR_*` errors, `ExploreSeerr*` contract types, `transports.seerr` in `buildApp`/`app.ts`.
      - Seerr in the read-only messages (`index.ts`, `errors.ts`) and `remote-json.ts`.
@@ -214,6 +214,20 @@ Each step is a commit that typechecks, with its targeted tests.
      - The fixtures in `scripts/preview-ui.ts`.
      - The README, `docs/CLEANUP.md`, MODULES-HANDOFF (module list, bus table) and the comments (`explore.css`, `plex-discover.ts`, `identity.ts`).
    - Check: `grep -ri seerr` matches nothing except "Overseerr" in `library.tsx`'s logo credit and this doc.
+   - **Tautulli** (added 2026-11-14; reviewed in `docs/TAUTULLI-REVIEW.md`, whose section 3 is the order to follow:
+     import Tautulli's history once while it's connected, then give the purge script watches in its run config,
+     switch the Python reader, a dry run by you, remove the connection, then comments and docs). Clean Up reads watch history from tk.box's
+     own watch history (Activity / `history_*` tables, which `purge_support/native_history.py` already compares
+     against in dry runs) instead of Tautulli, and the Tautulli connection goes.
+     - Clean Up: `purge_support/history.py` (TautulliClient, including its added-date fallback), the
+       `TAUTULLI_API_KEY` secret, `tautulliUrl`/`tautulliKey` in `cleanup-store.ts`, the Tautulli line in
+       `cleanupMissing`, and `exempt_user_ids` (Plex account ids, as Tautulli showed them).
+     - Other users of Tautulli to check: `activity-api.ts` / `modules/activity.ts`, `plex-notifications.ts`,
+       `connection-health.ts`, `artwork-schedule.ts`, `artwork-store.ts`, `apps/artwork/engine_common.py` and
+       `artwork_engine.py`, Admin › Connections' card, `cleanup-admin.tsx`.
+     - Risk: tk.box's history only covers watches since it started recording (and Plex's own apps through the playback
+       monitor). Rules anchored on "last watched" may delete sooner for titles last watched before that.
+   - Check: `grep -ri tautulli` matches nothing outside this doc.
 
 ## Open risks
 - **Matching on Plex account ids.** `account_id` is assumed to be the plex.tv numeric id that Seerr calls `plexId` and Clean Up's `exempt_user_ids` use. Check this on the real database before the import.

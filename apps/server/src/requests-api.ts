@@ -5,8 +5,6 @@ import { authorize, viewer } from './modules/access.js';
 import { requestSettings, requestStatuses, type RequestStore } from './persistence/requests-store.js';
 import { requestItem, type Requests } from './services/requests.js';
 import type { Fulfiller } from './providers/arr-fulfiller.js';
-import type { TmdbTitles } from './providers/tmdb-titles.js';
-import { importSeerr } from './services/seerr-import.js';
 
 const kind = z.enum(['movie', 'show']);
 const id = z.object({ id: z.coerce.number().int().positive() }).strict();
@@ -14,9 +12,7 @@ const override = { profileId: z.number().int().positive().optional(), rootFolder
 
 // Requests: any viewer may request and see and cancel their own; Admin › Requests lists, removes and retries every one,
 // and sets where requests go in Radarr and Sonarr. Only administrators may pick a profile (4K is a profile), folder or tags.
-const origin = z.string().trim().max(300).url().refine(value => { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; }, 'Use an http(s) address');
-
-export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller, tmdb: Pick<TmdbTitles, 'get'>, seerrTransport?: typeof fetch) {
+export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller) {
   app.post('/api/v1/requests', { config: { access: 'viewer', rateLimit: { max: 20, timeWindow: 60000 } } }, async request => {
     const input = z.object({ kind, tmdb: z.number().int().positive(), seasons: z.array(z.number().int().positive()).min(1).max(100).optional(), ...override }).strict().parse(request.body);
     const { kind: media, tmdb, seasons, profileId, rootFolder, tags } = input, extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined;
@@ -51,13 +47,6 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   app.get('/api/v1/admin/requests/options', { config: { access: 'admin' } }, async request => {
     const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId, rootFolder, tags } = store.settings()[media];
     return { ...await fulfiller.options(media), defaults: { profileId, rootFolder, tags } } satisfies RequestOptions;
-  });
-  // Seerr's requests, copied once before Seerr goes. The address and key are not saved.
-  app.post('/api/v1/admin/requests/import-seerr', { config: { access: 'admin', rateLimit: { max: 5, timeWindow: 60000 } } }, async request => {
-    const { url, apiKey } = z.object({ url: origin, apiKey: z.string().trim().min(1).max(200).regex(/^[\w=+/-]+$/) }).strict().parse(request.body);
-    const result = await importSeerr(store, tmdb, url, apiKey, seerrTransport);
-    requests.imported();
-    return result;
   });
   app.get('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async () => store.settings() satisfies RequestSettings);
   app.put('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async request => {

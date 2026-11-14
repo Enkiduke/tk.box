@@ -1,7 +1,8 @@
-"""Purge available Seerr requests according to watch history and retention policy.
+"""Purge available requests according to watch history and retention policy.
 
 tk.box runs this as ``python purge_requests.py <config.json> [--dry-run]`` (Admin > Server > Clean Up). The config is
-written by tk.box from its settings; the Plex token and the service keys arrive in the environment. ``--dry-run``
+written by tk.box from its settings and holds tk.box's available requests; the Plex token and the service keys arrive
+in the environment. ``--dry-run``
 previews a run whatever the config says. Output goes to stdout, which tk.box keeps with the job.
 """
 
@@ -18,7 +19,7 @@ import requests
 from plexapi.server import PlexServer
 
 from purge_support.actions import delete_whole_item, process_seasons
-from purge_support.api import ApiError, ArrClient, HttpClient, SeerrClient, positive_id
+from purge_support.api import ApiError, ArrClient, HttpClient, positive_id
 from purge_support.config import ConfigError, Settings
 from purge_support.history import TautulliClient
 from purge_support.native_history import NativeHistoryPreview
@@ -33,60 +34,49 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class MediaRequest:
     request_id: int
-    requestor_id: int
+    requestor_id: int | None
     added_at: datetime | None
     media: dict
 
 
 def group_requests(requests_data):
-    """Group shared media before deciding whether any request permits deletion."""
+    """Group shared media before deciding whether any request permits deletion. Each request is tk.box's record (the
+    config's `requests`), already validated."""
     groups = {}
     for request in requests_data:
-        media = request.get("media")
-        if not isinstance(media, dict) or media.get("mediaType") not in {"movie", "tv"}:
-            raise ApiError("Seerr request has missing or unsupported media information")
-        try:
-            key = (media["mediaType"], positive_id(media.get("tmdbId")))
-        except (TypeError, ValueError):
-            raise ApiError("Seerr request has an invalid TMDB ID") from None
-        groups.setdefault(key, []).append(request)
+        groups.setdefault((request["kind"], positive_id(request["tmdb"])), []).append(request)
     return groups
 
 
 def parse_requests(raw_requests):
     parsed = []
     for raw in raw_requests:
-        requestor = raw.get("requestedBy")
-        if not isinstance(requestor, dict):
-            raise ValueError("Missing requestor information")
         try:
-            added_at = parse_added_at(raw["media"].get("mediaAddedAt"))
+            added_at = parse_added_at(raw.get("available_at"))
         except MissingAddedAtError:
             added_at = None
-        parsed.append(MediaRequest(positive_id(raw.get("id")), positive_id(requestor.get("plexId")),
-                                   added_at, raw["media"]))
+        requestor = raw.get("requester_plex_id")
+        parsed.append(MediaRequest(positive_id(raw["id"]), positive_id(requestor) if requestor is not None else None, added_at, raw))
     return parsed
 
 
 def resolve_added_dates(requests_group, item, history):
-    """Use one validated Tautulli date for requests missing their Seerr date."""
+    """Use one validated Tautulli date for requests missing their available date."""
     missing = [request.request_id for request in requests_group if request.added_at is None]
     if not missing:
         return requests_group
     try:
         added_at = history.added_at(item.ratingKey)
     except ApiError as exc:
-        raise MissingAddedAtError(f"Seerr mediaAddedAt is missing and Tautulli added_at is unavailable: {exc}") from None
+        raise MissingAddedAtError(f"The available date is missing and Tautulli added_at is unavailable: {exc}") from None
     logger.warning("Using Tautulli added_at=%s for '%s' (Plex ratingKey=%s, request IDs %s) "
-                   "because Seerr mediaAddedAt is missing", added_at.isoformat(), item.title, item.ratingKey, missing)
+                   "because the available date is missing", added_at.isoformat(), item.title, item.ratingKey, missing)
     return [replace(request, added_at=added_at) if request.added_at is None else request for request in requests_group]
 
 
-def media_title_and_year(media_type, details):
-    title = details.get("title") if media_type == "movie" else details.get("name") or details.get("title")
-    date = details.get("releaseDate") if media_type == "movie" else details.get("firstAirDate")
-    year = int(date[:4]) if isinstance(date, str) and date[:4].isdigit() else None
-    return title or "Unknown Title", year
+def media_title_and_year(record):
+    year = record.get("year")
+    return record.get("title") or "Unknown Title", year if isinstance(year, int) and not isinstance(year, bool) else None
 
 
 def load_arr_data(client, needed, tags_needed):
@@ -101,23 +91,17 @@ def load_arr_data(client, needed, tags_needed):
         return None, None
 
 
-def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, sonarr, history,
+def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, history,
                           arr_data, now, report, processed_keys, context, native_preview=None):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
     media_type, tmdb_id = key
     media = requests_group[0].media
-    tvdb_ids = {positive_id(request.media["tvdbId"]) for request in requests_group if request.media.get("tvdbId")}
+    tvdb_ids = {positive_id(request.media["tvdb"]) for request in requests_group if request.media.get("tvdb")}
     if len(tvdb_ids) > 1:
         raise ApiError("Requests for the same media contain conflicting TVDB IDs")
     tvdb_id = next(iter(tvdb_ids), None)
-    try:
-        details = seerr.details(media_type, tmdb_id)
-    except ApiError as exc:
-        logger.warning("Seerr details unavailable for %s TMDB %s: %s; using request metadata",
-                       media_type, tmdb_id, exc)
-        details = media
-    title, year = media_title_and_year(media_type, details)
+    title, year = media_title_and_year(media)
     context["title"] = title
     hold = hold_key(media_type, tmdb_id)
     libraries = settings.movie_libraries if media_type == "movie" else settings.tv_libraries
@@ -168,7 +152,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
             return
 
     resolved_requests = resolve_added_dates(requests_group, item, history)
-    watch = history.watch_status(item, media_type, {request.requestor_id for request in requests_group})
+    watch = history.watch_status(item, media_type, {request.requestor_id for request in requests_group if request.requestor_id is not None})
     rule = rule_for_requests(resolved_requests, watch, settings)
     held = held_until(rule, settings, hold)
     due_at = held or rule.deletion_date
@@ -179,8 +163,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
     if now >= due_at:
         logger.warning("DELETE Candidate: '%s'. %s: %s", item.title, rule.name, rule.reason)
         add_entry(report.delete_summary, item, f"{item.title} [{rule.name}]")
-        delete_whole_item(item, media_type, arr_item, [request.media.get("id") for request in requests_group],
-                          settings, arr, seerr, report)
+        delete_whole_item(item, media_type, arr_item, settings, arr, report)
         add_status(report, item, kind, "due" if settings.dry_run else "deleted", rule=rule, key=hold)
     else:
         report.kept += 1
@@ -198,7 +181,7 @@ def process_request_group(key, raw_requests, *, settings, plex, seerr, radarr, s
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, seerr, radarr, sonarr, history, now=None, native_preview=None):
+def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -209,7 +192,7 @@ def run(settings, plex, seerr, radarr, sonarr, history, now=None, native_preview
             if library.type != expected:
                 raise ConfigError(f"Plex library '{library.title}' must have type '{expected}'")
             library_keys.append(library.key)
-    requests_data = seerr.available_requests()
+    requests_data = list(settings.requests)
     report.processed = len(requests_data)
     groups = group_requests(requests_data)
     logger.info("Processing %s requests across %s media items", len(requests_data), len(groups))
@@ -228,7 +211,7 @@ def run(settings, plex, seerr, radarr, sonarr, history, now=None, native_preview
             add_status(report, context.get("item"), "movie" if key[0] == "movie" else "show", "error",
                        title=context.get("title") or f"TMDB {key[1]}", reason=reason, key=hold_key(*key))
         try:
-            process_request_group(key, raw_requests, settings=settings, plex=plex, seerr=seerr,
+            process_request_group(key, raw_requests, settings=settings, plex=plex,
                                   radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,
                                   now=now, report=report, processed_keys=processed_keys, context=context, native_preview=native_preview)
         except MissingAddedAtError as exc:
@@ -282,7 +265,7 @@ def main(argv=None):
             plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
             native_preview = (NativeHistoryPreview(args.compare_native_history, getattr(plex, "machineIdentifier", ""), args.status)
                               if settings.dry_run and args.compare_native_history else None)
-            report = run(settings, plex, SeerrClient(http, settings.seerr),
+            report = run(settings, plex,
                          ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"),
                          TautulliClient(http, settings.tautulli, settings.exempt_user_ids), native_preview=native_preview)
         if args.status:

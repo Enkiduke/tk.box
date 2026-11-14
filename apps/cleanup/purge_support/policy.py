@@ -8,7 +8,7 @@ from .config import Settings
 
 
 class MissingAddedAtError(ValueError):
-    """Seerr did not provide the added-date anchor needed to evaluate a request."""
+    """The request has no added-date anchor (and Tautulli could not supply one)."""
 
 
 def plex_datetime(value):
@@ -33,9 +33,9 @@ class RetentionRule:
 
 def parse_added_at(value):
     if value is None or (isinstance(value, str) and not value.strip()):
-        raise MissingAddedAtError("Seerr mediaAddedAt date is missing")
+        raise MissingAddedAtError("The request's available date is missing")
     if not isinstance(value, str):
-        raise ValueError("mediaAddedAt must be an ISO 8601 date string")
+        raise ValueError("available_at must be an ISO 8601 date string")
     result = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     if result.tzinfo is None:
         result = result.replace(tzinfo=timezone.utc)
@@ -43,7 +43,8 @@ def parse_added_at(value):
 
 
 def retention_rule(added_at: datetime, requestor_id: int, watch: WatchStatus, settings: Settings):
-    if requestor_id in settings.exempt_user_ids:
+    # A request with no Plex requester (an old local Seerr account) is never exempt and has no watches of its own.
+    if requestor_id is not None and requestor_id in settings.exempt_user_ids:
         exempt_dates = [watch.last_watched_by_user[user_id] for user_id in settings.exempt_user_ids
                         if watch.last_watched_by_user[user_id] is not None]
         if exempt_dates:
@@ -54,7 +55,7 @@ def retention_rule(added_at: datetime, requestor_id: int, watch: WatchStatus, se
             anchor = watch.last_watched_by_anyone or added_at
             days, name = settings.days_after_any_watch_exempt, "Rule 3"
             reason = f"Exempt request without exempt-user watches, anchored to {anchor.date()}"
-    elif watch.last_watched_by_user[requestor_id] is not None:
+    elif requestor_id is not None and watch.last_watched_by_user.get(requestor_id) is not None:
         anchor = watch.last_watched_by_anyone
         if anchor is None:
             raise ValueError("Requestor watch exists without global watch history")

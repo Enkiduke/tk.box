@@ -55,7 +55,7 @@ the targeted tests pass.
 | `plex.notifications.connecting` | plex-notifications | artwork (`schedule.notificationLibraries`) |
 | `plex.playback.states` / `plex.playback.connection` | plex-notifications | watch-history (monitor) |
 | `session.signed-out` | sign-in (logout) | watch-history, activity, live-sessions, vod-playback |
-| `requests.changed` | requests (every row change) | client-events (`requests` to that account's pages only) |
+| `requests.changed` | requests (every row change) | client-events (`requests` to that account's pages only), explore (drops cached details) |
 
 `app.ts` subscribes the two Plex cache resets right after creating the bus, so they run before any module's listener
 for the same event (pages told to reload then read Plex anew).
@@ -85,15 +85,15 @@ for the same event (pages told to reload then read Plex anew).
 10a. **`requests.ts`**: RequestStore, ArrFulfiller, RequestAvailability (Plex index, owner's grant), Requests (create,
     cancel, retry, the 60 s sweep) and the `/api/v1/requests` and `/api/v1/admin/requests` routes. Deps `{arr, titles}`.
     API `{requests, store}`. See docs/REQUESTS.md.
-11. **`explore.ts`**: ExploreStore and routes. Deps `{accountToken, titles, transports}`. API `{store}` (cleanup reads
+11. **`explore.ts`**: ExploreStore and routes. Deps `{accountToken, titles, requests, transports}`. API `{store}` (cleanup reads
     `store.seerr()`).
 12. **`plex-notifications.ts`**: PlexNotifications, with no deps: it only emits and listens on the bus.
-13. **`cleanup.ts`** (default admin): CleanupStore, CleanupEngine and routes. Deps `{artwork, arr, seerr}`. API
+13. **`cleanup.ts`** (default admin): CleanupStore, CleanupEngine and routes. Deps `{artwork, arr, requests}`. API
     `{services}`.
 14. **`calendar.ts`**: the calendar route. Deps `{connections, titles}`.
 15. **`sign-in.ts`**: setup (`registerSetup`, all `public`), Plex sign-in start/status and logout (`public`),
     `/api/v1/me`, `/api/v1/libraries`, `/api/v1/media/:id` (viewer), and the session reaper.
-16. **`admin.ts`** (default admin): metrics, Admin › Connections keys, Admin › Admins (`owner`), playback settings.
+16. **`admin.ts`** (default admin): metrics, Admin › Connections keys, Admin › Users (`owner`), playback settings.
     Deps `{admins, settings, metrics, identity, customBuffer}`.
 17. **`web.ts`** (default public): `/health` and the built web files.
 

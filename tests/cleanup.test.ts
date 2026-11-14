@@ -4,10 +4,12 @@ import {randomBytes} from 'node:crypto';
 import {CleanupStore} from '../apps/server/src/persistence/cleanup-store.js';
 import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {Vault} from '../apps/server/src/security/vault.js';
+import {migrate} from '../apps/server/src/persistence/migrate.js';
+import {cleanupMigrations} from '../apps/server/src/modules/migrations/cleanup.js';
 import {cleanupCollections,cleanupConfig,cleanupMissing,holdUntil,withHolds,withKept,type CleanupServices,type CleanupTitle} from '../apps/server/src/services/cleanup-engine.js';
 
 const store=()=>new CleanupStore(openMigratedDatabase(':memory:'),new Vault(randomBytes(32)));
-const services:CleanupServices={seerr:{url:'http://seerr:5055',apiKey:'seerr-key'},tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
+const services:CleanupServices={tautulli:{url:'http://tautulli:8181',key:'tautulli-key'},radarr:{url:'',key:undefined},sonarr:{url:'',key:undefined}};
 
 test('clean up starts as a preview and writes the script’s config without keys',()=>{
   const {revision:_,...settings}=store().settings();
@@ -83,4 +85,18 @@ test('a kept show shows protected, every season, until a later run',()=>{
   assert.equal(kept.items[0]!.reason,'Tagged keep');
   // A run after the keep reports the tag itself.
   assert.equal(withKept({...view,updated:'2026-10-21T00:00:00Z'},{'tv:1':{tag:'keep',by:'1',at}}).items[0]!.status,'leaving');
+});
+
+test('the script is given tk.box’s requests and no Seerr, and settings saved with Remove from Seerr lose it',()=>{
+  const {revision:_,...settings}=store().settings();
+  const requests=[{id:1,kind:'movie' as const,tmdb:603,tvdb:null,title:'The Matrix',year:1999,requester_plex_id:11,available_at:'2026-01-05T00:00:00.000Z',seasons:[]}];
+  const config=cleanupConfig(settings,services,{plexUrl:'',poster:''},{},[],requests);
+  assert.deepEqual(config.requests,requests);
+  assert.ok(!/seerr/i.test(JSON.stringify(config)));
+  const db=openMigratedDatabase(':memory:');
+  db.prepare("INSERT INTO cleanup_config VALUES('settings',3,?)").run(JSON.stringify({...settings,deleteFromSeerr:true}));
+  assert.equal('deleteFromSeerr' in new CleanupStore(db,new Vault(randomBytes(32))).settings(),false);
+  db.prepare("DELETE FROM schema_migrations WHERE owner='cleanup' AND name='drop-seerr'").run();
+  migrate(db,'cleanup',cleanupMigrations);
+  assert.equal(JSON.parse((db.prepare("SELECT value FROM cleanup_config WHERE name='settings'").get() as {value:string}).value).deleteFromSeerr,undefined);
 });

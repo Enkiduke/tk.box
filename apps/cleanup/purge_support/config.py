@@ -56,6 +56,27 @@ def holds(config):
             for key, until in parsed.items()}
 
 
+def _positive(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def request_list(config):
+    """tk.box's available and partly available requests: id, kind (movie or tv), tmdb, tvdb, title, year,
+    requester_plex_id (null when the requester had no Plex account), available_at (ISO 8601 or null) and seasons."""
+    value = config.get("requests", [])
+    if not isinstance(value, list):
+        raise ConfigError("requests must be a list")
+    for row in value:
+        if (not isinstance(row, Mapping) or not _positive(row.get("id")) or row.get("kind") not in {"movie", "tv"}
+                or not _positive(row.get("tmdb")) or (row.get("tvdb") is not None and not _positive(row.get("tvdb")))
+                or not isinstance(row.get("title"), str)
+                or (row.get("requester_plex_id") is not None and not _positive(row.get("requester_plex_id")))
+                or (row.get("available_at") is not None and not isinstance(row.get("available_at"), str))
+                or not isinstance(row.get("seasons", []), list) or not all(_positive(s) for s in row.get("seasons", []))):
+            raise ConfigError("Each request needs an id, kind, TMDB id and title, with valid optional fields")
+    return tuple(value)
+
+
 COLLECTION_KINDS = ("franchise", "streaming", "custom", "seasonal", "other")
 
 
@@ -103,7 +124,6 @@ class Service:
 @dataclass(frozen=True)
 class Settings:
     plex: Service
-    seerr: Service
     tautulli: Service
     radarr: Service
     sonarr: Service
@@ -113,7 +133,6 @@ class Settings:
     dry_run: bool = True
     delete_from_radarr: bool = False
     delete_from_sonarr: bool = False
-    delete_from_seerr: bool = False
     days_after_watched: int = 30
     days_after_unwatched: int = 60
     days_after_any_watch_exempt: int = 90
@@ -134,6 +153,8 @@ class Settings:
     http_timeout_seconds: int = 30
     # Titles an administrator chose to keep longer (Clean Up > Status): hold key to the date kept until.
     holds: Mapping[str, datetime] = field(default_factory=dict)
+    # tk.box's available requests (see request_list), the titles a run looks at.
+    requests: tuple[Mapping, ...] = ()
 
     @property
     def timeout(self):
@@ -160,14 +181,13 @@ class Settings:
                 raise ConfigError(f"{name} must hold Plex library IDs")
         poster = text(config, "leaving_soon_poster")
         settings = cls(
-            plex=service("plex", "PLEX_TOKEN"), seerr=service("seerr", "SEERR_API_KEY"),
+            plex=service("plex", "PLEX_TOKEN"),
             tautulli=service("tautulli", "TAUTULLI_API_KEY"),
             radarr=service("radarr", "RADARR_API_KEY"), sonarr=service("sonarr", "SONARR_API_KEY"),
             movie_libraries=text_list(config, "movie_libraries"), tv_libraries=text_list(config, "tv_libraries"),
             dry_run=dry_run or boolean(config, "dry_run", default=True),
             delete_from_radarr=boolean(config, "delete_from_radarr"),
             delete_from_sonarr=boolean(config, "delete_from_sonarr"),
-            delete_from_seerr=boolean(config, "delete_from_seerr"),
             days_after_watched=integer(config, "days_after_watched", default=30),
             days_after_unwatched=integer(config, "days_after_unwatched", default=60),
             days_after_any_watch_exempt=integer(config, "days_after_any_watch_exempt", default=90),
@@ -186,12 +206,13 @@ class Settings:
             leaving_soon_days=integer(config, "leaving_soon_days", default=7),
             http_timeout_seconds=integer(config, "http_timeout_seconds", default=30, minimum=1),
             holds=holds(config),
+            requests=request_list(config),
         )
         settings.validate()
         return settings
 
     def validate(self):
-        for name, service in (("Plex", self.plex), ("Seerr", self.seerr), ("Tautulli", self.tautulli)):
+        for name, service in (("Plex", self.plex), ("Tautulli", self.tautulli)):
             service.validate(name, required=True)
         self.radarr.validate("Radarr", required=self.delete_from_radarr)
         self.sonarr.validate("Sonarr", required=self.delete_from_sonarr)

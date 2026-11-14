@@ -126,10 +126,9 @@ export const tmdbExploreRows = [...streamingRows, 'top-picks', 'because-1', 'bec
 export type TmdbExploreRow = typeof tmdbExploreRows[number];
 export type ExploreWatchProvider = {id: number; name: string; logoUrl?: string};
 export type ExploreWatchProviders = {regions: {code: string; name: string}[]; providers: ExploreWatchProvider[]; defaults: number[]};
-// Seerr's view of a title on the media server: available, partly available, or requested (including being downloaded).
-export type ExploreStatus = 'available' | 'partial' | 'requested';
 // tk.box's own requests (docs/REQUESTS.md). A title's label: on the server, partly, being downloaded, or asked for.
 export type RequestLabel = 'available' | 'partial' | 'downloading' | 'requested';
+export type ExploreStatus = RequestLabel;
 export type RequestStatus = 'queued' | 'requested' | 'downloading' | 'partial' | 'available' | 'failed' | 'removed';
 export type RequestItem = { id: number; kind: 'movie' | 'show'; tmdbId: number; title: string; year?: number; status: RequestStatus; statusAt: number; createdAt: number;
   seen: boolean; seasons: { season: number; available: boolean }[]; accountName: string; error?: string; removedBy?: string };
@@ -187,13 +186,13 @@ export type ExploreSources = {
   plex: boolean;
   // Sources shown, in the administrator's order (whether or not each is set up).
   order: ExploreBrowseSource[];
-  // `statuses`: Plex titles carry Seerr's labels (needs the Seerr API key).
-  seerr: { configured: boolean; statuses: boolean };
+  // Whether movies (Radarr) and shows (Sonarr) can be requested.
+  requests: { movie: boolean; show: boolean };
   tmdb: { configured: boolean };
 };
 export type ExploreDetails = {
   item: ExploreItem; genres: string[]; tagline?: string; cast: string[]; network?: string; contentRating?: string;
-  // The facts Seerr lists beside a title. `status` is TMDB's (Ended, Returning Series, Released…), dates are YYYY-MM-DD.
+  // The facts listed beside a title. `status` is TMDB's (Ended, Returning Series, Released…), dates are YYYY-MM-DD.
   status?: string; released?: string; language?: string; countries: { code?: string; name: string; flagUrl?: string }[]; studios: string[];
   ratings: ExternalRating[]; providers: { name: string; logoUrl?: string }[];
   links: { site: 'tmdb' | 'tvdb' | 'imdb' | 'rottentomatoes'; url: string }[];
@@ -203,8 +202,9 @@ export type ExploreDetails = {
   matchedLibraryId?: string;
   // Plex Discover watchlist state; undefined when Discover does not know the title.
   watchlisted?: boolean;
-  // What is still open to request (4K only when Seerr has 4K on). The viewer's own permissions are checked when they request.
-  seerr?: { requestable: boolean; requestable4k: boolean; seasons: ExploreSeason[]; seasons4k: ExploreSeason[]; status4k?: ExploreStatus };
+  // What is still open to request: the movie, or each regular season with its state. Absent when Radarr (movies) or
+  // Sonarr (shows) isn't connected, or TMDB doesn't know the title.
+  request?: { requestable: boolean; seasons: ExploreSeason[] };
 };
 // The viewer's Seerr account, read only when they go to request (it signs them in to Seerr with their Plex account).
 export type ExploreSeerrAccount = { user?: string; canRequest: { movie: boolean; show: boolean }; fourK: { movie: boolean; show: boolean };

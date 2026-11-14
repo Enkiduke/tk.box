@@ -14,7 +14,7 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
     const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query),s=services();
     const set=(c:{url:string;key?:string})=>!!(c.url&&c.key);
     return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(!!query.recheck),missing:engine.missing(),
-      connected:{seerr:!!(s.seerr?.url&&s.seerr.apiKey),tautulli:set(s.tautulli),radarr:set(s.radarr),sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
+      connected:{tautulli:set(s.tautulli),radarr:set(s.radarr),sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
   });
   app.put('/api/v1/admin/cleanup/settings',async request=>{
     const {grant}=viewer(request),{expectedRevision,...value}=cleanupSettings.extend({expectedRevision:revision}).strict().parse(request.body);

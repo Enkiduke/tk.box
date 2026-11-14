@@ -10,23 +10,17 @@ from .reporting import add_entry, add_status, library_name
 logger = logging.getLogger(__name__)
 
 
-def delete_whole_item(item, media_type, arr_item, media_ids, settings, arr, seerr, report):
-    """Validate targets first; keep Seerr requests until the content deletion succeeds."""
+def delete_whole_item(item, media_type, arr_item, settings, arr, report):
+    """Validate targets first. tk.box marks the title's requests removed after the run, from the status file."""
     delete_from_arr = settings.delete_from_radarr if media_type == "movie" else settings.delete_from_sonarr
     if delete_from_arr:
         if arr_item is None:
             raise ApiError(f"Required {arr.name} item was not found")
         positive_id(arr_item.get("id"))
-    if settings.delete_from_seerr:
-        media_ids = sorted({positive_id(media_id) for media_id in media_ids})
-        if not media_ids:
-            raise ApiError("Seerr media IDs are required for deletion")
     if settings.dry_run:
         if delete_from_arr:
             logger.warning("DRY RUN: Would delete '%s' from %s with files", item.title, arr.name)
         logger.warning("DRY RUN: Would delete '%s' from Plex", item.title)
-        if settings.delete_from_seerr:
-            logger.warning("DRY RUN: Would remove Seerr media IDs %s after content deletion", media_ids)
         report.planned += 1
         return
     if delete_from_arr:
@@ -34,13 +28,6 @@ def delete_whole_item(item, media_type, arr_item, media_ids, settings, arr, seer
     item.delete()
     report.deleted += 1
     logger.warning("Deleted '%s' from Plex", item.title)
-    if settings.delete_from_seerr:
-        for media_id in media_ids:
-            try:
-                seerr.delete_media(media_id)
-            except ApiError as exc:
-                logger.error("Content deleted, but Seerr cleanup failed for media ID %s: %s", media_id, exc)
-                report.failed += 1
 
 
 def process_seasons(show, requests, series, settings, sonarr, history, now, report, tmdb_id, native_preview=None):
@@ -70,7 +57,7 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
     if not settings.delete_from_sonarr or series is None:
         raise ApiError("Multi-season deletion needs Delete from Sonarr turned on and a matching Sonarr series")
     episodes = sonarr.episodes(series["id"])
-    requestor_ids = {request.requestor_id for request in requests}
+    requestor_ids = {request.requestor_id for request in requests if request.requestor_id is not None}
     rescan_needed = False
     for season in eligible:
         label = f"{show.title} - {season.title}"

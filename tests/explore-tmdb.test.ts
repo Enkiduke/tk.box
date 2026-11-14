@@ -14,6 +14,8 @@ import {PlexAdapter,type PlexGrant} from '../apps/server/src/providers/plex.js';
 import {TmdbExplore,tmdbCandidate} from '../apps/server/src/providers/tmdb-explore.js';
 import {TmdbTitles} from '../apps/server/src/providers/tmdb-titles.js';
 import {parseExplorePrefs} from '../apps/web/src/explore-prefs.js';
+// No Radarr or Sonarr: nothing can be requested and no title carries a label.
+const noRequests={labels:()=>new Map(),connected:()=>false,titleState:async()=>({requestable:false,seasons:[]}),plexKey:()=>undefined};
 import {config} from './fixtures.js';
 
 const now = Date.parse('2026-11-13T00:00:00Z');
@@ -73,7 +75,7 @@ test('Title credits use exact external ID matches and related rows stay usable w
   };
   installAccess(app,{viewer:auth as never,admin:auth as never});
   registerExplore(app,new PlexAdapter(config(),'title-discovery',(async()=>Response.json({MediaContainer:{}})) as typeof fetch),
-    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client);
+    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client,noRequests);
   const get=(path:string)=>app.inject({url:`/api/v1/explore/${path}`,headers:{authorization:'fixture'}});
   assert.equal((await app.inject('/api/v1/explore/title-credits?kind=movie&tmdb=297')).statusCode,401);
   assert.equal((await app.inject('/api/v1/explore/title-related?kind=movie&tmdb=297')).statusCode,401);
@@ -152,7 +154,7 @@ test('Related card details expose a direct Plex match only for the viewer with a
     ? {hash:'restricted',grant:{...grant,accountId:'2',libraries:[]}}
     : {hash:'owner',grant};
   installAccess(app,{viewer:auth as never,admin:auth as never});
-  registerExplore(app,plex,new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',new TmdbTitles(()=>undefined));
+  registerExplore(app,plex,new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',new TmdbTitles(()=>undefined),noRequests);
   const path='/api/v1/explore/details?kind=movie&tmdb=297&title=Meet+Joe+Black';
   assert.equal((await app.inject(path)).json().matchedLibraryId,'77');
   assert.equal((await app.inject({url:path,headers:{authorization:'restricted'}})).json().matchedLibraryId,undefined);
@@ -188,7 +190,7 @@ test('TMDB routes validate auth and regional providers, combine media types, app
   };
   installAccess(app,{viewer:auth as never,admin:auth as never});
   registerExplore(app,new PlexAdapter(config(),'explore-test',(async()=>Response.json({MediaContainer:{}})) as typeof fetch),
-    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client);
+    new ExploreStore(db,new Vault(randomBytes(32))),()=> 'account-token',client,noRequests);
   const get=(path:string)=>app.inject({url:`/api/v1/explore/${path}`,headers:{authorization:'fixture'}});
   assert.equal((await app.inject('/api/v1/explore/tmdb/providers')).statusCode,401);
   const catalog=(await get('tmdb/providers')).json();
@@ -333,13 +335,10 @@ test('Excluded Plex shelves are absent from browsing, admin controls and direct 
       :path.endsWith('/search/tv')?[{id:100,name:'TMDB show result'}]:[]});
   });
   installAccess(app,{viewer:auth as never,admin:auth as never});
-  registerExplore(app,plex,store,()=> 'account-token',tmdb,{seerr:async input=>{
-    assert.equal(new URL(String(input)).pathname,'/api/v1/media');
-    return Response.json({results:[]});
-  }});
+  registerExplore(app,plex,store,()=> 'account-token',tmdb,noRequests);
   const get=(url:string)=>app.inject(`/api/v1/explore/${url}`);
   assert.deepEqual((await get('sources')).json().order,['plex','tmdb']);
-  assert.equal((await get('sources')).json().seerr.configured,true);
+  assert.deepEqual((await get('sources')).json().requests,{movie:false,show:false});
   assert.equal((await get('seerr/rows')).statusCode,400);
   assert.equal((await get('seerr/rows/trending')).statusCode,400);
   assert.equal((await get('search?q=test&sources=tmdb')).json().items[0]?.title,'TMDB search result');
