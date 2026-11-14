@@ -4,7 +4,7 @@ import {CleanupStore,cleanupConnectionsInput,cleanupSettings,holdKey} from './pe
 import type {CleanupEngine,CleanupServices} from './services/cleanup-engine.js';
 import {viewer} from './modules/access.js';
 
-// Admin › Server › Clean Up: the purge script's settings, its Tautulli and Sonarr connections (shown in Admin ›
+// Admin › Server › Clean Up: the purge script's settings, its Tautulli connection (shown in Admin ›
 // Connections) and its jobs. Administrators only (the cleanup module's default access). A job runs with the Plex token of the administrator
 // who started it.
 const revision=z.number().int().nonnegative();

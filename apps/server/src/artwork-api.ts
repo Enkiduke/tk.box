@@ -217,18 +217,19 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     const {grant}=viewer(request),saved=store.collections();
     // Until definitions are first saved, the engine's seasonal presets (all off) are what it would use.
     const defaults=await engine.defaultCollections(runOf(grant)).catch(()=>[]);
-    return {...saved,defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload};
+    const radarr=engine.radarr();
+    return {...saved,radarrConnected:!!(radarr.url&&radarr.key),defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload};
   });
   app.put('/api/v1/admin/artwork/collections',{bodyLimit:512*1024},async request=>{
     const {grant}=viewer(request);
-    const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),({radarrKey:_,...collections})=>engine.check({collections},runOf(grant)));
+    const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),collections=>engine.check({collections},runOf(grant)));
     changed(grant);return saved;
   });
   // The saved Radarr's quality profiles, so downloads can name one (the engine is given its ID).
   app.get('/api/v1/admin/artwork/collections/radarr-profiles',async request=>{
-    const {radarr,radarrKey}=store.collectionsConfig();
-    if(!radarr.url||!radarrKey)return {connected:false,profiles:[]};
-    const response=await remoteJson(new URL(`${radarr.url}/api/v3/qualityprofile`),{headers:{'X-Api-Key':radarrKey}},'Radarr',fetch,8000);
+    const radarr=engine.radarr();
+    if(!radarr.url||!radarr.key)return {connected:false,profiles:[]};
+    const response=await remoteJson(new URL(`${radarr.url}/api/v3/qualityprofile`),{headers:{'X-Api-Key':radarr.key}},'Radarr',fetch,8000);
     requireThat(response.status<400,'CATALOG_UNAVAILABLE',response.status===401?'Radarr refused the API key.':`Radarr answered ${response.status}.`,502);
     const profiles=z.array(z.object({id:z.number().int(),name:z.string()}).passthrough()).catch([]).parse(response.data);
     return {connected:true,profiles:profiles.map(({id,name})=>({id,name}))};

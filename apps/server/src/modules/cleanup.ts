@@ -6,25 +6,28 @@ import { CleanupEngine, cleanupCollections, type CleanupServices } from '../serv
 import { registerCleanup } from '../cleanup-api.js';
 import type { ArtworkStore } from '../persistence/artwork-store.js';
 import type { ArtworkEngine } from '../services/artwork-engine.js';
+import type { ArrService } from '../providers/arr-tags.js';
 
 type Deps = {
-  // Radarr is Collections' connection; the collections artwork keeps are never purged.
+  // The collections artwork keeps are never purged.
   artwork: { store: ArtworkStore; engine: ArtworkEngine };
+  // Radarr and Sonarr.
+  arr: { connection: (name: 'radarr' | 'sonarr') => ArrService };
   // Seerr is Explore's connection.
   seerr: () => CleanupServices['seerr'];
 };
 
-// Admin › Server › Clean Up: the purge script runs as a separate Python process too. Its connections (`services`) also
-// feed the calendar.
+// Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
+// run needs.
 export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, log }, { artwork, seerr }: Deps) {
+  setup(routes, { config, db, vault, bus, background, log }, { artwork, seerr, arr }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
-      const { radarr, radarrKey } = artwork.store.collectionsConfig(), own = store.connections();
-      return { seerr: seerr(), radarr: { url: radarr.url, key: radarrKey }, tautulli: { url: own.tautulliUrl, key: own.tautulliKey }, sonarr: { url: own.sonarrUrl, key: own.sonarrKey } };
+      const own = store.connections();
+      return { seerr: seerr(), radarr: arr.connection('radarr'), tautulli: { url: own.tautulliUrl, key: own.tautulliKey }, sonarr: arr.connection('sonarr') };
     };
     const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
       dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, services, () => background.grant(), (message, detail) => log.info(message, detail));

@@ -46,8 +46,8 @@ const keyNames = ['tmdb', 'tvdb', 'fanart', 'mdblist'] as const;
 type OldSchedules = { seasonal?: Scheduled; collections?: Scheduled };
 type Stored = ArtworkSettings & { keys: Partial<Record<typeof keyNames[number], string>>; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
 // Collections: custom and seasonal definitions in the engine's own format (it validates them), how franchise, streaming and
-// chart collections are kept in step, and the Radarr that seasonal collections may download missing movies with.
-const origin = z.string().trim().max(300).refine(value => { if (!value) return true; try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }, 'Use an http(s) address').transform(value => value.replace(/\/+$/, ''));
+// chart collections are kept in step, and how seasonal collections download missing movies with Radarr (whose address
+// and key are the arr module's).
 export const artworkCollections = z.object({
   // null until first saved: the engine then offers its seasonal presets, all off.
   definitions: z.array(z.record(z.string(), z.unknown())).max(300).nullable(),
@@ -58,16 +58,16 @@ export const artworkCollections = z.object({
     exclude: z.array(z.string().regex(/^\d{1,10}$/)).max(2000).optional() }).strict()).max(3000).default([]),
   franchise: z.object({ sync: z.boolean(), franchises: z.boolean(), minItems: z.number().int().min(1).max(50), mode: z.enum(['sync', 'append']), streaming: z.enum(['off', 'originals', 'available']),
     region: z.string().regex(/^[A-Z]{2}$/), recent: z.boolean(), recentMovieDays: z.number().int().min(1).max(3650), recentEpisodeDays: z.number().int().min(1).max(3650) }).strict(),
-  radarr: z.object({ url: origin, rootFolder: z.string().trim().max(300), qualityProfileId: z.number().int().min(0).max(100000), search: z.boolean() }).strict(),
+  radarr: z.object({ rootFolder: z.string().trim().max(300), qualityProfileId: z.number().int().min(0).max(100000), search: z.boolean() }).strict(),
   // On their schedules, server local time: the custom and seasonal collections, then every collection. Titles newly added
   // to the libraries the custom collections use join the ones they match, checked when Plex adds some and on a schedule.
   schedules: z.object({ custom: daily, all: daily, added: everyFew }).strict()
 }).strict().refine(value => JSON.stringify(value).length <= 400000, 'Too many collections');
 export type ArtworkCollections = z.infer<typeof artworkCollections>;
-export const artworkCollectionsInput = z.object({ value: artworkCollections, radarrKey: key.optional(), expectedRevision: z.number().int().nonnegative() }).strict();
+export const artworkCollectionsInput = z.object({ value: artworkCollections, expectedRevision: z.number().int().nonnegative() }).strict();
 const collectionDefaults: ArtworkCollections = { definitions: null, automatic: [],
   franchise: { sync: false, franchises: true, minItems: 2, mode: 'sync', streaming: 'off', region: 'US', recent: false, recentMovieDays: 90, recentEpisodeDays: 7 },
-  radarr: { url: '', rootFolder: '', qualityProfileId: 0, search: true },
+  radarr: { rootFolder: '', qualityProfileId: 0, search: true },
   schedules: { custom: { enabled: false, schedule: { kind: 'times', times: ['04:15'], days: [] } }, all: { enabled: false, schedule: { kind: 'times', times: ['04:30'], days: [] } }, added: { enabled: false, schedule: { kind: 'every', minutes: 60 } } } };
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export type JobRow = { id: number; label: string; args: string[]; script: 'artwork' | 'collections'; actor: string; status: JobStatus; createdAt: number; startedAt: number | null; finishedAt: number | null; exitCode: number | null };
@@ -198,26 +198,23 @@ export class ArtworkStore {
   }
   private storedCollections() {
     const row = prepared(this.db, 'SELECT revision,value FROM artwork_collections WHERE id=1').get() as { revision: number; value: string } | undefined;
-    const value = row ? JSON.parse(row.value) as ArtworkCollections & { radarrKey?: string } : { ...collectionDefaults };
+    const value = row ? JSON.parse(row.value) as ArtworkCollections : { ...collectionDefaults };
     // Collections saved before an option existed read it as its default.
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
     value.schedules = value.schedules ? { custom: toScheduled(value.schedules.custom), all: toScheduled(value.schedules.all), added: toScheduled(value.schedules.added) } as ArtworkCollections['schedules'] : collectionDefaults.schedules;
     value.automatic ??= [];
     return { revision: row?.revision ?? 0, value };
   }
-  collections() { const { revision, value: { radarrKey, ...value } } = this.storedCollections(); return { revision, ...value, radarrKeySet: !!radarrKey }; }
-  // For the engine's config: the Radarr key opened, for the run's environment.
-  collectionsConfig() { const { value: { radarrKey, ...value } } = this.storedCollections(); return { ...value, radarrKey: radarrKey ? this.vault.open(radarrKey, 'artwork:radarr-key') : undefined }; }
-  async updateCollections(actor: string, input: z.input<typeof artworkCollectionsInput>, check: (value: ArtworkCollections & { radarrKey?: string }) => Promise<void>, now = Date.now()) {
-    const { value, radarrKey, expectedRevision } = artworkCollectionsInput.parse(input);
-    const current = this.collectionsConfig();
-    await check({ ...value, radarrKey: radarrKey === undefined ? current.radarrKey : radarrKey || undefined });
+  collections() { const { revision, value } = this.storedCollections(); return { revision, ...value }; }
+  collectionsConfig() { return this.storedCollections().value; }
+  async updateCollections(actor: string, input: z.input<typeof artworkCollectionsInput>, check: (value: ArtworkCollections) => Promise<void>, now = Date.now()) {
+    const { value, expectedRevision } = artworkCollectionsInput.parse(input);
+    await check(value);
     return this.db.transaction(() => {
-      const { revision, value: stored } = this.storedCollections();
+      const { revision } = this.storedCollections();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Collections changed. Reload and retry.', 409);
-      const sealed = radarrKey === undefined ? stored.radarrKey : radarrKey ? this.vault.seal(radarrKey, 'artwork:radarr-key') : undefined;
-      prepared(this.db, 'INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...value, ...(sealed ? { radarrKey: sealed } : {}) }));
-      this.audit(actor, 'artwork_collections_changed', { definitions: value.definitions?.length ?? null, franchise: value.franchise, radarr: !!value.radarr.url, schedules: value.schedules }, now);
+      prepared(this.db, 'INSERT INTO artwork_collections VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(value));
+      this.audit(actor, 'artwork_collections_changed', { definitions: value.definitions?.length ?? null, franchise: value.franchise, schedules: value.schedules }, now);
       return this.collections();
     })();
   }
