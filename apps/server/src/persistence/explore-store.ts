@@ -1,14 +1,29 @@
 import { z } from 'zod';
 import { exploreBrowseSources, tmdbExploreRows, type ExploreLayout } from '../../../../packages/contracts/src/index.js';
+import { exploreRankingDefaults, exploreRankingFields, type ExploreRankingField } from '../../../../packages/contracts/src/explore-ranking.js';
 import type { Db } from './database.js';
 import { AppError } from '../errors.js';
 
 const exploreSource = z.enum(exploreBrowseSources);
+export const exploreRankingInput = z.partialRecord(z.enum(tmdbExploreRows), z.record(z.string(), z.number())).superRefine((ranking, ctx) => {
+  for (const row of tmdbExploreRows) for (const [field, value] of Object.entries(ranking[row] ?? {})) {
+    if (!Object.hasOwn(exploreRankingDefaults[row], field)) {
+      ctx.addIssue({code:'custom', path:[row,field], message:'This row does not support that ranking setting.'});
+      continue;
+    }
+    const {min,max,step} = exploreRankingFields[field as ExploreRankingField];
+    const steps = (value - min) / step;
+    if (value < min || value > max || Math.abs(steps - Math.round(steps)) > 1e-8) {
+      ctx.addIssue({code:'custom', path:[row,field], message:`Use a value from ${min} to ${max} in steps of ${step}.`});
+    }
+  }
+});
 export const exploreLayoutInput = z.object({
   order: z.array(exploreSource).max(exploreBrowseSources.length).refine(list => new Set(list).size === list.length, 'List each source once'),
   hidden: z.array(exploreSource).max(exploreBrowseSources.length),
   hiddenRows: z.array(z.string().max(820).regex(/^(plex|tmdb):\S+$/)).max(300),
-  tmdbOrder: z.array(z.enum(tmdbExploreRows)).max(tmdbExploreRows.length).refine(list => new Set(list).size === list.length, 'List each row once').optional()
+  tmdbOrder: z.array(z.enum(tmdbExploreRows)).max(tmdbExploreRows.length).refine(list => new Set(list).size === list.length, 'List each row once').optional(),
+  ranking: exploreRankingInput.optional()
 }).strict();
 // The Plex watchlist is off until the administrator shows it.
 export const defaultExploreLayout: ExploreLayout = { order: ['tmdb', 'plex'], hidden: [], hiddenRows: ['plex:watchlist'] };
@@ -26,7 +41,9 @@ export function exploreLayout(value: Partial<ExploreLayout> | undefined): Explor
   const saved = { ...defaultExploreLayout, ...value };
   const parsed = exploreLayoutInput.safeParse({ order: drop(saved.order), hidden: drop(saved.hidden), hiddenRows: renamed(drop(saved.hiddenRows), 'tmdb:'), tmdbOrder: renamed(saved.tmdbOrder) });
   const layout = parsed.success ? parsed.data : defaultExploreLayout;
-  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)], ...(layout.tmdbOrder && { tmdbOrder: tmdbRowOrder(layout.tmdbOrder) }) };
+  const ranking = exploreRankingInput.safeParse(saved.ranking);
+  return { order: [...layout.order, ...defaultExploreLayout.order.filter(s => !layout.order.includes(s))], hidden: [...new Set(layout.hidden)], hiddenRows: [...new Set(layout.hiddenRows)],
+    ...(layout.tmdbOrder && { tmdbOrder: tmdbRowOrder(layout.tmdbOrder) }), ...(ranking.success && {ranking:ranking.data}) };
 }
 export class ExploreStore {
   constructor(private db: Db) {}
@@ -38,9 +55,10 @@ export class ExploreStore {
   updateLayout(actor: string, expectedRevision: number, input: ExploreLayout, now = Date.now()) {
     const next = exploreLayout(exploreLayoutInput.parse(input));
     return this.db.transaction(() => {
-      const { revision } = this.layout();
+      const current = this.layout(), { revision } = current;
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
-      if (input.tmdbOrder === undefined) next.tmdbOrder = this.layout().tmdbOrder;
+      if (input.tmdbOrder === undefined) next.tmdbOrder = current.tmdbOrder;
+      if (input.ranking === undefined) next.ranking = current.ranking;
       this.db.prepare('INSERT INTO explore_layout VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(next));
       this.db.prepare('INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'explore_layout_changed', now, JSON.stringify(next));
       return this.layout();

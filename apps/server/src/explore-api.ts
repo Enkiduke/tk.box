@@ -6,7 +6,7 @@ import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './pro
 import {externalRatings} from './providers/plex-catalog.js';
 import type {Requests} from './services/requests.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreLayoutInput,tmdbRowOrder} from './persistence/explore-store.js';
+import {ExploreStore,exploreLayoutInput,exploreRankingInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
 import {viewer as caller} from './modules/access.js';
 import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
@@ -114,15 +114,15 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.get('/api/v1/explore/:source/rows/:row',{config:{access:'viewer'}},async request=>{
     const params=z.object({source,row:z.string().max(800)}).parse(request.params),{account,token,grant}=await viewer(request);
     if (params.source==='tmdb') {
-      const parsed=tmdbRow.safeParse(params.row);
-      requireThat(parsed.success&&rowShown(store.layout(),'tmdb',params.row),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
+      const parsed=tmdbRow.safeParse(params.row),layout=store.layout();
+      requireThat(parsed.success&&rowShown(layout,'tmdb',params.row),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
       const row=parsed.data,def=tmdbRows[row];
       const {page:at,provider,providers,region,...query}=tmdbPage.parse(request.query);
       requireThat(def.streaming||(provider===undefined&&providers===undefined&&region===undefined),'INVALID_REQUEST','This row has no streaming selector.',400);
       requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
       const filter=exploreFilter(query);
       if (def.personal) {
-        const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token))[row];
+        const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,layout.ranking))[row];
         if (!result) return {items:[],page:at,hasMore:false} satisfies ExplorePage;
         // Labels are read again here, so a title requested since the day's suggestions were built drops out at once.
         const {items}=await labelled({items:result.items.map(c=>c.item)});
@@ -137,10 +137,10 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
         streaming={region:country,ids:typeof provider==='number'?[provider]:[...new Set(chosen)].sort((a,b)=>a-b)};
       }
       const {kind:mediaKind,...otherFilters}=filter;
-      if (!filtering(otherFilters)) return labelled(await tmdb.page(row,at,streaming,mediaKind));
+      if (!filtering(otherFilters)) return labelled(await tmdb.page(row,at,streaming,mediaKind,layout.ranking));
       const pages:ExplorePage[]=[];
       for (let i=0;i<FILTER_SPAN;i++) {
-        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming,mediaKind);
+        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming,mediaKind,layout.ranking);
         pages.push(result);
         if (!result.hasMore) break;
       }
@@ -240,6 +240,16 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.put('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
     const {grant}=caller(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
     return store.updateLayout(grant.accountId,expectedRevision,value);
+  });
+  app.post('/api/v1/admin/explore/ranking/preview',{config:{access:'admin'}},async request=>{
+    caller(request);
+    const {row,settings}=z.object({row:z.enum(['popular-movies','popular-shows']),settings:z.record(z.string(),z.number())}).strict().parse(request.body);
+    const draft=exploreRankingInput.parse({[row]:settings});
+    const [saved,preview]=await Promise.all([
+      tmdb.page(row,1,undefined,undefined,store.layout().ranking),
+      tmdb.page(row,1,undefined,undefined,draft)
+    ]);
+    return {saved:saved.items,preview:preview.items};
   });
 
   // A request changed: details (what can still be requested) are read again.

@@ -1,9 +1,10 @@
 import {createHash} from 'node:crypto';
 import {AppError} from './errors.js';
 import type {ExploreGenre, ExploreItem, TmdbExploreRow} from '../../../packages/contracts/src/index.js';
+import {exploreRankingDefaults,exploreRankingFor,type ExploreRanking} from '../../../packages/contracts/src/explore-ranking.js';
 import {exploreGenresOf} from './providers/explore-genres.js';
 import type {PlexAdapter, PlexGrant} from './providers/plex.js';
-import {type Candidate, type TmdbExplore} from './providers/tmdb-explore.js';
+import {audienceQuality,type Candidate,type TmdbExplore} from './providers/tmdb-explore.js';
 
 // Explore's suggestions: each viewer's Top Movie Picks, Top Show Picks and one Because You Watched row for each kind,
 // from everything they watched, wherever they watched it (tk.box's player, Plex's apps on this server, Plex elsewhere,
@@ -23,6 +24,10 @@ const unique = (items: Candidate[]) => [...new Map(items.map(c => [c.item.key, c
 const SEEDS = 8, RECENT = 10, TOP_LIMIT = 60, BECAUSE_LIMIT = 40, ROW_SHOWN = 20, BECAUSE_MIN = 6;
 // One watched title may supply at most this many of a Top Picks row's first 20, and of the whole row.
 const CAP_SHOWN = 5, CAP_ROW = 15;
+type Scoring = typeof exploreRankingDefaults['because-movie'] & {seedDiversity?:number};
+type SeedScoring = Pick<typeof exploreRankingDefaults['top-movies'], 'watchRankRetention' | 'watchHalfLife' | 'watchFrequency'>;
+const defaultTop = exploreRankingDefaults['top-movies'];
+const defaultScoring = exploreRankingDefaults['because-movie'];
 
 // One list from every source, each title once with its latest date, most plays, and whatever name and genres any
 // source gave. Dated titles go newest first; titles only an undated source knows (Plex's account history, which is in
@@ -46,16 +51,17 @@ export function mergeHistory(lists: WatchedTitle[][]): WatchedTitle[] {
 
 // How much a watched title says about the viewer: later in the list counts less, older watches fade (but never below
 // a quarter), and a title watched often (a show's many episodes) counts up to twice.
-export function seedWeight(title: WatchedTitle, rank: number, now: number) {
+export function seedWeight(title: WatchedTitle, rank: number, now: number, settings:SeedScoring = defaultTop) {
   const age = title.at === undefined ? 0 : Math.max(0, now - title.at) / DAY;
-  return 0.9 ** rank * Math.max(0.25, 0.5 ** (age / 180)) * (1 + Math.min(1, Math.log10(Math.max(1, title.plays ?? 1))));
+  return (settings.watchRankRetention / 100) ** rank * Math.max(0.25, 0.5 ** (age / settings.watchHalfLife))
+    * (1 + settings.watchFrequency / 100 * Math.min(1, Math.log10(Math.max(1, title.plays ?? 1))));
 }
 
 // The viewer's genres, weighted like their watches, as shares that add up to 1.
-export function genreTaste(history: WatchedTitle[], now: number) {
+export function genreTaste(history: WatchedTitle[], now: number, seeds?:SeedScoring) {
   const weights = new Map<ExploreGenre, number>();
   history.forEach((title, rank) => {
-    const genres = exploreGenresOf(title.genres ?? []), weight = seedWeight(title, rank, now);
+    const genres = exploreGenresOf(title.genres ?? []), weight = seedWeight(title, rank, now, seeds);
     for (const genre of genres) weights.set(genre, (weights.get(genre) ?? 0) + weight / genres.length);
   });
   const total = [...weights.values()].reduce((a, b) => a + b, 0);
@@ -64,13 +70,13 @@ export function genreTaste(history: WatchedTitle[], now: number) {
 
 // The viewer's eras: how much of their watching (weighted like their watches) is within 5 years of a release year,
 // as a multiplier from 0.6 (none) to 1.4 (half or more). Without any years known it changes nothing.
-export function eraTaste(history: WatchedTitle[], now: number) {
-  const years = history.flatMap((title, rank) => title.year ? [{year: title.year, weight: seedWeight(title, rank, now)}] : []);
+export function eraTaste(history: WatchedTitle[], now: number, seeds?:SeedScoring, strength = defaultScoring.eraAffinity / 100) {
+  const years = history.flatMap((title, rank) => title.year ? [{year: title.year, weight: seedWeight(title, rank, now, seeds)}] : []);
   const total = years.reduce((sum, y) => sum + y.weight, 0);
   return (year?: number) => {
     if (!total || !year) return 1;
     const near = years.reduce((sum, y) => sum + (Math.abs(y.year - year) <= 5 ? y.weight : 0), 0);
-    return 0.6 + 0.8 * Math.min(1, 2 * near / total);
+    return 1 + strength * (2 * Math.min(1, 2 * near / total) - 1);
   };
 }
 
@@ -85,8 +91,7 @@ export function freshness(date: string | undefined, now: number) {
 
 // TMDB's score as a multiplier from 0.6 (5.5 or less) to 1.4 (8 or more), pulled toward 6.5 until about 200 votes.
 export function quality(c: Candidate) {
-  const rating = ((c.item.rating ?? 0) * c.votes + 6.5 * 200) / (c.votes + 200);
-  return 0.6 + 0.8 * Math.min(1, Math.max(0, (rating - 5.5) / 2.5));
+  return audienceQuality(c, defaultScoring.audienceRating / 100, defaultScoring.ratingPriorVotes);
 }
 export type Taste = {genres: Map<ExploreGenre, number>; era?: (year?: number) => number};
 
@@ -110,10 +115,10 @@ const familyOf = (item: ExploreItem) => normalized(item.title).split(/\s*[:â€“â€
 // 1.4x) and well rated by many (0.6-1.4x), and a small random factor. The order then keeps one series' entries and one
 // genre from bunching up, and, with several watched titles, keeps any one of them from supplying most of the row:
 // a pick counts toward the watched title that adds most to its score, and one past that title's cap moves down.
-export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], taste: Taste, now: number, random: () => number): Candidate[] {
+export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], taste: Taste, now: number, random: () => number, settings:Scoring = defaultScoring): Candidate[] {
   const relevance = new Map<string, number>(), byKey = new Map<string, Candidate>(), source = new Map<string, {list: number; part: number}>();
   lists.forEach(({weight, items}, list) => unique(items).forEach((c, position) => {
-    const part = weight / (1 + position / 8);
+    const part = weight / (1 + position / settings.recommendationDecay);
     relevance.set(c.item.key, (relevance.get(c.item.key) ?? 0) + part);
     if (!byKey.has(c.item.key)) byKey.set(c.item.key, c);
     if ((source.get(c.item.key)?.part ?? -1) < part) source.set(c.item.key, {list, part});
@@ -121,14 +126,16 @@ export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], t
   const score = new Map<string, number>();
   for (const [key, c] of byKey) {
     const affinity = Math.min(1, (c.item.genres ?? []).reduce((sum, g) => sum + (taste.genres.get(g) ?? 0), 0));
-    score.set(key, relevance.get(key)! * (1 + freshness(c.date, now)) * (taste.era?.(c.item.year) ?? 1) * (1 + 0.4 * affinity) * quality(c) * (0.85 + 0.3 * random()));
+    const shuffled = 1 + settings.shuffle / 100 * (2 * random() - 1);
+    score.set(key, relevance.get(key)! * (1 + settings.freshness / 100 * freshness(c.date, now)) * (taste.era?.(c.item.year) ?? 1)
+      * (1 + settings.genreAffinity / 100 * affinity) * audienceQuality(c, settings.audienceRating / 100, settings.ratingPriorVotes) * shuffled);
   }
   const ranked = [...byKey.values()].sort((a, b) => score.get(b.item.key)! - score.get(a.item.key)! || a.item.ids.tmdb! - b.item.ids.tmdb!);
-  const result: Candidate[] = [], supplied = new Map<number, number>(), capped = lists.length > 1;
+  const result: Candidate[] = [], supplied = new Map<number, number>(), capped = settings.seedDiversity !== 0 && lists.length > 1;
   while (ranked.length) {
     const recent = result.slice(-4);
-    const variety = (c: Candidate) => !recent.some(r => familyOf(r.item) === familyOf(c.item))
-      && (!c.item.genres?.[0] || recent.filter(r => r.item.genres?.[0] === c.item.genres![0]).length < 3);
+    const variety = (c: Candidate) => !settings.variety || (!recent.some(r => familyOf(r.item) === familyOf(c.item))
+      && (!c.item.genres?.[0] || recent.filter(r => r.item.genres?.[0] === c.item.genres![0]).length < 3));
     const fits = (c: Candidate) => !capped || (supplied.get(source.get(c.item.key)!.list) ?? 0) < (result.length < ROW_SHOWN ? CAP_SHOWN : CAP_ROW);
     let index = ranked.findIndex(c => fits(c) && variety(c));
     if (index < 0) index = ranked.findIndex(fits);
@@ -163,19 +170,23 @@ export class ExploreRecommendations {
     for (const key of this.pools.keys()) if (key.startsWith(`${account}\n`)) this.pools.delete(key);
     this.rolls.set(account, (this.rolls.get(account) ?? 0) + 1);
   }
-  get(grant: PlexGrant, generation: number, accountToken?: string): Promise<ExplorePool> {
+  get(grant: PlexGrant, generation: number, accountToken?: string, ranking?:ExploreRanking): Promise<ExplorePool> {
     const scope = createHash('sha256').update(JSON.stringify([grant.serverToken, grant.libraries.map(l => [l.key, l.type]).sort()])).digest('hex');
     const tokenScope = createHash('sha256').update(accountToken ?? '').digest('hex');
     const now = this.now(), today = new Date(now), day = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
     const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
     const roll = this.rolls.get(grant.accountId) ?? 0;
-    const key = `${grant.accountId}\n${scope}:${tokenScope}:${generation}:${roll}`, hit = this.pools.get(key);
+    const settings = {
+      movie:{top:exploreRankingFor('top-movies', ranking), because:exploreRankingFor('because-movie', ranking)},
+      show:{top:exploreRankingFor('top-shows', ranking), because:exploreRankingFor('because-show', ranking)}
+    };
+    const key = `${grant.accountId}\n${scope}:${tokenScope}:${generation}:${roll}:${JSON.stringify(settings)}`, hit = this.pools.get(key);
     if (hit && hit.until > now) return hit.pending;
     const local = this.plex.exploreRecentlyWatched(grant, now).catch(() => []);
     const account = accountToken ? this.plex.exploreAccountHistory(grant, accountToken).catch(() => []) : Promise.resolve([]);
     const entry: Entry = {until: Infinity, pending: Promise.all([local, account]).then(([local, account]) => {
       const own = (() => { try { return this.sources.history?.(grant.accountId) ?? []; } catch { return []; } })();
-      return this.build(mergeHistory([own, local.map(t => ({...t, at: t.lastViewedAt * 1000})), account]), now, `${grant.accountId}:${day}:${roll}`);
+      return this.build(mergeHistory([own, local.map(t => ({...t, at: t.lastViewedAt * 1000})), account]), now, `${grant.accountId}:${day}:${roll}`, settings);
     }).then(({pool, partial}) => {
       entry.until = partial ? Math.min(midnight, this.now() + 5 * 60000) : midnight;
       if (!partial) entry.last = {value: pool, at: this.now()};
@@ -197,10 +208,9 @@ export class ExploreRecommendations {
     while (this.pools.size > 64) this.pools.delete(this.pools.keys().next().value!);
     return entry.pending;
   }
-  private async build(history: WatchedTitle[], now: number, seed: string): Promise<{pool: ExplorePool; partial: boolean}> {
+  private async build(history: WatchedTitle[], now: number, seed: string, settings:Record<Kind,{top:Scoring & SeedScoring; because:Scoring}>): Promise<{pool: ExplorePool; partial: boolean}> {
     const watched = new Set(history.map(t => idKey(t.kind, t.tmdbId))), excluded = this.sources.excluded?.();
     const fresh = (c: Candidate) => !watched.has(c.item.key) && !excluded?.has(c.item.key);
-    const genres = genreTaste(history, now);
     let partial = false, reads = 0, failures = 0;
     const tryList = async (read: Promise<Candidate[]>) => {
       reads++;
@@ -227,13 +237,14 @@ export class ExploreRecommendations {
     await Promise.all((['movie', 'show'] as const).map(async kind => {
       const mine = history.filter(t => t.kind === kind);
       if (!mine.length) return;
+      const {top:topSettings,because:becauseSettings} = settings[kind];
       // Each kind has its own random numbers, so the two kinds' reads finishing in either order give the same rows.
       const random = seededRandom(`${seed}:${kind}`);
       const seeds = mine.slice(0, SEEDS);
-      const seedLists = await Promise.all(seeds.map(async (seed, rank) => ({weight: seedWeight(seed, rank, now), items: await suggestions(seed)})));
+      const seedLists = await Promise.all(seeds.map(async (seed, rank) => ({weight: seedWeight(seed, rank, now, topSettings), items: await suggestions(seed)})));
       // Eras are per kind: someone may watch old movies and new shows.
-      const taste: Taste = {genres, era: eraTaste(mine, now)};
-      const top = scoreCandidates(seedLists, taste, now, random).slice(0, TOP_LIMIT);
+      const taste: Taste = {genres:genreTaste(history, now, topSettings), era:eraTaste(mine, now, topSettings, topSettings.eraAffinity / 100)};
+      const top = scoreCandidates(seedLists, taste, now, random, topSettings).slice(0, TOP_LIMIT);
       if (top.length) pool[kind === 'movie' ? 'top-movies' : 'top-shows'] = {title: kind === 'movie' ? 'Top Movie Picks for You' : 'Top Show Picks for You', items: top};
       // What the Top Picks row shows isn't suggested again just below it.
       const shown = new Set(top.slice(0, ROW_SHOWN).map(c => c.item.key));
@@ -242,7 +253,8 @@ export class ExploreRecommendations {
         if (items.length < BECAUSE_MIN) continue;
         const title = seed.title ?? await this.tmdb.title(kind === 'movie' ? 'movie' : 'tv', seed.tmdbId).catch(() => undefined);
         if (!title) continue;
-        pool[kind === 'movie' ? 'because-movie' : 'because-show'] = {title: `Because You Watched ${title}`, items: scoreCandidates([{weight: 1, items}], taste, now, random).slice(0, BECAUSE_LIMIT)};
+        const becauseTaste: Taste = {genres:genreTaste(history, now), era:eraTaste(mine, now, undefined, becauseSettings.eraAffinity / 100)};
+        pool[kind === 'movie' ? 'because-movie' : 'because-show'] = {title: `Because You Watched ${title}`, items: scoreCandidates([{weight: 1, items}], becauseTaste, now, random, becauseSettings).slice(0, BECAUSE_LIMIT)};
         break;
       }
     }));

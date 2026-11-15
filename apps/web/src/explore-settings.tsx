@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
-import {tmdbExploreRows,type ExploreLayout,type ExploreRowInfo,type ExploreBrowseSource,type ExploreSources} from '../../../packages/contracts/src/index.js';
+import {tmdbExploreRows,type ExploreItem,type ExploreLayout,type ExploreRowInfo,type ExploreBrowseSource,type ExploreSources,type TmdbExploreRow} from '../../../packages/contracts/src/index.js';
+import {exploreRankingDefaults,exploreRankingFields,exploreRankingFor,type ExploreRanking,type ExploreRankingField,type ExploreRowRanking} from '../../../packages/contracts/src/explore-ranking.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Loading} from './components.js';
@@ -81,7 +82,7 @@ function SourcePrefs({source}:{source:ExploreBrowseSource}) {
 }
 // Admin › Explore: what Explore shows and in what order.
 export function ExploreAdmin() {
-  return <><SectionHead title="Explore" description="What Explore offers every viewer, in order."/><ExploreLayoutSettings/></>;
+  return <><SectionHead title="Explore" description="Choose which rows viewers see and how titles rank within them."/><ExploreLayoutSettings/></>;
 }
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {
@@ -91,14 +92,14 @@ function ExploreLayoutSettings() {
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;
-  const data=view.data;
+  const data=view.data,tmdb=data.sources.find(source=>source.source==='tmdb');
   const set=(patch:Partial<ExploreLayout>)=>{setDraft(d=>d&&{...d,...patch});};
   const move=(from:number,to:number)=>set({order:moveTo(draft.order,from,to)});
   const showSource=(s:ExploreBrowseSource,on:boolean)=>set({hidden:on?draft.hidden.filter(h=>h!==s):[...draft.hidden,s]});
   const showRow=(key:string,on:boolean)=>set({hiddenRows:on?draft.hiddenRows.filter(r=>r!==key):[...draft.hiddenRows,key]});
   const toggle=(s:ExploreBrowseSource)=>setOpen(o=>o.includes(s)?o.filter(x=>x!==s):[...o,s]);
-  return <Card title="Order and rows" description="Move sources to change their order on Explore. Open a source to hide individual rows.">
-    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');toast.success('Explore order and rows saved');});}}>
+  return <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');toast.success('Explore settings saved');});}}>
+    <Card title="Order and rows" description="Move sources to change their order on Explore. Open a source to hide individual rows.">
       <ol className="sports-order">{draft.order.map((s,i)=>{
         const info=data.sources.find(x=>x.source===s),on=!draft.hidden.includes(s);
         const order=draft.tmdbOrder??[...tmdbExploreRows];
@@ -119,8 +120,109 @@ function ExploreLayoutSettings() {
           </li>;})}</ol>}
         </li>;})}</ol>
       {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the Discover shelves and their order. Streaming-service rows come from TMDB.</p>}
+    </Card>
+    {tmdb&&<ExploreRankingSettings rows={tmdb.rows} configured={tmdb.configured} revision={data.layout.revision}
+      ranking={draft.ranking} onChange={ranking=>set({ranking})}/>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Explore settings</button></div>
+  </form>;
+}
+
+const rankingLabels:Record<ExploreRankingField,{label:string;help:string}> = {
+  releaseBoost:{label:'Recent release boost (%)',help:'Maximum popularity boost on the release or premiere date. It fades over the freshness window.'},
+  releaseDays:{label:'Release window (days)',help:'Measure from the primary movie release or series premiere.'},
+  seasonBoost:{label:'New season boost (%)',help:'Maximum popularity boost at the premiere of season 2 or later.'},
+  seasonDays:{label:'New season window (days)',help:'The boost fades over this many days after the season premiere.'},
+  audienceRating:{label:'Audience rating influence (%)',help:'Adjust scores up or down by TMDB audience rating, with fewer votes carrying less influence.'},
+  minimumRating:{label:'Minimum TMDB rating',help:'Titles below this audience rating are excluded.'},
+  minimumVotes:{label:'Minimum TMDB votes',help:'Titles with fewer votes are excluded.'},
+  nearPopularity:{label:'Popularity multiplier at 0–44 days (%)',help:'100% uses the original TMDB popularity score.'},
+  midPopularity:{label:'Popularity multiplier at 45–89 days (%)',help:'Titles 90 or more days away use 100% of their popularity score.'},
+  futureDays:{label:'Upcoming window (days)',help:'Titles with a release or premiere further out are excluded.'},
+  trendingDays:{label:'Trending window',help:'Use TMDB’s daily or weekly chart.'},
+  freshness:{label:'Title freshness boost (%)',help:'The full boost applies for six months after release and fades by year three.'},
+  genreAffinity:{label:'Genre affinity boost (%)',help:'Favor genres the viewer watches more often.'},
+  eraAffinity:{label:'Release-era influence (%)',help:'Favor release years within five years of titles the viewer watches.'},
+  ratingPriorVotes:{label:'Vote confidence',help:'Treat the starting rating of 6.5 as this many votes. Higher values give low-vote ratings less influence.'},
+  shuffle:{label:'Daily shuffle (%)',help:'Maximum score adjustment from the repeatable daily shuffle.'},
+  recommendationDecay:{label:'Recommendation rank half-weight',help:'The number of positions below the first TMDB recommendation where its influence is halved.'},
+  watchRankRetention:{label:'Watch order retention (%)',help:'The influence each watched title retains per position lower in the watch-history list.'},
+  watchHalfLife:{label:'Watch recency half-life (days)',help:'Days until an older watch’s recency contribution halves, down to a 25% floor.'},
+  watchFrequency:{label:'Watch frequency boost (%)',help:'Maximum extra influence for titles played more often.'},
+  variety:{label:'Genre and franchise variety',help:'Space out titles from the same franchise or genre when alternatives are available.'},
+  seedDiversity:{label:'Spread picks across watched titles',help:'Avoid letting recommendations from one watched title dominate the row.'}
+};
+
+const rankingSummary:Record<TmdbExploreRow,string> = {
+  'popular-movies':'TMDB popularity is the baseline for released movies. Release freshness and vote-adjusted ratings can change the order.',
+  'popular-shows':'TMDB popularity is the baseline for shows that have premiered. Series premieres and returning seasons have separate boosts.',
+  'popular-streaming':'Titles alternate between movies and shows in TMDB popularity order within the viewer’s region and selected subscription services.',
+  'recent-streaming':'Movies and shows alternate, newest releases first within each group. Availability is checked against the viewer’s selected subscription services.',
+  trending:'Movies and shows alternate in their TMDB chart order.',
+  acclaimed:'Movies and shows alternate in TMDB audience-rating order.',
+  'upcoming-movies':'TMDB popularity is multiplied by the title’s release-date band.',
+  'upcoming-shows':'TMDB popularity is multiplied by the series premiere’s date band.',
+  'top-movies':'Recommendations backed by several watched movies gain influence.',
+  'top-shows':'Recommendations backed by several watched shows gain influence.',
+  'because-movie':'Rank recommendations from one of the viewer’s recently watched movies.',
+  'because-show':'Rank recommendations from one of the viewer’s recently watched shows.'
+};
+
+function RankingInput({field,value,popular,onChange}:{field:ExploreRankingField;value:number;popular:boolean;onChange:(value:number)=>void}) {
+  const [text,setText]=useState(String(value));
+  useEffect(()=>{setText(String(value));},[value]);
+  const {label,help}=rankingLabels[field];
+  const options=field==='trendingDays'?[[1,'Daily'],[7,'Weekly']]:field==='variety'||field==='seedDiversity'?[[0,'Off'],[1,'On']]:undefined;
+  return <label>{label}
+    {options?<select value={value} onChange={e=>onChange(Number(e.target.value))}>
+      {options.map(([id,name])=><option key={id} value={id}>{name}</option>)}
+    </select>:<input type="number" required {...exploreRankingFields[field]} value={text} onChange={e=>{
+      const input=e.currentTarget;
+      setText(input.value);
+      if(input.validity.valid)onChange(input.valueAsNumber);
+    }} onBlur={()=>setText(String(value))}/>}
+    <small className="muted">{field==='releaseDays'&&popular?'The boost fades over this many days. Older titles can still appear.':help}</small>
+  </label>;
+}
+
+function ExploreRankingSettings({rows,configured,revision,ranking,onChange}:{rows:ExploreRowInfo[];configured:boolean;revision:number;
+  ranking?:ExploreRanking;onChange:(ranking:ExploreRanking)=>void}) {
+  const [row,setRow]=useState<TmdbExploreRow>('popular-movies');
+  const [preview,setPreview]=useState<{key:string;saved:ExploreItem[];preview:ExploreItem[]}>();
+  const mutation=useMutation(()=>{});
+  const settings=exploreRankingFor(row,ranking) as ExploreRowRanking;
+  const fields=Object.keys(exploreRankingDefaults[row]) as ExploreRankingField[];
+  const key=JSON.stringify([revision,row,settings]);
+  const popular=row==='popular-movies'||row==='popular-shows';
+  const reset=()=>{
+    const next={...ranking};
+    delete next[row];
+    onChange(next);
+  };
+  return <Card title="Row ranking" description="Tune how titles are ordered within a TMDB row for all viewers.">
+    <div className="form-stack">
+      <label className="narrow">TMDB row<select value={row} onChange={e=>setRow(e.target.value as TmdbExploreRow)}>
+        {rows.map(r=><option key={r.id} value={r.id}>{r.title}</option>)}
+      </select></label>
+      <p className="muted small">{rankingSummary[row]}</p>
+      {fields.length>0&&<div className="explore-ranking-fields">
+        {fields.map(field=><RankingInput key={`${row}:${field}`} field={field} value={settings[field]!} popular={popular} onChange={value=>{
+          onChange({...ranking,[row]:{...ranking?.[row],[field]:value}});
+        }}/>)}</div>}
+      <div className="button-row">
+        {fields.length>0&&<button type="button" disabled={!ranking?.[row]} onClick={reset}>Reset row to defaults</button>}
+        {popular&&<button type="button" disabled={!configured||mutation.busy} onClick={()=>void mutation.run(async()=>{
+          const result=await api<{saved:ExploreItem[];preview:ExploreItem[]}>('/admin/explore/ranking/preview','POST',{row,settings});
+          setPreview({key,...result});
+        })}>{mutation.busy?'Loading preview…':'Preview ranking'}</button>}
+      </div>
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button></div>
-    </form>
+      {preview?.key===key&&<div className="explore-ranking-fields explore-ranking-preview">
+        {([['Saved order',preview.saved],['Draft order',preview.preview]] as const).map(([title,items])=><section key={title}>
+          <h3>{title}</h3>
+          {items.length?<ol>{items.slice(0,8).map(item=><li key={item.key}>{item.title}{item.year&&<small className="muted"> ({item.year})</small>}</li>)}</ol>:<p className="muted small">No titles found.</p>}
+        </section>)}
+      </div>}
+    </div>
   </Card>;
 }

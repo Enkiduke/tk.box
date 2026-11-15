@@ -1,13 +1,15 @@
 import type {ExploreItem, ExplorePage, ExploreRowInfo, ExploreWatchProviders, TmdbExploreRow} from '../../../../packages/contracts/src/index.js';
+import {exploreRankingFor,type ExploreRanking} from '../../../../packages/contracts/src/explore-ranking.js';
 import {requireThat} from '../errors.js';
+import {TtlCache} from '../lib/ttl-cache.js';
 import {tmdbImage} from './explore-images.js';
 import {tmdbGenres} from './explore-genres.js';
 import type {TitleKind, TmdbTitles} from './tmdb-titles.js';
 
 const HOUR = 3600000;
 const DAY = 24 * HOUR;
-const UPCOMING_DAYS = 365 * 1.5;
 const EXPLORE_PAGE_SIZE = 20;
+const POPULAR_PAGES = 5, RECENT_PAGES = 2;
 export const tmdbRows: Record<TmdbExploreRow, ExploreRowInfo> = {
   'popular-streaming': {id:'popular-streaming', title:'Popular on Streaming', icon:'play', streaming:true},
   'recent-streaming': {id:'recent-streaming', title:'Recently Released on Streaming', icon:'play', streaming:true},
@@ -24,6 +26,8 @@ export const tmdbRows: Record<TmdbExploreRow, ExploreRowInfo> = {
 };
 export type Candidate = {item: ExploreItem; votes: number; popularity: number; date?: string};
 type Result = {items: Candidate[]; pages: number};
+export type PopularRow = 'popular-movies' | 'popular-shows';
+type PopularSnapshot = {items:Candidate[]; seen:Set<string>; next:number; last:number; read:(page:number)=>Promise<Result>; pending?:Promise<void>};
 type UpcomingBucket = {weight:number; params:Record<string,string>; page:number; result:Result; index:number};
 type Provider = {provider_id: number; provider_name: string; logo_path?: string};
 type Title = {
@@ -43,6 +47,17 @@ const services = [
 const serviceLabels = new Map(services.flatMap(({names,label})=>label?names.map(name=>[name,label] as const):[]));
 const date = (value: number) => new Date(value).toISOString().slice(0, 10);
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+const isPopularRow = (row: TmdbExploreRow): row is PopularRow => row === 'popular-movies' || row === 'popular-shows';
+
+export function audienceQuality(candidate: Candidate, strength:number, priorVotes = 200) {
+  const rating = ((candidate.item.rating ?? 0) * candidate.votes + 6.5 * priorVotes) / (candidate.votes + priorVotes);
+  return 1 + strength * (2 * Math.min(1, Math.max(0, (rating - 5.5) / 2.5)) - 1);
+}
+
+function recentBoost(day: string | undefined, now: number, days: number, strength: number) {
+  const age = (now - Date.parse(day ?? '')) / DAY;
+  return Number.isFinite(age) && age >= 0 ? Math.max(0, 1 - age / days) * strength / 100 : 0;
+}
 
 export function tmdbCandidate(raw: Title | null, type: TitleKind): Candidate | undefined {
   const id = raw?.id, title = type === 'movie' ? raw?.title : raw?.name;
@@ -73,6 +88,7 @@ export function mixCandidates(lists: Candidate[][]) {
 }
 
 export class TmdbExplore {
+  private popular = new TtlCache<Promise<PopularSnapshot>>(16);
   constructor(private client: TmdbTitles, private now = Date.now) {}
   private async providerList(path: string, params: Record<string, string> = {}) {
     const data = await this.client.get(`/watch/providers/${path}`, params) as {results?: unknown[]} | undefined;
@@ -100,8 +116,8 @@ export class TmdbExplore {
     requireThat(Array.isArray(data?.results), 'CATALOG_UNAVAILABLE', 'TMDB could not load these titles.', 502);
     return {items:data.results.flatMap(row => tmdbCandidate(row, type) ?? []), pages:Math.max(0, Math.min(500, Math.floor(number(data.total_pages))))};
   }
-  async trending(types:readonly TitleKind[]=kinds) {
-    return mixCandidates(await Promise.all(types.map(type => this.titles(type, `/trending/${type}/week`, {}, 6 * HOUR).then(r => r.items))));
+  async trending(types:readonly TitleKind[]=kinds, days = 7) {
+    return mixCandidates(await Promise.all(types.map(type => this.titles(type, `/trending/${type}/${days === 1 ? 'day' : 'week'}`, {}, 6 * HOUR).then(r => r.items))));
   }
   async search(query:string,kind?:ExploreItem['kind']) {
     const types=kind?[kind==='show'?'tv':'movie'] as const:kinds;
@@ -118,13 +134,14 @@ export class TmdbExplore {
     requireThat(typeof name === 'string' && !!name.trim(), 'CATALOG_UNAVAILABLE', 'TMDB could not name this title.', 502);
     return name;
   }
-  private async upcoming(type:TitleKind, page:number, now:number):Promise<ExplorePage> {
+  private async upcoming(type:TitleKind, page:number, now:number, ranking?:ExploreRanking):Promise<ExplorePage> {
+    const {nearPopularity,midPopularity,futureDays} = exploreRankingFor(type === 'movie' ? 'upcoming-movies' : 'upcoming-shows', ranking);
     const field=type==='movie'?'primary_release_date':'first_air_date';
     const read=(params:Record<string,string>,at:number)=>this.titles(type,`/discover/${type}`,{
       include_adult:'false',sort_by:'popularity.desc',...params,page:String(at)
     },12*HOUR);
     // Each date range has a constant multiplier, so its TMDB popularity order is also its weighted order.
-    const ranges=[[0,44,1.25],[45,89,1.125],[90,UPCOMING_DAYS,1]] as const;
+    const ranges=[[0,44,nearPopularity/100],[45,89,midPopularity/100],[90,futureDays,1]] as const;
     const buckets=await Promise.all(ranges.map(async ([start,end,weight]):Promise<UpcomingBucket>=>{
       const params={[`${field}.gte`]:date(now+start*DAY),[`${field}.lte`]:date(now+Math.floor(end)*DAY)};
       return {weight,params,page:1,result:await read(params,1),index:0};
@@ -154,25 +171,100 @@ export class TmdbExplore {
       items.push(item);
     }
   }
-  async page(row: TmdbExploreRow, page: number, streaming?: {region: string; ids: number[]}, kind?:ExploreItem['kind']): Promise<ExplorePage> {
+  private async seasonPremiere(id: number, today: string) {
+    const details = await this.client.get(`/tv/${id}`, {}, 12 * HOUR).catch(error => {
+      if (error?.code === 'CATALOG_UNAVAILABLE') return undefined;
+      throw error;
+    }) as {seasons?:{season_number?:number; air_date?:string | null}[]} | undefined;
+    const seasons = Array.isArray(details?.seasons) ? details.seasons : [];
+    return seasons.reduce<string | undefined>((latest, season) => {
+      const day = season?.air_date;
+      return (season?.season_number ?? 0) >= 2 && typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today && (!latest || day > latest) ? day : latest;
+    }, undefined);
+  }
+  private async popularSnapshot(row: PopularRow, now: number, ranking?: ExploreRanking): Promise<PopularSnapshot> {
+    const type = row === 'popular-movies' ? 'movie' : 'tv', today = date(now);
+    const field = type === 'movie' ? 'primary_release_date' : 'first_air_date';
+    const {releaseBoost,releaseDays,audienceRating} = exploreRankingFor(row, ranking);
+    const {seasonBoost,seasonDays} = exploreRankingFor('popular-shows', ranking);
+    const fetchPage = (page:number, extra:Record<string,string> = {}) => this.titles(type, `/discover/${type}`, {
+      include_adult:'false', sort_by:'popularity.desc', [`${field}.lte`]:today, ...extra, page:String(page)
+    }, 12 * HOUR);
+    const gather = async (limit:number, extra?:Record<string,string>) => {
+      const first = await fetchPage(1, extra), count = Math.max(1, Math.min(limit, first.pages));
+      const rest = await Promise.all(Array.from({length:count-1}, (_, index) => fetchPage(index+2, extra)));
+      return {items:[first,...rest].flatMap(result=>result.items), count, last:first.pages};
+    };
+    const [popular,releases,airing] = await Promise.all([
+      gather(POPULAR_PAGES),
+      releaseBoost ? gather(RECENT_PAGES, {[`${field}.gte`]:date(now-releaseDays*DAY)}).then(result=>result.items) : [],
+      type === 'tv' && seasonBoost ? gather(RECENT_PAGES, {'air_date.gte':date(now-seasonDays*DAY),'air_date.lte':today}).then(result=>result.items) : []
+    ]);
+    const premieres = new Map<string, string | undefined>();
+    if (type === 'tv' && seasonBoost) {
+      // Check the most popular shows as well as the airing candidates that could move up into the row.
+      const series = mixCandidates([[...popular.items.slice(0,EXPLORE_PAGE_SIZE),...airing.slice(0,RECENT_PAGES*EXPLORE_PAGE_SIZE)]]);
+      await Promise.all(series.map(async ({item}) => {
+        premieres.set(item.key, await this.seasonPremiere(item.ids.tmdb!, today));
+      }));
+    }
+    const score = (candidate:Candidate) => {
+      const boost = recentBoost(candidate.date, now, releaseDays, releaseBoost)
+        + recentBoost(premieres.get(candidate.item.key), now, seasonDays, seasonBoost);
+      return {candidate, boost, score:candidate.popularity * (1 + boost) * audienceQuality(candidate, audienceRating / 100)};
+    };
+    const base = mixCandidates([popular.items]).map(score), baseKeys = new Set(base.map(({candidate})=>candidate.item.key));
+    const cutoff = base.reduce((min,entry)=>Math.min(min,entry.score),Infinity);
+    const promoted = mixCandidates([[...releases,...airing]]).filter(c=>!baseKeys.has(c.item.key)).map(score)
+      .filter(entry=>entry.boost>0 && (!base.length || entry.score>=cutoff));
+    const items = [...base,...promoted].sort((a,b)=>b.score-a.score).map(({candidate})=>candidate);
+    return {items, seen:new Set(items.map(({item})=>item.key)), next:popular.count+1, last:popular.last, read:fetchPage};
+  }
+  private async popularPage(row: PopularRow, page: number, now: number, ranking?: ExploreRanking): Promise<ExplorePage> {
+    const settings = exploreRankingFor(row, ranking), today = date(now);
+    const key = JSON.stringify([row,this.client.credentialGeneration(),today,settings]);
+    const snapshot = await this.popular.remember(key, HOUR, () => this.popularSnapshot(row, Date.parse(today), ranking), now);
+    // Keep the rest of the catalog browsable in TMDB order, skipping titles already promoted into the ranked results.
+    const end = page * EXPLORE_PAGE_SIZE;
+    while (snapshot.items.length <= end && snapshot.next <= snapshot.last) {
+      snapshot.pending ??= snapshot.read(snapshot.next).then(({items}) => {
+        for (const candidate of items) {
+          if (snapshot.seen.has(candidate.item.key)) continue;
+          snapshot.seen.add(candidate.item.key);
+          snapshot.items.push(candidate);
+        }
+        snapshot.next++;
+      }).finally(() => {snapshot.pending=undefined;});
+      await snapshot.pending;
+    }
+    return {items:snapshot.items.slice(end-EXPLORE_PAGE_SIZE,end).map(({item})=>item),page,hasMore:page<500&&snapshot.items.length>end};
+  }
+  async page(row: TmdbExploreRow, page: number, streaming?: {region: string; ids: number[]}, kind?:ExploreItem['kind'], ranking?:ExploreRanking): Promise<ExplorePage> {
     if (streaming && !streaming.ids.length) return {items:[], page, hasMore:false};
     const now = this.now();
     const types: readonly TitleKind[] = row.endsWith('-movies') ? ['movie'] : row.endsWith('-shows') ? ['tv'] : kinds;
     const selected=kind?types.filter(type=>type===(kind==='show'?'tv':'movie')):types;
-    if (row === 'trending') return sliceExplore(await this.trending(selected), page);
+    if (row === 'trending') return sliceExplore(await this.trending(selected, exploreRankingFor(row, ranking).trendingDays), page);
     if(row==='upcoming-movies'||row==='upcoming-shows'){
       const type=selected[0];
-      return type?this.upcoming(type,page,now):{items:[],page,hasMore:false};
+      return type?this.upcoming(type,page,now,ranking):{items:[],page,hasMore:false};
     }
+    if (isPopularRow(row) && selected.length && page <= 500) {
+      const {releaseBoost,audienceRating} = exploreRankingFor(row, ranking);
+      if (releaseBoost || audienceRating || row === 'popular-shows' && exploreRankingFor(row, ranking).seasonBoost) {
+        return this.popularPage(row,page,now,ranking);
+      }
+    }
+    const acclaimed = exploreRankingFor('acclaimed', ranking);
     const lists = await Promise.all(selected.map(async type => {
       const dateField = type === 'movie' ? 'primary_release_date' : 'first_air_date';
-      const days = row === 'recent-streaming' ? 180 : row === 'acclaimed' ? 365 : undefined;
+      const days = row === 'recent-streaming' ? exploreRankingFor(row, ranking).releaseDays : row === 'acclaimed' ? acclaimed.releaseDays : undefined;
       const params: Record<string,string> = {
         include_adult:'false',
         sort_by:row === 'acclaimed' ? 'vote_average.desc' : row === 'recent-streaming' ? `${dateField}.desc` : 'popularity.desc',
         ...(days && {[`${dateField}.gte`]:date(now-days*24*HOUR), [`${dateField}.lte`]:date(now)}),
         ...((row === 'popular-movies' || row === 'popular-shows') && {[`${dateField}.lte`]:date(now)}),
-        ...(row === 'acclaimed' && {'vote_average.gte':'7.2', 'vote_count.gte':'50'}),
+        ...(row === 'acclaimed' && {'vote_average.gte':String(acclaimed.minimumRating), 'vote_count.gte':String(acclaimed.minimumVotes)}),
         ...(streaming && {watch_region:streaming.region, with_watch_providers:streaming.ids.join('|'), with_watch_monetization_types:'flatrate'})
       };
       const read = (n: number) => this.titles(type, `/discover/${type}`, {...params, page:String(n)}, 12 * HOUR);
