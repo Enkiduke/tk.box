@@ -10,10 +10,20 @@ import type { ParsedRelease } from './release-name.js';
 
 export const MOVIES_ROOT = '/srv/media/movies';
 
-// Clean-title rules: `:` becomes ` -`; characters not allowed in file names go (a slash leaves a space, so Face/Off
-// stays two words); spaces collapse.
+// Radarr's {Movie CleanTitle} (FileNameBuilder.CleanTitle), checked against the folders Radarr made: `&` becomes `and`,
+// a slash a space (Face/Off stays two words), and Radarr's "scenify" characters go: punctuation standing alone between
+// spaces, `'` `:` `?` `,` (and the like) before a space, the end or a contraction (Freddy's → Freddys,
+// Avatar: Fire and Ash → Avatar Fire and Ash), and brackets. Accents are removed. Then the file-name pass: a colon still
+// left (10:30) is replaced the "smart" way (`-`), characters not allowed in file names go, and spaces collapse.
+const SCENIFY_REMOVE = /(?<=\s)(,|<|>|\/|\\|;|:|'|"|\||`|’|~|!|\?|@|\$|%|\^|\*|-|_|=)(?=\s)|('|`|’|:|\?|,)(?=(?:(?:s|m|t|ve|ll|d|re)\s)|\s|$)|(\(|\)|\[|\]|\{|\})/gi;
 export function cleanTitle(title: string) {
-  return title.replace(/\s*:/g, ' -').replace(/[\\/]/g, ' ').replace(/[<>"|?*\u0000-\u001f]/g, '')
+  return fileNameText(title.replace(/&/g, 'and').replace(/[\\/]/g, ' ').replace(SCENIFY_REMOVE, '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '').normalize('NFC'));
+}
+// The file-name pass alone, for tokens that aren't clean titles ({Edition Tags}, the group): colons the smart way,
+// characters not allowed in file names removed (a slash leaves a space), spaces collapsed.
+export function fileNameText(text: string) {
+  return text.replace(/[\\/]/g, ' ').replace(/\s*:\s*/g, m => /\s/.test(m) ? ' - ' : '-').replace(/[<>"|?*\u0000-\u001f]/g, '')
     .replace(/\s+/g, ' ').trim();
 }
 
@@ -38,11 +48,11 @@ export function movieFolder(movie: MovieNaming) {
 
 // Without the extension.
 export function movieFileName(movie: MovieNaming, file: MovieFile) {
-  const editions = file.editions?.length ? cleanTitle(file.editions.join(' ')) : undefined;
+  const editions = file.editions?.length ? fileNameText(file.editions.join(' ')) : undefined;
   const formats = file.customFormats?.length ? file.customFormats.join(' ') : undefined;
   // {[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}: one bracket around both; either may be missing.
   const audio = [file.audioCodec, file.audioChannels].filter(Boolean).join(' ') || undefined;
-  const group = file.group ? cleanTitle(file.group).replace(/\s+/g, '') : undefined;
+  const group = file.group ? fileNameText(file.group).replace(/\s+/g, '') : undefined;
   return tidy([
     cleanTitle(movie.title),
     optional(movie.year ? String(movie.year) : undefined, y => `(${y})`),

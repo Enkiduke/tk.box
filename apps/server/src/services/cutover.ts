@@ -1,4 +1,6 @@
+import { realpath } from 'node:fs/promises';
 import { posix } from 'node:path';
+import { movieFolder } from '../lib/naming.js';
 import { AppError, requireThat, requireWritable } from '../errors.js';
 import { isQuality, type Quality } from '../lib/quality.js';
 import { remoteJson, remoteMessage } from '../providers/remote-json.js';
@@ -60,17 +62,33 @@ export async function readRadarr(service: ArrService, transport: typeof fetch = 
   return { movies: movies as RadarrMovie[], naming: naming as RadarrNaming, tags: tags as RadarrData['tags'] };
 }
 
-// What an import would write, and what stops it or is left out. Pure.
-export function planMovies(data: RadarrData, settings: { roots: { movie: string }; naming: { movieFolder: string; movieFile: string } }, keepTags: readonly string[]) {
+const slash = (p: string) => trimSlash(p.replaceAll('\\', '/'));
+// The folders Radarr keeps movies in (each movie's parent folder).
+export function radarrRoots(data: RadarrData) {
+  return [...new Set(data.movies.flatMap(m => typeof m.path === 'string' && m.path ? [posix.dirname(slash(m.path))] : []))];
+}
+// Radarr's roots that are tk.box's movie root under another name, by where each resolves on disk (on Whatbox,
+// /home/<user> is a link to /mnt/<disk>/<user>). One that doesn't resolve here isn't the same folder.
+export async function sameRoots(roots: readonly string[], root: string, resolve: (path: string) => Promise<string> = realpath) {
+  const real = async (p: string) => slash(await resolve(p));
+  const mine = await real(root).catch(() => slash(root)), same: string[] = [];
+  for (const r of roots) if (r !== slash(root) && await real(r).then(p => p === mine, () => false)) same.push(r);
+  return same;
+}
+
+// What an import would write, and what stops it or is left out. Pure. `sameAs` are Radarr's roots that are the movie
+// root under another name; what's under them is recorded under the movie root.
+export function planMovies(data: RadarrData, settings: { roots: { movie: string }; naming: { movieFolder: string; movieFile: string } }, keepTags: readonly string[],
+  sameAs: readonly string[] = []) {
   const problems: CutoverProblem[] = [], titles: PlannedMovie[] = [];
   const naming = data.naming;
   if ((naming.standardMovieFormat ?? '').trim() !== settings.naming.movieFile.trim())
     problems.push({ kind: 'naming', blocking: true, detail: `Radarr's movie file format is “${naming.standardMovieFormat ?? ''}”` });
   if ((naming.movieFolderFormat ?? '').trim() !== settings.naming.movieFolder.trim())
     problems.push({ kind: 'naming', blocking: true, detail: `Radarr's movie folder format is “${naming.movieFolderFormat ?? ''}”` });
-  // tk.box turns “:” into “ -”, Radarr's “Replace with Space Dash”.
-  if (naming.colonReplacementFormat && naming.colonReplacementFormat !== 'spaceDash')
-    problems.push({ kind: 'naming', blocking: false, detail: `Radarr replaces colons with “${naming.colonReplacementFormat}”; tk.box uses space dash` });
+  // A colon CleanTitle leaves (10:30) is replaced the way Radarr's “Smart Replace” does.
+  if (naming.colonReplacementFormat && naming.colonReplacementFormat !== 'smart')
+    problems.push({ kind: 'naming', blocking: false, detail: `Radarr replaces colons with “${naming.colonReplacementFormat}”; tk.box uses smart replace` });
   if (naming.renameMovies === false) problems.push({ kind: 'naming', blocking: false, detail: 'Radarr doesn’t rename movies, so older files may not follow the format' });
 
   const keepLabels = new Set(keepTags.map(t => t.toLowerCase()));
@@ -81,10 +99,17 @@ export function planMovies(data: RadarrData, settings: { roots: { movie: string 
     if (typeof m.id !== 'number') continue;
     if (typeof m.tmdbId !== 'number' || m.tmdbId <= 0) { problems.push({ kind: 'no-tmdb', blocking: false, title: name, detail: 'No TMDB id in Radarr' }); continue; }
     if (seen.has(m.tmdbId)) { problems.push({ kind: 'duplicate', blocking: false, title: name, detail: `TMDB ${m.tmdbId} is in Radarr twice` }); continue; }
-    const path = typeof m.path === 'string' ? trimSlash(m.path.replaceAll('\\', '/')) : '';
-    const folder = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : undefined;
-    if (!folder || folder.includes('/')) { problems.push({ kind: 'outside-root', blocking: false, title: name, detail: path ? `${path} isn’t a folder in ${root}` : 'No path in Radarr' }); continue; }
+    const radarrPath = typeof m.path === 'string' ? slash(m.path) : '';
+    const under = [root, ...sameAs.map(slash)].find(r => radarrPath.startsWith(`${r}/`));
+    const folder = under ? radarrPath.slice(under.length + 1) : undefined;
+    if (!folder || folder.includes('/')) { problems.push({ kind: 'outside-root', blocking: false, title: name, detail: radarrPath ? `${radarrPath} isn’t a folder in ${root}` : 'No path in Radarr' }); continue; }
     seen.add(m.tmdbId);
+    // Recorded under tk.box's root, whatever name Radarr knew it by.
+    const path = `${root}/${folder}`;
+    // A folder tk.box would name differently means its clean-title rule doesn't match Radarr's, so new movies would be
+    // named unlike the old ones. Listed, not blocking: the folder itself is kept as Radarr made it.
+    const ours = movieFolder({ title: m.title ?? name, ...(m.year ? { year: m.year } : {}), tmdbId: m.tmdbId });
+    if (ours !== folder) problems.push({ kind: 'folder-name', blocking: false, title: name, detail: `Radarr: ${folder} · tk.box: ${ours}` });
     const released: Released = { ...(day(m.inCinemas) ? { theatrical: day(m.inCinemas) } : {}), ...(day(m.digitalRelease) ? { digital: day(m.digitalRelease) } : {}),
       ...(day(m.physicalRelease) ? { physical: day(m.physicalRelease) } : {}) };
     const aliases = [...new Set([m.originalTitle, ...(m.alternateTitles ?? []).map(a => a.title)].filter((t): t is string => !!t && t !== m.title))].slice(0, 50);
@@ -92,7 +117,8 @@ export function planMovies(data: RadarrData, settings: { roots: { movie: string 
       aliases, monitored: m.monitored !== false, keep: (m.tags ?? []).some(t => keepIds.has(t)), folder, released };
     const f = m.hasFile ? m.movieFile : undefined;
     if (f) {
-      const filePath = f.path ? f.path.replaceAll('\\', '/') : f.relativePath ? posix.join(path, f.relativePath.replaceAll('\\', '/')) : undefined;
+      const given = f.path ? slash(f.path) : f.relativePath ? posix.join(radarrPath, slash(f.relativePath)) : undefined;
+      const filePath = given?.startsWith(`${radarrPath}/`) ? `${path}/${given.slice(radarrPath.length + 1)}` : given;
       const quality = ladderQuality(f.quality?.quality?.name);
       if (!filePath || !filePath.startsWith(`${path}/`)) problems.push({ kind: 'outside-root', blocking: false, title: name, detail: `Its file ${filePath ?? '(no path)'} isn’t in its folder; imported without the file` });
       else if (!quality) problems.push({ kind: 'quality', blocking: false, title: name, detail: `Radarr's quality “${f.quality?.quality?.name ?? '?'}” isn’t on the ladder; imported without the file` });
@@ -112,7 +138,7 @@ export function planMovies(data: RadarrData, settings: { roots: { movie: string 
 }
 
 type Deps = { library: LibraryStore; requests: Pick<RequestStore, 'moveArrIds'>; radarr: () => ArrService; keepTags: () => readonly string[];
-  transport?: typeof fetch; now?: () => number };
+  transport?: typeof fetch; now?: () => number; resolve?: (path: string) => Promise<string> };
 
 export class MovieCutover {
   constructor(private deps: Deps) {}
@@ -124,15 +150,20 @@ export class MovieCutover {
     return { fulfil: this.store.settings().fulfil.movie, imported: this.store.cutoverIds('movie').size, ...s };
   }
 
+  private async plan() {
+    const data = await readRadarr(this.deps.radarr(), this.deps.transport), settings = this.store.settings();
+    return planMovies(data, settings, this.deps.keepTags(), await sameRoots(radarrRoots(data), settings.roots.movie, this.deps.resolve));
+  }
+
   async dryRun(): Promise<CutoverPlan> {
-    const plan = planMovies(await readRadarr(this.deps.radarr(), this.deps.transport), this.store.settings(), this.deps.keepTags());
+    const plan = await this.plan();
     return { summary: plan.summary, problems: plan.problems.slice(0, 500), namingOk: plan.namingOk };
   }
 
   async import(actor: string): Promise<CutoverPlan> {
     requireWritable();
     requireThat(this.store.settings().fulfil.movie === 'radarr', 'CUTOVER_SWITCHED', 'Movies are on tk.box. Switch back to Radarr before importing again.', 409);
-    const settings = this.store.settings(), plan = planMovies(await readRadarr(this.deps.radarr(), this.deps.transport), settings, this.deps.keepTags());
+    const settings = this.store.settings(), plan = await this.plan();
     if (!plan.namingOk) throw new AppError('CUTOVER_NAMING', `Radarr's naming differs from tk.box's: ${plan.problems.filter(p => p.blocking).map(p => p.detail).join('; ')}.`, 409);
     const now = this.now();
     let added = 0, updated = 0;
