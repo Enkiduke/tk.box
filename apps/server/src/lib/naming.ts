@@ -42,8 +42,10 @@ export type MovieFile = {
 const optional = (value: string | undefined, wrap: (v: string) => string) => value ? wrap(value) : '';
 const tidy = (name: string) => name.replace(/\s{2,}/g, ' ').trim();
 
+// The folder format's brackets are outside the year token, so a movie with no year keeps an empty `()`, as Radarr's
+// folders do (Slauson Rec () {tmdb-1459346}). In the file name they're inside it ({(Release Year)}) and vanish.
 export function movieFolder(movie: MovieNaming) {
-  return tidy(`${cleanTitle(movie.title)} ${movie.year ? `(${movie.year})` : ''} {tmdb-${movie.tmdbId}}`);
+  return tidy(`${cleanTitle(movie.title)} (${movie.year ?? ''}) {tmdb-${movie.tmdbId}}`);
 }
 
 // Without the extension.
