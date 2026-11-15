@@ -1253,6 +1253,18 @@ class ArtworkTests(unittest.TestCase):
         self.assertTrue(list(cards[0].parent.parent.parent.glob("logo.*")))
 
 
+    def test_read_only_full_run_records_existing_collections_without_applying(self):
+        existing = {"kind": "franchise", "library": "Movies", "name": "Alien", "items": 2, "rating_key": "100"}
+        config_path = self.base / "config.json"
+        def build(artwork, apply, *, kept, **options):
+            self.assertFalse(apply)
+            kept.extend([existing, {"kind": "franchise", "library": "Movies", "name": "Planned", "items": 2}])
+            return 0
+        with patch.object(pc, "READ_ONLY", True), patch.object(pc, "read_collections_config", return_value={"plex": {"upload": True}}), \
+                patch.object(pc, "engine", return_value=self.artwork), patch.object(pc, "build_collections", side_effect=build), redirect_stdout(io.StringIO()):
+            self.assertEqual(pc.sync_collections(config_path, "apply"), 0)
+        self.assertEqual(pc.read_kept(config_path), [existing])
+
     def test_build_collections_plans_creates_adopts_and_trims(self):
         plex = "http://plex.invalid:32400"
         def video(key, title, tmdb):
@@ -1391,6 +1403,24 @@ class ArtworkTests(unittest.TestCase):
         self.assertNotIn("no longer one of the franchise collections", output.getvalue())
         self.assertNotIn("WARN", output.getvalue())
 
+
+    def test_imdb_episode_lists_keep_parent_series_for_tv_and_exclude_episodes_from_movies(self):
+        sources = pc.CollectionSources(self.artwork)
+        url = "https://www.imdb.com/list/ls566667558/"
+        parent = {"id": "tt100", "titleText": {"text": "Series"}, "releaseYear": {"year": 2012}}
+        titles = [
+            {"id": "tt101", "titleType": {"id": "tvEpisode"}, "series": {"series": parent}},
+            {"id": "tt102", "titleType": {"id": "tvEpisode"}, "series": {"series": parent}},
+            {"id": "tt103", "titleType": {"id": "movie"}},
+            {"id": "tt104", "titleType": {"id": "videoGame"}},
+        ]
+        reply = {"list": {"titleListItemSearch": {"edges": [{"title": t} for t in titles], "pageInfo": {"hasNextPage": False}}}}
+        with patch.object(sources, "imdb", return_value=reply):
+            shows = sources.fetch(url, "tv", resolve=False)["items"]
+            movies = sources.fetch(url, "movie", resolve=False)["items"]
+        self.assertEqual([row["member"] for row in shows], [{"imdb_id": "tt100"}])
+        self.assertEqual((shows[0]["title"], shows[0]["year"]), ("Series", "2012"))
+        self.assertEqual([row["member"] for row in movies], [{"imdb_id": "tt103"}])
 
     def test_universes_are_counted_from_the_index_and_sorted_by_how_much_of_them_is_in_plex(self):
         items = [{"title": "Alien", "year": "1979", "tmdb_id": 10}, {"title": "Iron Man", "year": "2008", "imdb_id": "tt0371746"},

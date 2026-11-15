@@ -9,7 +9,7 @@ import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
 import {ArtworkFiles,imageType} from './services/artwork-files.js';
 import {ArtworkPictures,type PlexJson} from './services/artwork-pictures.js';
-import {AppError,requireThat} from './errors.js';
+import {AppError,readOnly,requireThat} from './errors.js';
 import {viewer} from './modules/access.js';
 import {remoteJson} from './providers/remote-json.js';
 import {TmdbTitles} from './providers/tmdb-titles.js';
@@ -218,7 +218,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     // Until definitions are first saved, the engine's seasonal presets (all off) are what it would use.
     const defaults=await engine.defaultCollections(runOf(grant)).catch(()=>[]);
     const radarr=engine.radarr();
-    return {...saved,radarrConnected:!!(radarr.url&&radarr.key),defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload};
+    return {...saved,radarrConnected:!!(radarr.url&&radarr.key),defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload,readOnly:readOnly()};
   });
   app.put('/api/v1/admin/artwork/collections',{bodyLimit:512*1024},async request=>{
     const {grant}=viewer(request);

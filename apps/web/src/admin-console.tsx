@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {api} from './api.js';
-import {useApi} from './hooks.js';
+import {invalidate,useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
 import {date,useMutation} from './settings-ui.js';
 
@@ -26,6 +26,8 @@ export function AdminConsole() {
   const reload=()=>{artwork.reload();cleanup.reload();};
   const list=[...artwork.data?.jobs??[],...cleanup.data?.jobs??[]].sort((a,b)=>b.createdAt-a.createdAt).slice(0,40);
   const latest=list[0],busy=list.some(active),shown=list.find(j=>keyOf(j)===pinned)??latest;
+  const lastCollectionJob=artwork.data?.jobs.find(job=>job.script==='collections'&&job.status==='succeeded'&&['all','custom'].includes(job.args[0]??''))?.id;
+  useEffect(()=>{if(lastCollectionJob!==undefined)invalidate('/admin/artwork/collections');},[lastCollectionJob]);
   useEffect(()=>{show=job=>{setPinned(job?keyOf(job):undefined);setOpen(true);reload();};return()=>{show=undefined;};},[]);
   // Quick while something runs; otherwise only often enough to notice a scheduled run starting.
   useEffect(()=>{const timer=window.setInterval(reload,busy?3000:open?10000:30000);return()=>window.clearInterval(timer);},[busy,open]);

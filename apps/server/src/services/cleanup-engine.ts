@@ -92,6 +92,7 @@ export function snapshotRows(data: unknown, serverId: string): { checked: number
   if (!file || typeof file !== 'object' || !Array.isArray(file.watches) || typeof file.checked !== 'number') return 'the script did not write it';
   if (file.server_id !== serverId) return 'it is from a different Plex server';
   if (file.complete !== true) return 'some titles could not be checked; fix them and save again';
+  if (file.checked === 0) return 'no Plex titles were checked';
   const rows: CleanupWatch[] = [], at = (value: unknown) => typeof value === 'string' ? Date.parse(value) : NaN;
   for (const w of file.watches as { scope?: unknown; rating_key?: unknown; any?: unknown; users?: unknown }[]) {
     const scope = w?.scope, key = w?.rating_key, any = at(w?.any);
@@ -282,8 +283,10 @@ export class CleanupEngine {
       this.store.jobStarted(job.id);
       const engine = await this.status();
       if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
-      const file = this.writeConfig(settings, services);
+      const requests = this.requests();
+      const file = this.writeConfig(settings, services, requests);
       say(`> purge_requests ${job.args.join(' ')}`.trim());
+      if (!requests.length) say('No available or partially available requests in tk.box. Check Admin › Requests for the request inventory.');
       const comparison = job.args.includes('--dry-run') && !snapshot ? ['--compare-native-history', join(this.paths.dataDir, 'tk.box.sqlite')] : [];
       if (snapshot) rmSync(snapshotFile, { force: true });
       const args = job.args.flatMap(a => a === '--watch-snapshot' ? [a, snapshotFile] : [a]);
@@ -315,10 +318,10 @@ export class CleanupEngine {
     finally { rmSync(file, { force: true }); }
   }
   // Written whole and then moved into place, so the script never reads a half-written config.
-  private writeConfig(settings: CleanupSettings, services: CleanupServices) {
+  private writeConfig(settings: CleanupSettings, services: CleanupServices, requests: CleanupRequest[]) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    const requests = this.requests(), serverId = this.serverId();
+    const serverId = this.serverId();
     const users = new Set([...settings.exemptUserIds, ...requests.flatMap(r => r.requester_plex_id === null ? [] : [r.requester_plex_id])].map(String));
     const watches = serverId ? cleanupWatches(serverId, this.watches(serverId), users) : undefined;
     writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections(), requests, watches), null, 2), { mode: 0o600 });

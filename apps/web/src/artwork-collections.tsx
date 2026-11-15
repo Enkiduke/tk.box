@@ -22,7 +22,7 @@ type Franchise={sync:boolean;franchises:boolean;minItems:number;mode:'sync'|'app
 type Radarr={rootFolder:string;qualityProfileId:number;search:boolean};
 type Kept={name:string;library:string;kind:'franchise'|'streaming'|'custom';items:number;rating_key?:string;off?:boolean};
 type Schedules={custom:Scheduled;all:Scheduled;added:Scheduled};
-type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrConnected:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean};
+type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrConnected:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean;readOnly:boolean};
 type Draft={definitions:Definition[];automatic:Automatic[];franchise:Franchise;radarr:Radarr;schedules:Schedules};
 const tabs=[['collections','Collections'],['calendar','Calendar'],['schedules','Schedules'],['settings','Settings']] as const;
 // New collections start out of every Home screen and recommendation row.
@@ -74,12 +74,17 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   // Saving also applies every collection to Plex (when results go to Plex); the run opens in the Console.
   const save=()=>void mutation.run(async()=>{
     await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});
+    if(data.readOnly){setSaved('Saved in the read-only preview.');return;}
     if(!data.upload){setSaved('Saved. Turn on Send results to Plex in Artwork › Settings to apply it.');return;}
     openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'apply'}));invalidate('/admin/artwork/jobs');setSaved('Saved and applying to Plex.');
   });
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
   const tiles=collectionTiles(draft,data.kept.collections,data.kept.updated!==null,live),open=tiles.find(t=>t.id===opened);
   const types=draft.franchise.franchises||draft.franchise.streaming!=='off';
+  const preview=()=>void mutation.run(async()=>{
+    openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'plan'}));
+    invalidate('/admin/artwork/jobs');
+  });
   return <div className="form-stack">
     <div className="subtabs" role="tablist" aria-label="Collections">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
     <div role="tabpanel" className="form-stack">
@@ -115,10 +120,15 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
           <Switch label="Also with every full artwork run" description="Runs every collection before the artwork." checked={draft.franchise.sync} onChange={v=>franchise({sync:v})}/>
         </Card>:tab==='calendar'?<Card title="Calendar" description="When each seasonal collection shows in Plex.">
         <SeasonCalendar definitions={draft.definitions} open={setEditing}/>
-      </Card>:<Card title="Collections" description={data.kept.updated?`Plex as of ${new Date(`${data.kept.updated}T00:00`).toLocaleDateString()}. Turning one off removes it from Plex on the next run.`:'Turning one off removes it from Plex on the next run.'} actions={<>
+      </Card>:<Card title="Collections" description={[
+          data.kept.updated&&`Plex as of ${new Date(`${data.kept.updated}T00:00`).toLocaleDateString()}.`,
+          !data.readOnly&&'Turning one off removes it from Plex on the next run.',
+        ].filter(Boolean).join(' ')} actions={<>
+          {data.readOnly&&<button disabled={mutation.busy} onClick={preview}>Refresh from Plex</button>}
           <button onClick={()=>setDiscover(true)}><Icon name="explore" size={16}/>Discover</button>
           <button onClick={()=>setImporting(true)}><Icon name="upload" size={16}/>Import</button>
           <button onClick={()=>{change({definitions:[...draft.definitions,{name:'New collection',library:libraries[0]?.title??'',type:libraries[0]?.type==='show'?'tv':'movie',enabled:false,members:[],visibility:hidden}]});setEditing(draft.definitions.length);}}><Icon name="plus" size={16}/>New</button></>}>
+        {data.readOnly&&<p className="muted small">This instance is read-only. Refresh from Plex to see your existing collections here.</p>}
         {data.definitions===null&&<p className="muted small">Seasonal presets, all off. Pick a library, turn some on, then save.</p>}
         <CollectionGrid tiles={tiles} open={t=>t.index===undefined?setOpened(t.id):setEditing(t.index)}
           toggle={(t,on)=>t.index===undefined?setAutomatic(t,{enabled:on}):setDefinition(t.index,{...draft.definitions[t.index]!,enabled:on})}/>

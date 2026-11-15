@@ -109,7 +109,10 @@ COLLECTION_UNIVERSES = (
     ("wizard", "Wizarding World", "https://mdblist.com/lists/k0meta/external/23683/", ("movie",)),
     ("xmen", "X-Men Universe", "https://www.imdb.com/list/ls567618635/", ("movie", "tv")))
 IMDB_CHARTS = {"top": "TOP_RATED_MOVIES", "toptv": "TOP_RATED_TV_SHOWS", "moviemeter": "MOST_POPULAR_MOVIES", "tvmeter": "MOST_POPULAR_TV_SHOWS"}
-IMDB_PAGE = "pageInfo { hasNextPage endCursor } edges { title { id titleText { text } releaseYear { year } titleType { canHaveEpisodes } } }"
+IMDB_TITLE = "id titleText { text } releaseYear { year }"
+IMDB_PAGE = ("pageInfo { hasNextPage endCursor } edges { title { " + IMDB_TITLE
+             + " titleType { id canHaveEpisodes } series { series { " + IMDB_TITLE + " } } } }")
+IMDB_MOVIE_TYPES = {"movie", "tvMovie", "short", "tvShort", "video", "tvSpecial"}
 
 
 def collection_source(url):
@@ -431,8 +434,23 @@ class CollectionSources:
                     title = edge.get("title") or edge.get("node")
                     if not title or not re.fullmatch(r"tt\d+", str(title.get("id"))):
                         raise ValueError("An IMDb list item has no readable identifier; refusing partial membership")
+                    title_type = title.get("titleType") or {}
+                    type_id = title_type.get("id")
+                    if type_id == "tvEpisode":
+                        if kind != "tv":
+                            continue
+                        title = (title.get("series") or {}).get("series") or {}
+                        if not re.fullmatch(r"tt\d+", str(title.get("id"))):
+                            raise ValueError("An IMDb episode has no parent series ID; refusing partial membership")
+                        media = "tv"
+                    elif title_type.get("canHaveEpisodes"):
+                        media = "tv"
+                    elif type_id in IMDB_MOVIE_TYPES or type_id is None:
+                        media = "movie"
+                    else:
+                        continue
                     add({"title": (title.get("titleText") or {}).get("text", ""), "year": str((title.get("releaseYear") or {}).get("year") or ""), "imdb_id": title["id"]},
-                        "tv" if (title.get("titleType") or {}).get("canHaveEpisodes") else "movie")
+                        media)
                 if len(rows) >= limit or not result["pageInfo"]["hasNextPage"]:
                     break
                 after = result["pageInfo"]["endCursor"]
@@ -1144,21 +1162,29 @@ def index_universes(sources, index, force=False, now=None):
     `force`d; one that can't be read keeps what was there. Returns how many couldn't be read."""
     now = time.time() if now is None else now
     universes = index["universes"]
-    wanted = [(key, url, kind) for key, _, url, kinds in COLLECTION_UNIVERSES for kind in kinds
-              if force or f"{key}:{kind}" not in universes or now - universes[f"{key}:{kind}"]["read"] > LIST_DAYS * 86400]
+    wanted = []
+    for key, name, url, kinds in COLLECTION_UNIVERSES:
+        imdb = collection_source(url)[0] == "imdb"
+        for kind in kinds:
+            cached = universes.get(f"{key}:{kind}", {})
+            if force or now - cached.get("read", float("-inf")) > LIST_DAYS * 86400 or (imdb and not cached.get("imdb_series")):
+                wanted.append((key, name, url, kind, imdb))
     def read(entry):
-        key, url, kind = entry
+        _, _, url, kind, _ = entry
         try:
-            return entry, [row["member"] for row in sources.fetch(url, kind, 250, resolve=False)["items"]]
-        except (RuntimeError, ValueError):
-            return entry, None
+            return entry, [row["member"] for row in sources.fetch(url, kind, 250, resolve=False)["items"]], None
+        except (RuntimeError, ValueError) as error:
+            return entry, None, error
     failed = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for (key, _, kind), members in pool.map(read, wanted):
+        for (key, name, url, kind, imdb), members, error in pool.map(read, wanted):
             if members is None:
                 failed += 1
+                print(f"WARN {name} ({kind}, {collection_source(url)[0]}): {error}", flush=True)
             else:
                 universes[f"{key}:{kind}"] = {"read": now, "members": members}
+                if imdb:
+                    universes[f"{key}:{kind}"]["imdb_series"] = True
     return failed
 
 
@@ -1561,6 +1587,9 @@ def collection_options(config):
 def sync_collections(config_path, mode="plan", custom=False, today=None):
     """all/custom: show (plan) or make (apply) the collections; apply needs plex.upload: true."""
     config = read_collections_config(config_path)
+    if READ_ONLY and mode == "apply":
+        print("READ-ONLY: previewing collection changes. Plex will not be updated.", flush=True)
+        mode = "plan"
     if mode == "apply" and not config.get("plex", {}).get("upload"):
         raise ValueError("Applying collections changes Plex, so plex.upload must be true")
     artwork = engine(config_path, config)
@@ -1577,6 +1606,9 @@ def sync_collections(config_path, mode="plan", custom=False, today=None):
                 build_index(artwork)
             except (RuntimeError, ValueError, OSError) as error:
                 print(f"ERROR Discover index: {error}", file=sys.stderr, flush=True)
+    elif READ_ONLY and not custom and not failed:
+        # Populate the preview's grid with collections that the plan actually found in Plex.
+        record_kept(config_path, [row for row in kept if row.get("rating_key")])
     return 1 if failed else 0
 
 
@@ -1608,7 +1640,7 @@ def added(config_path, rating_key):
     item = select_item(artwork, config, rating_key=rating_key)[0]
     if not item.get("rating_key"):
         return 0
-    return 1 if custom_collections(artwork, bool(config["plex"].get("upload")), added_item=item) else 0
+    return 1 if custom_collections(artwork, not READ_ONLY and bool(config["plex"].get("upload")), added_item=item) else 0
 
 
 def discover(config_path, data):
