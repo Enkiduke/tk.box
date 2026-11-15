@@ -79,9 +79,10 @@ export function parseNewznab(xml: string): NewznabFeed {
 }
 
 // Why a call failed. `rate`: a 429, or Newznab's request or download limit (codes 500, 501), which pauses the indexer
-// until the next hour. `auth`: the key was refused or the account is suspended (100–102). `other`: the rest.
+// until the next hour. `auth`: the key was refused or the account is suspended (100–102). `cookie`: IPTorrents' page
+// shows the signed-out form. `other`: the rest.
 export class IndexerError extends Error {
-  constructor(public kind: 'rate' | 'auth' | 'other', message: string) { super(message); }
+  constructor(public kind: 'rate' | 'auth' | 'cookie' | 'other', message: string) { super(message); }
 }
 
 const errorKind = (code: number): IndexerError['kind'] => code >= 100 && code <= 102 ? 'auth' : code === 500 || code === 501 || code === 429 ? 'rate' : 'other';

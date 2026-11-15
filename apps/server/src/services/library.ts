@@ -1,28 +1,43 @@
 import { dirname } from 'node:path';
+import * as fs from 'node:fs/promises';
 import { AppError, readOnly, requireThat } from '../errors.js';
-import { allows2160p, defaultProfile, type Profile } from '../lib/quality.js';
+import { allows2160p, defaultProfile, rank, type Profile } from '../lib/quality.js';
+import { seedingDecision, seedingRule } from '../lib/seeding.js';
 import { pick, type Decision, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
 import { imdbNumber, normaliseTitle, parseRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
 import { firstSearchAt, isOut, movieWanted, nextSearchAt, type Wanted } from './wanted.js';
-import type { MovieImporter } from './library-import.js';
-import type { FeedListener, MovieQuery, NzbFile, Release, SearchResult } from './indexers.js';
-import type { Download, GrabRef, Sent } from './downloaders.js';
-import type { DownloadStatus } from '../providers/sabnzbd.js';
+import { findVideos, type MovieImporter } from './library-import.js';
+import { rarSets, unpack, unpackFolder } from './unpack.js';
+import type { FeedListener, MovieQuery, NzbFile, Release, SearchOptions, SearchResult } from './indexers.js';
+import type { Download, DownloaderName, GrabRef, RemoveOptions, Sent } from './downloaders.js';
+import type { DownloadStatus } from '../providers/download-status.js';
+import { stallClock } from '../providers/qbittorrent.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import type { Grab, LibraryStore, LibraryTitle, Released } from '../persistence/library-store.js';
 import type { BusEvents } from '../modules/bus.js';
 
-// The library for movies (docs/ARR-REPLACEMENT.md, phase 1): adding a title, wanted, searching (on add, the 30-minute
-// sweep with its backoff, RSS), grabbing, following SABnzbd, importing, and the failure rules. Every step that talks
-// to something outside runs on the queue: search, send, import, refresh-title and plex-scan.
+// The library for movies (docs/ARR-REPLACEMENT.md, phases 1 and 3): adding a title, wanted, searching (on add, the
+// 30-minute sweep with its backoff, RSS), grabbing, following SABnzbd and qBittorrent, unpacking, importing, seeding,
+// and the failure rules. Usenet comes first: IPTorrents is searched when NZBGeek has nothing, or nothing at the
+// cutoff. Every step that talks to something outside runs on the queue: search, send, unpack, import, refresh-title
+// and plex-scan.
 
 export type IndexersApi = {
-  search(query: MovieQuery, signal?: AbortSignal): Promise<SearchResult>;
+  search(query: MovieQuery, signal?: AbortSignal, options?: SearchOptions): Promise<SearchResult>;
   feeds(listener: FeedListener): () => void;
   download(release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal): Promise<NzbFile>;
 };
-export type DownloadersApi = { send(download: Download): Promise<Sent>; status(): Promise<DownloadStatus[]>; remove(grab: GrabRef): Promise<void> };
+export type DownloadersApi = { send(download: Download): Promise<Sent>; status(name?: DownloaderName): Promise<DownloadStatus[]>; remove(grab: GrabRef, options?: RemoveOptions): Promise<void> };
+// Unpacking a torrent's RARs (services/unpack.ts); tests swap it.
+export type Unpacker = { sets(root: string): Promise<string[]>; hasVideo(root: string): Promise<boolean>; unpack(archives: string[], dest: string, signal?: AbortSignal): Promise<void>;
+  clear(dest: string): Promise<void> };
+export const defaultUnpacker: Unpacker = {
+  sets: root => rarSets(root),
+  hasVideo: async root => (await findVideos(root)).videos.length > 0,
+  unpack: (archives, dest, signal) => unpack(archives, dest, signal),
+  clear: dest => fs.rm(dest, { recursive: true, force: true }),
+};
 // What Plex holds, by TMDB id (the owner's grant). `ready` reads it when it hasn't been yet; false when it can't.
 export type PlexHolds = { has(tmdbId: number): boolean; ready(): Promise<boolean> };
 export type AddMovie = { tmdbId: number; by: string; profileId?: number; keep?: boolean; search: boolean };
@@ -31,9 +46,11 @@ type TmdbMovie = { title?: string; original_title?: string; release_date?: strin
   external_ids?: { imdb_id?: string | null };
   alternative_titles?: { titles?: { title?: string }[] };
   release_dates?: { results?: { iso_3166_1?: string; release_dates?: { type?: number; release_date?: string }[] }[] } };
-type SearchPayload = { titleId: number };
+// `extra`: torrents an RSS feed found, weighed with what the Usenet search finds (Usenet first).
+type SearchPayload = { titleId: number; extra?: Release[] };
 type SendPayload = { grabId: number; link: string };
-type GrabPayload = { grabId: number };
+// `from`: the unpack folder to import from, instead of the download's.
+type GrabPayload = { grabId: number; from?: string };
 type FilePayload = { fileId: number };
 
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -42,6 +59,10 @@ const MISSING_CHECKS = 6;
 // TMDB's facts are read again daily for a movie that isn't out, weekly for one that is.
 const REFRESH_UNRELEASED = DAY, REFRESH_RELEASED = 7 * DAY;
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
+const downloaderLabel = (name: string) => name === 'qbittorrent' ? 'qBittorrent' : 'SABnzbd';
+// The alert key while a downloader can't be reached or take downloads (SABnzbd kept phase 1's).
+const downloaderKey = (name: string) => name === 'qbittorrent' ? 'library.downloader.qbittorrent' : 'library.downloader';
+const asDownloader = (name: string): DownloaderName => name === 'qbittorrent' ? 'qbittorrent' : 'sabnzbd';
 
 // TMDB's days for a movie: release_dates types 3 (theatrical; 2, limited, when there's no 3), 4 (digital), 5 (physical).
 // The US dates when TMDB has them, else the earliest anywhere.
@@ -62,8 +83,9 @@ export class Library {
   constructor(private deps: {
     store: LibraryStore; queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>;
     plex: PlexHolds; importer: MovieImporter; scan: (folder: string) => Promise<boolean>; emit: Emit;
-    log: (message: string, detail?: Record<string, unknown>) => void; now?: () => number;
+    log: (message: string, detail?: Record<string, unknown>) => void; now?: () => number; unpacker?: Unpacker;
   }) {}
+  private get unpacker() { return this.deps.unpacker ?? defaultUnpacker; }
   private get store() { return this.deps.store; }
   private now() { return (this.deps.now ?? Date.now)(); }
   // The library searches and grabs on its own only once movies are switched to tk.box (the cutover): until then, and
@@ -79,6 +101,8 @@ export class Library {
       onFailed: (item, error) => this.sendGaveUp(item, error) });
     queue.handle<GrabPayload>('import', { label: 'Import downloads', area: 'Library', handler: (item, ctx) => this.import(item, ctx),
       onFailed: (item, error) => this.alert(`library.import.${item.payload.grabId}`, 'An import gave up', error) });
+    queue.handle<GrabPayload>('unpack', { label: 'Unpack torrents', area: 'Library', handler: (item, ctx) => this.unpackGrab(item, ctx),
+      onFailed: (item, error) => this.alert(`library.import.${item.payload.grabId}`, 'An unpack gave up', error) });
     queue.handle<SearchPayload>('refresh-title', { label: 'Refresh titles from TMDB', area: 'Library', handler: item => this.refresh(item) });
     queue.handle<FilePayload>('plex-scan', { label: 'Tell Plex about new files', area: 'Library', handler: item => this.scan(item) });
     this.stopFeed = this.deps.indexers.feeds(async releases => { await this.onFeed(releases); });
@@ -160,7 +184,7 @@ export class Library {
       this.store.updateGrab(grab.id, { state: 'cancelled', error: 'Its collection let it go.', finishedAt: this.now() });
       this.deps.queue.cancel('send', `grab:${grab.id}`);
       this.deps.queue.cancel('import', `grab:${grab.id}`);
-      if (grab.downloadId) await this.deps.downloaders.remove({ downloader: 'sabnzbd', downloadId: grab.downloadId })
+      if (grab.downloadId) await this.deps.downloaders.remove({ downloader: grab.downloader, downloadId: grab.downloadId })
         .catch(e => this.deps.log('library: could not remove the cancelled download', { grab: grab.id, error: errorText(e) }));
       this.grabChanged(grab);
     }
@@ -194,8 +218,8 @@ export class Library {
       ...(have ? { have } : {}) };
   }
 
-  private queueSearch(titleId: number, runAt?: number) {
-    return this.deps.queue.enqueue('search', `movie:${titleId}`, { titleId }, runAt === undefined ? {} : { runAt });
+  private queueSearch(titleId: number, runAt?: number, extra?: Release[]) {
+    return this.deps.queue.enqueue('search', `movie:${titleId}`, { titleId, ...(extra?.length ? { extra } : {}) }, runAt === undefined ? {} : { runAt });
   }
 
   // ---- The wanted sweep (every 30 minutes) ----
@@ -225,9 +249,7 @@ export class Library {
     if (!title || title.kind !== 'movie' || !this.searching()) return done();
     await this.deps.plex.ready();
     if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) return done();
-    const profile = this.profile(title);
-    const result = await this.deps.indexers.search({ kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}),
-      ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(profile) }, signal);
+    const result = await this.searchInOrder(title, signal, item.payload.extra ?? []);
     // Every indexer over its cap or paused: wait for it, without counting a miss.
     const waits = result.indexers.map(r => r.waitUntil);
     if (!result.releases.length && waits.length && waits.every(w => w !== undefined)) return retry(Math.min(...waits as number[]));
@@ -243,11 +265,27 @@ export class Library {
     return done();
   }
 
+  // The preferred protocol's indexers first (Usenet, by default); the other's only when the first found nothing
+  // acceptable, or nothing at the profile's cutoff, so a torrent is grabbed only when Usenet has nothing or only a worse
+  // quality. The pick then ranks quality before protocol, so at the same quality the preferred one still wins.
+  private async searchInOrder(title: LibraryTitle, signal: AbortSignal | undefined, extra: Release[]): Promise<SearchResult> {
+    const profile = this.profile(title), settings = this.store.settings();
+    const query: MovieQuery = { kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}), ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(profile) };
+    const first = settings.protocol === 'torrent-first' ? 'torrent' as const : 'usenet' as const, second = first === 'usenet' ? 'torrent' as const : 'usenet' as const;
+    const one = await this.deps.indexers.search(query, signal, { protocols: [first] });
+    const releases = [...one.releases, ...extra.filter(r => !one.releases.some(o => o.guid === r.guid))];
+    const { best } = pick(releases, this.want(title), this.context(title));
+    if (best && rank(best.quality!) >= rank(profile.cutoff) && best.release.protocol === first) return { releases, indexers: one.indexers };
+    const two = await this.deps.indexers.search(query, signal, { protocols: [second] });
+    return { releases: [...releases, ...two.releases.filter(r => !releases.some(o => o.guid === r.guid))], indexers: [...one.indexers, ...two.indexers] };
+  }
+
   // A grab for the decision's release, sent by the queue. Undefined when the title already has one under way.
   private grab(title: LibraryTitle, decision: Decision) {
     const release = decision.release as Release;
     const grab = this.store.insertGrab({ titleId: title.id, releaseName: release.name, indexer: release.indexer, guid: release.guid, protocol: release.protocol,
-      ...(release.size !== undefined ? { size: release.size } : {}), quality: decision.quality!, score: decision.score, upgrade: decision.upgrade, downloader: 'sabnzbd' });
+      ...(release.size !== undefined ? { size: release.size } : {}), quality: decision.quality!, score: decision.score, upgrade: decision.upgrade,
+      downloader: release.protocol === 'torrent' ? 'qbittorrent' : 'sabnzbd' });
     if (!grab) return undefined;
     this.deps.log('library: grabbed', { title: title.id, grab: grab.id, release: release.name, reasons: decision.reasons });
     this.deps.queue.enqueue('send', `grab:${grab.id}`, { grabId: grab.id, link: release.link });
@@ -258,7 +296,8 @@ export class Library {
   // ---- RSS ----
 
   // New releases from the indexers' feeds, matched to wanted movies by IMDb id or title (and alias); the best for each
-  // movie is grabbed as a search would.
+  // movie is grabbed as a search would. A torrent that would win while Usenet comes first isn't grabbed straight
+  // away: a search asks Usenet first, with the feed's torrents weighed in.
   async onFeed(releases: Release[]) {
     if (readOnly() || !releases.length || !this.searching()) return 0;
     const movies = this.store.activeMovies();
@@ -283,7 +322,10 @@ export class Library {
       const title = movies.find(m => m.id === id)!;
       if (this.store.openGrabFor(id) || !this.wanted(title).wanted) continue;
       const { best } = pick(candidates, this.want(title), this.context(title));
-      if (best && this.grab(title, best)) grabbed++;
+      if (!best) continue;
+      const first = this.store.settings().protocol === 'torrent-first' ? 'torrent' : 'usenet';
+      if (best.release.protocol !== first) { this.queueSearch(title.id, undefined, candidates.filter(c => c.protocol !== first)); continue; }
+      if (this.grab(title, best)) grabbed++;
     }
     return grabbed;
   }
@@ -295,26 +337,37 @@ export class Library {
     const grab = this.store.grab(item.payload.grabId);
     if (!grab || grab.state !== 'sending') return done();
     let nzb: NzbFile;
+    const what = grab.protocol === 'torrent' ? 'The .torrent' : 'The NZB';
     try { nzb = await this.deps.indexers.download({ indexer: grab.indexer as Release['indexer'], link: item.payload.link, name: grab.releaseName }, signal); }
     catch (e) {
-      // The NZB itself won't come: after three tries the release counts as failed and the next one is picked.
+      // The file itself won't come: after three tries the release counts as failed and the next one is picked.
       // (A paused or switched-off indexer isn't the release's fault: that just waits.)
       const indexerDown = e instanceof AppError && (e.code === 'INDEXER_PAUSED' || e.code === 'INDEXER_DISABLED');
-      if (item.attempts >= 3 && !indexerDown) { await this.failGrab(grab, `The NZB couldn't be fetched: ${errorText(e)}`, true); return done(); }
+      if (item.attempts >= 3 && !indexerDown) { await this.failGrab(grab, `${what} couldn't be fetched: ${errorText(e)}`, true); return done(); }
       return fail(errorText(e));
     }
+    if (grab.protocol === 'torrent' && !nzb.infoHash) { await this.failGrab(grab, 'The .torrent had no info hash.', true); return done(); }
+    // A torrent already blocklisted by its hash (the same torrent under another listing) isn't sent.
+    if (nzb.infoHash && this.store.blocklist(grab.titleId).some(b => b.infoHash?.toLowerCase() === nzb.infoHash!.toLowerCase())) {
+      await this.failGrab(grab, 'That torrent is on the blocklist.', false); return done();
+    }
+    const key = downloaderKey(grab.downloader), label = downloaderLabel(grab.downloader);
     try {
-      const sent = await this.deps.downloaders.send({ kind: 'movie', protocol: 'usenet', name: grab.releaseName.slice(0, 200), file: nzb.bytes });
-      this.store.updateGrab(grab.id, { state: 'downloading', downloadId: sent.downloadId, sentAt: this.now(), progress: 0, error: null });
-      this.resolve('library.downloader');
+      const seedingMinutes = seedingRule(this.store.settings().seeding).maxDays * 24 * 60;
+      const sent = await this.deps.downloaders.send({ kind: 'movie', protocol: grab.protocol, name: grab.releaseName.slice(0, 200), file: nzb.bytes,
+        ...(nzb.infoHash ? { infoHash: nzb.infoHash, seedingMinutes } : {}) });
+      const now = this.now();
+      this.store.updateGrab(grab.id, { state: 'downloading', downloadId: sent.downloadId, sentAt: now, progress: 0, progressAt: now, error: null });
+      if (sent.warning) this.deps.log('library: sent with a warning', { grab: grab.id, warning: sent.warning });
+      this.resolve(key);
       this.grabChanged(grab);
       return done();
     } catch (e) {
-      this.alert('library.downloader', 'SABnzbd can’t take downloads', errorText(e));
+      this.alert(key, `${label} can’t take downloads`, errorText(e));
       return fail(errorText(e));
     }
   }
-  // SABnzbd stayed unreachable through every try: the grab is dropped (the release isn't at fault) and the sweep
+  // The downloader stayed unreachable through every try: the grab is dropped (the release isn't at fault) and the sweep
   // searches the title again later.
   private sendGaveUp(item: QueueItem<SendPayload>, error: string) {
     const grab = this.store.grab(item.payload.grabId);
@@ -323,27 +376,43 @@ export class Library {
     this.grabChanged(grab);
   }
 
-  // ---- The SABnzbd check (every 30 s while grabs are open) ----
+  // ---- The download check (every 30 s while grabs are under way): SABnzbd and qBittorrent ----
 
   async checkDownloads() {
     if (!this.store.hasOpenGrabs()) return { checked: 0 };
-    const grabs = this.store.openGrabs().filter(g => g.downloadId && (g.state === 'downloading' || g.state === 'unpacking'));
+    // SABnzbd's own unpacking is followed; a torrent being unpacked is tk.box's (the unpack queue).
+    const grabs = this.store.activeGrabs().filter(g => g.downloadId && (g.state === 'downloading' || (g.state === 'unpacking' && g.protocol === 'usenet')));
     if (!grabs.length) return { checked: 0 };
-    let statuses: DownloadStatus[];
-    try { statuses = await this.deps.downloaders.status(); this.resolve('library.downloader'); }
-    catch (e) { this.alert('library.downloader', 'SABnzbd can’t be reached', errorText(e)); throw e; }
-    const byId = new Map(statuses.map(s => [s.downloadId, s]));
+    let failure: unknown;
+    for (const name of [...new Set(grabs.map(g => asDownloader(g.downloader)))]) {
+      let statuses: DownloadStatus[];
+      try { statuses = await this.deps.downloaders.status(name); this.resolve(downloaderKey(name)); }
+      catch (e) { this.alert(downloaderKey(name), `${downloaderLabel(name)} can’t be reached`, errorText(e)); failure ??= e; continue; }
+      await this.follow(grabs.filter(g => asDownloader(g.downloader) === name), statuses);
+    }
+    if (failure) throw failure;
+    return { checked: grabs.length };
+  }
+
+  private async follow(grabs: Grab[], statuses: DownloadStatus[]) {
+    const byId = new Map(statuses.map(s => [s.downloadId.toLowerCase(), s]));
+    const now = this.now(), stalledMs = this.store.settings().stalledHours * HOUR;
     for (const grab of grabs) {
-      const status = byId.get(grab.downloadId!);
+      const status = byId.get(grab.downloadId!.toLowerCase()), label = downloaderLabel(grab.downloader);
       if (!status) {
         const misses = (this.missing.get(grab.id) ?? 0) + 1;
         this.missing.set(grab.id, misses);
-        if (misses >= MISSING_CHECKS) { this.missing.delete(grab.id); await this.failGrab(grab, 'SABnzbd no longer has the download.', true); }
+        if (misses >= MISSING_CHECKS) { this.missing.delete(grab.id); await this.failGrab(grab, `${label} no longer has the download.`, true); }
         continue;
       }
       this.missing.delete(grab.id);
-      if (status.state === 'failed') await this.failGrab(grab, status.error ?? 'SABnzbd marked the download failed.', true);
-      else if (status.state === 'importing') {
+      if (status.state === 'failed') await this.failGrab(grab, status.error ?? `${label} marked the download failed.`, true);
+      else if (status.state === 'downloading' && grab.protocol === 'torrent') {
+        // The stalled rule: no progress for stalledHours (6) counts as failed, unless qBittorrent itself holds it.
+        const clock = stallClock({ ...(grab.progress !== undefined ? { progress: grab.progress } : {}), ...(grab.progressAt ?? grab.sentAt ? { progressAt: grab.progressAt ?? grab.sentAt } : {}) }, status, now);
+        if (clock.stalledMs >= stalledMs) { await this.failGrab(grab, `No progress for ${Math.round(clock.stalledMs / HOUR)} h (${status.torrentState ?? 'stalled'}).`, true); continue; }
+        this.store.updateGrab(grab.id, { progress: status.progress ?? 0, progressAt: clock.progressAt });
+      } else if (status.state === 'importing') {
         this.store.updateGrab(grab.id, { state: 'importing', progress: 1, finishedAt: this.now(), ...(status.storage ? { contentPath: status.storage } : {}) });
         this.deps.queue.enqueue('import', `grab:${grab.id}`, { grabId: grab.id }, { maxAttempts: 10 });
         this.grabChanged(grab);
@@ -358,13 +427,15 @@ export class Library {
 
   // ---- The failure rules ----
 
-  // A failed download: blocklisted (unless it wasn't the release's fault), removed from SABnzbd and searched again. The
-  // fifth failure since the title's last import (or an admin unpausing it) pauses it and tells the admins.
+  // A failed download: blocklisted (unless it wasn't the release's fault; a torrent by its info hash too), removed from
+  // its downloader with its files, and searched again. The fifth failure since the title's last import (or an admin
+  // unpausing it) pauses it and tells the admins.
   async failGrab(grab: Grab, reason: string, blocklist: boolean) {
     this.store.updateGrab(grab.id, { state: 'failed', error: reason.slice(0, 500), finishedAt: this.now() });
-    if (blocklist) this.store.block({ titleId: grab.titleId, releaseName: grab.releaseName, indexer: grab.indexer, guid: grab.guid, reason: reason.slice(0, 500) });
+    if (blocklist) this.store.block({ titleId: grab.titleId, releaseName: grab.releaseName, indexer: grab.indexer, guid: grab.guid,
+      ...(grab.protocol === 'torrent' && grab.downloadId ? { infoHash: grab.downloadId } : {}), reason: reason.slice(0, 500) });
     this.deps.log('library: download failed', { grab: grab.id, title: grab.titleId, release: grab.releaseName, reason });
-    if (grab.downloadId && !readOnly()) await this.deps.downloaders.remove({ downloader: 'sabnzbd', downloadId: grab.downloadId })
+    if (grab.downloadId && !readOnly()) await this.deps.downloaders.remove({ downloader: grab.downloader, downloadId: grab.downloadId }, { deleteFiles: true })
       .catch(e => this.deps.log('library: could not remove the failed download', { grab: grab.id, error: errorText(e) }));
     this.grabChanged(grab);
     const title = this.store.title(grab.titleId);
@@ -380,21 +451,36 @@ export class Library {
 
   // ---- import ----
 
+  // A torrent whose files are RARs goes to the unpack queue first; the unpacked copy is then imported from the unpack
+  // folder (renamed in, and the folder removed). A torrent's own file is hardlinked, and the grab is then seeding.
   private async import(item: QueueItem<GrabPayload>, { signal }: HandlerContext): Promise<Outcome> {
     if (readOnly()) return retry(this.now() + HOUR);
     const grab = this.store.grab(item.payload.grabId);
     if (!grab || grab.state !== 'importing') return done();
     const title = this.store.title(grab.titleId);
     if (!title) { this.store.updateGrab(grab.id, { state: 'cancelled', error: 'The title was removed.' }); return done(); }
+    const torrent = grab.protocol === 'torrent', from = item.payload.from;
+    if (torrent && !from && grab.contentPath) {
+      const sets = await this.unpacker.sets(grab.contentPath).catch(() => [] as string[]);
+      if (sets.length && !(await this.unpacker.hasVideo(grab.contentPath).catch(() => false))) {
+        this.store.updateGrab(grab.id, { state: 'unpacking' });
+        this.deps.queue.enqueue('unpack', `grab:${grab.id}`, { grabId: grab.id }, { maxAttempts: 3 });
+        this.grabChanged(grab);
+        return done();
+      }
+    }
     const runtime = await this.tmdb(title.tmdbId).then(f => f.runtime, () => undefined);
     try {
-      const result = await this.deps.importer.import(grab, title, runtime, signal);
+      const result = await this.deps.importer.import(grab, title, runtime, signal,
+        torrent ? (from ? { from, state: 'seeding' } : { link: true, state: 'seeding' }) : {});
+      if (from) await this.unpacker.clear(from).catch(e => this.deps.log('library: the unpack folder stayed', { grab: grab.id, folder: from, error: errorText(e) }));
       if (!result.ok) { await this.failGrab(grab, result.reason, true); return done(); }
       this.resolve(`library.import.${grab.id}`);
       this.deps.log('library: imported', { grab: grab.id, title: title.id, path: result.path, ...(result.copied ? { copied: true } : {}),
         ...(result.replaced.length ? { replaced: result.replaced } : {}) });
-      if (result.copied) this.deps.log('library: the download was on another mount, so it was copied instead of moved', { grab: grab.id, path: result.path });
-      await this.deps.downloaders.remove({ downloader: 'sabnzbd', downloadId: grab.downloadId ?? '' })
+      if (result.copied) this.deps.log(`library: the download was on another mount, so it was copied instead of ${torrent && !from ? 'linked' : 'moved'}`, { grab: grab.id, path: result.path });
+      // SABnzbd's job and folder go; a torrent keeps seeding until the seeding check removes it.
+      if (!torrent) await this.deps.downloaders.remove({ downloader: 'sabnzbd', downloadId: grab.downloadId ?? '' })
         .catch(e => this.deps.log('library: SABnzbd kept the imported job', { grab: grab.id, error: errorText(e) }));
       const now = this.now(), settings = this.store.settings(), file = this.store.file(result.fileId)!;
       this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: this.store.search(title.id, 'movie')?.lastAt ?? now, misses: 0,
@@ -407,6 +493,75 @@ export class Library {
       this.alert(`library.import.${grab.id}`, `${title.title} couldn’t be imported`, errorText(e));
       return fail(errorText(e));
     }
+  }
+
+  // ---- unpack ----
+
+  // unrar (or 7z) into .tk-unpack/<grab id>/ beside the download, at low priority; the RARs keep seeding. An archive
+  // that fails twice counts as a failed download.
+  private async unpackGrab(item: QueueItem<GrabPayload>, { signal }: HandlerContext): Promise<Outcome> {
+    if (readOnly()) return retry(this.now() + HOUR);
+    const grab = this.store.grab(item.payload.grabId);
+    if (!grab || grab.state !== 'unpacking' || grab.protocol !== 'torrent' || !grab.contentPath) return done();
+    const dest = unpackFolder(grab.contentPath, grab.id);
+    try {
+      const sets = await this.unpacker.sets(grab.contentPath);
+      if (!sets.length) throw new Error('No RAR set was found any more.');
+      await this.unpacker.unpack(sets, dest, signal);
+    } catch (e) {
+      if (signal.aborted) throw e;
+      await this.unpacker.clear(dest).catch(() => {});
+      if (item.attempts >= 2) { await this.failGrab(grab, `Unpacking failed: ${errorText(e)}`, true); return done(); }
+      return fail(errorText(e));
+    }
+    this.store.updateGrab(grab.id, { state: 'importing' });
+    this.deps.queue.enqueue('import', `grab:${grab.id}`, { grabId: grab.id, from: dest }, { maxAttempts: 10 });
+    this.grabChanged(grab);
+    return done();
+  }
+
+  // ---- The seeding check (hourly) ----
+
+  // Each seeding torrent's ratio and seeding time are recorded, and one that meets the rule (lib/seeding.ts: ratio 2
+  // and 14 days, or 28 days, never under IPTorrents' 14-day / ratio-1 floor) is deleted from qBittorrent with its
+  // download; the library's hardlink or copy stays, and the grab is done. A finished tk.box torrent with no grab at all
+  // (its title was removed) goes by the same rule. A torrent qBittorrent no longer lists was removed there by hand.
+  async seedingCheck() {
+    if (readOnly()) return { checked: 0, removed: 0 };
+    const seeding = this.store.seedingGrabs();
+    let statuses: DownloadStatus[];
+    try { statuses = await this.deps.downloaders.status('qbittorrent'); this.resolve(downloaderKey('qbittorrent')); }
+    catch (e) {
+      if (!seeding.length) return { checked: 0, removed: 0 };
+      this.alert(downloaderKey('qbittorrent'), 'qBittorrent can’t be reached', errorText(e)); throw e;
+    }
+    const byHash = new Map(statuses.map(s => [s.downloadId.toLowerCase(), s]));
+    const now = this.now(), settings = this.store.settings().seeding;
+    let removed = 0;
+    const take = async (hash: string, figures: { ratio: number; seedingSeconds: number }, grab?: Grab) => {
+      const decision = seedingDecision(figures, settings, now);
+      if (grab) this.store.updateGrab(grab.id, { ratio: figures.ratio, seedingSeconds: Math.round(figures.seedingSeconds), seedingCheckedAt: now });
+      if (!decision.remove) return;
+      try { await this.deps.downloaders.remove({ downloader: 'qbittorrent', downloadId: hash }, { deleteFiles: true }); }
+      catch (e) { this.deps.log('library: a seeded torrent could not be removed', { hash, error: errorText(e) }); return; }
+      removed++;
+      this.deps.log('library: removed a seeded torrent; the library file stays', { hash, ...(grab ? { grab: grab.id } : { orphan: true }), reason: decision.reason });
+      if (grab) { this.store.updateGrab(grab.id, { state: 'done', removedAt: now }); this.grabChanged(grab); }
+    };
+    for (const grab of seeding) {
+      const status = byHash.get((grab.downloadId ?? '').toLowerCase());
+      if (!status) {
+        this.store.updateGrab(grab.id, { state: 'done', removedAt: now, error: 'qBittorrent no longer had the torrent.' });
+        this.grabChanged(grab);
+        continue;
+      }
+      await take(status.downloadId, { ratio: status.ratio ?? 0, seedingSeconds: status.seedingSeconds ?? 0 }, grab);
+    }
+    for (const status of statuses) {
+      if (status.state !== 'importing' || this.store.knowsDownload(status.downloadId)) continue;
+      await take(status.downloadId, { ratio: status.ratio ?? 0, seedingSeconds: status.seedingSeconds ?? 0 });
+    }
+    return { checked: seeding.length, removed };
   }
 
   // ---- plex-scan ----
@@ -472,6 +627,7 @@ export class Library {
   private found = new Map<number, { at: number; releases: Release[] }>();
   async interactive(titleId: number, signal?: AbortSignal) {
     const title = this.movie(titleId);
+    // Every enabled indexer, Usenet and torrents.
     const result = await this.deps.indexers.search({ kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}),
       ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(this.profile(title)) }, signal);
     const now = this.now();
@@ -483,7 +639,8 @@ export class Library {
     return {
       releases: decisions.map(d => ({ guid: d.release.guid, name: d.release.name, indexer: d.release.indexer, protocol: d.release.protocol,
         ...(d.release.size !== undefined ? { size: d.release.size } : {}), ...(d.release.publishedAt !== undefined ? { publishedAt: d.release.publishedAt } : {}),
-        ...(d.release.grabs !== undefined ? { grabs: d.release.grabs } : {}), ...(d.quality ? { quality: d.quality } : {}),
+        ...(d.release.grabs !== undefined ? { grabs: d.release.grabs } : {}), ...(d.release.seeders !== undefined ? { seeders: d.release.seeders } : {}),
+        ...(d.release.freeleech ? { freeleech: true } : {}), ...(d.quality ? { quality: d.quality } : {}),
         score: d.score, accepted: d.accepted, upgrade: d.upgrade, reasons: d.reasons })),
       indexers: result.indexers.map(r => ({ indexer: r.indexer, searched: r.searched, ...(r.error ? { error: r.error } : {}) })),
     };

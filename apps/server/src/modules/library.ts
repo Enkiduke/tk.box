@@ -11,13 +11,14 @@ import { registerLibraryAdmin } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 
-const SWEEP_MINUTES = 30, CHECK_MS = 30000;
+const SWEEP_MINUTES = 30, CHECK_MS = 30000, SEEDING_MINUTES = 60;
 
 type Deps = { queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'> };
 
 // tk.box's own library (docs/ARR-REPLACEMENT.md, phase 1b): movies, from adding one to importing it. Its work runs on
-// the queue (search, send, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes and the SABnzbd
-// check every 30 s while grabs are open, both in Admin › Schedule with Run now. Admin › Downloads reads and changes it
+// the queue (search, send, unpack, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes, the
+// download check (SABnzbd and qBittorrent) every 30 s while grabs are under way, and the seeding check hourly, all in
+// Admin › Schedule with Run now. Admin › Downloads reads and changes it
 // through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for a kind once
 // library_settings.fulfil says 'tkbox'; until then Radarr.
 export const libraryModule = defineModule({
@@ -70,11 +71,14 @@ export const libraryModule = defineModule({
 
     const sweepNow = () => jobs.track('library.wanted', () => library.sweep());
     const checkNow = () => jobs.track('library.downloads', () => library.checkDownloads());
+    const seedNow = () => jobs.track('library.seeding', () => library.seedingCheck());
     jobs.add(
       { id: 'library.wanted', label: 'Search for wanted movies', area: 'Library', section: 'downloads',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SWEEP_MINUTES } }), status: () => jobs.tracked('library.wanted'), run: sweepNow },
-      { id: 'library.downloads', label: 'Check SABnzbd downloads', area: 'Library', section: 'downloads',
-        schedule: () => ({ enabled: store.hasOpenGrabs(), schedule: { kind: 'every', minutes: CHECK_MS / 60000 } }), status: () => jobs.tracked('library.downloads'), run: checkNow });
+      { id: 'library.downloads', label: 'Check downloads', area: 'Library', section: 'downloads',
+        schedule: () => ({ enabled: store.hasOpenGrabs(), schedule: { kind: 'every', minutes: CHECK_MS / 60000 } }), status: () => jobs.tracked('library.downloads'), run: checkNow },
+      { id: 'library.seeding', label: 'Remove seeded torrents', area: 'Library', section: 'downloads',
+        schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SEEDING_MINUTES } }), status: () => jobs.tracked('library.seeding'), run: seedNow });
 
     const fulfiller = new LibraryFulfiller(library, store);
     const fulfils = tkboxFulfils(store);
@@ -93,6 +97,7 @@ export const libraryModule = defineModule({
         timers = [
           every(SWEEP_MINUTES * 60000, sweepNow, e => log.warn('library sweep failed', errorDetail(e))),
           every(CHECK_MS, () => store.hasOpenGrabs() ? checkNow() : undefined, e => log.warn('library download check failed', errorDetail(e))),
+          every(SEEDING_MINUTES * 60000, seedNow, e => log.warn('library seeding check failed', errorDetail(e))),
         ];
       },
       stop() { for (const t of timers) t.stop(); library.close(); availability.close(); }

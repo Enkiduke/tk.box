@@ -1,5 +1,5 @@
 // Admin › Downloads (docs/ARR-REPLACEMENT.md, "Admin UI"): what the library, indexers and downloaders routes answer.
-// Movies only in phase 1. Times are epoch ms; sizes are bytes, except profile sizes, which are GB.
+// Movies only so far (phases 1 and 3). Times are epoch ms; sizes are bytes, except profile sizes, which are GB.
 
 export type GrabState = 'sending' | 'downloading' | 'unpacking' | 'importing' | 'imported' | 'seeding' | 'done' | 'failed' | 'cancelled';
 export type DownloadsGrab = {
@@ -11,7 +11,10 @@ export type DownloadsJobState = 'queued' | 'running' | 'failed';
 // A queue item: `subject` names the title it is for, when it is for one.
 export type DownloadsJob = { id: number; kind: string; label: string; subject?: string; titleId?: number; state: DownloadsJobState; runAt: number;
   attempts: number; maxAttempts: number; lastError?: string; updatedAt: number };
-export type DownloadsActivity = { open: DownloadsGrab[]; failed: DownloadsGrab[]; history: DownloadsGrab[]; jobs: DownloadsJob[] };
+// A seeding torrent: its ratio and days seeded as qBittorrent last gave them (`checkedAt`), and when the seeding rule
+// will remove it (`removeAt`, the earliest certain time: the ratio already met, or the longest seeding).
+export type DownloadsSeeding = DownloadsGrab & { ratio?: number; seedingDays?: number; checkedAt?: number; removeAt?: number };
+export type DownloadsActivity = { open: DownloadsGrab[]; seeding: DownloadsSeeding[]; failed: DownloadsGrab[]; history: DownloadsGrab[]; jobs: DownloadsJob[] };
 
 export type WantedItem = { id: number; title: string; year?: number; why: 'missing' | 'cutoff'; quality?: string; paused: boolean; pausedReason?: string;
   nextAt?: number; lastAt?: number; misses: number; grab?: GrabState };
@@ -27,15 +30,19 @@ export type LibraryTitleView = {
   files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[];
 };
 export type InteractiveRelease = { guid: string; name: string; indexer: string; protocol: 'usenet' | 'torrent'; size?: number; publishedAt?: number; grabs?: number;
+  seeders?: number; freeleech?: boolean;
   quality?: string; score: number; accepted: boolean; upgrade: boolean; reasons: string[] };
 export type InteractiveSearch = { releases: InteractiveRelease[]; indexers: { indexer: string; searched: string[]; error?: string }[] };
 
 export type IndexerView = {
   name: 'nzbgeek' | 'iptorrents'; enabled: boolean; secretSet: boolean;
-  settings: { categories: { movies: number[]; tv: number[] }; hourlyCap: number; dailyCap: number };
+  settings: { categories: { movies: number[]; tv: number[] }; hourlyCap: number; dailyCap: number; freeleechOnly: boolean };
+  // IPTorrents: which parts of its secret are saved (the user agent isn't secret).
+  iptorrents?: { rssSet: boolean; cookieSet: boolean; userAgent: string };
   lastOkAt: number | null; lastError: string | null; pausedUntil: number | null; today: { searches: number; grabs: number }; thisHour: number;
 };
-export type DownloaderView = { name: 'sabnzbd' | 'qbittorrent'; url: string; secretSet: boolean; settings: { categories: { movie: string; show: string }; priority?: number } };
+export type DownloaderView = { name: 'sabnzbd' | 'qbittorrent'; url: string; secretSet: boolean; settings: { categories: { movie: string; show: string }; priority?: number };
+  qbittorrent?: { username: string; passwordSet: boolean } };
 export type ConnectionTest = { ok: true; detail: string };
 
 export type PickProfile = { qualities: { name: string; allowed: boolean }[]; cutoff: string; movieSize: [number, number]; episodeSize: [number, number] };

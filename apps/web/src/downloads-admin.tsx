@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import type {ConnectionTest,CutoverPlan,CutoverView,DownloaderView,DownloadsActivity,DownloadsGrab,GrabState,IndexerView,InteractiveSearch,LibrarySettingsView,LibraryTitleView,NamingPreview,
+import type {CutoverPlan,CutoverView,DownloadsActivity,DownloadsGrab,DownloadsSeeding,GrabState,InteractiveSearch,LibrarySettingsView,LibraryTitleView,NamingPreview,
   PickProfile,PickProfileView,PickRules,ScoreRuleView,WantedList} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {invalidate,link,replaceRoute,useApi,useDebounced} from './hooks.js';
@@ -9,7 +9,7 @@ import {toast} from './toasts.js';
 
 // Admin › Downloads (docs/ARR-REPLACEMENT.md, "Admin UI"): tk.box's own library for movies, from what is downloading to
 // the pick rules and naming. A title opens from Activity or Wanted (?title=<id>).
-const tabs=[['activity','Activity'],['wanted','Wanted'],['indexers','Indexers'],['downloaders','Downloaders'],['rules','Pick rules'],['library','Library'],['cutover','Cutover']] as const;
+const tabs=[['activity','Activity'],['wanted','Wanted'],['rules','Pick rules'],['library','Library'],['cutover','Cutover']] as const;
 type Tab=typeof tabs[number][0];
 const REFRESH_MS=10000,HOUR=3600000,GB=1024**3;
 const stateNames:Record<GrabState,string>={sending:'Sending',downloading:'Downloading',unpacking:'Unpacking',importing:'Importing',imported:'Imported',seeding:'Seeding',done:'Done',failed:'Failed',cancelled:'Cancelled'};
@@ -37,7 +37,7 @@ export function DownloadsAdmin({params}:{params:URLSearchParams}) {
   if(titleId)return <TitleView id={titleId}/>;
   return <><SectionHead title="Downloads"/>
     <div className="subtabs" role="tablist" aria-label="Downloads">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
-    <div role="tabpanel">{tab==='activity'?<Activity/>:tab==='wanted'?<Wanted/>:tab==='indexers'?<Indexers/>:tab==='downloaders'?<Downloaders/>:tab==='rules'?<PickRulesTab/>:tab==='library'?<LibraryTab/>:<CutoverTab/>}</div>
+    <div role="tabpanel">{tab==='activity'?<Activity/>:tab==='wanted'?<Wanted/>:tab==='rules'?<PickRulesTab/>:tab==='library'?<LibraryTab/>:<CutoverTab/>}</div>
   </>;
 }
 
@@ -47,13 +47,14 @@ function Activity() {
   const view=useApi<DownloadsActivity>('/admin/library/activity'),mutation=useMutation(changed);useRefresh(view.reload);
   if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data)return <Loading/>;
-  const {open,failed,history,jobs}=view.data,now=Date.now();
+  const {open,seeding=[],failed,history,jobs}=view.data,now=Date.now();
   const retry=(path:string,what:string)=>void mutation.run(async()=>{await api(path,'POST');toast.info(`Retrying ${what}`);});
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     <Card title="Downloading" actions={<span className="muted small">{open.length}</span>}>
       {!open.length?<p className="muted small">Nothing downloading</p>:<GrabTable grabs={open} columns={['quality','protocol','progress','state']}/>}
     </Card>
+    {!!seeding.length&&<Card title="Seeding" actions={<span className="muted small">{seeding.length}</span>}><SeedingTable torrents={seeding} now={now}/></Card>}
     <Card title="Failed">
       {!failed.length?<p className="muted small">No failures</p>:<div className="table-scroll"><table className="jobs-table"><thead><tr><th>Title</th><th>Reason</th><th>When</th><th><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{failed.map(g=><tr key={g.id}><td><TitleLink id={g.titleId} title={g.title} year={g.year}/><small>{g.releaseName}</small></td>
@@ -72,6 +73,14 @@ function Activity() {
       {!history.length?<p className="muted small">Nothing yet</p>:<GrabTable grabs={history} columns={['quality','state','when']}/>}
     </Card>
   </>;
+}
+
+// Seeding torrents: ratio and days as qBittorrent last gave them, and when the seeding rule removes each.
+function SeedingTable({torrents,now}:{torrents:DownloadsSeeding[];now:number}) {
+  return <div className="table-scroll"><table className="jobs-table downloads-grabs"><thead><tr><th>Title</th><th>Ratio</th><th>Days</th><th>Removed</th></tr></thead>
+    <tbody>{torrents.map(t=><tr key={t.id}><td><TitleLink id={t.titleId} title={t.title} year={t.year}/><small>{t.releaseName} · {gb(t.size)}</small></td>
+      <td>{t.ratio!==undefined?t.ratio.toFixed(2):'—'}</td><td>{t.seedingDays!==undefined?t.seedingDays.toFixed(1):'—'}</td>
+      <td title={t.removeAt?date(t.removeAt):undefined}>{t.removeAt===undefined?'—':t.removeAt<=now?'Next check':when(t.removeAt,now)}</td></tr>)}</tbody></table></div>;
 }
 
 type GrabColumn='quality'|'protocol'|'progress'|'state'|'when';
@@ -172,79 +181,6 @@ function InteractiveSearchCard({path,title}:{path:string;title:string}) {
             title={r.accepted?undefined:'Grab it anyway'} aria-label={`Grab ${r.name} for ${title}`} onClick={()=>take(r.guid,r.name)}>Grab</button>}</td>
         </tr>)}</tbody></table></div>)}
   </Card>;
-}
-
-// ---- Indexers and downloaders ----
-
-const numbers=(text:string)=>text.split(/[\s,]+/).filter(Boolean).map(Number);
-const validNumbers=(text:string)=>numbers(text).every(n=>Number.isInteger(n)&&n>0);
-function TestButton({path,disabled}:{path:string;disabled?:boolean}) {
-  const [busy,setBusy]=useState(false);
-  const run=async()=>{setBusy(true);try{toast.success((await api<ConnectionTest>(path,'POST')).detail);}catch(e){toast.error((e as Error).message);}finally{setBusy(false);invalidate('/admin/indexers');invalidate('/admin/downloaders');}};
-  return <button type="button" disabled={busy||disabled} onClick={()=>void run()}>{busy?'Testing…':'Test'}</button>;
-}
-
-function Indexers() {
-  const view=useApi<IndexerView[]>('/admin/indexers');
-  if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
-  const nzbgeek=view.data?.find(i=>i.name==='nzbgeek');
-  if(!nzbgeek)return <Loading/>;
-  return <NzbGeekCard key={JSON.stringify(nzbgeek.settings)+nzbgeek.secretSet+nzbgeek.enabled} indexer={nzbgeek}/>;
-}
-function NzbGeekCard({indexer}:{indexer:IndexerView}) {
-  const s=indexer.settings;
-  const [enabled,setEnabled]=useState(indexer.enabled),[key,setKey]=useState(''),[movies,setMovies]=useState(s.categories.movies.join(', ')),[tv,setTv]=useState(s.categories.tv.join(', '));
-  const [hourly,setHourly]=useState(String(s.hourlyCap)),[daily,setDaily]=useState(String(s.dailyCap));
-  const mutation=useMutation(()=>invalidate('/admin/indexers'));
-  const valid=validNumbers(movies)&&validNumbers(tv);
-  const save=()=>void mutation.run(async()=>{
-    await api('/admin/indexers/nzbgeek','PUT',{enabled,...(key.trim()?{key:key.trim()}:{}),settings:{categories:{movies:numbers(movies),tv:numbers(tv)},hourlyCap:Number(hourly),dailyCap:Number(daily)}});
-    setKey('');toast.success('NZBGeek saved');});
-  const status=indexer.pausedUntil?<span className="warning-text">Paused until {date(indexer.pausedUntil)}</span>:indexer.lastError?<span className="warning-text" title={indexer.lastError}>Needs attention</span>
-    :indexer.lastOkAt?<span className="success">Working</span>:<span className="muted">{indexer.secretSet?'Not used yet':'Not set up'}</span>;
-  return <form onSubmit={e=>{e.preventDefault();if(valid)save();}}><Card title="NZBGeek" actions={status}>
-    <Switch label="On" checked={enabled} onChange={setEnabled}/>
-    <div className="form-columns">
-      <label>API key<input type="password" autoComplete="off" spellCheck={false} value={key} placeholder={indexer.secretSet?'Saved':''} onChange={e=>setKey(e.target.value)}/></label>
-      <div className="downloads-facts"><span><small>Today</small>{plural(indexer.today.searches,'search')} · {plural(indexer.today.grabs,'grab')}</span><span><small>This hour</small>{indexer.thisHour}</span></div>
-      <label>Movie categories<input value={movies} aria-invalid={!validNumbers(movies)} onChange={e=>setMovies(e.target.value)}/></label>
-      <label>TV categories<input value={tv} aria-invalid={!validNumbers(tv)} onChange={e=>setTv(e.target.value)}/></label>
-      <label>Searches an hour<input type="number" min={1} max={10000} required value={hourly} onChange={e=>setHourly(e.target.value)}/></label>
-      <label>Searches a day<input type="number" min={1} max={100000} required value={daily} onChange={e=>setDaily(e.target.value)}/></label>
-    </div>
-    {indexer.lastError&&<p className="danger-text small">{indexer.lastError}</p>}
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row"><button className="primary" disabled={mutation.busy||!valid}>Save</button><TestButton path="/admin/indexers/nzbgeek/test" disabled={!indexer.secretSet}/></div>
-  </Card></form>;
-}
-
-function Downloaders() {
-  const view=useApi<DownloaderView[]>('/admin/downloaders');
-  if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
-  const sab=view.data?.find(d=>d.name==='sabnzbd');
-  if(!sab)return <Loading/>;
-  return <SabnzbdCard key={JSON.stringify(sab)} downloader={sab}/>;
-}
-const priorities=[['','Category’s own'],['-1','Low'],['0','Normal'],['1','High'],['2','Force']] as const;
-function SabnzbdCard({downloader}:{downloader:DownloaderView}) {
-  const s=downloader.settings;
-  const [url,setUrl]=useState(downloader.url),[key,setKey]=useState(''),[movie,setMovie]=useState(s.categories.movie),[show,setShow]=useState(s.categories.show),[priority,setPriority]=useState(s.priority===undefined?'':String(s.priority));
-  const mutation=useMutation(()=>invalidate('/admin/downloaders'));
-  const save=()=>void mutation.run(async()=>{
-    await api('/admin/downloaders/sabnzbd','PUT',{url:url.trim(),...(key.trim()?{key:key.trim()}:{}),settings:{categories:{movie:movie.trim(),show:show.trim()},...(priority?{priority:Number(priority)}:{})}});
-    setKey('');toast.success('SABnzbd saved');});
-  const ready=!!downloader.url&&downloader.secretSet;
-  return <form onSubmit={e=>{e.preventDefault();save();}}><Card title="SABnzbd" actions={<span className={ready?'success':'muted'}>{ready?'Set up':'Not set up'}</span>}>
-    <div className="form-columns">
-      <label>Address<input type="url" placeholder="http://127.0.0.1:8080" value={url} onChange={e=>setUrl(e.target.value)}/></label>
-      <label>API key<input type="password" autoComplete="off" spellCheck={false} value={key} placeholder={downloader.secretSet?'Saved':''} onChange={e=>setKey(e.target.value)}/></label>
-      <label>Movie category<input required pattern="[\w.\-]+" value={movie} onChange={e=>setMovie(e.target.value)}/></label>
-      <label>TV category<input required pattern="[\w.\-]+" value={show} onChange={e=>setShow(e.target.value)}/></label>
-      <label>Priority<select value={priority} onChange={e=>setPriority(e.target.value)}>{priorities.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
-    </div>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button><TestButton path="/admin/downloaders/sabnzbd/test" disabled={!ready}/></div>
-  </Card></form>;
 }
 
 // ---- Pick rules ----

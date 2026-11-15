@@ -8,8 +8,9 @@ import { audioChannelsName, audioCodecName, dynamicRangeName, movieFileName, mov
 import type { FileMedia, Grab, LibraryStore, LibraryTitle } from '../persistence/library-store.js';
 
 // Importing a finished movie download (docs/ARR-REPLACEMENT.md, "Import and seeding", steps 1 and 3–5): find the video,
-// check it, name it, move it into the library and record it. Usenet only in phase 1, so files are renamed (copied when
-// the download is on another mount). Unpacking, hardlinks and seeding come with torrents.
+// check it, name it, bring it into the library and record it. Usenet downloads and unpacked RARs are renamed; torrents
+// are hardlinked so they keep seeding (services/unpack.ts unpacks RARs first). Either is copied when the download is on
+// another mount.
 
 export const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.m4v', '.avi']);
 export const SAMPLE_BYTES = 150 * 1024 * 1024;
@@ -21,7 +22,12 @@ export type Probe = { durationSec?: number; videoCodec?: string; audioCodec?: st
   transfer?: string; dolbyVision?: boolean; hdr10Plus?: boolean };
 export type ProbeFn = (path: string, signal?: AbortSignal) => Promise<Probe>;
 // The file operations import uses, so tests can make a rename fail with EXDEV or stop between two steps.
-export type FileOps = Pick<typeof fs, 'rename' | 'copyFile' | 'unlink' | 'mkdir' | 'stat' | 'readdir' | 'rmdir'>;
+export type FileOps = Pick<typeof fs, 'rename' | 'copyFile' | 'unlink' | 'mkdir' | 'stat' | 'readdir' | 'rmdir' | 'link'>;
+// How a download is brought in. Usenet and unpacked files are moved (renamed); a torrent's file is hardlinked, so it
+// keeps seeding. Both copy instead on EXDEV (another mount), and a hardlink copies too where links aren't possible.
+// `from` is the folder to read instead of the grab's (the unpack folder); `state` is the grab's state once imported
+// (`seeding` for a torrent).
+export type ImportOptions = { from?: string; link?: boolean; state?: 'imported' | 'seeding' };
 
 export type Found = { path: string; size: number };
 export type Skipped = { path: string; reason: string };
@@ -125,19 +131,20 @@ export class MovieImporter {
 
   // `runtimeMin` is TMDB's runtime; the file must be at least half of it. Errors it can't act on (permissions, a full
   // disk) are thrown, for the queue to retry.
-  async import(grab: Grab, title: LibraryTitle, runtimeMin: number | undefined, signal?: AbortSignal): Promise<ImportResult> {
+  async import(grab: Grab, title: LibraryTitle, runtimeMin: number | undefined, signal?: AbortSignal, options: ImportOptions = {}): Promise<ImportResult> {
     await this.cleanLeftovers();
-    if (!grab.contentPath) return { ok: false, failure: 'no-file', reason: 'The downloader gave no folder.', skipped: [] };
+    const contentPath = options.from ?? grab.contentPath;
+    if (!contentPath) return { ok: false, failure: 'no-file', reason: 'The downloader gave no folder.', skipped: [] };
     let found: Awaited<ReturnType<typeof findVideos>>;
-    try { found = await findVideos(grab.contentPath, this.ops, this.minBytes); }
-    catch (e) { if (errno(e) === 'ENOENT') return { ok: false, failure: 'no-file', reason: `${grab.contentPath} doesn't exist.`, skipped: [] }; throw e; }
+    try { found = await findVideos(contentPath, this.ops, this.minBytes); }
+    catch (e) { if (errno(e) === 'ENOENT') return { ok: false, failure: 'no-file', reason: `${contentPath} doesn't exist.`, skipped: [] }; throw e; }
     const { videos, skipped } = found;
     const main = videos[0];
     if (!main) return { ok: false, failure: 'no-file', reason: skipped.length ? `No usable video: ${skipped.map(s => `${basename(s.path)} is ${s.reason}`).join('; ')}.` : 'No video file in the download.', skipped };
 
     // The file's own name, the folder's when the file's is obfuscated, else the release name the grab was for.
     const fileParse = parseRelease(basename(main.path, extname(main.path)));
-    const folderName = main.path !== grab.contentPath ? basename(dirname(main.path)) : undefined;
+    const folderName = main.path !== contentPath ? basename(dirname(main.path)) : undefined;
     const candidates = [fileParse, ...(folderName ? [parseRelease(folderName)] : []), parseRelease(grab.releaseName)];
     const parsed: ParsedRelease = candidates.find(p => !p.obfuscated && qualityOf(p)) ?? parseRelease(grab.releaseName);
     const quality = qualityOf(parsed) ?? grab.quality;
@@ -165,14 +172,14 @@ export class MovieImporter {
       ...media, ...(group ? { group } : {}) });
     const dest = join(title.root, folder, `${name}${extname(main.path).toLowerCase()}`);
 
-    const copied = await this.place(main.path, dest);
+    const copied = options.link ? await this.linkInto(main.path, dest) : await this.place(main.path, dest);
     if (copied) media.copied = true;
     // Recorded first: the new file, the title's folder and the grab. Only then does the old file go.
     const fileId = this.store.db.transaction(() => {
       this.store.setFolder(title.id, folder);
       const id = this.store.insertFile({ titleId: title.id, path: dest, size: main.size, quality, proper: parsed.proper || parsed.repack, score,
         releaseName: grab.releaseName, ...(group ? { releaseGroup: group } : {}), media, grabId: grab.id });
-      this.store.updateGrab(grab.id, { state: 'imported', importedAt: Date.now(), progress: 1, error: null });
+      this.store.updateGrab(grab.id, { state: options.state ?? 'imported', importedAt: Date.now(), progress: 1, error: null });
       // On another mount the file was copied, not moved: said in the activity (Admin › Downloads reads it in 1c).
       if (copied) this.store.audit('library_import_copied', { grab: grab.id, title: title.id, from: main.path, to: dest });
       return id;
@@ -189,6 +196,24 @@ export class MovieImporter {
       }
     }
     return { ok: true, fileId, path: dest, copied, replaced, skipped };
+  }
+
+  // Hardlinks into the library (to a partial name, renamed into place, so a file already there is replaced whole). On
+  // EXDEV, or where the filesystem takes no links, copies instead. The download's own file stays: it is seeding.
+  private async linkInto(source: string, dest: string) {
+    await this.ops.mkdir(dirname(dest), { recursive: true });
+    if (source === dest) return false;
+    const partial = `${dest}.tk-partial`;
+    await unlinkQuietly(this.ops, partial);
+    let copied = false;
+    try { await this.ops.link(source, partial); }
+    catch (e) {
+      if (!['EXDEV', 'EPERM', 'ENOTSUP', 'EMLINK'].includes(errno(e) ?? '')) throw e;
+      copied = true;
+      try { await this.ops.copyFile(source, partial); } catch (copyError) { await unlinkQuietly(this.ops, partial).catch(() => {}); throw copyError; }
+    }
+    try { await this.ops.rename(partial, dest); } catch (e) { await unlinkQuietly(this.ops, partial).catch(() => {}); throw e; }
+    return copied;
   }
 
   // Renames into the library; on EXDEV (another mount) copies to a partial name, renames that into place, then removes

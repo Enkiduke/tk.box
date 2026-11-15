@@ -55,6 +55,8 @@ export type Grab = {
   id: number; titleId: number; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
   upgrade: boolean; downloader: string; downloadId?: string; state: GrabState; progress?: number; error?: string; contentPath?: string;
   sentAt?: number; finishedAt?: number; importedAt?: number; removedAt?: number;
+  // Torrents: when progress last moved, and the seeding figures qBittorrent last gave (and when).
+  progressAt?: number; ratio?: number; seedingSeconds?: number; seedingCheckedAt?: number;
 };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
 
@@ -65,7 +67,8 @@ type FileRaw = { id: number; title_id: number; path: string; size: number; quali
   release_group: string | null; media: string; grab_id: number | null; imported_at: number };
 type GrabRaw = { id: number; title_id: number; release_name: string; indexer: string; guid: string; protocol: Protocol; size: number | null; quality: string; score: number;
   upgrade: number; downloader: string; download_id: string | null; state: GrabState; progress: number | null; error: string | null; content_path: string | null;
-  sent_at: number | null; finished_at: number | null; imported_at: number | null; removed_at: number | null };
+  sent_at: number | null; finished_at: number | null; imported_at: number | null; removed_at: number | null;
+  progress_at: number | null; ratio: number | null; seeding_seconds: number | null; seeding_checked_at: number | null };
 
 const json = <T>(text: string | null, fallback: T): T => { try { return text ? JSON.parse(text) as T : fallback; } catch { return fallback; } };
 const quality = (text: string): Quality => isQuality(text) ? text : 'DVD';
@@ -85,9 +88,12 @@ const grab = (r: GrabRaw): Grab => ({
   id: r.id, titleId: r.title_id, releaseName: r.release_name, indexer: r.indexer, guid: r.guid, protocol: r.protocol, ...opt('size', r.size), quality: quality(r.quality),
   score: r.score, upgrade: !!r.upgrade, downloader: r.downloader, ...opt('downloadId', r.download_id), state: r.state, ...opt('progress', r.progress),
   ...opt('error', r.error), ...opt('contentPath', r.content_path), ...opt('sentAt', r.sent_at), ...opt('finishedAt', r.finished_at),
-  ...opt('importedAt', r.imported_at), ...opt('removedAt', r.removed_at),
+  ...opt('importedAt', r.imported_at), ...opt('removedAt', r.removed_at), ...opt('progressAt', r.progress_at), ...opt('ratio', r.ratio),
+  ...opt('seedingSeconds', r.seeding_seconds), ...opt('seedingCheckedAt', r.seeding_checked_at),
 });
 const OPEN = `state IN ('sending','downloading','unpacking','importing','seeding')`;
+// Under way: open but not yet imported. A seeding torrent's title is in the library, so it may be searched and upgraded.
+const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
 
 export type NewTitle = { kind: 'movie'; tmdbId: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
   root: string; keep: boolean; released: Released; addedBy: string };
@@ -202,10 +208,18 @@ export class LibraryStore {
 
   grab(id: number) { const r = prepared(this.db, 'SELECT * FROM grabs WHERE id = ?').get(id) as GrabRaw | undefined; return r ? grab(r) : undefined; }
   openGrabs() { return (prepared(this.db, `SELECT * FROM grabs WHERE ${OPEN} ORDER BY id`).all() as GrabRaw[]).map(grab); }
-  hasOpenGrabs() { return !!prepared(this.db, `SELECT 1 FROM grabs WHERE ${OPEN} LIMIT 1`).get(); }
-  openGrabFor(titleId: number) { const r = prepared(this.db, `SELECT * FROM grabs WHERE title_id = ? AND ${OPEN} ORDER BY id DESC LIMIT 1`).get(titleId) as GrabRaw | undefined; return r ? grab(r) : undefined; }
+  // Grabs under way (not seeding), for the 30-second check.
+  activeGrabs() { return (prepared(this.db, `SELECT * FROM grabs WHERE ${ACTIVE} ORDER BY id`).all() as GrabRaw[]).map(grab); }
+  hasOpenGrabs() { return !!prepared(this.db, `SELECT 1 FROM grabs WHERE ${ACTIVE} LIMIT 1`).get(); }
+  // Seeding torrents, for the hourly seeding check.
+  seedingGrabs() { return (prepared(this.db, `SELECT * FROM grabs WHERE state = 'seeding' ORDER BY id`).all() as GrabRaw[]).map(grab); }
+  hasSeeding() { return !!prepared(this.db, `SELECT 1 FROM grabs WHERE state = 'seeding' LIMIT 1`).get(); }
+  // Whether any grab, in any state, has this download id (a torrent's info hash).
+  knowsDownload(downloadId: string) { return !!prepared(this.db, 'SELECT 1 FROM grabs WHERE download_id = ? LIMIT 1').get(downloadId); }
+  // The title's grab under way (a seeding torrent doesn't count).
+  openGrabFor(titleId: number) { const r = prepared(this.db, `SELECT * FROM grabs WHERE title_id = ? AND ${ACTIVE} ORDER BY id DESC LIMIT 1`).get(titleId) as GrabRaw | undefined; return r ? grab(r) : undefined; }
   // Titles with a grab under way (LibraryFulfiller.queue).
-  grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${OPEN}`).all() as { title_id: number }[]).map(r => r.title_id)); }
+  grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${ACTIVE}`).all() as { title_id: number }[]).map(r => r.title_id)); }
   // A new grab, unless the title already has an open one (then undefined).
   insertGrab(g: NewGrab) {
     return this.db.transaction(() => {
@@ -217,9 +231,10 @@ export class LibraryStore {
     })();
   }
   updateGrab(id: number, fields: Partial<{ state: GrabState; downloadId: string; progress: number | null; error: string | null; contentPath: string;
-    sentAt: number; finishedAt: number; importedAt: number; removedAt: number }>) {
+    sentAt: number; finishedAt: number; importedAt: number; removedAt: number; progressAt: number; ratio: number; seedingSeconds: number; seedingCheckedAt: number }>) {
     const columns: Record<string, string> = { state: 'state', downloadId: 'download_id', progress: 'progress', error: 'error', contentPath: 'content_path',
-      sentAt: 'sent_at', finishedAt: 'finished_at', importedAt: 'imported_at', removedAt: 'removed_at' };
+      sentAt: 'sent_at', finishedAt: 'finished_at', importedAt: 'imported_at', removedAt: 'removed_at', progressAt: 'progress_at', ratio: 'ratio',
+      seedingSeconds: 'seeding_seconds', seedingCheckedAt: 'seeding_checked_at' };
     const keys = Object.keys(fields).filter(k => k in columns).sort();
     if (!keys.length) return;
     prepared(this.db, `UPDATE grabs SET ${keys.map(k => `${columns[k]} = @${k}`).join(', ')} WHERE id = @id`)
@@ -233,9 +248,9 @@ export class LibraryStore {
       { release_name: string; indexer: string | null; guid: string | null; info_hash: string | null }[])
       .map(r => ({ name: r.release_name, ...opt('indexer', r.indexer), ...opt('guid', r.guid), ...opt('infoHash', r.info_hash) }));
   }
-  block(entry: { titleId: number; releaseName: string; indexer: string; guid: string; reason: string }) {
-    prepared(this.db, 'INSERT INTO blocklist(title_id, release_name, indexer, guid, reason, at) VALUES(?, ?, ?, ?, ?, ?)')
-      .run(entry.titleId, entry.releaseName, entry.indexer, entry.guid, entry.reason, this.now());
+  block(entry: { titleId: number; releaseName: string; indexer: string; guid: string; infoHash?: string; reason: string }) {
+    prepared(this.db, 'INSERT INTO blocklist(title_id, release_name, indexer, guid, info_hash, reason, at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run(entry.titleId, entry.releaseName, entry.indexer, entry.guid, entry.infoHash ?? null, entry.reason, this.now());
   }
   // When an admin last unpaused the title: its failures count from then.
   resumedAt(titleId: number) {

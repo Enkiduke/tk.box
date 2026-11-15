@@ -3,19 +3,24 @@ import { indexersMigrations } from './migrations/indexers.js';
 import { every, errorDetail } from '../lib/every.js';
 import { z } from 'zod';
 import { connectionActor } from './access.js';
-import { Indexers, indexerInput, indexerNames, type FeedListener, type MovieQuery, type Release } from '../services/indexers.js';
+import { Indexers, indexerInput, indexerNames, type FeedListener, type MovieQuery, type Release, type SearchOptions } from '../services/indexers.js';
 
 const RSS_MINUTES = 15;
 
-// The indexers (docs/ARR-REPLACEMENT.md, "Modules"): NZBGeek in phase 1, IPTorrents in phase 3. Admin › Downloads ›
-// Indexers reads, saves and tests them through /api/v1/admin/indexers. The new-release feed is read every 15 minutes and
+// The indexers (docs/ARR-REPLACEMENT.md, "Modules"): NZBGeek in phase 1, IPTorrents in phase 3. Admin › Connections ›
+// Indexers & downloaders reads, saves and tests them through /api/v1/admin/indexers. An expired IPTorrents cookie is an
+// admin alert in the bell. The new-release feed is read every 15 minutes and
 // shows in Admin › Schedule.
 export const indexersModule = defineModule({
   name: 'indexers',
   access: 'connectionAdmin',
   migrations: indexersMigrations,
-  setup(routes, { db, vault, jobs, log }, deps: { transport?: typeof fetch } | undefined) {
-    const indexers = new Indexers(db, vault, { ...(deps?.transport ? { transport: deps.transport } : {}), log: (message, detail) => log.warn(message, detail) });
+  setup(routes, { db, vault, jobs, bus, log }, deps: { transport?: typeof fetch } | undefined) {
+    const indexers = new Indexers(db, vault, { ...(deps?.transport ? { transport: deps.transport } : {}), log: (message, detail) => log.warn(message, detail),
+      notify: {
+        post: (key, title, detail) => bus.emit('notification.post', { to: 'admins', kind: 'indexers', tone: 'error', title, detail, key, link: '#admin?section=connections' }),
+        resolve: key => bus.emit('notification.resolve', { to: 'admins', key }),
+      } });
     const pollNow = () => jobs.track('indexers.rss', () => indexers.poll());
     jobs.add({ id: 'indexers.rss', label: 'Read new releases', area: 'Indexers', section: 'downloads',
       schedule: () => ({ enabled: indexers.anyEnabled(), schedule: { kind: 'every', minutes: RSS_MINUTES } }),
@@ -28,9 +33,10 @@ export const indexersModule = defineModule({
     let timer: { stop(): void } | undefined;
     return {
       api: {
-        search: (query: MovieQuery, signal?: AbortSignal) => indexers.search(query, signal),
+        search: (query: MovieQuery, signal?: AbortSignal, options?: SearchOptions) => indexers.search(query, signal, options),
+        searches: (protocol: 'usenet' | 'torrent') => indexers.searches(protocol),
         feeds: (listener: FeedListener) => indexers.feeds(listener),
-        // The NZB for a release, which downloaders.send takes as a file.
+        // The NZB or .torrent for a release, which downloaders.send takes as a file.
         download: (release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal) => indexers.download(release, signal),
       },
       start() {

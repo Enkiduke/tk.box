@@ -81,5 +81,13 @@ export const libraryMigrations: Migration[] = [
       title_id INTEGER NOT NULL REFERENCES library_titles(id) ON DELETE CASCADE, PRIMARY KEY(kind, arr_id));
     CREATE INDEX library_cutover_title ON library_cutover(title_id);
     CREATE TABLE library_cutover_state(kind TEXT PRIMARY KEY CHECK(kind IN ('movie','show')),
-      imported_at INTEGER, summary TEXT, switched_at INTEGER, switched_back_at INTEGER);` }
+      imported_at INTEGER, summary TEXT, switched_at INTEGER, switched_back_at INTEGER);` },
+  // Torrents (phase 3): when a download's progress last moved (the stalled rule), and a seeding torrent's ratio and
+  // seeding time as qBittorrent last gave them, with when.
+  { name: 'library-torrents', up: `
+    ALTER TABLE grabs ADD COLUMN progress_at INTEGER;
+    ALTER TABLE grabs ADD COLUMN ratio REAL;
+    ALTER TABLE grabs ADD COLUMN seeding_seconds INTEGER;
+    ALTER TABLE grabs ADD COLUMN seeding_checked_at INTEGER;
+    CREATE INDEX grabs_download ON grabs(download_id);` }
 ];

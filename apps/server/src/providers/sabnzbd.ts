@@ -1,14 +1,8 @@
 // SABnzbd's API (docs/ARR-REPLACEMENT.md, "Clients" › SABnzbd): send an NZB as a file, read the queue and history as
 // grab states, and delete a job with its folder after import. SABnzbd's own repair and unpack stay on.
 
-// The grab states a download can be in while SABnzbd has it. Completed is `importing`: the import is next.
-export type DownloadState = 'downloading' | 'unpacking' | 'importing' | 'failed';
-export type DownloadStatus = {
-  downloader: 'sabnzbd'; downloadId: string; name: string; category: string;
-  state: DownloadState; progress?: number; size?: number;
-  // History only: the final folder, and why it failed.
-  storage?: string; error?: string;
-};
+import type { DownloadState, DownloadStatus } from './download-status.js';
+export type { DownloadState, DownloadStatus } from './download-status.js';
 
 export class DownloaderError extends Error {
   constructor(public kind: 'auth' | 'unreachable' | 'other', message: string) { super(message); }

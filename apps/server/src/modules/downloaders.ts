@@ -2,10 +2,10 @@ import { defineModule } from './module.js';
 import { downloadersMigrations } from './migrations/downloaders.js';
 import { z } from 'zod';
 import { connectionActor } from './access.js';
-import { Downloaders, downloaderInput, downloaderNames, type Download, type GrabRef } from '../services/downloaders.js';
+import { Downloaders, downloaderInput, downloaderNames, type Download, type DownloaderName, type GrabRef, type RemoveOptions } from '../services/downloaders.js';
 
-// The downloaders (docs/ARR-REPLACEMENT.md, "Modules"): SABnzbd in phase 1, qBittorrent in phase 3. Admin › Downloads ›
-// Downloaders reads, saves and tests them through /api/v1/admin/downloaders. The library checks status every 30 s
+// The downloaders (docs/ARR-REPLACEMENT.md, "Modules"): SABnzbd in phase 1, qBittorrent in phase 3. Admin › Connections ›
+// Indexers & downloaders reads, saves and tests them through /api/v1/admin/downloaders. The library checks status every 30 s
 // while grabs are open.
 export const downloadersModule = defineModule({
   name: 'downloaders',
@@ -21,8 +21,8 @@ export const downloadersModule = defineModule({
     return {
       api: {
         send: (download: Download) => downloaders.send(download),
-        status: () => downloaders.status(),
-        remove: (grab: GrabRef) => downloaders.remove(grab),
+        status: (name?: DownloaderName) => downloaders.status(name),
+        remove: (grab: GrabRef, options?: RemoveOptions) => downloaders.remove(grab, options),
       }
     };
   }

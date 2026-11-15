@@ -2,13 +2,14 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { DownloadsActivity, DownloadsGrab, InteractiveSearch, LibraryTitleView, LibrarySettingsView, NamingPreview, PickProfile, PickRules,
+import type { DownloadsActivity, DownloadsGrab, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, NamingPreview, PickProfile, PickRules,
   WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import { EARLY_COPIES, LADDER, isQuality, qualityOf, scoreRelease, type Profile, type Quality, type ScoreRule } from './lib/quality.js';
 import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
+import { seedingDecision } from './lib/seeding.js';
 import type { Grab, LibraryStore } from './persistence/library-store.js';
 import type { Library } from './services/library.js';
 import type { QueueApi } from './services/queue.js';
@@ -120,11 +121,18 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles() };
   };
 
+  const seedingView = (g: Grab): DownloadsSeeding => {
+    const seen = g.seedingCheckedAt !== undefined && g.seedingSeconds !== undefined;
+    const removeAt = seen ? seedingDecision({ ratio: g.ratio ?? 0, seedingSeconds: g.seedingSeconds! }, store.settings().seeding, g.seedingCheckedAt!).removeAt : undefined;
+    return { ...grabView(g), ...(g.ratio !== undefined ? { ratio: g.ratio } : {}), ...(g.seedingSeconds !== undefined ? { seedingDays: g.seedingSeconds / 86400 } : {}),
+      ...(g.seedingCheckedAt !== undefined ? { checkedAt: g.seedingCheckedAt } : {}), ...(removeAt !== undefined ? { removeAt } : {}) };
+  };
+
   app.get('/api/v1/admin/library/activity', admin, async () => {
     titleName.clear();
     const view = queue.view(), labels = new Map(view.kinds.map(k => [k.kind, k.label]));
     return {
-      open: store.openGrabs().map(grabView), failed: store.finishedGrabs(true, 30).map(grabView), history: store.finishedGrabs(false, 30).map(grabView),
+      open: store.activeGrabs().map(grabView), seeding: store.seedingGrabs().map(seedingView), failed: store.finishedGrabs(true, 30).map(grabView), history: store.finishedGrabs(false, 30).map(grabView),
       jobs: view.items.filter(i => i.state !== 'cancelled' && i.state !== 'done').map(i => {
         const titleId = subjectOf(i.key);
         return { id: i.id, kind: i.kind, label: labels.get(i.kind) ?? i.kind, ...(titleId ? { titleId, subject: nameOf(titleId).title } : {}),

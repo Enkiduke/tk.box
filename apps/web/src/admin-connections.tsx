@@ -1,5 +1,7 @@
-import {useState} from 'react';
+import {useState,type ReactNode} from 'react';
+import type {DownloaderView,IndexerView} from '../../../packages/contracts/src/downloads.js';
 import {ApiClientError,api} from './api.js';
+import {IptorrentsEditor,NzbGeekEditor,QbittorrentEditor,SabnzbdEditor} from './download-connections.js';
 import {invalidate,link,useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {date,SectionHead,useMutation} from './settings-ui.js';
@@ -20,7 +22,7 @@ type SavedSettings={
   keySaved:boolean;
   address?:{value:string;placeholder:string;hint?:string};
   removableKey?:boolean;
-  save:(draft:Draft)=>Promise<unknown>;
+  save?:(draft:Draft)=>Promise<unknown>;
 };
 type Connection={
   name:string;
@@ -34,6 +36,8 @@ type Connection={
   builtIn?:boolean;
   health?:HealthStatus;
   credential?:string;
+  // Its own settings form in place of the address-and-key editor.
+  editor?:(close:()=>void)=>ReactNode;
 };
 
 const artworkProviders=[
@@ -129,6 +133,8 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
   const artwork=useApi<ArtworkKeysView>('/admin/connections/artwork');
   const arr=useApi<ArrView>('/admin/arr');
+  const indexers=useApi<IndexerView[]>('/admin/indexers');
+  const downloaders=useApi<DownloaderView[]>('/admin/downloaders');
 
   const serviceStatus=(id:string)=>readHealth(services,results=>{
     const result=results[id];
@@ -163,6 +169,43 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       },
     })),
   }));
+  const nzbgeek=indexers.data?.find(item=>item.name==='nzbgeek');
+  const sabnzbd=downloaders.data?.find(item=>item.name==='sabnzbd');
+  const iptorrents=indexers.data?.find(item=>item.name==='iptorrents');
+  const qbittorrent=downloaders.data?.find(item=>item.name==='qbittorrent');
+  const nzbgeekStatus=(item:IndexerView):HealthStatus=>
+    !item.secretSet?{label:'Not set up'}
+    :!item.enabled?{label:'Off'}
+    :item.pausedUntil?{label:'Paused',tone:'warning',detail:`Paused until ${date(item.pausedUntil)}.`}
+    :item.lastError?{label:'Needs attention',tone:'warning',detail:item.lastError}
+    :item.lastOkAt?{label:'Working',tone:'success',timestamp:`Last worked ${date(item.lastOkAt)}`}
+    :{label:'Not used yet'};
+  const searchConnections:Connection[]=[
+    {
+      name:'NZBGeek',description:'Usenet releases for movies and TV.',
+      health:readHealth(indexers,()=>nzbgeek?nzbgeekStatus(nzbgeek):{label:'Not set up'}),
+      ...readSettings(indexers,()=>({keySaved:!!nzbgeek?.secretSet})),
+      ...(nzbgeek?{editor:(close:()=>void)=><NzbGeekEditor indexer={nzbgeek} onClose={close}/>}:{}),
+    },
+    {
+      name:'SABnzbd',description:'Downloads Usenet releases.',
+      health:readHealth(downloaders,()=>sabnzbd?.url&&sabnzbd.secretSet?{label:'Set up'}:sabnzbd?.url?{label:'API key missing',tone:'warning',detail:'Add an API key to complete setup.'}:{label:'Not set up'}),
+      ...readSettings(downloaders,()=>({keySaved:!!sabnzbd?.secretSet,address:{value:sabnzbd?.url??'',placeholder:'http://127.0.0.1:8080'}})),
+      ...(sabnzbd?{editor:(close:()=>void)=><SabnzbdEditor downloader={sabnzbd} onClose={close}/>}:{}),
+    },
+    {
+      name:'IPTorrents',description:'Torrents for movies, when Usenet has nothing better.',
+      health:readHealth(indexers,()=>!iptorrents?.iptorrents?.cookieSet&&!iptorrents?.iptorrents?.rssSet?{label:'Not set up'}:nzbgeekStatus(iptorrents)),
+      ...readSettings(indexers,()=>({keySaved:!!iptorrents?.secretSet})),
+      ...(iptorrents?{editor:(close:()=>void)=><IptorrentsEditor indexer={iptorrents} onClose={close}/>}:{}),
+    },
+    {
+      name:'qBittorrent',description:'Downloads and seeds torrents.',
+      health:readHealth(downloaders,()=>qbittorrent?.url?{label:'Set up'}:{label:'Not set up'}),
+      ...readSettings(downloaders,()=>({keySaved:!!qbittorrent?.secretSet,address:{value:qbittorrent?.url??'',placeholder:'http://127.0.0.1:8080'}})),
+      ...(qbittorrent?{editor:(close:()=>void)=><QbittorrentEditor downloader={qbittorrent} onClose={close}/>}:{}),
+    },
+  ];
   const groups:{id:string;title:string;icon:string;connections:Connection[]}[]=[
     {id:'media',title:'Media & requests',icon:'live',connections:[
       {
@@ -175,6 +218,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     {id:'downloads',title:'Downloads & Clean Up',icon:'download',connections:[
       ...arrApps,
     ]},
+    {id:'indexers',title:'Indexers & downloaders',icon:'search',connections:searchConnections},
     {id:'metadata',title:'Metadata & artwork',icon:'image',connections:artworkProviders.map(([id,name,description,keyHint])=>({
       name,description,keyHint,
       health:artwork.data?.keysSet[id]?serviceStatus(id):undefined,
@@ -210,10 +254,10 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     return status.tone==='warning'?[{id,name:connection.name,label:status.label,detail:status.detail}]:[];
   }));
   const refresh=()=>{
-    plex.reload();sports.reload();services.reload();
+    plex.reload();sports.reload();services.reload();indexers.reload();downloaders.reload();
     for(const view of [serviceKeys,artwork,arr])if(view.error)view.reload();
   };
-  const refreshingStatus=plex.loading||sports.loading||services.loading;
+  const refreshingStatus=plex.loading||sports.loading||services.loading||indexers.loading||downloaders.loading;
   return <>
     <SectionHead title="Connections" description="Manage connected services and see their latest status.">
       <button type="button" disabled={refreshingStatus} onClick={refresh}><Icon name="restart" size={15}/>{refreshingStatus?'Refreshing…':'Refresh status'}</button>
@@ -274,8 +318,16 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
         </section>
       </div>
     </section>
-    {editing?.settings&&<ConnectionEditor connection={editing} settings={editing.settings} onClose={()=>setEditing(undefined)}
-      onSaved={()=>{toast.success(`${editing.name} settings saved`);setEditing(undefined);}}/>}
+    {editing?.settings&&(editing.editor
+      ? <Modal title={`${editAction(editing,editing.settings)} ${editing.name}`} onClose={()=>setEditing(undefined)}>
+        <div className="connections-editor">
+          <h3>{editAction(editing,editing.settings)} {editing.name}</h3>
+          <p className="muted small">{editing.description}</p>
+          {editing.editor(()=>setEditing(undefined))}
+        </div>
+      </Modal>
+      : <ConnectionEditor connection={editing} settings={editing.settings} onClose={()=>setEditing(undefined)}
+        onSaved={()=>{toast.success(`${editing.name} settings saved`);setEditing(undefined);}}/>)}
   </>;
 }
 
@@ -299,7 +351,7 @@ function ConnectionEditor({connection,settings,onClose,onSaved}:{connection:Conn
         e.preventDefault();
         if(!changed||conflict)return;
         const saved=await mutation.run(async()=>{
-          try{await settings.save(values);}
+          try{await settings.save?.(values);}
           catch(error){
             if(error instanceof ApiClientError&&error.code==='REVISION_CONFLICT'){
               setConflict(true);
