@@ -172,17 +172,14 @@ class Service:
 @dataclass(frozen=True)
 class Settings:
     plex: Service
-    radarr: Service
     sonarr: Service
     # Plex library section IDs.
     movie_libraries: tuple[str, ...]
     tv_libraries: tuple[str, ...]
     dry_run: bool = True
-    delete_from_radarr: bool = False
+    # Movies are tk.box's own: a movie is kept by tk.box's Keep (a request's `keep`) and deleted from Plex only, and
+    # tk.box forgets it after the run. Only shows go through Sonarr.
     delete_from_sonarr: bool = False
-    # Movies are on tk.box (the cutover): Radarr isn't used for them. A movie is kept by tk.box's Keep (a request's
-    # `keep`), not by Radarr tags, and is deleted from Plex only.
-    movies_on_tkbox: bool = False
     days_after_watched: int = 30
     days_after_unwatched: int = 60
     days_after_any_watch_exempt: int = 90
@@ -234,12 +231,10 @@ class Settings:
         poster = text(config, "leaving_soon_poster")
         settings = cls(
             plex=service("plex", "PLEX_TOKEN"),
-            radarr=service("radarr", "RADARR_API_KEY"), sonarr=service("sonarr", "SONARR_API_KEY"),
+            sonarr=service("sonarr", "SONARR_API_KEY"),
             movie_libraries=text_list(config, "movie_libraries"), tv_libraries=text_list(config, "tv_libraries"),
             dry_run=dry_run or boolean(config, "dry_run", default=True),
-            delete_from_radarr=boolean(config, "delete_from_radarr"),
             delete_from_sonarr=boolean(config, "delete_from_sonarr"),
-            movies_on_tkbox=boolean(config, "movies_on_tkbox"),
             days_after_watched=integer(config, "days_after_watched", default=30),
             days_after_unwatched=integer(config, "days_after_unwatched", default=60),
             days_after_any_watch_exempt=integer(config, "days_after_any_watch_exempt", default=90),
@@ -266,14 +261,8 @@ class Settings:
 
     def validate(self):
         self.plex.validate("Plex", required=True)
-        if self.movies_on_tkbox and self.delete_from_radarr:
-            raise ConfigError("Delete from Radarr can't be on while movies are on tk.box")
-        self.radarr.validate("Radarr", required=self.delete_from_radarr)
         self.sonarr.validate("Sonarr", required=self.delete_from_sonarr)
         if not self.movie_libraries and not self.tv_libraries:
             raise ConfigError("Choose at least one movie or TV library")
-        if self.exempt_arr_tags:
-            if self.movie_libraries and not self.movies_on_tkbox:
-                self.radarr.validate("Radarr", required=True)
-            if self.tv_libraries:
-                self.sonarr.validate("Sonarr", required=True)
+        if self.exempt_arr_tags and self.tv_libraries:
+            self.sonarr.validate("Sonarr", required=True)

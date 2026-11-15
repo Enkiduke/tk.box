@@ -9,7 +9,7 @@ import {toast} from './toasts.js';
 
 type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
 type ArtworkKeysView={revision:number;keysSet:Record<KeyName,boolean>};
-type ArrView=Record<'radarr'|'sonarr',{revision:number;url:string;keySet:boolean}>;
+type ArrView=Record<'sonarr',{revision:number;url:string;keySet:boolean}>;
 type KeysView={plex:boolean;thesportsdb:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
 type FeedHealth={state:'idle'|'waiting'|'working'|'warning'|'backoff';lastSuccess:number|null;lastChecked:number|null;failedRequests:number;retryAt:number|null};
@@ -154,7 +154,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     },
   }));
   const arrApps:Connection[]=([
-    ['radarr','Radarr','Movie releases in Calendar, seasonal downloads in Collections, and movie management in Clean Up.','http://radarr:7878'],
     ['sonarr','Sonarr','TV air dates in Calendar and episode management in Clean Up.','http://sonarr:8989'],
   ] as const).map(([id,name,description,placeholder])=>({
     name,description,keyHint:`${name} › Settings › General`,

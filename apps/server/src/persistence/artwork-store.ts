@@ -46,8 +46,7 @@ const keyNames = ['tmdb', 'tvdb', 'fanart', 'mdblist'] as const;
 type OldSchedules = { seasonal?: Scheduled; collections?: Scheduled };
 type Stored = ArtworkSettings & { keys: Partial<Record<typeof keyNames[number], string>>; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
 // Collections: custom and seasonal definitions in the engine's own format (it validates them), how franchise, streaming and
-// chart collections are kept in step, and how seasonal collections download missing movies with Radarr (whose address
-// and key are the arr module's).
+// chart collections are kept in step. Seasonal collections' missing movies are added by tk.box's library.
 export const artworkCollections = z.object({
   // null until first saved: the engine then offers its seasonal presets, all off.
   definitions: z.array(z.record(z.string(), z.unknown())).max(300).nullable(),
@@ -58,7 +57,6 @@ export const artworkCollections = z.object({
     exclude: z.array(z.string().regex(/^\d{1,10}$/)).max(2000).optional() }).strict()).max(3000).default([]),
   franchise: z.object({ sync: z.boolean(), franchises: z.boolean(), minItems: z.number().int().min(1).max(50), mode: z.enum(['sync', 'append']), streaming: z.enum(['off', 'originals', 'available']),
     region: z.string().regex(/^[A-Z]{2}$/), recent: z.boolean(), recentMovieDays: z.number().int().min(1).max(3650), recentEpisodeDays: z.number().int().min(1).max(3650) }).strict(),
-  radarr: z.object({ rootFolder: z.string().trim().max(300), qualityProfileId: z.number().int().min(0).max(100000), search: z.boolean() }).strict(),
   // On their schedules, server local time: the custom and seasonal collections, then every collection. Titles newly added
   // to the libraries the custom collections use join the ones they match, checked when Plex adds some and on a schedule.
   schedules: z.object({ custom: daily, all: daily, added: everyFew }).strict()
@@ -67,7 +65,6 @@ export type ArtworkCollections = z.infer<typeof artworkCollections>;
 export const artworkCollectionsInput = z.object({ value: artworkCollections, expectedRevision: z.number().int().nonnegative() }).strict();
 const collectionDefaults: ArtworkCollections = { definitions: null, automatic: [],
   franchise: { sync: false, franchises: true, minItems: 2, mode: 'sync', streaming: 'off', region: 'US', recent: false, recentMovieDays: 90, recentEpisodeDays: 7 },
-  radarr: { rootFolder: '', qualityProfileId: 0, search: true },
   schedules: { custom: { enabled: false, schedule: { kind: 'times', times: ['04:15'], days: [] } }, all: { enabled: false, schedule: { kind: 'times', times: ['04:30'], days: [] } }, added: { enabled: false, schedule: { kind: 'every', minutes: 60 } } } };
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export type JobRow = { id: number; label: string; args: string[]; script: 'artwork' | 'collections'; actor: string; status: JobStatus; createdAt: number; startedAt: number | null; finishedAt: number | null; exitCode: number | null };
@@ -210,6 +207,8 @@ export class ArtworkStore {
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
     value.schedules = value.schedules ? { custom: toScheduled(value.schedules.custom), all: toScheduled(value.schedules.all), added: toScheduled(value.schedules.added) } as ArtworkCollections['schedules'] : collectionDefaults.schedules;
     value.automatic ??= [];
+    // Collections saved with Radarr's download settings (gone with Radarr) read without them.
+    delete (value as Partial<{ radarr: unknown }>).radarr;
     return { revision: row?.revision ?? 0, value };
   }
   collections() { const { revision, value } = this.storedCollections(); return { revision, ...value }; }

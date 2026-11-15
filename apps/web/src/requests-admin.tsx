@@ -6,7 +6,7 @@ import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading} from './components.js'
 import {Card,SectionHead,Switch,date,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 
-// Admin › Requests: every request (docs/REQUESTS.md), where requests go in Radarr and Sonarr, and the Requests site.
+// Admin › Requests: every request (docs/REQUESTS.md), where requests go (tk.box's profiles for movies, Sonarr for shows), and the Requests site.
 export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',requested:'Requested',downloading:'Downloading',partial:'Partly available',available:'Available',failed:'Failed',removed:'Removed'};
 const statusFilters=[['','All'] as const,...Object.entries(requestStatusNames)];
 const kindFilters=[['','All'],['movie','Movies'],['show','Shows']] as const;
@@ -95,7 +95,7 @@ function RequestDefaults() {
   return <form onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Where requests go" description="Administrators can change these per request.">
       <div className="form-columns">
-        <Destination title="Movies" service="Radarr" options={movie} value={draft.movie} set={v=>{setDraft({...draft,movie:{...draft.movie,...v}});}}/>
+        <Destination title="Movies" service="tk.box" options={movie} value={draft.movie} set={v=>{setDraft({...draft,movie:{...draft.movie,...v}});}}/>
         <Destination title="Shows" service="Sonarr" options={show} value={draft.show} set={v=>{setDraft({...draft,show:{...draft.show,...v}});}}/>
       </div>
       <Switch label="Season folders" checked={draft.show.seasonFolders} onChange={v=>{setDraft({...draft,show:{...draft.show,seasonFolders:v}});}}/>

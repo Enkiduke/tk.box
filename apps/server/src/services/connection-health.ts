@@ -3,7 +3,7 @@ import type {ArtworkKeys} from '../persistence/artwork-store.js';
 import type {ArrService} from '../providers/arr-tags.js';
 import {remoteJson} from '../providers/remote-json.js';
 
-type Services = {radarr:ArrService;sonarr:ArrService};
+type Services = {sonarr:ArrService};
 type Result = {state:'working'|'limited'|'failed';checkedAt:number;detail?:string};
 
 export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkKeys,
@@ -11,8 +11,8 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
   // Share checks if two admins open the page at the same time. A settings change gets a fresh check.
   let pending: {config:string;result:Promise<Record<string,Result>>} | undefined;
   return () => {
-    const {radarr,sonarr} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
-    const config = JSON.stringify([radarr,sonarr,tmdb,tvdb,fanart,mdblist]);
+    const {sonarr} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
+    const config = JSON.stringify([sonarr,tmdb,tvdb,fanart,mdblist]);
     if (pending?.config === config) return pending.result;
 
     const checks: Record<string,Promise<Result>> = {};
@@ -32,10 +32,8 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
     };
     const object = (data:unknown) => data !== null && typeof data === 'object' ? data as Record<string,unknown> : undefined;
 
-    for (const [id,name,service] of [['radarr','Radarr',radarr],['sonarr','Sonarr',sonarr]] as const) {
-      if (service.url&&service.key) run(id,()=>json(new URL(`${service.url}/api/v3/system/status`),name,
-        data=>typeof object(data)?.version==='string',{headers:{'X-Api-Key':service.key!}}));
-    }
+    if (sonarr.url&&sonarr.key) run('sonarr',()=>json(new URL(`${sonarr.url}/api/v3/system/status`),'Sonarr',
+      data=>typeof object(data)?.version==='string',{headers:{'X-Api-Key':sonarr.key!}}));
     if (tmdb) run('tmdb',()=>json(new URL(`https://api.themoviedb.org/3/movie/603?api_key=${encodeURIComponent(tmdb)}`),
       'TMDb',data=>object(data)?.id===603,{},transports.tmdb));
     if (tvdb) run('tvdb',()=>json(new URL('https://api4.thetvdb.com/v4/login'),'TVDB',

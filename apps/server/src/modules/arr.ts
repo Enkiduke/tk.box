@@ -4,8 +4,8 @@ import { arrMigrations } from './migrations/arr.js';
 import { connectionActor } from './access.js';
 import { ArrStore, arrConnectionInput, arrNames, type ArrName } from '../persistence/arr-store.js';
 
-// The Radarr and Sonarr connections (Admin › Connections). Mounted before everything that reads them: artwork
-// (Collections' seasonal downloads), Clean Up, the calendar and requests.
+// The Sonarr connection (Admin › Connections). Mounted before everything that reads it: Clean Up, the calendar and
+// requests. Goes with phase 2, once shows are tk.box's too.
 export const arrModule = defineModule({
   name: 'arr',
   migrations: arrMigrations,

@@ -28,5 +28,7 @@ export const arrMigrations: Migration[] = [
         db.prepare("UPDATE cleanup_config SET value=? WHERE name='connections'").run(JSON.stringify(rest));
       }
     }
-  } }
+  } },
+  // Movies are tk.box's own (phase 3.5): Radarr's connection goes.
+  { name: 'drop-radarr', up: "DELETE FROM arr_connections WHERE name='radarr'" }
 ];

@@ -5,7 +5,7 @@ import { isOut } from '../services/wanted.js';
 import type { Library } from '../services/library.js';
 import type { LibraryStore } from '../persistence/library-store.js';
 
-// Requests fulfilled by tk.box's own library (docs/ARR-REPLACEMENT.md), behind the same Fulfiller as Radarr and Sonarr.
+// Requests fulfilled by tk.box's own library (docs/ARR-REPLACEMENT.md), behind the same Fulfiller as Sonarr.
 // Movies only in phase 1; ids are library_titles ids. Keep is the title's own flag, offered as one tag.
 export const KEEP_TAG = -1;
 
@@ -47,10 +47,8 @@ export class LibraryFulfiller implements Fulfiller {
   async tagId() { return KEEP_TAG; }
 }
 
-// The kinds tk.box fulfils itself, by library_settings.fulfil. Shows stay on Sonarr until phase 2, whatever it says.
-export const tkboxFulfils = (store: Pick<LibraryStore, 'settings'>) => (kind: FulfilKind) => kind === 'movie' && store.settings().fulfil.movie === 'tkbox';
-
-// One Fulfiller in front of two: each call goes to the one `choose` names for its kind (library_settings.fulfil).
+// One Fulfiller in front of two: each call goes to the one `choose` names for its kind (movies to the library, shows
+// to Sonarr until phase 2).
 export function fulfillerByKind(choose: (kind: FulfilKind) => Fulfiller): Fulfiller {
   return {
     add: target => choose(target.kind).add(target),

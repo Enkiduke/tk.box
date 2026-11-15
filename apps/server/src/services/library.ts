@@ -88,10 +88,6 @@ export class Library {
   private get unpacker() { return this.deps.unpacker ?? defaultUnpacker; }
   private get store() { return this.deps.store; }
   private now() { return (this.deps.now ?? Date.now)(); }
-  // The library searches and grabs on its own only once movies are switched to tk.box (the cutover): until then, and
-  // after a switch back, Radarr has them, and titles the cutover imported must not be downloaded twice. Downloads
-  // already under way still finish, and an admin's interactive search still works.
-  private searching() { return this.store.settings().fulfil.movie === 'tkbox'; }
 
   // The queue's kinds and the RSS listener.
   register() {
@@ -226,7 +222,7 @@ export class Library {
 
   // Queues a search for each wanted movie whose next search is due, and a TMDB refresh for stale ones.
   async sweep() {
-    if (readOnly() || !this.searching()) return { searched: 0, refreshed: 0 };
+    if (readOnly()) return { searched: 0, refreshed: 0 };
     await this.deps.plex.ready();
     const now = this.now();
     let searched = 0, refreshed = 0;
@@ -246,7 +242,7 @@ export class Library {
   private async search(item: QueueItem<SearchPayload>, { signal }: HandlerContext): Promise<Outcome> {
     if (readOnly()) return retry(this.now() + HOUR);
     const title = this.store.title(item.payload.titleId);
-    if (!title || title.kind !== 'movie' || !this.searching()) return done();
+    if (!title || title.kind !== 'movie') return done();
     await this.deps.plex.ready();
     if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) return done();
     const result = await this.searchInOrder(title, signal, item.payload.extra ?? []);
@@ -299,7 +295,7 @@ export class Library {
   // movie is grabbed as a search would. A torrent that would win while Usenet comes first isn't grabbed straight
   // away: a search asks Usenet first, with the feed's torrents weighed in.
   async onFeed(releases: Release[]) {
-    if (readOnly() || !releases.length || !this.searching()) return 0;
+    if (readOnly() || !releases.length) return 0;
     const movies = this.store.activeMovies();
     if (!movies.length) return 0;
     await this.deps.plex.ready();

@@ -6,7 +6,7 @@ import { LibraryStore } from '../persistence/library-store.js';
 import { Library, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
 import { MovieImporter, ffprobe } from '../services/library-import.js';
 import { RequestAvailability } from '../services/request-availability.js';
-import { LibraryFulfiller, tkboxFulfils } from '../providers/library-fulfiller.js';
+import { LibraryFulfiller } from '../providers/library-fulfiller.js';
 import { registerLibraryAdmin } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
@@ -19,8 +19,7 @@ type Deps = { queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersAp
 // the queue (search, send, unpack, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes, the
 // download check (SABnzbd and qBittorrent) every 30 s while grabs are under way, and the seeding check hourly, all in
 // Admin › Schedule with Run now. Admin › Downloads reads and changes it
-// through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for a kind once
-// library_settings.fulfil says 'tkbox'; until then Radarr.
+// through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for movies.
 export const libraryModule = defineModule({
   name: 'library',
   access: 'admin',
@@ -54,9 +53,8 @@ export const libraryModule = defineModule({
     bus.on('plex.library.changed', () => availability.soon());
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library
-    // added them for collections and nobody has requested or kept them since. Only once movies are switched to tk.box.
+    // added them for collections and nobody has requested or kept them since.
     bus.on('collections.acquire', ({ tmdbIds, removeIds }) => {
-      if (!fulfils('movie')) return;
       void (async () => {
         for (const tmdbId of removeIds) {
           const title = store.titleByTmdb('movie', tmdbId);
@@ -81,12 +79,11 @@ export const libraryModule = defineModule({
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SEEDING_MINUTES } }), status: () => jobs.tracked('library.seeding'), run: seedNow });
 
     const fulfiller = new LibraryFulfiller(library, store);
-    const fulfils = tkboxFulfils(store);
     let timers: { stop(): void }[] = [];
     return {
       api: {
-        fulfiller, fulfils, store,
-        // Collections' seasonal downloads (and later the cutover) add through here, as requests do.
+        fulfiller, store,
+        // Collections' seasonal downloads add through here, as requests do.
         add: library.add.bind(library),
         keep: library.keep.bind(library),
         forget: library.forget.bind(library),

@@ -13,7 +13,7 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
     const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query),s=services();
     const set=(c:{url:string;key?:string})=>!!(c.url&&c.key);
     return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(!!query.recheck),missing:engine.missing(),
-      connected:{radarr:set(s.radarr),sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
+      connected:{sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
   });
   app.put('/api/v1/admin/cleanup/settings',async request=>{
     const {grant}=viewer(request),{expectedRevision,...value}=cleanupSettings.extend({expectedRevision:revision}).strict().parse(request.body);
@@ -27,7 +27,7 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
       z.object({key:holdKey,action:z.literal('clear')}).strict()]).parse(request.body);
     return engine.hold(grant.accountId,body.key,body);
   });
-  // Keep: tag the title in Radarr or Sonarr with the first protected tag, so no run deletes it.
+  // Keep: a movie by the library's Keep, a show by Sonarr's first protected tag, so no run deletes it.
   app.post('/api/v1/admin/cleanup/keep',async request=>{
     const {grant}=viewer(request),{key}=z.object({key:holdKey}).strict().parse(request.body);
     return engine.keep(grant.accountId,key);

@@ -25,14 +25,12 @@ const info = z.object({
   remotePoster: z.string().optional().catch(undefined),
   images,
 });
-const movie = info.extend({inCinemas: z.unknown().optional(), digitalRelease: z.unknown().optional(), physicalRelease: z.unknown().optional(), hasFile: z.boolean().optional()});
 const episode = z.object({
   title: z.string().trim().max(500).optional().catch(undefined), seasonNumber: z.number().int().nonnegative(),
   episodeNumber: z.number().int().nonnegative(), airDate: z.unknown().optional(), airDateUtc: z.unknown().optional(),
   hasFile: z.boolean().optional(), series: info, images,
 });
 type Scheduled = CalendarEntry & { hasFile?: boolean };
-type Source = keyof CalendarPage['sources'];
 
 function cover(art: z.infer<typeof images>, types: string[]) {
   return types.flatMap(type => (art ?? []).filter(image => image.coverType.toLowerCase() === type)
@@ -44,15 +42,6 @@ function titleFields(value: z.infer<typeof info>) {
   return {title: value.title, year: value.year, summary: value.overview, ids,
     posterUrl: imagePath(value.remotePoster) ?? cover(value.images, ['poster']),
     backdropUrl: cover(value.images, ['fanart', 'backdrop', 'banner'])};
-}
-
-function movieEntry(raw: unknown): Scheduled[] {
-  const result = movie.safeParse(raw);
-  if (!result.success || !result.data.tmdbId) return [];
-  const item = result.data;
-  const release = movieReleaseDate(item);
-  if (!release) return [];
-  return [{...titleFields(item), key: `movie:${item.tmdbId}`, day: release.day, kind: release.format, hasFile: item.hasFile}];
 }
 
 function episodeEntry(raw: unknown): Scheduled[] {
@@ -72,10 +61,9 @@ function episodeEntry(raw: unknown): Scheduled[] {
     episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
 }
 
-// With movies on tk.box (the cutover), the calendar's movies are the library's, on the day its TMDB dates give (the same
-// choice of digital, physical or theatrical as Radarr's). The picture and summary are TMDB's, from the details the
-// library already reads (cached).
-export type CalendarLibrary = { fulfils(kind: 'movie' | 'show'): boolean; store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[] } };
+// The calendar's movies are the library's, on the day its TMDB dates give (digital, else physical, else theatrical).
+// The picture and summary are TMDB's, from the details the library already reads (cached). Shows are Sonarr's.
+export type CalendarLibrary = { store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[] } };
 export function libraryMovieEntries(movies: (LibraryTitle & { hasFile: boolean })[], from: string, to: string): Scheduled[] {
   return movies.flatMap(m => {
     const release = movieReleaseDate({inCinemas: m.released.theatrical, digitalRelease: m.released.digital, physicalRelease: m.released.physical});
@@ -85,7 +73,7 @@ export function libraryMovieEntries(movies: (LibraryTitle & { hasFile: boolean }
   });
 }
 
-export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, connections: () => {radarr: ArrService; sonarr: ArrService},
+export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, sonarr: () => ArrService,
   transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales' | 'get'>, library?: CalendarLibrary) {
   const pictures = async (entries: Scheduled[]) => {
     if (!tmdb) return;
@@ -102,14 +90,14 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
   };
   // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
   const cache = new TtlCache<Promise<Scheduled[]>>(100);
-  const read = (source: Source, connection: ArrService, start: string, end: string) => {
-    const key = createHash('sha256').update(JSON.stringify([source, connection.url, connection.key, start, end])).digest('hex');
+  const read = (connection: ArrService, start: string, end: string) => {
+    const key = createHash('sha256').update(JSON.stringify([connection.url, connection.key, start, end])).digest('hex');
     return cache.remember(key, 5 * 60_000, () => {
       const url = new URL(`${connection.url.replace(/\/+$/, '')}/api/v3/calendar`);
-      url.search = new URLSearchParams({start, end, unmonitored: 'true', ...(source === 'Sonarr' ? {includeSeries: 'true', includeEpisodeImages: 'true'} : {})}).toString();
-      const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, source, transport, 10_000, 16 * 1024 * 1024).then(response => {
-        requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', `${source} could not load its calendar.`, 502);
-        return response.data.flatMap(source === 'Radarr' ? movieEntry : episodeEntry);
+      url.search = new URLSearchParams({start, end, unmonitored: 'true', includeSeries: 'true', includeEpisodeImages: 'true'}).toString();
+      const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, 'Sonarr', transport, 10_000, 16 * 1024 * 1024).then(response => {
+        requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', 'Sonarr could not load its calendar.', 502);
+        return response.data.flatMap(episodeEntry);
       });
       return rows;
     });
@@ -124,28 +112,28 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     let localDay: Intl.DateTimeFormat;
     try { localDay = new Intl.DateTimeFormat('sv-SE', {timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit'}); }
     catch { requireThat(false, 'INVALID_CALENDAR_ZONE', 'Invalid calendar time zone.'); }
-    // Arr returns UTC timestamps. Pad the upstream window for viewers on either side of UTC and apply exact local bounds below.
+    // Sonarr returns UTC timestamps. Pad the upstream window for viewers on either side of UTC and apply exact local bounds below.
     const upstreamStart = new Date(start - dayMs).toISOString(), upstreamEnd = new Date(end + dayMs).toISOString();
-    const {radarr, sonarr} = connections();
-    const sources: CalendarPage['sources'] = {Radarr: 'disconnected', Sonarr: 'disconnected'};
-    const fetchSource = async (source: Source, connection: ArrService) => {
-      if (source === 'Radarr' && library?.fulfils('movie')) {
-        const rows = libraryMovieEntries(library.store.calendarMovies(), upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10));
-        await pictures(rows);
-        sources.Radarr = 'ready';
-        return rows;
-      }
+    const sources: CalendarPage['sources'] = {Library: library ? 'ready' : 'disconnected', Sonarr: 'disconnected'};
+    const movies = async () => {
+      if (!library) return [];
+      const rows = libraryMovieEntries(library.store.calendarMovies(), upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10));
+      await pictures(rows);
+      return rows;
+    };
+    const shows = async () => {
+      const connection = sonarr();
       if (!connection.url || !connection.key) return [];
       try {
-        const rows = await read(source, connection, upstreamStart, upstreamEnd);
-        sources[source] = 'ready';
+        const rows = await read(connection, upstreamStart, upstreamEnd);
+        sources.Sonarr = 'ready';
         return rows;
       } catch {
-        sources[source] = 'unavailable';
+        sources.Sonarr = 'unavailable';
         return [];
       }
     };
-    const feeds = await Promise.all([fetchSource('Radarr', radarr), fetchSource('Sonarr', sonarr)]);
+    const feeds = await Promise.all([movies(), shows()]);
     const unique = new Map<string, Scheduled>();
     for (const entry of feeds.flat()) {
       const local = entry.airTime ? localDay.format(new Date(entry.airTime)) : entry.day;

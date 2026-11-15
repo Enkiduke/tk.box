@@ -4,8 +4,7 @@ import { defaultLibrarySettings } from '../../persistence/library-store.js';
 
 // Titles, files, grabs, the blocklist, search backoff, pick profiles, score rules and the library settings
 // (docs/ARR-REPLACEMENT.md, "Data model" › library). The tables are the plan's, as written. The seed is the default
-// "1080p" profile, the default score rules and the settings row, with movies and shows still fulfilled by Radarr and
-// Sonarr.
+// "1080p" profile, the default score rules and the settings row, with shows fulfilled by Sonarr.
 export const libraryMigrations: Migration[] = [
   { name: 'library', up: `
     CREATE TABLE pick_profiles(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, value TEXT NOT NULL);
@@ -89,5 +88,14 @@ export const libraryMigrations: Migration[] = [
     ALTER TABLE grabs ADD COLUMN ratio REAL;
     ALTER TABLE grabs ADD COLUMN seeding_seconds INTEGER;
     ALTER TABLE grabs ADD COLUMN seeding_checked_at INTEGER;
-    CREATE INDEX grabs_download ON grabs(download_id);` }
+    CREATE INDEX grabs_download ON grabs(download_id);` },
+  // Phase 3.5: movies are always tk.box's. The cutover's tables go, and the settings lose `fulfil.movie`.
+  { name: 'drop-cutover', up: db => {
+    db.exec('DROP TABLE IF EXISTS library_cutover; DROP TABLE IF EXISTS library_cutover_state;');
+    const row = db.prepare('SELECT value FROM library_settings WHERE id=1').get() as { value: string } | undefined;
+    if (!row) return;
+    const value = JSON.parse(row.value) as { fulfil?: { movie?: string; show?: string } };
+    const { movie: _, ...fulfil } = value.fulfil ?? {};
+    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, fulfil: { show: 'sonarr', ...fulfil } }));
+  } }
 ];

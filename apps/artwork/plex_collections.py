@@ -4,8 +4,8 @@
 - Franchise collections from TMDb, "<Service> Shows" streaming collections and the "Newly Released" / "New Episodes"
   smart collections, made and kept in line with your libraries. Each franchise or streaming one can be turned off.
 - tk.box's collections are what Plex holds: one turned off or removed in tk.box is deleted from Plex (its titles stay).
-- Custom and seasonal collections defined in tk.box (by hand, from a curated universe or a public list), with Radarr
-  fetching a seasonal collection's missing movies and, when asked, removing them again once its season ends.
+- Custom and seasonal collections defined in tk.box (by hand, from a curated universe or a public list), with tk.box's
+  library fetching a seasonal collection's missing movies and, when asked, removing them again once its season ends.
 - Discover: the public lists and universes the Collections page offers, the TMDb collections a library has only part
   of, and a preview of what one would hold. Partly owned and Universes read the Discover index, which the full run
   builds and newly added movies join (`index build`, `index added`), so they open without asking TMDb or the lists.
@@ -20,7 +20,6 @@ import contextlib
 import json
 import os
 import re
-import secrets
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -762,29 +761,14 @@ def validate_collections(config):
         if entry.get("cleanup", "keep") not in ("keep", "remove-delete", "rotate"):
             raise ValueError("Collection cleanup must be keep, remove-delete or rotate")
         if entry.get("acquire") and entry["type"] != "movie":
-            raise ValueError(f"{entry['name']}: only movie collections can download through Radarr")
+            raise ValueError(f"{entry['name']}: only movie collections can download")
         if enabled and entry.get("acquire") and not (source or any("tmdb_id" in m for m in members)):
-            raise ValueError(f"{entry['name']}: Radarr downloads need titles with TMDb IDs (tmdb:123) or a list")
+            raise ValueError(f"{entry['name']}: downloads need titles with TMDb IDs (tmdb:123) or a list")
         if entry.get("cleanup") == "remove-delete" and (not entry.get("schedule") or not entry.get("acquire")):
             raise ValueError("remove-delete requires a seasonal collection with acquire: true")
         # Rotating deletes what leaves the list, so the list must be read on every run.
         if entry.get("cleanup") == "rotate" and (not entry.get("acquire") or not source or not source.get("refresh", option({}, "collection_source_refresh"))):
             raise ValueError("rotate requires acquire: true and a list that is refreshed on every run")
-    radarr = config.get("radarr", {})
-    if not isinstance(radarr, dict) or set(radarr) - {"url", "api_key", "root_folder", "quality_profile_id", "search"}:
-        raise ValueError("Unsupported radarr settings")
-    if "search" in radarr and type(radarr["search"]) is not bool:
-        raise ValueError("radarr.search must be true or false")
-    # Without a quality profile ID, downloads use Radarr's first quality profile.
-    if "quality_profile_id" in radarr and (type(radarr["quality_profile_id"]) is not int or radarr["quality_profile_id"] < 1):
-        raise ValueError("radarr.quality_profile_id must be a positive integer")
-    if config.get("acquire_via", "radarr") not in ("radarr", "tkbox"):
-        raise ValueError("acquire_via must be radarr or tkbox")
-    # With movies on tk.box, tk.box adds them to its own library; Radarr isn't used.
-    if config.get("acquire_via") != "tkbox" and any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
-        for key in ("url", "api_key", "root_folder"):
-            if not isinstance(radarr.get(key), str) or not radarr[key].strip():
-                raise ValueError(f"radarr.{key} is required for acquisition")
     return definitions
 
 
@@ -858,151 +842,23 @@ def collection_members(entry, items):
     return [item["rating_key"] for item in items if item["rating_key"] in selected], missing, ambiguous
 
 
-def seasonal_radarr(artwork, definitions, items, apply, today):
-    """Only a successful add recorded here AND its private Radarr tag grant cleanup ownership. A seasonal collection
-    (remove-delete) deletes the movies it downloaded once its season ends; a rotating one (rotate) deletes each once it
-    leaves the list, but not while someone is watching it, nor on a run where the list came back less than half as long as last time."""
+def seasonal_acquire(artwork, definitions, items, apply, today):
+    """Seasonal and rotating collections that download: tk.box adds and removes the movies (seasonal_tkbox)."""
     if not any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
         return
     if READ_ONLY:
-        print("READ-ONLY: Radarr acquisition and cleanup skipped", flush=True)
+        print("READ-ONLY: acquisition and removal skipped", flush=True)
         return
-    if artwork.config.get("acquire_via") == "tkbox":
-        seasonal_tkbox(artwork, definitions, items, apply, today)
-        return
-    settings = artwork.config["radarr"]
-    url = settings["url"].rstrip("/")
-    token = secret(settings["api_key"])
-    if not token:
-        raise ValueError("Set RADARR_API_KEY before using acquisition")
-    def request(method, path, **kwargs):
-        with artwork.http.request(method, url + "/api/v3/" + path, headers={"X-Api-Key": token}, **kwargs) as response:
-            return response.json() if response.content else None
-    # This durable journal is intentionally outside the expiring artwork cache.
-    state_path = artwork.base / "collections-state.json"
-    try:
-        state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "server": url, "tag": "tkbox-" + secrets.token_hex(8), "movies": {}}
-    except (OSError, ValueError):
-        raise ValueError("Cannot read collections-state.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup") from None
-    if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("movies"), dict) or not isinstance(state.get("tag"), str):
-        raise ValueError("Invalid collections-state.json; Radarr acquisition and cleanup refused. Restore the ownership journal from backup")
-    if state.get("server") != url:
-        raise ValueError("Radarr URL differs from collections-state.json; Radarr acquisition and cleanup refused. Restore the previous radarr.url or the journal for this server")
-    save = lambda: atomic_write(state_path, json.dumps(state, indent=2).encode())
-    movies = request("GET", "movie")
-    existing = {int(movie["tmdbId"]): movie for movie in movies}
-    tags = request("GET", "tag")
-    tag = next((t["id"] for t in tags if t["label"] == state["tag"]), None)
-    active_ids, acquisition, owners = set(), set(), {}
-    def identity(entry):
-        return entry["library"] + ":" + collection_key(entry["name"])
-    for entry in definitions:
-        owner = identity(entry)
-        owners[owner] = entry
-        if not entry.get("enabled", True) or not collection_active(entry.get("schedule"), today):
-            continue
-        ids = {m["tmdb_id"] for m in entry.get("members", []) if "tmdb_id" in m}
-        candidates = [i for i in items if i["library"] == entry["library"] and i["type"] == entry["type"]]
-        keys = collection_members(entry, candidates)[0]
-        ids.update(i["tmdb_id"] for i in candidates if i["rating_key"] in keys and i.get("tmdb_id"))
-        if entry["type"] == "movie":
-            active_ids.update(ids)
-            if entry.get("acquire"):
-                acquisition.update(m["tmdb_id"] for m in entry.get("members", []) if "tmdb_id" in m)
-    present = {i["tmdb_id"] for i in items if i["type"] == "movie" and i.get("tmdb_id")}
-    missing = acquisition - existing.keys() - present
-    if missing:
-        profiles, roots = request("GET", "qualityprofile"), request("GET", "rootfolder")
-        profile = settings.get("quality_profile_id") or next((p["id"] for p in profiles), None)
-        if profile not in {p["id"] for p in profiles}:
-            available = ", ".join(str(p["id"]) for p in profiles) or "none"
-            raise ValueError(f"Radarr quality profile ID {profile} does not exist. Available IDs: {available}")
-        root_folder = next((r["path"] for r in roots if r["path"].rstrip("/") == settings["root_folder"].rstrip("/")), None)
-        if root_folder is None:
-            available = ", ".join(repr(r["path"]) for r in roots) or "none"
-            raise ValueError(f"Radarr root folder {settings['root_folder']!r} is not configured. Registered folders: {available}. Use the path Radarr sees (inside its container, if applicable)")
-        if apply:
-            save()
-            if tag is None:
-                tag = request("POST", "tag", json={"label": state["tag"]})["id"]
-        for tmdb_id in sorted(missing):
-            print(f"{' ' if apply else 'PLAN '}RADARR ADD tmdb:{tmdb_id}", flush=True)
-            if not apply:
-                continue
-            # Recheck immediately before adding; never adopt a pre-existing movie.
-            if any(m.get("tmdbId") == tmdb_id for m in request("GET", "movie")):
-                continue
-            found = request("GET", "movie/lookup", params={"term": f"tmdb:{tmdb_id}"})
-            movie = next((m for m in found if m.get("tmdbId") == tmdb_id), None)
-            if movie is None:
-                raise ValueError(f"Radarr could not resolve tmdb:{tmdb_id}")
-            if any(i["type"] == "movie" and i["title"].casefold() == movie["title"].casefold()
-                   and str(i.get("year", "")) == str(movie.get("year", "")) for i in items):
-                print(f"SKIP tmdb:{tmdb_id}: title/year already in Plex", flush=True)
-                continue
-            added = request("POST", "movie", json={"tmdbId": tmdb_id, "title": movie["title"], "qualityProfileId": profile,
-                            "rootFolderPath": root_folder, "monitored": True, "minimumAvailability": "released", "tags": [tag],
-                            "addOptions": {"searchForMovie": option(settings, "search")}})
-            state["movies"][str(tmdb_id)] = {"id": added["id"], "path": added.get("path"), "owners": [identity(e) for e in definitions
-                if e.get("enabled", True) and e.get("acquire") and collection_active(e.get("schedule"), today) and {"tmdb_id": tmdb_id} in e.get("members", [])]}
-            save()
-    # A list that suddenly shrank is more likely a bad answer than a new week: nothing leaves it on this run.
-    lists, held = state.setdefault("lists", {}), set()
-    for entry in definitions:
-        if entry.get("enabled", True) and entry.get("cleanup") == "rotate":
-            owner, count = identity(entry), sum("tmdb_id" in m for m in entry.get("members", []))
-            if count < lists.get(owner, 0) / 2:
-                held.add(owner)
-                print(f"WARN {entry['name']} [{entry['library']}]: the list has {count} movies, down from {lists[owner]}; none are removed this run", flush=True)
-            if apply and lists.get(owner) != count:
-                lists[owner] = count
-                save()
-    def releases(entry):
-        if entry is None or not entry.get("enabled", True):
-            return False
-        if entry.get("cleanup") == "rotate":
-            return identity(entry) not in held
-        return entry.get("cleanup", "keep") == "remove-delete" and not collection_active(entry.get("schedule"), today)
-    playing = None
-    for key, record in list(state["movies"].items()):
-        tmdb_id = int(key)
-        if tmdb_id in active_ids:
-            # All acquisition collections sharing this movie must agree before eventual deletion.
-            shared = [identity(e) for e in definitions if e.get("acquire") and {"tmdb_id": tmdb_id} in e.get("members", [])]
-            if apply and set(shared) - set(record["owners"]):
-                record["owners"] = sorted(set(record["owners"]) | set(shared))
-                save()
-            continue
-        responsible = [owners.get(owner) for owner in record["owners"]]
-        if not responsible or not all(map(releases, responsible)):
-            continue
-        movie = existing.get(tmdb_id)
-        if movie is None or tag is None or tag not in movie.get("tags", []) or movie["id"] != record["id"] or not record.get("path") or movie.get("path") != record["path"]:
-            continue
-        if any(e.get("cleanup") == "rotate" for e in responsible):
-            if playing is None:
-                playing = now_playing(artwork.plex, items)
-            if playing is False or tmdb_id in playing:
-                print(f"KEEP {movie['title']} (tmdb:{tmdb_id}): left the list, but "
-                      + ("Plex didn't say what is playing" if playing is False else "someone is watching it"), flush=True)
-                continue
-        print(f"{' ' if apply else 'PLAN '}RADARR REMOVE + DELETE FILES {movie['title']} (tmdb:{tmdb_id}; added by tk.box)", flush=True)
-        if apply:
-            fresh = request("GET", f"movie/{record['id']}")
-            if fresh.get("tmdbId") != tmdb_id or tag not in fresh.get("tags", []) or fresh.get("path") != record["path"]:
-                raise ValueError("Radarr ownership changed; cleanup refused")
-            request("DELETE", f"movie/{record['id']}", params={"deleteFiles": "true", "addImportExclusion": "false"})
-            del state["movies"][key]
-            save()
+    seasonal_tkbox(artwork, definitions, items, apply, today)
 
 
 def seasonal_tkbox(artwork, definitions, items, apply, today):
     """Movies are on tk.box. The movies active acquiring collections want and Plex lacks go in collections-acquire.json
     as `tmdb_ids`, and tk.box adds each its library doesn't have yet. Each is recorded in collections-tkbox.json with
-    the collections that wanted it, as the Radarr journal does. Once every one of them lets it go (a seasonal one's
+    the collections that wanted it. Once every one of them lets it go (a seasonal one's
     season ended, or it left a rotating one's list, not while watched, nor when the list came back less than half as
     long), it goes in `remove_ids`: tk.box deletes it with its files, but only one it added for collections and that
-    nobody has requested or kept since. Radarr's journal is left as it is."""
+    nobody has requested or kept since. An old Radarr journal (collections-state.json) is left as it is."""
     state_path = artwork.base / "collections-tkbox.json"
     try:
         state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "movies": {}, "lists": {}}
@@ -1128,13 +984,13 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
         if entry["library"] not in libraries["show" if entry["type"] == "tv" else "movie"]:
             raise ValueError(f"Collection library {entry['library']!r} must name a configured library of its type")
     items = plex.scan() if enabled else []
-    radarr_failed = 0
+    acquire_failed = 0
     if added_item is None and enabled:
         try:
-            seasonal_radarr(artwork, definitions, items, apply, today)
+            seasonal_acquire(artwork, definitions, items, apply, today)
         except (RuntimeError, ValueError, OSError) as error:
-            radarr_failed = 1
-            print(f"ERROR Radarr: {error}. Plex collection syncing will continue", file=sys.stderr, flush=True)
+            acquire_failed = 1
+            print(f"ERROR Downloads: {error}. Plex collection syncing will continue", file=sys.stderr, flush=True)
     builder = CollectionBuilder(plex, apply, ("movie", "show"))
     for entry in off:
         current = builder.existing.get((entry["library"], collection_key(entry["name"])))
@@ -1182,7 +1038,7 @@ def custom_collections(artwork, apply=False, today=None, added_item=None, kept=N
         if added_item is None:
             kept.append({"name": name, "library": library, "kind": "custom", "items": len(keys), **({"rating_key": current["rating_key"]} if current else {})})
     builder.summary()
-    return builder.failures + radarr_failed
+    return builder.failures + acquire_failed
 
 
 def franchise_name(collection):

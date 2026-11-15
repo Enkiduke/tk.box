@@ -89,7 +89,7 @@ def load_arr_data(client, needed, tags_needed):
         return None, None
 
 
-def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, history,
+def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
                           arr_data, now, report, processed_keys, context):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
@@ -122,18 +122,16 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
     kind = "movie" if media_type == "movie" else "show"
     logger.info("Processing '%s' for request IDs %s", item.title, [request.request_id for request in requests_group])
 
-    arr = radarr if media_type == "movie" else sonarr
-    library, tags = arr_data[media_type]
-    external_id = tmdb_id if media_type == "movie" else tvdb_id
-    arr_item = library.get(external_id) if library is not None else None
-    tkbox_movie = media_type == "movie" and settings.movies_on_tkbox
-    if tkbox_movie and any(request.media.get("keep") for request in requests_group):
+    # Movies are tk.box's own (kept by its Keep, deleted from Plex only); shows are Sonarr's.
+    library, tags = arr_data.get(media_type, ({}, {}))
+    arr_item = library.get(tvdb_id) if library is not None and media_type == "tv" else None
+    if media_type == "movie" and any(request.media.get("keep") for request in requests_group):
         logger.info("Keeping '%s': kept in tk.box", item.title)
         report.protected += 1
         report.settled.add(str(item.ratingKey))
         add_status(report, item, kind, "protected", reason="Kept in tk.box", key=hold)
         return
-    if settings.exempt_arr_tags and not tkbox_movie:
+    if settings.exempt_arr_tags and media_type == "tv":
         matches = matching_arr_tags(arr_item, tags, settings.exempt_arr_tags)
         if matches:
             logger.info("Keeping '%s': protected by Arr tags %s", item.title, ", ".join(matches))
@@ -166,7 +164,7 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
     if now >= due_at:
         logger.warning("DELETE Candidate: '%s'. %s: %s", item.title, rule.name, rule.reason)
         add_entry(report.delete_summary, item, f"{item.title} [{rule.name}]")
-        delete_whole_item(item, media_type, arr_item, settings, arr, report)
+        delete_whole_item(item, media_type, arr_item, settings, sonarr, report)
         add_status(report, item, kind, "due" if settings.dry_run else "deleted", rule=rule, key=hold)
     else:
         report.kept += 1
@@ -184,7 +182,7 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, radarr, sonarr, history, now=None):
+def run(settings, plex, sonarr, history, now=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -200,8 +198,6 @@ def run(settings, plex, radarr, sonarr, history, now=None):
     groups = group_requests(requests_data)
     logger.info("Processing %s requests across %s media items", len(requests_data), len(groups))
     arr_data = {
-        "movie": load_arr_data(radarr, not settings.movies_on_tkbox and any(key[0] == "movie" for key in groups) and bool(settings.movie_libraries) and
-                               (settings.delete_from_radarr or bool(settings.exempt_arr_tags)), bool(settings.exempt_arr_tags)),
         "tv": load_arr_data(sonarr, any(key[0] == "tv" for key in groups) and bool(settings.tv_libraries) and
                             (settings.delete_from_sonarr or bool(settings.exempt_arr_tags) or settings.enable_season_retention),
                             bool(settings.exempt_arr_tags)),
@@ -215,7 +211,7 @@ def run(settings, plex, radarr, sonarr, history, now=None):
                        title=context.get("title") or f"TMDB {key[1]}", reason=reason, key=hold_key(*key))
         try:
             process_request_group(key, raw_requests, settings=settings, plex=plex,
-                                  radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,
+                                  sonarr=sonarr, history=history, arr_data=arr_data,
                                   now=now, report=report, processed_keys=processed_keys, context=context)
         except MissingAddedAtError as exc:
             logger.warning("Skipping %s TMDB=%s (request IDs %s): %s; retaining media",
@@ -270,8 +266,7 @@ def main(argv=None):
             except ConfigError as exc:
                 logger.error("Cannot start purge: %s", exc)
                 return 1
-            report = run(settings, plex,
-                         ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"), history)
+            report = run(settings, plex, ArrClient(http, settings.sonarr, "Sonarr"), history)
         if args.status:
             write_status(report, args.status, settings.dry_run)
         return 1 if report.failed or report.skipped_missing_added_at else 0

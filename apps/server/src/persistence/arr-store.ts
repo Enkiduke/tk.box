@@ -5,9 +5,9 @@ import { AppError } from '../errors.js';
 import { prepared } from './statements.js';
 import type { ArrService } from '../providers/arr-tags.js';
 
-// The one Radarr and one Sonarr tk.box talks to: Calendar, Collections' seasonal downloads, Clean Up and requests all
-// read them here. Keys are sealed.
-export const arrNames = ['radarr', 'sonarr'] as const;
+// The one Sonarr tk.box talks to for shows (until phase 2): the calendar, Clean Up and requests read it here. Movies are
+// tk.box's own. The key is sealed.
+export const arrNames = ['sonarr'] as const;
 export type ArrName = typeof arrNames[number];
 const origin = z.string().trim().max(300).refine(value => { if (!value) return true; try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }, 'Use an http(s) address').transform(value => value.replace(/\/+$/, ''));
 // Omitted keeps a saved key; an empty string removes it.

@@ -150,7 +150,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
   const canReadEarlier = validDay(previousBatch) && previousBatch >= addDays(firstWeek, -364);
   const canReadLater = validDay(nextBatch) && nextBatch < addDays(firstWeek, 364);
   const hasSource = (page: CalendarPage) => Object.entries(page.sources).some(([source, state]) =>
-    state === 'ready' && filter !== (source === 'Radarr' ? 'shows' : 'movies'));
+    state === 'ready' && filter !== (source === 'Library' ? 'shows' : 'movies'));
   const ready = !!initial.data && hasSource(initial.data);
   const earlierUnavailable = !!before.data && !hasSource(before.data);
   const laterUnavailable = !!after.data && !hasSource(after.data);
@@ -247,7 +247,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
       window.location.hash = route({from: day === current ? undefined : day});
     }
   };
-  const sources = Object.entries(initial.data?.sources ?? {}).filter(([source]) => filter !== (source === 'Radarr' ? 'shows' : 'movies'));
+  const sources = Object.entries(initial.data?.sources ?? {}).filter(([source]) => filter !== (source === 'Library' ? 'shows' : 'movies'));
   const failed = sources.filter(([, status]) => status === 'unavailable').map(([source]) => source);
   const disconnected = sources.filter(([, status]) => status === 'disconnected').map(([source]) => source);
   const open = (entry: CalendarEntry, plexId?: string) => {

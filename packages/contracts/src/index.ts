@@ -205,7 +205,8 @@ export type CalendarEntry = {
 };
 export type CalendarPage = {
   dates: CalendarEntry[];
-  sources: Record<'Radarr' | 'Sonarr', 'ready' | 'disconnected' | 'unavailable'>;
+  // Library: tk.box's own movies; Sonarr: the shows.
+  sources: Record<'Library' | 'Sonarr', 'ready' | 'disconnected' | 'unavailable'>;
   plexUnavailable: boolean;
 };
 // Search across every catalog source; `failed` names sources that could not be searched.
@@ -219,7 +220,7 @@ export type ExploreSources = {
   plex: boolean;
   // Sources shown, in the administrator's order (whether or not each is set up).
   order: ExploreBrowseSource[];
-  // Whether movies (Radarr) and shows (Sonarr) can be requested.
+  // Whether movies (tk.box's library) and shows (Sonarr) can be requested.
   requests: { movie: boolean; show: boolean };
   tmdb: { configured: boolean };
 };
@@ -235,8 +236,8 @@ export type ExploreDetails = {
   matchedLibraryId?: string;
   // Plex Discover watchlist state; undefined when Discover does not know the title.
   watchlisted?: boolean;
-  // What is still open to request: the movie, or each regular season with its state. Absent when Radarr (movies) or
-  // Sonarr (shows) isn't connected, or TMDB doesn't know the title.
+  // What is still open to request: the movie, or each regular season with its state. Absent when Sonarr (shows)
+  // isn't connected, or TMDB doesn't know the title.
   request?: { requestable: boolean; seasons: ExploreSeason[] };
   // TMDB's YouTube trailer (or teaser), by YouTube video key.
   trailer?: TitleTrailer;

@@ -284,7 +284,7 @@ dialog:has(.artwork-discover){width:min(920px,calc(100% - 32px))}
 .artwork-discover-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto}
 .artwork-discover-rows li{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .artwork-discover-rows small{display:block}
-/* A custom collection: its settings up top, its titles as posters, then where it shows and Radarr side by side. */
+/* A custom collection: its settings up top, its titles as posters, then where it shows and downloads side by side. */
 dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .collection-editor{display:flex;flex-direction:column;gap:22px}
 .collection-editor h3{display:flex;align-items:center;gap:8px;margin:0;font-size:15px;font-weight:650}

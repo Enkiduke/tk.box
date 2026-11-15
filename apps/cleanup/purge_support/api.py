@@ -78,8 +78,8 @@ class ArrClient:
         self.name = name
         self.url = service.url + "/api/v3"
         self.headers = {"X-Api-Key": service.key}
-        self.resource = "movie" if name == "Radarr" else "series"
-        self.external_id = "tmdbId" if name == "Radarr" else "tvdbId"
+        self.resource = "series"
+        self.external_id = "tvdbId"
 
     def library(self):
         if not self.service.configured:

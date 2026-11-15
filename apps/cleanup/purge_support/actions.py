@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 def delete_whole_item(item, media_type, arr_item, settings, arr, report):
     """Validate targets first. tk.box marks the title's requests removed after the run, from the status file."""
-    delete_from_arr = settings.delete_from_radarr if media_type == "movie" else settings.delete_from_sonarr
+    # Movies are tk.box's own: only shows are deleted from Sonarr too.
+    delete_from_arr = media_type == "tv" and settings.delete_from_sonarr
     if delete_from_arr:
         if arr_item is None:
             raise ApiError(f"Required {arr.name} item was not found")

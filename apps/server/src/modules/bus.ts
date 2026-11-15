@@ -24,7 +24,7 @@ export type BusEvents = {
   'plex.playback.connection': { connected: boolean };
   // A browser session signed out: everything it was watching stops.
   'session.signed-out': { hash: string };
-  // A request was made, sent, moved on (Plex, Radarr/Sonarr), cancelled or removed. `accountId` is the requester's.
+  // A request was made, sent, moved on (Plex, the library, Sonarr), cancelled or removed. `accountId` is the requester's.
   'requests.changed': RequestChange;
   // Post a notification, or close an open condition (modules/notifications.ts), without depending on that module.
   'notification.post': NewNotification;
@@ -34,7 +34,7 @@ export type BusEvents = {
   'library.grab.changed': { grabId: number; titleId: number; state: GrabState };
   'library.file.imported': { titleId: number; fileId: number; path: string; kind: 'movie' | 'show'; tmdbId: number };
   'library.title.removed': { titleId: number; kind: 'movie' | 'show'; tmdbId: number; by: 'cleanup' | 'admin' | 'collections' };
-  // A collections run wants these movies (seasonal downloads, movies on tk.box): the library adds those it lacks, and
+  // A collections run wants these movies (seasonal downloads): the library adds those it lacks, and
   // deletes those in `removeIds` that it added for collections and nobody has requested or kept since.
   'collections.acquire': { tmdbIds: number[]; removeIds: number[] };
   // Someone's notifications changed (`to`: an account id, or 'admins' for every admin); their pages read them again.

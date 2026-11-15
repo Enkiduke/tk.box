@@ -6,7 +6,6 @@ import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
 import { hiddenDownloads } from './hidden-downloads.js';
-import type { ArrService } from '../providers/arr-tags.js';
 
 // Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
 // their own Python processes: tk.box writes their shared JSON config from the database, passes credentials in the
@@ -29,8 +28,8 @@ const MAX_LINES = 5000, SAVED_LINES = 2000;
 
 // The engine's config for one run. Library titles come from the signed-in administrator's view of Plex, because the
 // engine matches its per-library layouts by title. Credentials are never written into it.
-export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections, radarrUrl = '', moviesOnTkbox = false) {
-  const title = (id: string) => libraries.find(l => l.key === id)?.title, f = collections?.franchise, radarr = collections?.radarr;
+export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections) {
+  const title = (id: string) => libraries.find(l => l.key === id)?.title, f = collections?.franchise;
   return {
     plex: { url: paths.plexUrl, libraries: settings.libraries, upload: settings.upload, upload_logo: settings.uploadLogo, include_seasons: settings.includeSeasons,
       include_episodes: settings.includeEpisodes, include_collections: settings.includeCollections, completion_label: settings.completionLabel,
@@ -42,15 +41,11 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     ...(Object.keys(settings.layoutByType).length ? { layout_by_type: settings.layoutByType } : {}),
     layouts,
     ...(collections?.definitions ? { collections: collections.definitions } : {}),
-    ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {}),
-    // Movies on tk.box: seasonal downloads go to its library (the engine lists them; tk.box adds them), not Radarr.
-    ...(moviesOnTkbox ? { acquire_via: 'tkbox' } : {}),
-    // The key itself arrives in the environment; the engine reads ${RADARR_API_KEY} from there.
-    ...(radarr && radarrUrl && !moviesOnTkbox ? { radarr: { url: radarrUrl, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
-      ...(radarr.qualityProfileId ? { quality_profile_id: radarr.qualityProfileId } : {}) } } : {})
+    // Seasonal downloads go to tk.box's library: the engine lists them (collections-acquire.json) and tk.box adds them.
+    ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {})
   };
 }
-export type EngineSecrets = ArtworkKeys & { radarr?: string };
+export type EngineSecrets = ArtworkKeys;
 // Only what Python needs, plus the credentials for this run; never the server's own environment.
 export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
@@ -59,8 +54,8 @@ export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   // Match artwork_engine.py's defaults when the dependency check imports NumPy directly.
   Object.assign(env, { OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1' });
   if (run) env.PLEX_TOKEN = run.token;
-  for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY'], ['mdblist', 'MDBLIST_API_KEY'],
-    ['radarr', 'RADARR_API_KEY']] as const) if (keys[name]) env[variable] = keys[name];
+  for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY'], ['mdblist', 'MDBLIST_API_KEY']] as const)
+    if (keys[name]) env[variable] = keys[name];
   return env;
 }
 const redact = (line: string, secrets: string[]) => secrets.reduce((text, secret) => secret.length >= 6 ? text.replaceAll(secret, '•••') : text, line);
@@ -75,11 +70,7 @@ export class ArtworkEngine {
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
-  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
-    // The arr module's Radarr, for seasonal collections' downloads.
-    readonly radarr: () => ArrService = () => ({ url: '' }),
-    // Whether movies are on tk.box (the cutover), so seasonal downloads go to its library instead of Radarr.
-    readonly moviesOnTkbox: () => boolean = () => false) {
+  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
     this.renameFiles();
@@ -104,7 +95,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
-  secrets(): EngineSecrets { const radarr = this.moviesOnTkbox() ? undefined : this.radarr().key; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
+  secrets(): EngineSecrets { return this.store.keys(); }
   // Cache the dependency check for a minute. An interrupted check can be tried again on the next request.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);
@@ -209,7 +200,7 @@ export class ArtworkEngine {
   }
   // The movies collections downloaded that stay off Recently added; none while the journal can't be read.
   hiddenFromRecent() {
-    try { return hiddenDownloads(JSON.parse(readFileSync(join(this.workDir, 'collections-state.json'), 'utf8')), this.store.collections().definitions); }
+    try { return hiddenDownloads(JSON.parse(readFileSync(join(this.workDir, 'collections-tkbox.json'), 'utf8')), this.store.collections().definitions); }
     catch { return new Set<number>(); }
   }
   // The config the worker reads, written again whenever settings, layouts or collections change.
@@ -248,7 +239,7 @@ export class ArtworkEngine {
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // The movies the last collections run wants tk.box's library to add, and those its seasonal and rotating
-  // collections let go (movies on tk.box only). Read once: the file is removed as it's read.
+  // collections let go. Read once: the file is removed as it's read.
   takeAcquisitions(): { add: number[]; remove: number[] } {
     const file = join(this.workDir, 'collections-acquire.json');
     if (!existsSync(file)) return { add: [], remove: [] };
@@ -265,7 +256,7 @@ export class ArtworkEngine {
     const collections = this.store.collectionsConfig();
     const inputs: Inputs = { settings: this.store.settings(), layouts: this.store.layouts(), collections, ...changes };
     const file = join(this.workDir, name), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections, this.radarr().url, this.moviesOnTkbox()), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

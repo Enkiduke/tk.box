@@ -18,7 +18,7 @@ export function RequestOptionsPanel({kind,extras,setExtras}:{kind:ExploreItem['k
   useEffect(()=>{if(o)setExtras(x=>x.profileId?x:{...x,profileId:o.defaults.profileId||o.profiles[0]?.id});},[o]);
   if(options.error)return <ErrorNotice message={options.error.message} retry={options.reload}/>;
   if(!o)return <Loading/>;
-  if(!o.connected)return <p className="muted small">{kind==='show'?'Sonarr':'Radarr'} isn’t connected.</p>;
+  if(!o.connected)return <p className="muted small">Sonarr isn’t connected.</p>;
   return <div className="request-options">
     {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality profile</span>
       <select value={extras.profileId} onChange={e=>setExtras(x=>({...x,profileId:Number(e.target.value)}))}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}

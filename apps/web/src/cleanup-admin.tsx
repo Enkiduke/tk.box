@@ -11,14 +11,14 @@ import {CleanupStatus} from './cleanup-status.js';
 import {toast} from './toasts.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
-// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Radarr and
-// Sonarr are connected in Admin › Connections.
+// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Movies are tk.box's
+// own; Sonarr is connected in Admin › Connections.
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
-type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;
+type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromSonarr:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
-type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
+type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
@@ -53,7 +53,7 @@ function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
   const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
   const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
-  const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr]] as const).filter(([,on])=>on).map(([name])=>name);
+  const also=data.settings.deleteFromSonarr?['Sonarr']:[];
   return <>
     <SectionHead title="Clean Up">
       <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
@@ -172,7 +172,7 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play tk.box saw counts, in its own player or Plex’s apps, as does the saved watch history. A partial play counts. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
     </Card>
     <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
-      <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>
+      <label>Protected Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);}}/><small>Shows only; movies use Keep. Separate tags with commas.</small></label>
       <Switch label="Keep titles in Plex collections" description={`Never “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
       {draft.exemptIfInCollection&&<fieldset className="form-stack"><legend>Collections that protect</legend>
         {collectionKinds.map(([kind,label])=><label key={kind} className="checkbox-label"><input type="checkbox" checked={draft.collectionKinds[kind]} onChange={e=>set({collectionKinds:{...draft.collectionKinds,[kind]:e.target.checked}})}/>{label}</label>)}
@@ -187,7 +187,6 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </div>}
     </Card>
     <Card title="Also remove from connected apps" description="A run that deletes always removes due content from Plex with its files. These options control the other apps. Plex must allow media deletion.">
-      <Switch label="Delete from Radarr" description={needs(connected.radarr,'Radarr')??'Removes the movie and its files.'} checked={draft.deleteFromRadarr} onChange={v=>set({deleteFromRadarr:v})}/>
       <Switch label="Delete from Sonarr" description={needs(connected.sonarr,'Sonarr')??'Removes whole shows, or unmonitors episodes and removes their files when cleaning up individual seasons.'} checked={draft.deleteFromSonarr} onChange={v=>set({deleteFromSonarr:v})}/>
     </Card>
     <Card title="Leaving Soon collection" description="Show whole titles approaching their deadline in a Plex collection. This does not add extra time before deletion.">

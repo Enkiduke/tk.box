@@ -84,13 +84,13 @@ function ReleaseFact({release}:{release:RequestRelease}) {
     day=release.day;
     label=`S${release.season} E${release.episode} ${release.aired?'aired':'airs'}`;
   } else {
-    if(!release.date)return <div><dt>Release</dt><dd>Waiting for release in Radarr</dd></div>;
+    if(!release.date)return <div><dt>Release</dt><dd>Waiting for release</dd></div>;
     const {format}=release.date;
     day=release.date.day;
     const future=day>localDayFormat.format(new Date());
     label=movieReleaseLabels[format][future?'future':'past'];
     if(format==='theatrical'&&!future)note='Home release date unknown';
-    else if(release.waitingForRelease&&!future)note='Waiting for release in Radarr';
+    else if(release.waitingForRelease&&!future)note='Waiting for release';
   }
   return <div><dt>Release</dt><dd>{label} <time dateTime={day}>{releaseDateFormat.format(new Date(`${day}T00:00:00Z`))}</time>
     {note&&<small className="request-card-release-note">{note}</small>}

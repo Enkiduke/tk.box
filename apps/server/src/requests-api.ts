@@ -14,7 +14,7 @@ const override = { profileId: z.number().int().positive().optional(), rootFolder
   keep: z.boolean().optional() };
 
 // Requests: any viewer may request, see everyone's (not removed ones) and cancel their own; Admin › Requests lists, removes and retries every one,
-// and sets where requests go in Radarr and Sonarr. Only administrators may pick a profile (4K is a profile), folder or tags.
+// and sets where show requests go in Sonarr. Only administrators may pick a profile (4K is a profile), folder or tags.
 export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller) {
   app.post('/api/v1/requests', { config: { access: 'viewer', rateLimit: { max: 20, timeWindow: 60000 } } }, async request => {
     const input = z.object({ kind, tmdb: z.number().int().positive(), seasons: z.array(z.number().int().positive()).min(1).max(100).optional(), ...override }).strict().parse(request.body);
@@ -23,9 +23,9 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
     const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep;
     const { grant } = extras ? await authorize(request, 'admin') : viewer(request);
     if (keep) {
-      // tk.box's own library keeps a title by its own flag; Radarr and Sonarr by Clean Up's protected tag.
-      const label = requests.fulfilledHere(media) ? 'Keep' : requests.keepTag();
-      requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Radarr and Sonarr tag in Clean Up › Settings first.', 409);
+      // tk.box's own library keeps a movie by its own flag; Sonarr a show by Clean Up's protected tag.
+      const label = media === 'movie' ? 'Keep' : requests.keepTag();
+      requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Sonarr tag in Clean Up › Settings first.', 409);
       requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Keep isn’t available here.', 409);
       const keepId = await fulfiller.tagId(media, label);
       tags = [...new Set([...(tags ?? store.settings()[media].tags), keepId])];
@@ -74,8 +74,8 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   // Also on the Requests site, for its administrators' Request with options….
   app.get('/api/v1/admin/requests/options', { config: { access: 'admin', portal: 'admin' } }, async request => {
     const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId, rootFolder, tags } = store.settings()[media];
-    const keepTag = requests.fulfilledHere(media) ? 'Keep' : requests.keepTag(), options = await fulfiller.options(media);
-    // On tk.box a saved Radarr or Sonarr profile means nothing: its default profile (listed first) stands in.
+    const keepTag = media === 'movie' ? 'Keep' : requests.keepTag(), options = await fulfiller.options(media);
+    // On tk.box a profile saved for Radarr means nothing: its default profile (listed first) stands in.
     const defaults = options.tkbox ? { profileId: options.profiles.some(p => p.id === profileId) ? profileId : options.profiles[0]?.id ?? 0, rootFolder: '', tags: [] }
       : { profileId, rootFolder, tags };
     return { ...options, defaults, ...(keepTag ? { keepTag } : {}) } satisfies RequestOptions;

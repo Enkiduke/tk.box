@@ -4,8 +4,8 @@ import { hidesFromRecent } from '../../../../packages/contracts/src/collections.
 // a trailing "Collection" ignored.
 export const collectionKey = (name: string) => name.trim().toLowerCase().replace(/\s+collection$/, '').replace(/[^a-z0-9]/g, '');
 
-// The TMDb IDs of the movies Radarr downloaded for custom collections that stay off Recently added. The collections
-// engine's journal (collections-state.json) names each download's collections as "library:key"; a movie is hidden when
+// The TMDb IDs of the movies tk.box downloaded for custom collections that stay off Recently added. The collections
+// engine's journal (collections-tkbox.json) names each download's collections as "library:key"; a movie is hidden when
 // any of them hides its downloads. One whose collections are all gone shows again.
 export function hiddenDownloads(journal: unknown, definitions: Record<string, unknown>[] | null) {
   const hiding = new Set((definitions ?? []).filter(d => typeof d.name === 'string' && typeof d.library === 'string' && hidesFromRecent(d))

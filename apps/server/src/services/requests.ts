@@ -9,12 +9,12 @@ import { openStatuses, type RequestKind, type RequestRow, type RequestStatus, ty
 import type { RequestAvailability } from './request-availability.js';
 
 // Requests (docs/REQUESTS.md): every allowed viewer may request, and every request is approved as it is made. A request
-// is saved first, then sent to Radarr or Sonarr; one that couldn't be sent stays queued and the sweep tries again
-// (1 minute, 5, 30, then 2 hours), and after the fifth failure, or one Radarr or Sonarr refused outright, it has failed.
-// Statuses come from Plex (available, partial) and Radarr/Sonarr's queue (downloading).
+// is saved first, then sent to tk.box's library (movies) or Sonarr (shows); one that couldn't be sent stays queued and
+// the sweep tries again (1 minute, 5, 30, then 2 hours), and after the fifth failure, or one refused outright, it has
+// failed. Statuses come from Plex (available, partial) and the library's grabs or Sonarr's queue (downloading).
 const BACKOFF = [60000, 5 * 60000, 30 * 60000, 2 * 3600000];
 const MAX_ATTEMPTS = BACKOFF.length + 1;
-// How often each sent title is checked for having been deleted from Radarr or Sonarr.
+// How often each sent title is checked for having been deleted from the library or Sonarr.
 const EXISTS_MS = 3600000;
 export type Requester = { accountId: string; name: string };
 export type RequestInput = { kind: RequestKind; tmdb: number; seasons?: number[] };
@@ -37,14 +37,13 @@ export class Requests {
   // Told after every change to a row: made, sent, moved on, cancelled.
   changed?: (change: RequestChange) => void;
   constructor(private store: RequestStore, private fulfiller: Fulfiller, private availability: RequestAvailability, private tmdb: Pick<TmdbTitles, 'get'>,
-    private connection: (name: 'radarr' | 'sonarr') => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
+    private sonarr: () => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
     availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
-  // True for a kind tk.box's own library fulfils (library_settings.fulfil): it needs no Radarr or Sonarr.
-  fulfilledHere: (kind: RequestKind) => boolean = () => false;
+  // Movies are tk.box's own library's; shows need Sonarr connected.
   connected(kind: RequestKind) {
-    if (this.fulfilledHere(kind)) return true;
-    const c = this.connection(kind === 'movie' ? 'radarr' : 'sonarr'); return !!(c.url && c.key);
+    if (kind === 'movie') return true;
+    const c = this.sonarr(); return !!(c.url && c.key);
   }
   private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus, made = false) {
     this.labelCache = undefined;
@@ -152,7 +151,7 @@ export class Requests {
 
   async create(by: Requester, input: RequestInput, override?: Override) {
     requireWritable();
-    requireThat(this.connected(input.kind), 'REQUESTS_NOT_CONNECTED', `Requests need ${input.kind === 'movie' ? 'Radarr' : 'Sonarr'} connected in Admin › Connections.`, 409);
+    requireThat(this.connected(input.kind), 'REQUESTS_NOT_CONNECTED', 'Show requests need Sonarr connected in Admin › Connections.', 409);
     if (!this.availability.ready()) await this.availability.rebuild();
     const raw = await this.tmdbTitle(input.kind, input.tmdb);
     requireThat(raw, 'NOT_FOUND', 'TMDB does not know this title.', 404);
@@ -183,7 +182,7 @@ export class Requests {
     return this.store.get(row.id)!;
   }
 
-  // One attempt at handing the row to Radarr or Sonarr.
+  // One attempt at handing the row to the library (movies) or Sonarr (shows).
   private async send(row: RequestRow) {
     if (readOnly() || row.status !== 'queued') return;
     const settings = this.store.settings();
@@ -203,7 +202,7 @@ export class Requests {
     }
   }
 
-  // Cancel (the requester, while nothing is downloading yet) or remove (an administrator, any time). Radarr or Sonarr
+  // Cancel (the requester, while nothing is downloading yet) or remove (an administrator, any time). The library or Sonarr
   // stops watching what no other request still needs; nothing is deleted there.
   async cancel(id: number, by: { accountId: string; admin: boolean }) {
     const row = this.store.get(id);
@@ -231,7 +230,7 @@ export class Requests {
     return this.store.get(id)!;
   }
 
-  // Each minute while any request is open: send what's due, then move each row on from Plex and Radarr/Sonarr.
+  // Each minute while any request is open: send what's due, then move each row on from Plex and the library or Sonarr.
   async sweep() {
     const open = this.store.open();
     if (!open.length) return;
@@ -255,7 +254,7 @@ export class Requests {
       if (next === 'partial') return;
     }
     if (!row.arrId && row.seerrId && row.status !== 'queued' && this.due(row.id, now)) {
-      // Imported from Seerr, so never sent by tk.box: find it in Radarr or Sonarr to follow its downloads.
+      // Imported from Seerr, so never sent by tk.box: find it in the library or Sonarr to follow its downloads.
       this.checked.set(row.id, now);
       const arrId = await this.fulfiller.find(row.kind, row.tmdbId, row.tvdbId).catch(() => undefined);
       if (arrId) { this.store.setArrId(row.id, arrId); row = { ...row, arrId }; }
@@ -281,5 +280,5 @@ export function requestItem(row: RequestRow): RequestItem {
     seen: row.seen, seasons: row.seasons.map(s => ({ season: s.season, available: !!s.availableAt })), accountName: row.accountName,
     ...(row.lastError && (row.status === 'failed' || row.status === 'queued') ? { error: row.lastError } : {}), ...(row.removedBy ? { removedBy: removedBy(row) } : {}) };
 }
-// Who removed it, without naming an administrator's account: the requester, an administrator, Clean Up, or Radarr/Sonarr.
+// Who removed it, without naming an administrator's account: the requester, an administrator, Clean Up, or the library or Sonarr.
 const removedBy = (row: RequestRow) => row.removedBy === 'arr' || row.removedBy === 'cleanup' ? row.removedBy : row.removedBy === row.accountId ? 'requester' : 'admin';

@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import type {CutoverPlan,CutoverView,DownloadsActivity,DownloadsGrab,DownloadsSeeding,GrabState,InteractiveSearch,LibrarySettingsView,LibraryTitleView,NamingPreview,
+import type {DownloadsActivity,DownloadsGrab,DownloadsSeeding,GrabState,InteractiveSearch,LibrarySettingsView,LibraryTitleView,NamingPreview,
   PickProfile,PickProfileView,PickRules,ScoreRuleView,WantedList} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {invalidate,link,replaceRoute,useApi,useDebounced} from './hooks.js';
@@ -9,7 +9,7 @@ import {toast} from './toasts.js';
 
 // Admin › Downloads (docs/ARR-REPLACEMENT.md, "Admin UI"): tk.box's own library for movies, from what is downloading to
 // the pick rules and naming. A title opens from Activity or Wanted (?title=<id>).
-const tabs=[['activity','Activity'],['wanted','Wanted'],['rules','Pick rules'],['library','Library'],['cutover','Cutover']] as const;
+const tabs=[['activity','Activity'],['wanted','Wanted'],['rules','Pick rules'],['library','Library']] as const;
 type Tab=typeof tabs[number][0];
 const REFRESH_MS=10000,HOUR=3600000,GB=1024**3;
 const stateNames:Record<GrabState,string>={sending:'Sending',downloading:'Downloading',unpacking:'Unpacking',importing:'Importing',imported:'Imported',seeding:'Seeding',done:'Done',failed:'Failed',cancelled:'Cancelled'};
@@ -37,7 +37,7 @@ export function DownloadsAdmin({params}:{params:URLSearchParams}) {
   if(titleId)return <TitleView id={titleId}/>;
   return <><SectionHead title="Downloads"/>
     <div className="subtabs" role="tablist" aria-label="Downloads">{tabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</div>
-    <div role="tabpanel">{tab==='activity'?<Activity/>:tab==='wanted'?<Wanted/>:tab==='rules'?<PickRulesTab/>:tab==='library'?<LibraryTab/>:<CutoverTab/>}</div>
+    <div role="tabpanel">{tab==='activity'?<Activity/>:tab==='wanted'?<Wanted/>:tab==='rules'?<PickRulesTab/>:<LibraryTab/>}</div>
   </>;
 }
 
@@ -281,50 +281,6 @@ function ScoreRules({data}:{data:PickRules}) {
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button>{JSON.stringify(rules)!==JSON.stringify(data.rules)&&<button type="button" onClick={()=>setRules(data.rules)}>Undo</button>}</div>
   </Card></form>;
-}
-
-// ---- Cutover (movies from Radarr) ----
-
-function CutoverTab() {
-  const view=useApi<CutoverView>('/admin/library/cutover'),[plan,setPlan]=useState<CutoverPlan>(),mutation=useMutation(()=>{view.reload();changed();});
-  if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
-  if(!view.data)return <Loading/>;
-  const v=view.data,onTkbox=v.fulfil==='tkbox';
-  const dryRun=()=>void mutation.run(async()=>setPlan(await api<CutoverPlan>('/admin/library/cutover/dry-run','POST')));
-  const runImport=()=>void mutation.run(async()=>{const p=await api<CutoverPlan>('/admin/library/cutover/import','POST');setPlan(p);toast.success(`Imported ${plural(p.summary.importable,'movie')}`);});
-  const switchTo=(back:boolean)=>{
-    if(!window.confirm(back?'Switch movies back to Radarr?':'Switch movies to tk.box?'))return;
-    void mutation.run(async()=>{const r=await api<CutoverView>(`/admin/library/cutover/${back?'switch-back':'switch'}`,'POST');
-      toast.success(`${back?'Movies on Radarr':'Movies on tk.box'} · ${plural(r.requests?.moved??0,'request')} moved${r.requests?.resent?`, ${r.requests.resent} resent`:''}`);});
-  };
-  const status=onTkbox?<span className="success">On tk.box</span>:<span className="muted">On Radarr</span>;
-  return <>
-    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Card title="Movies" actions={status}>
-      <div className="downloads-facts">
-        <span><small>Imported</small>{v.importedAt?<>{plural(v.imported,'movie')}<span className="muted small">{date(v.importedAt)}</span></>:'—'}</span>
-        <span><small>Switched</small>{v.switchedAt?date(v.switchedAt):'—'}</span>
-        {v.switchedBackAt&&<span><small>Switched back</small>{date(v.switchedBackAt)}</span>}
-      </div>
-      <div className="button-row">
-        <button disabled={mutation.busy||onTkbox} onClick={dryRun}>Dry run</button>
-        <button disabled={mutation.busy||onTkbox||!plan?.namingOk} onClick={runImport}>Import</button>
-        {onTkbox?<button className="danger" disabled={mutation.busy} onClick={()=>switchTo(true)}>Switch back</button>
-          :<button className="primary" disabled={mutation.busy||!v.importedAt} onClick={()=>switchTo(false)}>Switch</button>}
-      </div>
-    </Card>
-    {plan&&<Card title="Dry run" actions={plan.namingOk?<span className="success">Naming matches</span>:<span className="danger-text">Naming differs</span>}>
-      <div className="downloads-facts">
-        <span><small>In Radarr</small>{plan.summary.movies}</span><span><small>To import</small>{plan.summary.importable}</span>
-        <span><small>Monitored</small>{plan.summary.monitored}</span><span><small>With a file</small>{plan.summary.files}</span>
-        <span><small>Keep</small>{plan.summary.keep}</span><span><small>Problems</small>{plan.summary.problems}</span>
-        {plan.summary.added!==undefined&&<span><small>Added</small>{plan.summary.added}</span>}
-        {plan.summary.updated!==undefined&&<span><small>Updated</small>{plan.summary.updated}</span>}
-      </div>
-      {plan.problems.length>0&&<div className="table-scroll"><table className="jobs-table"><thead><tr><th>Title</th><th>Problem</th></tr></thead>
-        <tbody>{plan.problems.map((p,i)=><tr key={i}><td>{p.title??'Naming'}</td><td className={p.blocking?'danger-text':undefined}>{p.detail}</td></tr>)}</tbody></table></div>}
-    </Card>}
-  </>;
 }
 
 // ---- Library ----

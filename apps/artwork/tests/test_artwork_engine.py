@@ -1478,8 +1478,7 @@ class ArtworkTests(unittest.TestCase):
             pc.validate_collections({"collections": [{**rotate, "members": [{"tmdb_id": 1}]}]})
         with self.assertRaisesRegex(ValueError, "rotate requires"):
             pc.validate_collections({"collections": [{**rotate, "source": {"url": url, "refresh": False}}]})
-        pc.validate_collections({"collections": [{**rotate, "source": {"url": url}}],
-                                 "radarr": {"url": "http://radarr.invalid", "api_key": "key", "root_folder": "/movies"}})
+        pc.validate_collections({"collections": [{**rotate, "source": {"url": url}}]})
 
     def test_a_list_is_filtered_and_sorted_before_the_collection_size_cuts_it(self):
         def row(tmdb_id, year, rating=7.0, genres=("Drama",), certification="R", language="en"):
@@ -1521,77 +1520,54 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual([r["member"]["tmdb_id"] for r in result["items"]], [4, 3])
         self.assertEqual((result["limit"], len(result["left_out"])), (2, 2))
 
-    def test_on_tkbox_a_seasonal_collection_asks_for_its_movies_then_lets_them_go_after_its_season(self):
-        self.config["acquire_via"] = "tkbox"
+    def test_a_seasonal_collection_asks_tkbox_for_its_movies_then_lets_them_go_after_its_season(self):
         acquire, journal = self.artwork.base / "collections-acquire.json", self.artwork.base / "collections-tkbox.json"
         halloween = [{"name": "Halloween", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "remove-delete", "schedule": "10/01-10/31",
                       "members": [{"tmdb_id": 1}, {"tmdb_id": 2}]}]
         # Movie 1 is already in Plex (never the collection's); 2 is missing.
         items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}}]
-        with patch.object(self.artwork.http, "request", side_effect=AssertionError("Radarr isn't used")), redirect_stdout(io.StringIO()):
-            pc.seasonal_radarr(self.artwork, halloween, items, True, date(2026, 10, 5))
+        with patch.object(self.artwork.http, "request", side_effect=AssertionError("Nothing is fetched")), redirect_stdout(io.StringIO()):
+            pc.seasonal_acquire(self.artwork, halloween, items, True, date(2026, 10, 5))
         self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [2], "remove_ids": []})
         self.assertEqual(json.loads(journal.read_text())["movies"], {"2": {"owners": ["Movies:" + pc.collection_key("Halloween")]}})
         acquire.unlink()
         # A plan (not applied) changes nothing.
         with redirect_stdout(io.StringIO()) as planned:
-            pc.seasonal_radarr(self.artwork, halloween, items, False, date(2026, 11, 5))
+            pc.seasonal_acquire(self.artwork, halloween, items, False, date(2026, 11, 5))
         self.assertIn("PLAN TK.BOX REMOVE", planned.getvalue())
         self.assertFalse(acquire.exists())
         # After the season, tk.box is asked to remove 2 (it downloaded it), never 1.
         items.append({"type": "movie", "tmdb_id": 2, "rating_key": "200", "library": "Movies", "title": "Two", "year": "2000", "genres": [], "media": {}})
         with redirect_stdout(io.StringIO()):
-            pc.seasonal_radarr(self.artwork, halloween, items, True, date(2026, 11, 5))
+            pc.seasonal_acquire(self.artwork, halloween, items, True, date(2026, 11, 5))
         self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [], "remove_ids": [2]})
         self.assertEqual(json.loads(journal.read_text())["movies"], {})
 
-    def test_a_rotating_collection_deletes_downloads_that_left_its_list_unless_watched(self):
-        radarr = "http://radarr.invalid:7878"
-        self.config["radarr"] = {"url": radarr, "api_key": "radarr-key", "root_folder": "/movies"}
+    def test_a_rotating_collection_lets_go_of_downloads_that_left_its_list_unless_watched(self):
         owner = "Movies:" + pc.collection_key("Week")
-        def record(key):
-            return {"id": key, "path": f"/movies/{key}", "owners": [owner]}
-        state_path = self.artwork.base / "collections-state.json"
+        acquire, journal = self.artwork.base / "collections-acquire.json", self.artwork.base / "collections-tkbox.json"
         def start(listed):
-            state_path.write_text(json.dumps({"version": 1, "server": radarr, "tag": "tkbox-test", "lists": {owner: listed},
-                                              "movies": {"2": record(22), "3": record(33), "4": record(44)}}))
-        calls = []
-        class Reply:
-            def __init__(self, data):
-                self.data, self.content = data, b"x" if data is not None else b""
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-            def json(self):
-                return self.data
-        movies = [{"id": key, "tmdbId": key // 11, "title": f"Movie {key}", "path": f"/movies/{key}", "tags": [7]} for key in (22, 33, 44)]
-        def request(method, url, **kwargs):
-            path = url.removeprefix(radarr + "/api/v3/")
-            calls.append((method, path))
-            replies = {"movie": movies, "tag": [{"id": 7, "label": "tkbox-test"}], **{f"movie/{m['id']}": m for m in movies}}
-            return Reply(None if method == "DELETE" else replies[path])
+            journal.write_text(json.dumps({"version": 1, "lists": {owner: listed}, "movies": {str(k): {"owners": [owner]} for k in (2, 3, 4)}}))
         # This week's list holds movie 1, which is in Plex; 2, 3 and 4 left it, and 4 is playing.
         self.http.replies[self.artwork.plex.url + "/status/sessions"] = b'<MediaContainer><Video ratingKey="400"/></MediaContainer>'
         items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}},
-                 {"type": "movie", "tmdb_id": 4, "rating_key": "400", "library": "Movies", "title": "Movie 44", "year": "2000", "genres": [], "media": {}}]
+                 {"type": "movie", "tmdb_id": 4, "rating_key": "400", "library": "Movies", "title": "Movie 4", "year": "2000", "genres": [], "media": {}}]
         week = [{"name": "Week", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "rotate",
                  "source": {"url": "https://watch.plex.tv/discover/list/historical-week/"}, "members": [{"tmdb_id": 1}]}]
         start(1)
-        output = io.StringIO()
-        with patch.object(self.artwork.http, "request", side_effect=request), redirect_stdout(output):
-            pc.seasonal_radarr(self.artwork, week, items, True, date.today())
-        self.assertEqual([c for c in calls if c[0] == "DELETE"], [("DELETE", "movie/22"), ("DELETE", "movie/33")])
-        self.assertEqual(sorted(json.loads(state_path.read_text())["movies"]), ["4"])
+        with redirect_stdout(io.StringIO()) as output:
+            pc.seasonal_acquire(self.artwork, week, items, True, date.today())
+        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [], "remove_ids": [2, 3]})
+        self.assertEqual(sorted(json.loads(journal.read_text())["movies"]), ["4"])
         self.assertIn("someone is watching it", output.getvalue())
         # A list that came back less than half as long as last time removes nothing.
+        acquire.unlink()
         start(10)
-        calls.clear()
-        with patch.object(self.artwork.http, "request", side_effect=request), redirect_stdout(io.StringIO()) as warned:
-            pc.seasonal_radarr(self.artwork, week, items, True, date.today())
-        self.assertFalse([c for c in calls if c[0] == "DELETE"])
+        with redirect_stdout(io.StringIO()) as warned:
+            pc.seasonal_acquire(self.artwork, week, items, True, date.today())
+        self.assertFalse(acquire.exists())
         self.assertIn("down from 10", warned.getvalue())
-        self.assertEqual(json.loads(state_path.read_text())["lists"][owner], 1)
+        self.assertEqual(json.loads(journal.read_text())["lists"][owner], 1)
 
     def test_partly_owned_reads_the_discover_index_which_runs_and_newly_added_movies_keep(self):
         plex = "http://plex.invalid:32400"
@@ -2304,14 +2280,12 @@ class CLIAndHTTPTests(unittest.TestCase):
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
             self.assertEqual(collections.returncode, 1)
             self.assertIn("Empty needs titles, a list or a rule before it can be turned on", collections.stderr)
-            # Off, it is a draft; Radarr downloads without a quality profile ID use Radarr's first one.
+            # Off, it is a draft; downloads need nothing else configured.
             config["collections"] = [{"name": "Empty", "library": "Movies", "type": "movie", "enabled": False, "acquire": True},
                                      {"name": "Picks", "library": "Movies", "type": "movie", "acquire": True, "members": [{"tmdb_id": 948}]}]
-            config["radarr"] = {"url": "http://radarr.local:7878", "api_key": "${RADARR_API_KEY}", "root_folder": "/movies"}
             path.write_text(json.dumps(config), encoding="utf-8")
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
             self.assertEqual(collections.returncode, 0, collections.stderr)
-            del config["radarr"]
             config["layouts"], config["collections"], config["workers"] = {}, [], 2
             path.write_text(json.dumps(config), encoding="utf-8")
             collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)

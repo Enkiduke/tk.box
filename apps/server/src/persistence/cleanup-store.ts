@@ -7,7 +7,7 @@ import { prepared } from './statements.js';
 
 // Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its saved watch
 // history and its job history. The script reads none of this directly: before each run tk.box writes its JSON config
-// (cleanupConfig). Radarr and Sonarr are the arr module's; the titles
+// (cleanupConfig). Sonarr is the arr module's; the titles
 // come from tk.box's requests.
 const libraryId = z.string().regex(/^\d{1,10}$/);
 const days = z.number().int().min(0).max(3650);
@@ -16,7 +16,8 @@ export const cleanupSettings = z.object({
   movieLibraries: z.array(libraryId).max(50), tvLibraries: z.array(libraryId).max(50),
   // A preview reports what would be deleted and changes nothing, in Plex or anywhere else.
   dryRun: z.boolean(),
-  deleteFromRadarr: z.boolean(), deleteFromSonarr: z.boolean(),
+  // Shows only: movies are tk.box's own, deleted from Plex and then forgotten by the library.
+  deleteFromSonarr: z.boolean(),
   // Rule 1: the requester watched it; days after anyone last watched it. Rule 2: the requester hasn't; days after it
   // was added, or Rule 1's days after anyone else last watched it, whichever is later. Rules 3 and 4 are for requests by exempt users: days after anyone's watch, or after an exempt user's.
   daysAfterWatched: days, daysAfterUnwatched: days, daysAfterAnyWatchExempt: days, daysAfterExemptWatch: days,
@@ -33,7 +34,7 @@ export const cleanupSettings = z.object({
 }).strict();
 export type CleanupSettings = z.infer<typeof cleanupSettings>;
 // Nothing is deleted until an administrator turns previews off; the retention days are the script's own defaults.
-const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromRadarr: false, deleteFromSonarr: false,
+const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromSonarr: false,
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
   // Streaming collections hold shows by service, not ones anyone chose to keep.
   collectionKinds: { franchise: true, streaming: false, custom: true, seasonal: true, other: true },
@@ -60,8 +61,8 @@ export class CleanupStore {
   }
   settings(): CleanupSettings & { revision: number } {
     const row = this.row<Partial<CleanupSettings>>('settings');
-    // Settings saved with Remove from Seerr (gone with Seerr) read without it.
-    const { deleteFromSeerr: _, ...saved } = (row?.value ?? {}) as Partial<CleanupSettings> & { deleteFromSeerr?: boolean };
+    // Settings saved with Remove from Seerr (gone with Seerr) or Delete from Radarr (gone with Radarr) read without them.
+    const { deleteFromSeerr: _, deleteFromRadarr: __, ...saved } = (row?.value ?? {}) as Partial<CleanupSettings> & { deleteFromSeerr?: boolean; deleteFromRadarr?: boolean };
     const value = { ...defaults, ...saved };
     // A schedule saved as a daily time reads as a schedule.
     return { ...value, schedule: toScheduled(value.schedule) as Scheduled, revision: row?.revision ?? 0 };
@@ -92,7 +93,7 @@ export class CleanupStore {
       return holds;
     })();
   }
-  // Titles an administrator kept (tagged in Radarr or Sonarr) since a run, by title key (movie:<tmdb> or tv:<tmdb>,
+  // Titles an administrator kept (by the library's Keep, or tagged in Sonarr) since a run, by title key (movie:<tmdb> or tv:<tmdb>,
   // a show as a whole). Status shows them protected until a run that started after sees the tag itself.
   kept() { return this.state<Record<string, CleanupKept>>('kept') ?? {}; }
   setKept(actor: string, key: string, tag: string, now = Date.now()) {

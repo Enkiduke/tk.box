@@ -11,7 +11,6 @@ import {ArtworkFiles,imageType} from './services/artwork-files.js';
 import {ArtworkPictures,type PlexJson} from './services/artwork-pictures.js';
 import {AppError,readOnly,requireThat} from './errors.js';
 import {asConnectionAdmin,connectionActor,viewer} from './modules/access.js';
-import {remoteJson} from './providers/remote-json.js';
 import {TmdbTitles} from './providers/tmdb-titles.js';
 
 // Admin › Artwork: the engine's settings, layouts, titles, collections, schedules and jobs. Every route is
@@ -226,22 +225,12 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     const {grant}=viewer(request),saved=store.collections();
     // Until definitions are first saved, the engine's seasonal presets (all off) are what it would use.
     const defaults=await engine.defaultCollections(runOf(grant)).catch(()=>[]);
-    const radarr=engine.radarr();
-    return {...saved,radarrConnected:!!(radarr.url&&radarr.key),defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload,readOnly:readOnly()};
+    return {...saved,defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload,readOnly:readOnly()};
   });
   app.put('/api/v1/admin/artwork/collections',{bodyLimit:512*1024},async request=>{
     const {grant}=viewer(request);
     const saved=await store.updateCollections(grant.accountId,artworkCollectionsInput.parse(request.body),collections=>engine.check({collections},runOf(grant)));
     changed(grant);return saved;
-  });
-  // The saved Radarr's quality profiles, so downloads can name one (the engine is given its ID).
-  app.get('/api/v1/admin/artwork/collections/radarr-profiles',async request=>{
-    const radarr=engine.radarr();
-    if(!radarr.url||!radarr.key)return {connected:false,profiles:[]};
-    const response=await remoteJson(new URL(`${radarr.url}/api/v3/qualityprofile`),{headers:{'X-Api-Key':radarr.key}},'Radarr',fetch,8000);
-    requireThat(response.status<400,'CATALOG_UNAVAILABLE',response.status===401?'Radarr refused the API key.':`Radarr answered ${response.status}.`,502);
-    const profiles=z.array(z.object({id:z.number().int(),name:z.string()}).passthrough()).catch([]).parse(response.data);
-    return {connected:true,profiles:profiles.map(({id,name})=>({id,name}))};
   });
   // Picking a collection's titles: a TMDb search, and posters for the members it already has.
   app.get('/api/v1/admin/artwork/collections/titles/search',{config:{rateLimit:{max:120,timeWindow:60000}}},async request=>{

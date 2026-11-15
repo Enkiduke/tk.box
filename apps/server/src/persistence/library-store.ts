@@ -9,7 +9,8 @@ import type { BlockedRelease, Protocol } from '../lib/pick-rules.js';
 
 export const SHOWS_ROOT = '/srv/media/tv';
 
-// Radarr's and Sonarr's formats as text, for the record and the cutover's comparison. lib/naming.ts reproduces them.
+// Radarr's and Sonarr's formats as text, for the record (the library's files are named by them). lib/naming.ts
+// reproduces them.
 const NAMING = {
   movieFolder: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}',
   movieFile: '{Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} {[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[Mediainfo VideoCodec]}{-Release Group}',
@@ -29,13 +30,14 @@ export const librarySettings = z.object({
   maxFailures: z.number().int().min(1).max(50),
   properDays: z.number().int().min(0).max(60),
   defaultProfile: z.number().int().positive(),
-  fulfil: z.object({ movie: z.enum(['radarr', 'tkbox']), show: z.enum(['sonarr', 'tkbox']) }).strict(),
+  // Who fulfils shows (Sonarr until phase 2). Movies are always tk.box's.
+  fulfil: z.object({ show: z.enum(['sonarr', 'tkbox']) }).strict(),
 }).strict();
 export type LibrarySettings = z.infer<typeof librarySettings>;
 export const defaultLibrarySettings = (defaultProfile: number): LibrarySettings => ({
   roots: { movie: MOVIES_ROOT, show: SHOWS_ROOT }, naming: { ...NAMING }, earlyCopies: false, protocol: 'usenet-first', rssMinutes: 15,
   seeding: { ratio: 2, minDays: 14, maxDays: 28 }, stalledHours: 6, maxFailures: 5, properDays: 7, defaultProfile,
-  fulfil: { movie: 'radarr', show: 'sonarr' },
+  fulfil: { show: 'sonarr' },
 });
 
 // library_titles.released for a movie: TMDB's days (YYYY-MM-DD).
@@ -269,38 +271,6 @@ export class LibraryStore {
     prepared(this.db, `INSERT INTO searches(title_id, scope, last_at, misses, next_at) VALUES(?, ?, ?, ?, ?)
       ON CONFLICT(title_id, scope) DO UPDATE SET last_at = excluded.last_at, misses = excluded.misses, next_at = excluded.next_at`)
       .run(row.titleId, row.scope, row.lastAt, row.misses, row.nextAt);
-  }
-  // Who fulfils a kind (the cutover's Switch and Switch back; the settings PUT doesn't take it).
-  setFulfil(actor: string, kind: 'movie', to: 'radarr' | 'tkbox') {
-    return this.db.transaction(() => {
-      const { revision, ...current } = this.settings();
-      const next = librarySettings.parse({ ...current, fulfil: { ...current.fulfil, [kind]: to } });
-      prepared(this.db, 'UPDATE library_settings SET revision = revision + 1, value = ? WHERE id = 1').run(JSON.stringify(next));
-      prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run(actor, 'library_fulfil_changed', this.now(), JSON.stringify({ kind, to, revision }));
-    })();
-  }
-
-  // ---- The cutover ----
-
-  // Radarr's id for each imported title, by that id.
-  cutoverIds(kind: 'movie' | 'show') {
-    return new Map((prepared(this.db, 'SELECT arr_id, title_id FROM library_cutover WHERE kind = ?').all(kind) as { arr_id: number; title_id: number }[]).map(r => [r.arr_id, r.title_id]));
-  }
-  setCutoverId(kind: 'movie' | 'show', arrId: number, titleId: number) {
-    prepared(this.db, 'INSERT INTO library_cutover(kind, arr_id, title_id) VALUES(?, ?, ?) ON CONFLICT(kind, arr_id) DO UPDATE SET title_id = excluded.title_id').run(kind, arrId, titleId);
-  }
-  cutoverState(kind: 'movie' | 'show') {
-    const r = prepared(this.db, 'SELECT * FROM library_cutover_state WHERE kind = ?').get(kind) as
-      { imported_at: number | null; summary: string | null; switched_at: number | null; switched_back_at: number | null } | undefined;
-    return { ...opt('importedAt', r?.imported_at), ...opt('summary', r?.summary ? JSON.parse(r.summary) as Record<string, number> : undefined),
-      ...opt('switchedAt', r?.switched_at), ...opt('switchedBackAt', r?.switched_back_at) };
-  }
-  setCutoverState(kind: 'movie' | 'show', fields: { importedAt?: number; summary?: Record<string, number>; switchedAt?: number; switchedBackAt?: number }) {
-    prepared(this.db, `INSERT INTO library_cutover_state(kind, imported_at, summary, switched_at, switched_back_at) VALUES(@kind, @importedAt, @summary, @switchedAt, @switchedBackAt)
-      ON CONFLICT(kind) DO UPDATE SET imported_at = COALESCE(excluded.imported_at, imported_at), summary = COALESCE(excluded.summary, summary),
-        switched_at = COALESCE(excluded.switched_at, switched_at), switched_back_at = COALESCE(excluded.switched_back_at, switched_back_at)`)
-      .run({ kind, importedAt: fields.importedAt ?? null, summary: fields.summary ? JSON.stringify(fields.summary) : null, switchedAt: fields.switchedAt ?? null,
-        switchedBackAt: fields.switchedBackAt ?? null });
   }
   // Every movie, for the calendar: its TMDB dates and whether tk.box has a file for it.
   calendarMovies() {

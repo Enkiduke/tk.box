@@ -14,17 +14,16 @@ import {toast} from './toasts.js';
 
 // Admin › Collections: every Plex collection the engine keeps, in one grid. Franchise and streaming collections come
 // from TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public
-// list), and Radarr can fetch a seasonal collection's missing movies. What's here is what Plex holds: turning one off,
+// list), and tk.box's library can fetch a seasonal collection's missing movies. What's here is what Plex holds: turning one off,
 // or removing it, takes it out of Plex on the next run. Definitions are kept in the engine's own format.
 type Library={key:string;title:string;type:string};
 // A franchise or streaming collection set apart from how it's made: turned off, where it shows, or titles taken out (by Plex ID).
 type Automatic={name:string;library:string;kind:'franchise'|'streaming';enabled?:boolean;visibility?:Visibility;exclude?:string[]};
 type Franchise={sync:boolean;franchises:boolean;minItems:number;mode:'sync'|'append';streaming:'off'|'originals'|'available';region:string;recent:boolean;recentMovieDays:number;recentEpisodeDays:number};
-type Radarr={rootFolder:string;qualityProfileId:number;search:boolean};
 type Kept={name:string;library:string;kind:'franchise'|'streaming'|'custom';items:number;rating_key?:string;off?:boolean};
 type Schedules={custom:Scheduled;all:Scheduled;added:Scheduled};
-type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;radarr:Radarr;radarrConnected:boolean;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean;readOnly:boolean};
-type Draft={definitions:Definition[];automatic:Automatic[];franchise:Franchise;radarr:Radarr;schedules:Schedules};
+type View={revision:number;definitions:Definition[]|null;automatic:Automatic[];franchise:Franchise;defaults:Definition[];kept:{updated:string|null;collections:Kept[]};schedules:Schedules;scheduleStates:Record<keyof Schedules,ScheduleState>;libraries:Library[];upload:boolean;readOnly:boolean};
+type Draft={definitions:Definition[];automatic:Automatic[];franchise:Franchise;schedules:Schedules};
 const tabs=[['collections','Collections'],['calendar','Calendar'],['schedules','Schedules'],['settings','Settings']] as const;
 // New collections start out of every Home screen and recommendation row.
 const hidden={home:false,shared:false,recommended:false};
@@ -49,7 +48,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[importing,setImporting]=useState(false),[dirty,setDirty]=useState(false),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
   const mutation=useMutation(view.reload);
-  const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:(JSON.parse(JSON.stringify(d.definitions??d.defaults)) as (Definition&{sync?:string})[]).map(({sync:_,...x})=>x),automatic:d.automatic??[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
+  const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:(JSON.parse(JSON.stringify(d.definitions??d.defaults)) as (Definition&{sync?:string})[]).map(({sync:_,...x})=>x),automatic:d.automatic??[],franchise:d.franchise,schedules:d.schedules});setDirty(false);};
   useEffect(reset,[view.data?.revision,!!view.data]);
   // Franchise counts from Plex now (through the Discover index), so movies gone since the last full run show at once.
   const [live,setLive]=useState<Map<string,number>>();
@@ -63,7 +62,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   if(!view.data||!draft)return null;
   const data=view.data,libraries=data.libraries.filter(l=>['movie','show'].includes(l.type));
   const change=(next:Partial<Draft>)=>{setDraft({...draft,...next});setDirty(true);};
-  const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}}),radarr=(patch:Partial<Radarr>)=>change({radarr:{...draft.radarr,...patch}});
+  const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}});
   const setDefinition=(index:number,value:Definition|null)=>change({definitions:value?draft.definitions.map((d,i)=>i===index?value:d):draft.definitions.filter((_,i)=>i!==index)});
   // A franchise or streaming collection that's on, with no visibility of its own and nothing taken out, needs no entry.
   const setAutomatic=(tile:Tile,patch:Partial<Automatic>)=>{
@@ -104,12 +103,6 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
           {draft.franchise.recent&&<div className="form-columns">
             <label>Newly Released: movies from the last (days)<input type="number" min="1" max="3650" value={draft.franchise.recentMovieDays} onChange={e=>franchise({recentMovieDays:Number(e.target.value)})}/></label>
             <label>New Episodes: aired in the last (days)<input type="number" min="1" max="3650" value={draft.franchise.recentEpisodeDays} onChange={e=>franchise({recentEpisodeDays:Number(e.target.value)})}/></label></div>}
-        </Card>
-        <Card title="Radarr downloads" description="For seasonal collections that download missing movies.">
-          {!data.radarrConnected&&<p className="muted small">Radarr isn’t connected. Add it in <a href="#admin?section=connections&category=downloads">Admin › Connections</a>.</p>}
-          <label>Root folder<input placeholder="/movies" maxLength={300} value={draft.radarr.rootFolder} onChange={e=>radarr({rootFolder:e.target.value})}/><small>Use the path as Radarr sees it.</small></label>
-          <QualityProfile value={draft.radarr.qualityProfileId} set={qualityProfileId=>radarr({qualityProfileId})}/>
-          <Switch label="Search for movies when added" checked={draft.radarr.search} onChange={v=>radarr({search:v})}/>
         </Card>
       </>:tab==='schedules'?<Card title="Schedules" description="Server local time.">
           {!data.upload&&<p className="muted small">Send results to Plex is off, so these are skipped until it’s on.</p>}
@@ -236,15 +229,6 @@ function AutomaticCollection({tile,setting,onClose,save}:{tile:Tile;setting?:Aut
       <div className="button-row collection-editor-foot"><button className="primary">Done</button><button type="button" onClick={onClose}>Cancel</button><span className="muted small">Save collections to keep this.</span></div>
     </form>
   </Modal>;
-}
-// The saved Radarr's quality profiles by name; the engine is given the chosen one's ID, and none means Radarr's first.
-function QualityProfile({value,set}:{value:number;set:(id:number)=>void}) {
-  const view=useApi<{connected:boolean;profiles:{id:number;name:string}[]}>('/admin/artwork/collections/radarr-profiles'),profiles=view.data?.profiles??[];
-  return <label className="narrow">Quality profile<select value={value} disabled={!view.data?.connected} onChange={e=>set(Number(e.target.value))}>
-      <option value={0}>Radarr’s first profile{profiles[0]?` (${profiles[0].name})`:''}</option>
-      {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-      {value>0&&!profiles.some(p=>p.id===value)&&<option value={value}>{view.data?.connected?`Missing profile (ID ${value})`:`ID ${value}`}</option>}</select>
-    {view.error?<small className="danger">{view.error.message}</small>:view.loading&&!view.data?<small>Loading profiles from Radarr…</small>:null}</label>;
 }
 // A member's poster and name from TMDb, kept for the page's life so reopening a collection doesn't ask again.
 // undefined while it is being looked up; null when TMDb has no match (or isn't set up).
@@ -375,7 +359,7 @@ function EditDefinition({value,libraries,onClose,save,remove,check,found}:{value
           <Switch label="Show on Home" description={homeHint} checked={onHome(visibility)} onChange={v=>set({visibility:everywhere(v)})}/>
         </section>
         {d.type==='movie'&&<section className="collection-editor-panel">
-          <Switch label="Download missing movies" description={found?`Radarr adds the ${(found.total??0)-(found.owned??0)} missing while the collection is on.`:'Needs Radarr and TMDb IDs.'} checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
+          <Switch label="Download missing movies" description={found?`tk.box adds the ${(found.total??0)-(found.owned??0)} missing while the collection is on.`:'Needs TMDb IDs.'} checked={!!d.acquire} onChange={v=>set({acquire:v})}/>
           {d.acquire&&<label>Downloaded movies<select value={d.cleanup??'keep'} onChange={e=>set({cleanup:e.target.value as NonNullable<Definition['cleanup']>})}><option value="keep">Keep them</option><option value="remove-delete">Delete them when the season ends</option>{refreshed&&<option value="rotate">Delete each once it leaves the list</option>}</select></label>}
           {d.acquire&&d.cleanup==='rotate'&&<p className="muted small">None goes while someone is watching it. Movies you already had are never deleted.</p>}
           {d.acquire&&<Switch label="Hide downloads from Recently added" checked={hidesFromRecent(d)} onChange={v=>set({hide_recent:v})}/>}

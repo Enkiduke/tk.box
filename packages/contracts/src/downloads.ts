@@ -54,16 +54,6 @@ export type PickRules = { profiles: PickProfileView[]; rules: ScoreRuleView[]; r
 export type LibrarySettingsView = {
   revision: number; roots: { movie: string; show: string };
   naming: { movieFolder: string; movieFile: string; seriesFolder: string; seasonFolder: string; episodeFile: string };
-  earlyCopies: boolean; protocol: 'usenet-first' | 'torrent-first'; defaultProfile: number; fulfil: { movie: 'radarr' | 'tkbox'; show: 'sonarr' | 'tkbox' };
+  earlyCopies: boolean; protocol: 'usenet-first' | 'torrent-first'; defaultProfile: number; fulfil: { show: 'sonarr' | 'tkbox' };
 };
 export type NamingPreview = { quality?: string; folder: string; file: string; path: string };
-
-// Admin › Downloads › Cutover (docs/ARR-REPLACEMENT.md, Phase 1 › Cutover). A blocking problem (Radarr's naming differs
-// from tk.box's) stops the import; the rest are titles or files left out.
-export type CutoverProblem = { kind: 'naming' | 'folder-name' | 'no-tmdb' | 'outside-root' | 'quality' | 'duplicate'; blocking: boolean; title?: string; detail: string };
-export type CutoverPlan = {
-  summary: { movies: number; importable: number; monitored: number; files: number; keep: number; problems: number; added?: number; updated?: number };
-  problems: CutoverProblem[]; namingOk: boolean;
-};
-export type CutoverView = { fulfil: 'radarr' | 'tkbox'; imported: number; importedAt?: number; summary?: Record<string, number>; switchedAt?: number; switchedBackAt?: number;
-  requests?: { moved: number; resent: number; cleared: number } };

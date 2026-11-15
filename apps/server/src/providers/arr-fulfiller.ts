@@ -1,25 +1,26 @@
 import { AppError } from '../errors.js';
-import { movieReleaseDate, releaseDay } from '../lib/release-day.js';
+import { releaseDay } from '../lib/release-day.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import type { ArrService } from './arr-tags.js';
 import type { RequestRelease } from '../../../../packages/contracts/src/index.js';
 
-// How a request reaches a downloader. Radarr and Sonarr today (ArrFulfiller); a later replacement implements the same.
+// How a request reaches a downloader: tk.box's library for movies (LibraryFulfiller), Sonarr for shows (ArrFulfiller)
+// until phase 2.
 export type FulfilKind = 'movie' | 'show';
 export type FulfilTarget = { kind: FulfilKind; tmdbId: number; tvdbId?: number; title: string; seasons: number[]; monitorFuture: boolean;
   profileId?: number; rootFolder?: string; tags: number[]; search: boolean; seasonFolders?: boolean;
-  // The requester's account id (tk.box's library records who added a title; Radarr and Sonarr ignore it).
+  // The requester's account id (tk.box's library records who added a title; Sonarr ignores it).
   requestedBy?: string };
-// What Radarr or Sonarr is downloading: movie ids, and for Sonarr each series' seasons (`undefined` when a record names none).
+// What is downloading: the library's movie ids, and Sonarr's series with their seasons (`undefined` when a record names none).
 export type QueueState = { movies: Set<number>; series: Map<number, Set<number | undefined>> };
 // `tkbox`: tk.box's own library answers for the kind (its pick profiles; no folders or tags).
 export type ArrOptions = { connected: boolean; tkbox?: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[] };
 export type FulfilProgress = { at?: number; release?: RequestRelease };
 export interface Fulfiller {
-  // Adds the title, or monitors and searches it when it's already there. Returns its id in Radarr or Sonarr.
+  // Adds the title, or monitors and searches it when it's already there. Returns its id there.
   add(target: FulfilTarget): Promise<number>;
   queue(): Promise<QueueState>;
-  // Its id there, if Radarr or Sonarr has the title (for requests imported from Seerr, which tk.box never sent).
+  // Its id there, if it has the title (for requests imported from Seerr, which tk.box never sent).
   find(kind: FulfilKind, tmdbId: number, tvdbId?: number): Promise<number | undefined>;
   // false once the title has been deleted there.
   exists(kind: FulfilKind, arrId: number): Promise<boolean>;
@@ -31,23 +32,25 @@ export interface Fulfiller {
   tagId?(kind: FulfilKind, label: string): Promise<number>;
 }
 
-// `permanent`: trying again won't help (Radarr or Sonarr refused it). Otherwise the sweep retries later.
+// `permanent`: trying again won't help (it was refused). Otherwise the sweep retries later.
 export class FulfilError extends AppError {
   constructor(message: string, readonly permanent: boolean) { super('REQUEST_SEND_FAILED', message, 502); }
 }
 
 type Json = Record<string, unknown>;
-const service = (kind: FulfilKind) => kind === 'movie' ? 'Radarr' : 'Sonarr';
 
 function timestamp(value: unknown) {
   const at = typeof value === 'string' ? Date.parse(value) : NaN;
   return Number.isFinite(at) ? at : undefined;
 }
 
+// Sonarr, for shows until phase 2. Movies are tk.box's library's (LibraryFulfiller); a movie here is refused.
 export class ArrFulfiller implements Fulfiller {
-  constructor(private connection: (name: 'radarr' | 'sonarr') => ArrService, private transport: typeof fetch = fetch) {}
+  constructor(private connection: () => ArrService, private transport: typeof fetch = fetch) {}
+  private shows(kind: FulfilKind) { if (kind !== 'show') throw new FulfilError('Movies are tk.box’s own; Sonarr takes shows only.', true); }
   private async call(kind: FulfilKind, path: string, init: { method?: string; body?: unknown } = {}, allow404 = false) {
-    const name = service(kind), { url, key } = this.connection(kind === 'movie' ? 'radarr' : 'sonarr');
+    this.shows(kind);
+    const name = 'Sonarr', { url, key } = this.connection();
     if (!url || !key) throw new FulfilError(`${name} isn't connected. Add it in Admin › Connections.`, false);
     let response;
     try { response = await remoteJson(new URL(`${url}/api/v3/${path}`), { ...init, headers: { 'X-Api-Key': key } }, name, this.transport, 20000, 64 * 1024 * 1024); }
@@ -62,25 +65,12 @@ export class ArrFulfiller implements Fulfiller {
   private async destination(kind: FulfilKind, target: FulfilTarget) {
     const [profiles, folders] = await Promise.all([this.call(kind, 'qualityprofile'), this.call(kind, 'rootfolder')]) as [Json[] | undefined, Json[] | undefined];
     const profileId = target.profileId || (profiles?.[0]?.id as number | undefined), rootFolderPath = target.rootFolder || (folders?.[0]?.path as string | undefined);
-    if (!profileId || !rootFolderPath) throw new FulfilError(`${service(kind)} has no quality profile or root folder to add to.`, true);
+    if (!profileId || !rootFolderPath) throw new FulfilError(`Sonarr has no quality profile or root folder to add to.`, true);
     return { qualityProfileId: profileId, rootFolderPath };
   }
   async add(target: FulfilTarget) {
-    return target.kind === 'movie' ? this.addMovie(target) : this.addSeries(target);
-  }
-  private async addMovie(target: FulfilTarget) {
-    const existing = await this.first<Json>('movie', `movie?tmdbId=${target.tmdbId}`);
-    if (existing && typeof existing.id === 'number') {
-      if (!existing.monitored) await this.call('movie', `movie/${existing.id}`, { method: 'PUT', body: { ...existing, monitored: true } });
-      if (target.search && !existing.hasFile) await this.call('movie', 'command', { method: 'POST', body: { name: 'MoviesSearch', movieIds: [existing.id] } });
-      return existing.id;
-    }
-    const lookup = await this.call('movie', `movie/lookup/tmdb?tmdbId=${target.tmdbId}`) as Json | undefined;
-    if (!lookup || typeof lookup.tmdbId !== 'number') throw new FulfilError(`Radarr can't find TMDB ${target.tmdbId}.`, true);
-    const added = await this.call('movie', 'movie', { method: 'POST', body: { ...lookup, ...await this.destination('movie', target), monitored: true, minimumAvailability: 'released',
-      tags: target.tags, addOptions: { searchForMovie: target.search } } }) as Json | undefined;
-    if (typeof added?.id !== 'number') throw new FulfilError('Radarr did not return the movie it added.', false);
-    return added.id;
+    this.shows(target.kind);
+    return this.addSeries(target);
   }
   private async addSeries(target: FulfilTarget) {
     if (!target.tvdbId) throw new FulfilError('TMDB has no TVDB id for this show, which Sonarr needs.', true);
@@ -107,40 +97,27 @@ export class ArrFulfiller implements Fulfiller {
     return added.id;
   }
   async queue(): Promise<QueueState> {
-    const state: QueueState = { movies: new Set(), series: new Map() };
-    const read = async (kind: FulfilKind) => {
-      const name = kind === 'movie' ? 'radarr' : 'sonarr', { url, key } = this.connection(name);
-      if (!url || !key) return [];
-      const data = await this.call(kind, 'queue?pageSize=1000&includeUnknownMovieItems=false&includeUnknownSeriesItems=false') as { records?: Json[] } | undefined;
-      return data?.records ?? [];
-    };
-    const [movies, series] = await Promise.all([read('movie'), read('show')]);
-    for (const r of movies) if (typeof r.movieId === 'number') state.movies.add(r.movieId);
-    for (const r of series) if (typeof r.seriesId === 'number') {
+    const state: QueueState = { movies: new Set(), series: new Map() }, { url, key } = this.connection();
+    if (!url || !key) return state;
+    const data = await this.call('show', 'queue?pageSize=1000&includeUnknownSeriesItems=false') as { records?: Json[] } | undefined;
+    for (const r of data?.records ?? []) if (typeof r.seriesId === 'number') {
       const seasons = state.series.get(r.seriesId) ?? new Set();
       seasons.add(typeof r.seasonNumber === 'number' ? r.seasonNumber : typeof (r.episode as Json | undefined)?.seasonNumber === 'number' ? (r.episode as Json).seasonNumber as number : undefined);
       state.series.set(r.seriesId, seasons);
     }
     return state;
   }
-  async find(kind: FulfilKind, tmdbId: number, tvdbId?: number) {
-    if (kind === 'show' && !tvdbId) return undefined;
-    const found = await this.first<Json>(kind, kind === 'movie' ? `movie?tmdbId=${tmdbId}` : `series?tvdbId=${tvdbId}`);
+  async find(kind: FulfilKind, _tmdbId: number, tvdbId?: number) {
+    this.shows(kind);
+    if (!tvdbId) return undefined;
+    const found = await this.first<Json>(kind, `series?tvdbId=${tvdbId}`);
     return typeof found?.id === 'number' ? found.id : undefined;
   }
   async exists(kind: FulfilKind, arrId: number) {
-    return (await this.call(kind, `${kind === 'movie' ? 'movie' : 'series'}/${arrId}`, {}, true)) !== undefined;
+    return (await this.call(kind, `series/${arrId}`, {}, true)) !== undefined;
   }
   async progress(kind: FulfilKind, arrId: number, seasons: number[], now: number): Promise<FulfilProgress> {
-    if (kind === 'movie') {
-      const movie = await this.call(kind, `movie/${arrId}`, {}, true) as Json | undefined;
-      if (!movie) return {};
-      const date = movieReleaseDate(movie);
-      const waitingForRelease = movie.isAvailable === false;
-      return { at: timestamp(movie.lastSearchTime), ...((date || waitingForRelease) && {
-        release: { kind: 'movie', date, ...(waitingForRelease && { waitingForRelease: true }) }
-      }) };
-    }
+    this.shows(kind);
     if (!seasons.length) return {};
     const episodes = await this.call(kind, `episode?seriesId=${arrId}`) as Json[];
     const today = new Date(now).toISOString().slice(0, 10);
@@ -163,9 +140,8 @@ export class ArrFulfiller implements Fulfiller {
     return { at: latestSearch, release: latestAired ?? nextToAir };
   }
   async unmonitor(kind: FulfilKind, arrId: number, seasons: number[]) {
-    const path = `${kind === 'movie' ? 'movie' : 'series'}/${arrId}`, item = await this.call(kind, path, {}, true) as Json | undefined;
+    const path = `series/${arrId}`, item = await this.call(kind, path, {}, true) as Json | undefined;
     if (!item) return;
-    if (kind === 'movie') { if (item.monitored) await this.call(kind, path, { method: 'PUT', body: { ...item, monitored: false } }); return; }
     const off = new Set(seasons), list = (item.seasons as { seasonNumber: number; monitored: boolean }[] | undefined) ?? [];
     if (!list.some(s => off.has(s.seasonNumber) && s.monitored)) return;
     await this.call(kind, path, { method: 'PUT', body: { ...item, seasons: list.map(s => off.has(s.seasonNumber) ? { ...s, monitored: false } : s) } });
@@ -175,11 +151,12 @@ export class ArrFulfiller implements Fulfiller {
     const found = (tags ?? []).find(t => typeof t.label === 'string' && t.label.toLowerCase() === label.toLowerCase())?.id;
     if (typeof found === 'number') return found;
     const made = await this.call(kind, 'tag', { method: 'POST', body: { label } }) as Json | undefined;
-    if (typeof made?.id !== 'number') throw new AppError('CATALOG_UNAVAILABLE', `${service(kind)} didn't make the tag “${label}”.`, 502);
+    if (typeof made?.id !== 'number') throw new AppError('CATALOG_UNAVAILABLE', `Sonarr didn't make the tag “${label}”.`, 502);
     return made.id;
   }
   async options(kind: FulfilKind): Promise<ArrOptions> {
-    const { url, key } = this.connection(kind === 'movie' ? 'radarr' : 'sonarr');
+    this.shows(kind);
+    const { url, key } = this.connection();
     if (!url || !key) return { connected: false, profiles: [], rootFolders: [], tags: [] };
     const [profiles, folders, tags] = await Promise.all(['qualityprofile', 'rootfolder', 'tag'].map(p => this.call(kind, p))) as (Json[] | undefined)[];
     return { connected: true,
@@ -188,7 +165,7 @@ export class ArrFulfiller implements Fulfiller {
       tags: (tags ?? []).flatMap(t => typeof t.id === 'number' && typeof t.label === 'string' ? [{ id: t.id, label: t.label }] : []) };
   }
 }
-// Radarr and Sonarr answer a refused add with a list of validation failures.
+// Sonarr answers a refused add with a list of validation failures.
 function arrMessage(data: unknown) {
   if (Array.isArray(data)) { const first = data.find(e => e && typeof e === 'object' && typeof (e as Json).errorMessage === 'string') as Json | undefined; if (first) return String(first.errorMessage).slice(0, 300); }
   return remoteMessage(data);
