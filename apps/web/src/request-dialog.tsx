@@ -7,30 +7,39 @@ import {seasonList,seasonModes,seasonsFor,type SeasonMode} from './request-seaso
 
 export const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',downloading:'Downloading',requested:'Requested'};
 const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
-type Extras={profileId?:number;keep?:boolean};
+// An administrator's request options: the quality profile (which is also how 4K is chosen) and Keep (Clean Up's
+// protected tag). Root folder and tags come from Admin › Requests.
+export type RequestExtras={profileId?:number;keep?:boolean};
 
-// The request window: which seasons, and with `advanced` (administrators' Request with options…) the quality profile
-// (which is also how 4K is chosen) and Keep (Clean Up's protected tag). Every request is approved as it is made.
-// Root folder and tags come from Admin › Requests.
-export function RequestDialog({item,request,admin,advanced=false,onClose,onDone}:{item:ExploreItem;request:NonNullable<ExploreDetails['request']>;admin:boolean;advanced?:boolean;onClose:()=>void;onDone:(message:string)=>void}) {
+// The options in Request's ▾ menu, read when it first opens; Request itself sends them.
+export function RequestOptionsPanel({kind,extras,setExtras}:{kind:ExploreItem['kind'];extras:RequestExtras;setExtras:(update:(current:RequestExtras)=>RequestExtras)=>void}) {
+  const options=useApi<RequestOptions>(`/admin/requests/options?kind=${kind}`),o=options.data;
+  useEffect(()=>{if(o)setExtras(x=>x.profileId?x:{...x,profileId:o.defaults.profileId||o.profiles[0]?.id});},[o]);
+  if(options.error)return <ErrorNotice message={options.error.message} retry={options.reload}/>;
+  if(!o)return <Loading/>;
+  if(!o.connected)return <p className="muted small">{kind==='show'?'Sonarr':'Radarr'} isn’t connected.</p>;
+  return <div className="request-options">
+    {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality profile</span>
+      <select value={extras.profileId} onChange={e=>setExtras(x=>({...x,profileId:Number(e.target.value)}))}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}
+    <label className="request-keep" title={o.keepTag?`Tags it “${o.keepTag}” so Clean Up never removes it`:'Add a protected tag in Clean Up › Settings first'}>
+      <strong>Keep</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>setExtras(x=>({...x,keep:e.target.checked}))}/></label>
+  </div>;
+}
+export const extrasBody=(extras?:RequestExtras)=>extras?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{})}:{};
+
+// The request window, for a show's seasons, with any options chosen in Request's menu. Every request is approved as it is made.
+export function RequestDialog({item,request,extras,onClose,onDone}:{item:ExploreItem;request:NonNullable<ExploreDetails['request']>;extras?:RequestExtras;onClose:()=>void;onDone:(message:string)=>void}) {
   const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
   // A second dialog over the title's own; closing it leaves the page locked for the one underneath.
   useEffect(()=>{const dialog=ref.current!;dialog.showModal();return()=>dialog.close();},[]);
   const show=item.kind==='show',seasons=request.seasons,[mode,setMode]=useState<SeasonMode>('all'),[picked,setPicked]=useState<number[]>([]);
   const chosen=show?seasonsFor(mode,seasons,{picked}):[],open=seasons.filter(s=>!s.status).map(s=>s.number);
   const episodes=seasons.filter(s=>chosen.includes(s.number)).reduce((n,s)=>n+(s.episodeCount??0),0);
-  const [expanded,setExpanded]=useState(advanced);
-  // Collapsed, Options reads nothing and the request uses Admin › Requests' defaults.
-  const options=useApi<RequestOptions>(admin&&expanded?`/admin/requests/options?kind=${item.kind}`:undefined),o=options.data;
-  const [extras,setExtras]=useState<Extras>({});
-  useEffect(()=>{if(o)setExtras({profileId:o.defaults.profileId||o.profiles[0]?.id});},[o]);
-  const set=(patch:Extras)=>setExtras(e=>({...e,...patch}));
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
   const submit=async()=>{
     if(busy||(show&&!chosen.length))return;setBusy(true);setError('');
     try {
-      const advanced=admin&&expanded&&o?.connected?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{})}:{};
-      await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...(show&&chosen.length<open.length?{seasons:chosen}:{}),...advanced});
+      await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...(show&&chosen.length<open.length?{seasons:chosen}:{}),...extrasBody(extras)});
       invalidate('/explore/');invalidate('/requests/mine');onDone(`Requested ${item.title}${show?` · ${seasonList(chosen)}`:''}.`);
     } catch(e){setError((e as Error).message);setBusy(false);}
   };
@@ -46,16 +55,6 @@ export function RequestDialog({item,request,admin,advanced=false,onClose,onDone}
         {mode==='manual'?<SeasonTable seasons={seasons} picked={picked} setPicked={setPicked}/>
           :<p className="muted small">{chosen.length?`${seasonList(chosen)}${episodes?` · ${plural(episodes,'episode')}`:''}`:'Nothing to request for this choice.'}{seasons.length>open.length?' Seasons already on the server or requested are left out.':''}{mode==='all'&&chosen.length?' New seasons are added as they air.':''}</p>}
       </div>}
-      {admin&&advanced&&<details className="request-advanced" open={expanded} onToggle={e=>setExpanded(e.currentTarget.open)}>
-        <summary><Icon name="next" size={16}/>Options</summary>
-        <div className="request-advanced-body">
-          {options.error?<ErrorNotice message={options.error.message} retry={options.reload}/>:!o?<Loading/>:!o.connected?<p className="muted small">{show?'Sonarr':'Radarr'} isn’t connected.</p>:<>
-            {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality Profile</span><select value={extras.profileId} onChange={e=>set({profileId:Number(e.target.value)})}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}
-            <label className="request-keep"><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>set({keep:e.target.checked})}/>
-              <span><strong>Keep</strong><small className="muted">{o.keepTag?`Tags it “${o.keepTag}” so Clean Up never removes it`:'Add a protected tag in Clean Up › Settings first'}</small></span></label>
-          </>}
-        </div>
-      </details>}
       {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}
       <footer className="request-foot"><button type="button" onClick={onClose}>Cancel</button>
         <button className="primary" disabled={busy||(show&&!chosen.length)}>{busy?'Requesting…':show&&chosen.length?`Request ${plural(chosen.length,'season')}`:'Request'}</button></footer>
