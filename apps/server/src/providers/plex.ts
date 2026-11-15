@@ -142,22 +142,27 @@ export class PlexAdapter {
   // services to some shelves that way); any other redirect is refused, so the token never leaves that host.
   // Told the duration and outcome of every Plex API read (server metrics).
   observe?: (ms: number, ok: boolean) => void;
-  private async json(url: URL, token?: string, method = 'GET', sameOrigin = false) {
+  private json(url: URL, token?: string, method = 'GET', sameOrigin = false) {
+    return this.request(url, token, method, sameOrigin);
+  }
+  private async request(url: URL, token: string | undefined, method: string, sameOrigin: boolean, xml = false) {
     const started = performance.now();
     try {
-      const result = await this.readJson(url, token, method, sameOrigin);
+      const result = await this.readResponse(url, token, method, sameOrigin, xml);
       this.observe?.(performance.now() - started, true);
       return result;
     } catch (e) { this.observe?.(performance.now() - started, false); throw e; }
   }
-  private async readJson(url: URL, token: string | undefined, method: string, sameOrigin: boolean) {
+  private async readResponse(url: URL, token: string | undefined, method: string, sameOrigin: boolean, xml: boolean) {
     try {
-      let response = await this.transport(url, { method, headers: this.headers(token), redirect: sameOrigin ? 'manual' : 'error', signal: AbortSignal.timeout(10000) });
+      const headers = this.headers(token);
+      if (xml) headers.Accept = 'application/xml';
+      let response = await this.transport(url, { method, headers, redirect: sameOrigin ? 'manual' : 'error', signal: AbortSignal.timeout(10000) });
       for (let hops = 0; sameOrigin && response.status >= 300 && response.status < 400; hops++) {
         const next = new URL(response.headers.get('location') ?? '', url);
         await response.body?.cancel();
         if (hops >= 3 || next.origin !== url.origin) throw new AppError('PLEX_UNAVAILABLE', 'Plex redirected the request elsewhere.', 502);
-        response = await this.transport(next, { method, headers: this.headers(token), redirect: 'manual', signal: AbortSignal.timeout(10000) });
+        response = await this.transport(next, { method, headers, redirect: 'manual', signal: AbortSignal.timeout(10000) });
       }
       if (!response.ok) {
         await response.body?.cancel();
@@ -175,7 +180,7 @@ export class PlexAdapter {
       } finally { reader.releaseLock(); }
       // Discover's watchlist actions answer with an empty body.
       const text = Buffer.concat(chunks).toString('utf8');
-      return (text ? JSON.parse(text) : {}) as unknown;
+      return (xml ? text : text ? JSON.parse(text) : {}) as unknown;
     } catch (e) {
       if (e instanceof AppError) throw e;
       throw new AppError('PLEX_UNAVAILABLE', 'Plex is unavailable or returned invalid data.', 502);
@@ -244,7 +249,7 @@ export class PlexAdapter {
   async plexUsers(accountToken: string) {
     try {
       return await readPlexUsers(
-        path => this.json(new URL(path, 'https://clients.plex.tv'), accountToken),
+        path => this.request(new URL(path, 'https://clients.plex.tv'), accountToken, 'GET', false, path === '/api/users'),
         path => this.json(new URL(path, 'https://plex.tv'), accountToken),
         this.config.PLEX_MACHINE_ID!,
       );
@@ -254,7 +259,7 @@ export class PlexAdapter {
   }
   async revokePlexShare(accountToken: string, path: string) {
     requireWritable();
-    requireThat(/^\/api\/v2\/(?:shared_servers|shared_items)\/\d{1,20}$/.test(path), 'INVALID_REQUEST', 'Invalid Plex share.');
+    requireThat(/^\/api\/v2\/(?:shared_servers|shared_items|shared_sources)\/\d{1,20}$/.test(path), 'INVALID_REQUEST', 'Invalid Plex share.');
     const response = await this.transport(new URL(path, 'https://clients.plex.tv'), {
       method: 'DELETE', headers: this.headers(accountToken), redirect: 'error', signal: AbortSignal.timeout(10000),
     }).catch(() => undefined);

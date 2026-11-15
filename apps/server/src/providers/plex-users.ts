@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SaxesParser } from 'saxes';
 
 const id = z.union([z.string(), z.number().int().nonnegative()]).transform(String).pipe(z.string().regex(/^\d{1,20}$/));
 const account = z.object({
@@ -6,7 +7,7 @@ const account = z.object({
   restricted: z.boolean().nullish(),
 });
 const people = z.array(account);
-const serverShare = z.object({ id, machineIdentifier: z.string() });
+const serverShare = z.object({ id, machineIdentifier: z.string(), invitedEmail: z.string().nullish() });
 const recipient = z.object({ invited: account.nullish(), invitedEmail: z.string().nullish() });
 const serverShares = z.array(serverShare.extend(recipient.shape));
 const invitations = z.array(recipient.extend({ sharedServers: z.array(serverShare) }));
@@ -28,9 +29,25 @@ type Person = {
 
 export const canManageTkBox = (user: Person) => user.access.some(share => share.library && !share.pending);
 
+function directoryUsers(xml: unknown) {
+  const parser = new SaxesParser();
+  const users: z.infer<typeof account>[] = [];
+  let container = false;
+  parser.on('opentag', ({ name, attributes }) => {
+    if (name === 'MediaContainer') container = true;
+    if (name === 'User') users.push(account.parse({
+      id: attributes.id, title: attributes.title, username: attributes.username,
+      home: attributes.home === '1', restricted: attributes.restricted === '1',
+    }));
+  });
+  parser.write(z.string().parse(xml)).close();
+  if (!container) throw new Error('Plex user directory is missing its MediaContainer.');
+  return users;
+}
+
 export async function readPlexUsers(readCloud: Read, readAccount: Read, machineId: string) {
   const directory = Promise.allSettled([
-    readAccount('/api/v2/friends').then(value => people.parse(value)),
+    readCloud('/api/users').then(directoryUsers),
     readAccount('/api/v2/home/users').then(value => Array.isArray(value) ? people.parse(value) : z.object({ users: people }).parse(value).users),
   ]);
   const [accepted, pending, items, pendingItems, [friends, home]] = await Promise.all([
@@ -65,9 +82,9 @@ export async function readPlexUsers(readCloud: Read, readAccount: Read, machineI
   }
   for (const invite of pending) {
     const shares = invite.sharedServers.filter(share => share.machineIdentifier === machineId);
-    if (shares.length) addAccess(invite, `share-${shares[0]!.id}`, shares.map(share => ({
-      path: `/api/v2/shared_servers/${share.id}`, pending: true, library: true,
-    })));
+    const first = shares[0];
+    if (first) addAccess({ ...invite, invitedEmail: invite.invitedEmail || first.invitedEmail }, `share-${first.id}`,
+      shares.map(share => ({ path: `/api/v2/shared_servers/${share.id}`, pending: true, library: true })));
   }
   const onServer = (value?: string | null) => value === machineId || value === `server://${machineId}` || !!value?.startsWith(`server://${machineId}/`);
   function itemAccess(source: z.infer<typeof itemSource>, pending: boolean): Access[] {

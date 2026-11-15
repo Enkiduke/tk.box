@@ -44,8 +44,24 @@ const viewedAt=Math.floor(Date.now()/1000);
 Object.assign(nodes[5]!,{lastViewedAt:viewedAt-60});
 Object.assign(episodes[0]!,{viewCount:1,lastViewedAt:viewedAt-120});
 const watchlist=new Set<string>();
+const plexShares=[
+  {id:101,machineIdentifier:'machine',invited:{id:2,title:'Viewer',username:'viewer'}},
+  {id:102,machineIdentifier:'machine',invited:{id:4,title:'Library guest'}},
+];
 const transport=(async(input:string|URL|Request,init?:RequestInit)=>{
   const url=new URL(String(input));
+  if(url.hostname==='clients.plex.tv'){
+    if(url.pathname==='/api/users')return new Response('<MediaContainer><User id="2" title="Viewer" username="viewer"/></MediaContainer>');
+    if(url.pathname==='/api/v2/shared_servers/owned/accepted')return Response.json(plexShares);
+    if(['/api/v2/shared_servers/invites/owned/pending','/api/v2/shared_sources/owned','/api/v2/shared_sources/invites/owned/pending'].includes(url.pathname))return Response.json([]);
+    const shareId=url.pathname.match(/^\/api\/v2\/shared_servers\/(\d+)$/)?.[1];
+    const index=plexShares.findIndex(share=>String(share.id)===shareId);
+    if(init?.method==='DELETE'&&index!==-1){
+      plexShares.splice(index,1);
+      return new Response(null,{status:204});
+    }
+    return new Response(null,{status:404});
+  }
   if(url.hostname==='discover.provider.plex.tv'){
     if(url.pathname==='/hubs/sections/home')return Response.json({MediaContainer:{Hub:[
       {key:'/hubs/preview/picks',title:'Plex Picks',type:'movie'},

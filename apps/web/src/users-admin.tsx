@@ -51,7 +51,7 @@ export function UsersAdmin() {
     {!data.ownerTokenSaved&&data.admins.length>0&&<div className="notice"><span>Save your Plex admin token in <a href="#admin?section=connections">Admin › Connections</a> to let other admins run Clean Up, Artwork and Collections.</span></div>}
     {notice&&<div className="notice" role="status">{notice}</div>}
     {!removing&&mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Card title="Plex users" description={`${plural(people.size,'account')} · ${data.admins.length} delegated ${data.admins.length===1?'admin':'admins'}`}>
+    <Card title="Plex users" description={`${people.size} ${people.size===1?'entry':'entries'} · ${plural(data.admins.length,'delegated admin')}`}>
       <input type="search" className="users-search" placeholder="Find a Plex user" aria-label="Find a Plex user" value={query} onChange={e=>setQuery(e.target.value)}/>
       {!shown.length?<Empty title="No matching Plex users"/>:
         <ul className="users-list">{shown.map(user=>{
@@ -75,7 +75,8 @@ export function UsersAdmin() {
                     void mutation.run(()=>api(PATH,'POST',{accountId:user.accountId,admin:on}));
                   }}/>}
               {!isOwner&&user.access!=='none'&&<button type="button" className="danger" disabled={busy||!data.canRevoke||!!view.error}
-                aria-label={`${revokeLabel(user)} for ${user.name}`} onClick={()=>{setNotice('');mutation.setError('');setRemoving(user);}}>{revokeLabel(user)}</button>}
+                aria-label={user.access==='pending'?`Cancel invitation for ${user.name}`:`Remove Plex access for ${user.name}`}
+                onClick={()=>{setNotice('');mutation.setError('');setRemoving(user);}}>{user.access==='pending'?'Cancel':'Remove'}</button>}
             </div>
           </li>;
         })}</ul>}
@@ -86,8 +87,8 @@ export function UsersAdmin() {
       {removing.home&&<p>They’ll remain a member of Plex Home.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row">
-        <button type="button" disabled={mutation.busy} autoFocus onClick={()=>{setRemoving(undefined);mutation.setError('');}}>Back</button>
-        <button type="button" className="danger" disabled={busy} onClick={()=>revoke(removing)}>{mutation.busy?'Removing…':revokeLabel(removing)}</button>
+        <button type="button" disabled={mutation.busy} autoFocus onClick={()=>{setRemoving(undefined);mutation.setError('');}}>Cancel</button>
+        <button type="button" className="danger" disabled={busy||!!view.error} onClick={()=>revoke(removing)}>{mutation.busy?'Removing…':'Remove'}</button>
       </div>
     </Modal>}
   </>;
