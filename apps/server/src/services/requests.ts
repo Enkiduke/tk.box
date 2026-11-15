@@ -26,6 +26,8 @@ type TmdbTitle = { title?: string; name?: string; release_date?: string; first_a
   seasons?: { season_number?: number; name?: string; episode_count?: number; air_date?: string | null }[] };
 
 export class Requests {
+  // Clean Up's first protected tag (set by the cleanup module): a request's Keep tags the title with it.
+  keepTag: () => string | undefined = () => undefined;
   private labelCache?: Map<string, RequestLabel>;
   private keyCache?: Map<string, number>;
   private checked = new Map<number, number>();

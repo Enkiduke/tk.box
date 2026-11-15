@@ -13,8 +13,8 @@ type FullLevel = Exclude<AccessLevel, 'public' | 'session'>;
 export type AccessChecks = Record<FullLevel, (req: FastifyRequest) => Promise<Viewer>> & { session: (req: FastifyRequest) => Promise<string> };
 
 declare module 'fastify' {
-  // portal: the route is also served on the Requests site (modules/module.ts).
-  interface FastifyContextConfig { access?: AccessLevel; portal?: boolean }
+  // portal: the route is also served on the Requests site (modules/module.ts); 'admin' lets an admin route through there.
+  interface FastifyContextConfig { access?: AccessLevel; portal?: boolean | 'admin' }
   interface FastifyRequest { viewer: Viewer | null; sessionHash: string | null }
   interface FastifyInstance { accessChecks: Partial<AccessChecks> }
 }

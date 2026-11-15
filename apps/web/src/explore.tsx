@@ -240,6 +240,25 @@ export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLS
   </div>;
 }
 
+// Request, and for administrators a menu beside it with Request with options… (profile, root folder, tags).
+function RequestButton({className,busy,admin,onRequest,onOptions}:{className:string;busy:boolean;admin:boolean;onRequest:()=>void;onOptions:()=>void}) {
+  const [open,setOpen]=useState(false),ref=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    if(!open)return;
+    const outside=(e:PointerEvent)=>{if(!ref.current?.contains(e.target as Node))setOpen(false);};
+    const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setOpen(false);}};
+    document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape,true);
+    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape,true);};
+  },[open]);
+  const main=<button className={className} disabled={busy} onClick={onRequest}><Icon name="plus"/>Request</button>;
+  if(!admin)return main;
+  return <div ref={ref} className={`request-split ${className.split(' ')[0]}`}>
+    {main}
+    <button className={`${className} request-split-toggle`} disabled={busy} aria-label="More request options" aria-haspopup="menu" aria-expanded={open} onClick={()=>setOpen(!open)}><Icon name="down" size={16}/></button>
+    {open&&<div className="request-split-menu" role="menu"><button type="button" role="menuitem" onClick={()=>{setOpen(false);onOptions();}}>Request with options…</button></div>}
+  </div>;
+}
+
 export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{item:ExploreItem;admin:boolean;onClose:()=>void;onOpen?:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
   const {region}=useExplorePrefs();
   const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,request=info?.request;
@@ -249,8 +268,14 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
   const status=info?.item.status??start.status,art=item.backdropUrl??item.posterUrl;
   const facts=[item.year,info?.contentRating,item.kind==='show'?(item.episodeCount?`${item.episodeCount} episodes`:'TV series'):item.durationMs?duration(item.durationMs):undefined,info?.status,
     !info?.ratings.length&&item.rating?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
-  const [requesting,setRequesting]=useState(false),canRequest=!!request?.requestable;
+  // 'seasons': the request window for a show's seasons; 'options': also an administrator's Advanced options.
+  const [requesting,setRequesting]=useState<false|'seasons'|'options'>(false),canRequest=!!request?.requestable;
   const run=async(action:()=>Promise<unknown>,message:string)=>{if(busy)return;setBusy(true);setError('');setDone('');try{await action();setDone(message);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
+  // Request asks only when there are seasons to choose; anything else is requested at once with Admin › Requests'
+  // defaults. Administrators get Request with options… beside it.
+  const needsWindow=item.kind==='show'&&(request?.seasons.length??0)>1;
+  const openRequest=(mode:'seasons'|'options')=>{setDone('');setError('');setRequesting(mode);};
+  const requestNow=()=>void run(async()=>{await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb});invalidate('/explore/');invalidate('/requests/mine');},`Requested ${item.title}.`);
   const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist.':'Removed from your Plex watchlist.');
   const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{done&&<p className="success explore-done" role="status"><Icon name="check" size={16}/>{done}</p>}</>;
   return <Modal title={item.title} onClose={onClose} variant="media">
@@ -269,7 +294,8 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
           </div>
           <div className="button-row">
             {info?.libraryId&&onOpen&&<button className="primary large" onClick={()=>onOpen(info.libraryId!)}><Icon name="play"/>Watch</button>}
-            {canRequest&&<button className={info?.libraryId&&onOpen?'secondary large':'primary large'} disabled={busy} onClick={()=>{setDone('');setError('');setRequesting(true);}}><Icon name="plus"/>Request</button>}
+            {canRequest&&<RequestButton className={info?.libraryId&&onOpen?'secondary large':'primary large'} busy={busy} admin={admin}
+              onRequest={()=>needsWindow?openRequest('seasons'):requestNow()} onOptions={()=>openRequest('options')}/>}
             <TrailerButton trailer={info?.trailer} title={item.title}/>
             {info?.watchlisted!==undefined&&item.ids.plex&&<button className="secondary large" aria-pressed={info.watchlisted} disabled={busy} onClick={()=>watchlist(!info.watchlisted)}><Icon name={info.watchlisted?'check':'star'}/>{info.watchlisted?'On Watchlist':'Watchlist'}</button>}
             {(details.loading&&!info||busy)&&<span className="spinner small-spinner" aria-label={busy?'Working':'Loading details'}/>}
@@ -287,6 +313,6 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
       <TitleFacts kind={item.kind} info={info} genres={item.genres}/>
     </div>
     <TitleDiscovery kind={item.kind} ids={item.ids} cast={info?.cast} onOpen={onOpenRelated}/>
-    {requesting&&request&&<RequestDialog item={item} request={request} admin={admin} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
+    {requesting&&request&&<RequestDialog item={item} request={request} admin={admin} advanced={requesting==='options'} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
   </Modal>;
 }

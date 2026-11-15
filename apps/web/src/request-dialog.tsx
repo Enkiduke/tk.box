@@ -7,29 +7,29 @@ import {seasonList,seasonModes,seasonsFor,type SeasonMode} from './request-seaso
 
 export const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',downloading:'Downloading',requested:'Requested'};
 const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
-const freeSpace=(bytes?:number)=>bytes===undefined?'':` · ${(bytes/1024**4>=1?`${(bytes/1024**4).toFixed(1)} TB`:`${Math.round(bytes/1024**3)} GB`)} free`;
-type Extras={profileId?:number;rootFolder?:string;tags?:number[]};
+type Extras={profileId?:number;keep?:boolean};
 
-// The request window: which seasons, and for administrators where it goes in Radarr or Sonarr (profile, which is also
-// how 4K is chosen, root folder and tags). Every request is approved as it is made.
-export function RequestDialog({item,request,admin,onClose,onDone}:{item:ExploreItem;request:NonNullable<ExploreDetails['request']>;admin:boolean;onClose:()=>void;onDone:(message:string)=>void}) {
+// The request window: which seasons, and with `advanced` (administrators' Request with options…) the quality profile
+// (which is also how 4K is chosen) and Keep (Clean Up's protected tag). Every request is approved as it is made.
+// Root folder and tags come from Admin › Requests.
+export function RequestDialog({item,request,admin,advanced=false,onClose,onDone}:{item:ExploreItem;request:NonNullable<ExploreDetails['request']>;admin:boolean;advanced?:boolean;onClose:()=>void;onDone:(message:string)=>void}) {
   const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
   // A second dialog over the title's own; closing it leaves the page locked for the one underneath.
   useEffect(()=>{const dialog=ref.current!;dialog.showModal();return()=>dialog.close();},[]);
   const show=item.kind==='show',seasons=request.seasons,[mode,setMode]=useState<SeasonMode>('all'),[picked,setPicked]=useState<number[]>([]);
   const chosen=show?seasonsFor(mode,seasons,{picked}):[],open=seasons.filter(s=>!s.status).map(s=>s.number);
   const episodes=seasons.filter(s=>chosen.includes(s.number)).reduce((n,s)=>n+(s.episodeCount??0),0);
-  const [expanded,setExpanded]=useState(false);
-  // Collapsed, Advanced reads nothing and the request uses Admin › Requests' defaults.
+  const [expanded,setExpanded]=useState(advanced);
+  // Collapsed, Options reads nothing and the request uses Admin › Requests' defaults.
   const options=useApi<RequestOptions>(admin&&expanded?`/admin/requests/options?kind=${item.kind}`:undefined),o=options.data;
   const [extras,setExtras]=useState<Extras>({});
-  useEffect(()=>{if(o)setExtras({profileId:o.defaults.profileId||o.profiles[0]?.id,rootFolder:o.defaults.rootFolder||o.rootFolders[0]?.path,tags:o.defaults.tags});},[o]);
+  useEffect(()=>{if(o)setExtras({profileId:o.defaults.profileId||o.profiles[0]?.id});},[o]);
   const set=(patch:Extras)=>setExtras(e=>({...e,...patch}));
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
   const submit=async()=>{
     if(busy||(show&&!chosen.length))return;setBusy(true);setError('');
     try {
-      const advanced=admin&&expanded&&o?.connected?Object.fromEntries(Object.entries(extras).filter(([,v])=>v!==undefined&&v!=='')):{};
+      const advanced=admin&&expanded&&o?.connected?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{})}:{};
       await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...(show&&chosen.length<open.length?{seasons:chosen}:{}),...advanced});
       invalidate('/explore/');invalidate('/requests/mine');onDone(`Requested ${item.title}${show?` · ${seasonList(chosen)}`:''}.`);
     } catch(e){setError((e as Error).message);setBusy(false);}
@@ -46,14 +46,13 @@ export function RequestDialog({item,request,admin,onClose,onDone}:{item:ExploreI
         {mode==='manual'?<SeasonTable seasons={seasons} picked={picked} setPicked={setPicked}/>
           :<p className="muted small">{chosen.length?`${seasonList(chosen)}${episodes?` · ${plural(episodes,'episode')}`:''}`:'Nothing to request for this choice.'}{seasons.length>open.length?' Seasons already on the server or requested are left out.':''}{mode==='all'&&chosen.length?' New seasons are added as they air.':''}</p>}
       </div>}
-      {admin&&<details className="request-advanced" open={expanded} onToggle={e=>setExpanded(e.currentTarget.open)}>
-        <summary><Icon name="next" size={16}/>Advanced</summary>
+      {admin&&advanced&&<details className="request-advanced" open={expanded} onToggle={e=>setExpanded(e.currentTarget.open)}>
+        <summary><Icon name="next" size={16}/>Options</summary>
         <div className="request-advanced-body">
           {options.error?<ErrorNotice message={options.error.message} retry={options.reload}/>:!o?<Loading/>:!o.connected?<p className="muted small">{show?'Sonarr':'Radarr'} isn’t connected.</p>:<>
             {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality Profile</span><select value={extras.profileId} onChange={e=>set({profileId:Number(e.target.value)})}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}
-            {o.rootFolders.length>1&&<label className="request-field"><span className="request-label">Root Folder</span><select value={extras.rootFolder} onChange={e=>set({rootFolder:e.target.value})}>{o.rootFolders.map(r=><option key={r.path} value={r.path}>{r.path}{freeSpace(r.freeSpace)}{r.path===o.defaults.rootFolder?' (Default)':''}</option>)}</select></label>}
-            {o.tags.length>0&&<div className="request-field"><span className="request-label">Tags</span><div className="explore-chips">{o.tags.map(t=>{const on=extras.tags?.includes(t.id)??false;
-              return <button key={t.id} type="button" className="explore-chip" aria-pressed={on} onClick={()=>set({tags:on?(extras.tags??[]).filter(x=>x!==t.id):[...(extras.tags??[]),t.id]})}>{t.label}</button>;})}</div></div>}
+            <label className="request-keep"><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>set({keep:e.target.checked})}/>
+              <span><strong>Keep</strong><small className="muted">{o.keepTag?`Tags it “${o.keepTag}” so Clean Up never removes it`:'Add a protected tag in Clean Up › Settings first'}</small></span></label>
           </>}
         </div>
       </details>}

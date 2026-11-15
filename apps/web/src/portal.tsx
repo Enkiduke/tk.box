@@ -66,7 +66,7 @@ function Portal() {
       {identity.loading&&!me?fallback:content}
     </main>
     {me&&dialog&&dialog.type!=='library'&&<DialogNavContext.Provider value={dialogs.nav}><Suspense fallback={null}>{dialog.type==='title'
-      ?<ExploreDialog key={dialog.item.key} item={dialog.item} admin={false} onClose={dialogs.close} onOpenRelated={openRelated}/>
+      ?<ExploreDialog key={dialog.item.key} item={dialog.item} admin={me.role==='admin'} onClose={dialogs.close} onOpenRelated={openRelated}/>
       :<PersonDialog key={dialog.person.id??dialog.person.name} person={dialog.person} onClose={dialogs.close} onOpenRelated={openRelated}/>}</Suspense></DialogNavContext.Provider>}
   </div>;
 }

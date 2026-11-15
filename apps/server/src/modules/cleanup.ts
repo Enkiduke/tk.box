@@ -16,7 +16,7 @@ type Deps = {
   // Radarr and Sonarr.
   arr: { connection: (name: 'radarr' | 'sonarr') => ArrService };
   // tk.box's requests: the titles a run looks at, and those to mark removed once it deleted them.
-  requests: Pick<Requests, 'forCleanup' | 'removedByCleanup'>;
+  requests: Pick<Requests, 'forCleanup' | 'removedByCleanup' | 'keepTag'>;
   // Watch history: each account's latest watch of each title on a Plex server.
   watches: (serverId: string) => CleanupWatch[];
 };
@@ -40,6 +40,7 @@ export const cleanupModule = defineModule({
     engine.serverId = () => config.PLEX_MACHINE_ID;
     engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
     engine.deleted = titles => requests.removedByCleanup(titles);
+    requests.keepTag = () => store.settings().exemptArrTags[0];
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
       status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },

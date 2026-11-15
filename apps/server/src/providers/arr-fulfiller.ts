@@ -20,6 +20,8 @@ export interface Fulfiller {
   // Stops watching the movie, or these seasons of the show.
   unmonitor(kind: FulfilKind, arrId: number, seasons: number[]): Promise<void>;
   options(kind: FulfilKind): Promise<ArrOptions>;
+  // A tag's id by label, made there when it doesn't exist yet (a request's Keep).
+  tagId?(kind: FulfilKind, label: string): Promise<number>;
 }
 
 // `permanent`: trying again won't help (Radarr or Sonarr refused it). Otherwise the sweep retries later.
@@ -124,6 +126,14 @@ export class ArrFulfiller implements Fulfiller {
     const off = new Set(seasons), list = (item.seasons as { seasonNumber: number; monitored: boolean }[] | undefined) ?? [];
     if (!list.some(s => off.has(s.seasonNumber) && s.monitored)) return;
     await this.call(kind, path, { method: 'PUT', body: { ...item, seasons: list.map(s => off.has(s.seasonNumber) ? { ...s, monitored: false } : s) } });
+  }
+  async tagId(kind: FulfilKind, label: string) {
+    const tags = await this.call(kind, 'tag') as Json[] | undefined;
+    const found = (tags ?? []).find(t => typeof t.label === 'string' && t.label.toLowerCase() === label.toLowerCase())?.id;
+    if (typeof found === 'number') return found;
+    const made = await this.call(kind, 'tag', { method: 'POST', body: { label } }) as Json | undefined;
+    if (typeof made?.id !== 'number') throw new AppError('CATALOG_UNAVAILABLE', `${service(kind)} didn't make the tag “${label}”.`, 502);
+    return made.id;
   }
   async options(kind: FulfilKind): Promise<ArrOptions> {
     const { url, key } = this.connection(kind === 'movie' ? 'radarr' : 'sonarr');

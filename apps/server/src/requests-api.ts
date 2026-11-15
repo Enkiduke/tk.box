@@ -2,21 +2,33 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { MyRequests, RequestOptions, RequestPage, RequestSettings } from '../../../packages/contracts/src/index.js';
 import { authorize, viewer } from './modules/access.js';
+import { requireThat } from './errors.js';
 import { requestSettings, requestStatuses, type RequestStore } from './persistence/requests-store.js';
 import { requestItem, type Requests } from './services/requests.js';
 import type { Fulfiller } from './providers/arr-fulfiller.js';
 
 const kind = z.enum(['movie', 'show']);
 const id = z.object({ id: z.coerce.number().int().positive() }).strict();
-const override = { profileId: z.number().int().positive().optional(), rootFolder: z.string().trim().min(1).max(300).optional(), tags: z.array(z.number().int().nonnegative()).max(50).optional() };
+// `keep` adds Clean Up's first protected tag to the request's tags, so no Clean Up run deletes the title.
+const override = { profileId: z.number().int().positive().optional(), rootFolder: z.string().trim().min(1).max(300).optional(), tags: z.array(z.number().int().nonnegative()).max(50).optional(),
+  keep: z.boolean().optional() };
 
 // Requests: any viewer may request, see everyone's (not removed ones) and cancel their own; Admin › Requests lists, removes and retries every one,
 // and sets where requests go in Radarr and Sonarr. Only administrators may pick a profile (4K is a profile), folder or tags.
 export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller) {
   app.post('/api/v1/requests', { config: { access: 'viewer', rateLimit: { max: 20, timeWindow: 60000 } } }, async request => {
     const input = z.object({ kind, tmdb: z.number().int().positive(), seasons: z.array(z.number().int().positive()).min(1).max(100).optional(), ...override }).strict().parse(request.body);
-    const { kind: media, tmdb, seasons, profileId, rootFolder, tags } = input, extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined;
+    const { kind: media, tmdb, seasons, profileId, rootFolder, keep } = input;
+    let { tags } = input;
+    const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep;
     const { grant } = extras ? await authorize(request, 'admin') : viewer(request);
+    if (keep) {
+      const label = requests.keepTag();
+      requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Radarr and Sonarr tag in Clean Up › Settings first.', 409);
+      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Keep isn’t available here.', 409);
+      const keepId = await fulfiller.tagId(media, label);
+      tags = [...new Set([...(tags ?? store.settings()[media].tags), keepId])];
+    }
     const row = await requests.create({ accountId: grant.accountId, name: grant.name ?? 'Plex user' }, { kind: media, tmdb, ...(seasons ? { seasons } : {}) },
       extras ? { ...(profileId !== undefined ? { profileId } : {}), ...(rootFolder !== undefined ? { rootFolder } : {}), ...(tags !== undefined ? { tags } : {}) } : undefined);
     return requestItem(row);
@@ -56,9 +68,11 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
     return requestItem(await requests.cancel(rowId, { accountId: viewer(request).grant.accountId, admin: true }));
   });
   app.post('/api/v1/admin/requests/:id/retry', { config: { access: 'admin' } }, async request => requestItem(await requests.retry(id.parse(request.params).id)));
-  app.get('/api/v1/admin/requests/options', { config: { access: 'admin' } }, async request => {
+  // Also on the Requests site, for its administrators' Request with options….
+  app.get('/api/v1/admin/requests/options', { config: { access: 'admin', portal: 'admin' } }, async request => {
     const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId, rootFolder, tags } = store.settings()[media];
-    return { ...await fulfiller.options(media), defaults: { profileId, rootFolder, tags } } satisfies RequestOptions;
+    const keepTag = requests.keepTag();
+    return { ...await fulfiller.options(media), defaults: { profileId, rootFolder, tags }, ...(keepTag ? { keepTag } : {}) } satisfies RequestOptions;
   });
   app.get('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async () => store.settings() satisfies RequestSettings);
   app.put('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async request => {

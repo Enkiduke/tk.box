@@ -48,7 +48,7 @@
 .explore-chip{gap:6px;height:34px;padding:0 14px;border-radius:17px;border-color:var(--line-strong);background:transparent;color:var(--text);font-size:13px;font-weight:600}
 .explore-chip:hover{background:var(--surface-2)}
 /* Request window: a smaller dialog over the title's. */
-.request-dialog{width:min(620px,calc(100% - 32px));background:var(--surface);scrollbar-width:thin}
+.request-dialog{width:min(620px,calc(100% - 32px));margin:auto;background:var(--surface);scrollbar-width:thin}
 .request-form{display:flex;flex-direction:column;gap:18px;padding:24px 26px 22px}
 .request-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .request-head h2{margin:2px 0 0;font-size:20px;line-height:1.25}
@@ -123,3 +123,13 @@
 .my-requests-list li{display:grid;grid-template-columns:1fr auto 84px;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
 .my-requests-list li.is-new strong::before{content:'';display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:var(--accent);vertical-align:middle}
 .my-requests-list small{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+/* Request with a menu beside it for administrators (Request with options…); it opens upward, as the title header clips below. */
+.request-split{position:relative;display:inline-flex;align-items:stretch}
+.request-split>button:first-child{border-top-right-radius:0;border-bottom-right-radius:0}
+.request-split>.request-split-toggle{min-width:0;padding-inline:10px;margin-left:1px;border-top-left-radius:0;border-bottom-left-radius:0}
+.request-split-menu{position:absolute;bottom:calc(100% + 6px);left:0;z-index:20;min-width:100%;padding:4px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface);box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.request-split-menu button{display:flex;width:100%;justify-content:flex-start;padding:8px 12px;border:0;background:none;font-size:14px;white-space:nowrap}
+.request-split-menu button:hover,.request-split-menu button:focus-visible{background:var(--surface-2)}
+.request-keep{display:flex;align-items:center;gap:12px;cursor:pointer}
+.request-keep>span{display:flex;flex-direction:column;gap:2px}
+.request-keep small{font-size:12px}

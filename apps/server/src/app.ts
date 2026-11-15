@@ -83,11 +83,12 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     {old: `${legacyNamespace}_link`, current: linkCookie, maxAge: 600}
   ];
   app.addHook('onRequest', async (req, reply) => {
-    // Unknown routes, routes not on the Requests site, and every admin and owner route are not found there.
+    // Unknown routes, routes not on the Requests site, and admin and owner routes are not found there, except an admin
+    // route marked `portal: 'admin'` (still for administrators only).
     if (site.has(req.raw)) {
       req.portal = true;
-      const route = req.routeOptions.config as {portal?: boolean; access?: string} | undefined;
-      requireThat(route?.portal && route.access !== 'admin' && route.access !== 'owner', 'NOT_FOUND', 'Not found.', 404);
+      const route = req.routeOptions.config as {portal?: boolean | 'admin'; access?: string} | undefined;
+      requireThat(route?.portal && (route.portal === 'admin' ? route.access === 'admin' : route.access !== 'admin' && route.access !== 'owner'), 'NOT_FOUND', 'Not found.', 404);
     }
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
