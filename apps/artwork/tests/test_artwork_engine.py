@@ -1521,6 +1521,30 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual([r["member"]["tmdb_id"] for r in result["items"]], [4, 3])
         self.assertEqual((result["limit"], len(result["left_out"])), (2, 2))
 
+    def test_on_tkbox_a_seasonal_collection_asks_for_its_movies_then_lets_them_go_after_its_season(self):
+        self.config["acquire_via"] = "tkbox"
+        acquire, journal = self.artwork.base / "collections-acquire.json", self.artwork.base / "collections-tkbox.json"
+        halloween = [{"name": "Halloween", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "remove-delete", "schedule": "10/01-10/31",
+                      "members": [{"tmdb_id": 1}, {"tmdb_id": 2}]}]
+        # Movie 1 is already in Plex (never the collection's); 2 is missing.
+        items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}}]
+        with patch.object(self.artwork.http, "request", side_effect=AssertionError("Radarr isn't used")), redirect_stdout(io.StringIO()):
+            pc.seasonal_radarr(self.artwork, halloween, items, True, date(2026, 10, 5))
+        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [2], "remove_ids": []})
+        self.assertEqual(json.loads(journal.read_text())["movies"], {"2": {"owners": ["Movies:" + pc.collection_key("Halloween")]}})
+        acquire.unlink()
+        # A plan (not applied) changes nothing.
+        with redirect_stdout(io.StringIO()) as planned:
+            pc.seasonal_radarr(self.artwork, halloween, items, False, date(2026, 11, 5))
+        self.assertIn("PLAN TK.BOX REMOVE", planned.getvalue())
+        self.assertFalse(acquire.exists())
+        # After the season, tk.box is asked to remove 2 (it downloaded it), never 1.
+        items.append({"type": "movie", "tmdb_id": 2, "rating_key": "200", "library": "Movies", "title": "Two", "year": "2000", "genres": [], "media": {}})
+        with redirect_stdout(io.StringIO()):
+            pc.seasonal_radarr(self.artwork, halloween, items, True, date(2026, 11, 5))
+        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [], "remove_ids": [2]})
+        self.assertEqual(json.loads(journal.read_text())["movies"], {})
+
     def test_a_rotating_collection_deletes_downloads_that_left_its_list_unless_watched(self):
         radarr = "http://radarr.invalid:7878"
         self.config["radarr"] = {"url": radarr, "api_key": "radarr-key", "root_folder": "/movies"}

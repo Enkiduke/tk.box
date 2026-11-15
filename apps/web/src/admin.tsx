@@ -15,13 +15,14 @@ import {HistoryAdmin} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
 import {UsersAdmin} from './users-admin.js';
 import {ScheduleAdmin} from './schedule-admin.js';
+import {DownloadsAdmin} from './downloads-admin.js';
 import './admin.css';
 
 // The Admin console: server-wide settings and media management tools, apart from each viewer's own Settings.
 // It is its own bundle, loaded only when an administrator opens it, so none of it reaches viewers or the player.
 const groups=[
   ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Events','star']]],
-  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['requests','Requests','download']]],
+  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['requests','Requests','download'],['downloads','Downloads','queue']]],
   ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash'],['schedule','Schedule','clock']]]
 ] as const;
 type Section=typeof groups[number][1][number][0];
@@ -48,7 +49,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='downloads'?<DownloadsAdmin params={params}/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
     </div>
     <AdminConsole/>
   </div>;

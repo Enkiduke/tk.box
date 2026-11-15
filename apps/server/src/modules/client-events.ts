@@ -12,6 +12,7 @@ export const clientEventsModule = defineModule({
     bus.on('library.edited', () => events.publish('library'));
     bus.on('requests.changed', ({ accountId }) => { if (accountId) events.publish('requests', accountId); });
     bus.on('notifications.changed', ({ to }) => events.publish('notifications', to));
+    bus.on('library.grab.changed', () => events.publish('downloads', 'admins'));
     const close = registerEvents(routes, events, isAdmin);
     return { api: {}, stop: close };
   }

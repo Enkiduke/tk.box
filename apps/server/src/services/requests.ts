@@ -40,7 +40,12 @@ export class Requests {
     private connection: (name: 'radarr' | 'sonarr') => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
     availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
-  connected(kind: RequestKind) { const c = this.connection(kind === 'movie' ? 'radarr' : 'sonarr'); return !!(c.url && c.key); }
+  // True for a kind tk.box's own library fulfils (library_settings.fulfil): it needs no Radarr or Sonarr.
+  fulfilledHere: (kind: RequestKind) => boolean = () => false;
+  connected(kind: RequestKind) {
+    if (this.fulfilledHere(kind)) return true;
+    const c = this.connection(kind === 'movie' ? 'radarr' : 'sonarr'); return !!(c.url && c.key);
+  }
   private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus, made = false) {
     this.labelCache = undefined;
     this.changed?.({ id: row.id, kind: row.kind, tmdb: row.tmdbId, ...(row.accountId ? { accountId: row.accountId } : {}), status, ...(made ? { made: true as const } : {}) });
@@ -185,7 +190,7 @@ export class Requests {
     try {
       const arrId = await this.fulfiller.add({ kind: row.kind, tmdbId: row.tmdbId, ...(row.tvdbId ? { tvdbId: row.tvdbId } : {}), title: row.title, seasons: row.seasons.map(s => s.season),
         monitorFuture: row.monitorFuture, ...(row.profileId ? { profileId: row.profileId } : {}), ...(row.rootFolder ? { rootFolder: row.rootFolder } : {}), tags: row.tags,
-        search: settings.searchOnAdd, ...(row.kind === 'show' ? { seasonFolders: settings.show.seasonFolders } : {}) });
+        search: settings.searchOnAdd, ...(row.kind === 'show' ? { seasonFolders: settings.show.seasonFolders } : {}), ...(row.accountId ? { requestedBy: row.accountId } : {}) });
       this.store.sent(row.id, arrId); this.store.setStatus(row.id, 'requested', { lastError: null });
       this.emit(row, 'requested');
     } catch (e) {

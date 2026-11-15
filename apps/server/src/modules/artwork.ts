@@ -17,6 +17,8 @@ type Deps = {
   tmdbTransport?: typeof fetch;
   // The arr module's connections: Collections' seasonal downloads use Radarr.
   arr: { connection: (name: 'radarr' | 'sonarr') => ArrService };
+  // Movies on tk.box (the cutover): seasonal downloads go to its library (collections.acquire), not Radarr.
+  moviesOnTkbox?: () => boolean;
 };
 
 // Admin › Artwork: posters, logos and collections made by the artwork engine, which runs as a separate Python process,
@@ -25,17 +27,21 @@ export const artworkModule = defineModule({
   name: 'artwork',
   migrations: artworkMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, plex, bus, background, jobs, log }, { streaming, tmdbTransport, arr }: Deps) {
+  setup(routes, { config, db, vault, plex, bus, background, jobs, log }, { streaming, tmdbTransport, arr, moviesOnTkbox = () => false }: Deps) {
     const store = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
     const titles = new TmdbTitles(() => store.keys().tmdb, tmdbTransport);
     const engine = new ArtworkEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'),
-      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail), () => arr.connection('radarr'));
+      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail), () => arr.connection('radarr'), moviesOnTkbox);
     const worker = new ArtworkWorker(engine, (message, detail) => log.warn(message, detail));
     engine.useWorker(worker);
     const schedule = new ArtworkSchedule(store, engine, plex, () => background.grant(), (message, detail) => log.warn(message, detail), streaming);
     bus.on('plex.library.changed', ({ sections }) => schedule.finished(sections));
     bus.on('plex.notifications.connecting', ({ grant }) => schedule.notificationLibraries(grant));
-    engine.finished = () => bus.emit('library.edited', { by: 'artwork' });
+    engine.finished = () => {
+      bus.emit('library.edited', { by: 'artwork' });
+      const { add, remove } = engine.takeAcquisitions();
+      if ((add.length || remove.length) && moviesOnTkbox()) bus.emit('collections.acquire', { tmdbIds: add, removeIds: remove });
+    };
     registerArtwork(routes, store, engine, worker, schedule, titles);
     // Admin › Schedule. A note starting "Waiting" is a run held back (no Plex admin token, streams playing).
     const status = ({ lastRun, note }: ScheduleState) => ({ lastRun, note, waiting: note?.startsWith('Waiting') });

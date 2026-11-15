@@ -28,7 +28,7 @@ const MAX_LINES = 5000, SAVED_LINES = 2000;
 
 // The engine's config for one run. Library titles come from the signed-in administrator's view of Plex, because the
 // engine matches its per-library layouts by title. Credentials are never written into it.
-export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections, radarrUrl = '') {
+export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections, radarrUrl = '', moviesOnTkbox = false) {
   const title = (id: string) => libraries.find(l => l.key === id)?.title, f = collections?.franchise, radarr = collections?.radarr;
   return {
     plex: { url: paths.plexUrl, libraries: settings.libraries, upload: settings.upload, upload_logo: settings.uploadLogo, include_seasons: settings.includeSeasons,
@@ -42,8 +42,10 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     layouts,
     ...(collections?.definitions ? { collections: collections.definitions } : {}),
     ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {}),
+    // Movies on tk.box: seasonal downloads go to its library (the engine lists them; tk.box adds them), not Radarr.
+    ...(moviesOnTkbox ? { acquire_via: 'tkbox' } : {}),
     // The key itself arrives in the environment; the engine reads ${RADARR_API_KEY} from there.
-    ...(radarr && radarrUrl ? { radarr: { url: radarrUrl, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
+    ...(radarr && radarrUrl && !moviesOnTkbox ? { radarr: { url: radarrUrl, api_key: '${RADARR_API_KEY}', root_folder: radarr.rootFolder, search: radarr.search,
       ...(radarr.qualityProfileId ? { quality_profile_id: radarr.qualityProfileId } : {}) } } : {})
   };
 }
@@ -72,7 +74,9 @@ export class ArtworkEngine {
   finished?: () => void;
   constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {},
     // The arr module's Radarr, for seasonal collections' downloads.
-    readonly radarr: () => ArrService = () => ({ url: '' })) {
+    readonly radarr: () => ArrService = () => ({ url: '' }),
+    // Whether movies are on tk.box (the cutover), so seasonal downloads go to its library instead of Radarr.
+    readonly moviesOnTkbox: () => boolean = () => false) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
     this.renameFiles();
@@ -97,7 +101,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
-  secrets(): EngineSecrets { const radarr = this.radarr().key; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
+  secrets(): EngineSecrets { const radarr = this.moviesOnTkbox() ? undefined : this.radarr().key; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
   // Whether Python and the engine's packages are installed. Asked again at most once a minute unless forced.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);
@@ -227,13 +231,25 @@ export class ArtworkEngine {
     this.postersFor(created, job.id, job.run);
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
+  // The movies the last collections run wants tk.box's library to add, and those its seasonal and rotating
+  // collections let go (movies on tk.box only). Read once: the file is removed as it's read.
+  takeAcquisitions(): { add: number[]; remove: number[] } {
+    const file = join(this.workDir, 'collections-acquire.json');
+    if (!existsSync(file)) return { add: [], remove: [] };
+    const ids = (value: unknown) => Array.isArray(value) ? value.filter((n): n is number => Number.isSafeInteger(n) && (n as number) > 0) : [];
+    try {
+      const data = JSON.parse(readFileSync(file, 'utf8')) as { tmdb_ids?: unknown; remove_ids?: unknown };
+      return { add: ids(data.tmdb_ids), remove: ids(data.remove_ids) };
+    } catch { return { add: [], remove: [] }; }
+    finally { rmSync(file, { force: true }); }
+  }
   // Written whole and then moved into place, so the engine never reads a half-written config.
   private writeConfig(libraries: ArtworkLibrary[], name: string, changes: Partial<Inputs> = {}) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const collections = this.store.collectionsConfig();
     const inputs: Inputs = { settings: this.store.settings(), layouts: this.store.layouts(), collections, ...changes };
     const file = join(this.workDir, name), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections, this.radarr().url), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections, this.radarr().url, this.moviesOnTkbox()), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

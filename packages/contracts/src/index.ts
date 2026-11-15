@@ -157,8 +157,10 @@ export type RequestSettings = { revision: number; movie: RequestDestination; sho
 // Admin › Requests › Requests site. `running` is the port it is listening on now; `publicAddress` says tk.box has a
 // public address, so the site needs one too.
 export type RequestsSiteStatus = { revision: number; port: number | null; publicUrl: string | null; publicAddress: boolean; appPort: number; running: number | null; error?: string };
-// `keepTag`: Clean Up's first protected tag, which a request's Keep adds; absent when Clean Up has none.
-export type RequestOptions = { connected: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[];
+// `keepTag`: Clean Up's first protected tag, which a request's Keep adds; absent when Clean Up has none. `tkbox`: the
+// kind is fulfilled by tk.box's own library, so the profiles are its pick profiles, there are no folders or tags, and
+// Keep is the title's own flag (`keepTag` is then 'Keep').
+export type RequestOptions = { connected: boolean; tkbox?: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[];
   defaults: RequestDestination; keepTag?: string };
 // The genres Explore filters on: TMDB's movie and TV genres and Plex's, merged into one list.
 export const exploreGenres = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Kids',

@@ -23,7 +23,8 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
     const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep;
     const { grant } = extras ? await authorize(request, 'admin') : viewer(request);
     if (keep) {
-      const label = requests.keepTag();
+      // tk.box's own library keeps a title by its own flag; Radarr and Sonarr by Clean Up's protected tag.
+      const label = requests.fulfilledHere(media) ? 'Keep' : requests.keepTag();
       requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Radarr and Sonarr tag in Clean Up › Settings first.', 409);
       requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Keep isn’t available here.', 409);
       const keepId = await fulfiller.tagId(media, label);
@@ -73,8 +74,11 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   // Also on the Requests site, for its administrators' Request with options….
   app.get('/api/v1/admin/requests/options', { config: { access: 'admin', portal: 'admin' } }, async request => {
     const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId, rootFolder, tags } = store.settings()[media];
-    const keepTag = requests.keepTag();
-    return { ...await fulfiller.options(media), defaults: { profileId, rootFolder, tags }, ...(keepTag ? { keepTag } : {}) } satisfies RequestOptions;
+    const keepTag = requests.fulfilledHere(media) ? 'Keep' : requests.keepTag(), options = await fulfiller.options(media);
+    // On tk.box a saved Radarr or Sonarr profile means nothing: its default profile (listed first) stands in.
+    const defaults = options.tkbox ? { profileId: options.profiles.some(p => p.id === profileId) ? profileId : options.profiles[0]?.id ?? 0, rootFolder: '', tags: [] }
+      : { profileId, rootFolder, tags };
+    return { ...options, defaults, ...(keepTag ? { keepTag } : {}) } satisfies RequestOptions;
   });
   app.get('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async () => store.settings() satisfies RequestSettings);
   app.put('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async request => {

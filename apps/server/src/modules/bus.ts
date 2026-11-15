@@ -2,6 +2,7 @@ import type { Finished, PlexPlaybackState } from '../services/plex-notifications
 import type { PlexGrant } from '../providers/plex.js';
 import type { RequestChange } from '../services/requests.js';
 import type { NewNotification, NotificationTarget, Resolution } from '../persistence/notifications-store.js';
+import type { GrabState } from '../persistence/library-store.js';
 
 // In-process events between modules. A module announces what changed; others react, without either holding the other.
 // Listeners run synchronously in subscription order, and one listener's failure is logged without stopping the rest.
@@ -28,6 +29,14 @@ export type BusEvents = {
   // Post a notification, or close an open condition (modules/notifications.ts), without depending on that module.
   'notification.post': NewNotification;
   'notification.resolve': { to: NotificationTarget; key: string; resolution?: Resolution };
+  // The library (docs/ARR-REPLACEMENT.md): a grab moved on (sent, downloading, importing, imported, failed); a file was
+  // imported and Plex told to scan its folder; a title was removed (by Clean Up, an admin, or a collection letting it go).
+  'library.grab.changed': { grabId: number; titleId: number; state: GrabState };
+  'library.file.imported': { titleId: number; fileId: number; path: string; kind: 'movie' | 'show'; tmdbId: number };
+  'library.title.removed': { titleId: number; kind: 'movie' | 'show'; tmdbId: number; by: 'cleanup' | 'admin' | 'collections' };
+  // A collections run wants these movies (seasonal downloads, movies on tk.box): the library adds those it lacks, and
+  // deletes those in `removeIds` that it added for collections and nobody has requested or kept since.
+  'collections.acquire': { tmdbIds: number[]; removeIds: number[] };
   // Someone's notifications changed (`to`: an account id, or 'admins' for every admin); their pages read them again.
   'notifications.changed': { to: NotificationTarget };
 };

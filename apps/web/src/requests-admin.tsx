@@ -107,6 +107,10 @@ function RequestDefaults() {
 }
 function Destination({title,service,options,value,set}:{title:string;service:string;options:ReturnType<typeof useApi<RequestOptions>>;value:RequestSettings['movie'];set:(patch:Partial<RequestSettings['movie']>)=>void}) {
   const o=options.data;
+  // On tk.box (Admin › Downloads) the profiles are its pick profiles, and there is no folder or tag to pick.
+  if(o?.tkbox)return <fieldset className="requests-destination"><legend>{title}</legend>
+    <label>Quality profile<select value={o.profiles.some(p=>p.id===value.profileId)?value.profileId:0} onChange={e=>set({profileId:Number(e.target.value)})}><option value={0}>Default profile</option>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+  </fieldset>;
   return <fieldset className="requests-destination"><legend>{title}</legend>
     {options.error?<ErrorNotice message={options.error.message} retry={options.reload}/>:!o?<Loading/>:!o.connected?<p className="muted small">{service} isn’t connected. Add it in <a href="#admin?section=connections&category=downloads">Admin › Connections</a>.</p>:<>
       <label>Quality profile<select value={value.profileId} onChange={e=>set({profileId:Number(e.target.value)})}><option value={0}>{service}’s first{o.profiles[0]?` (${o.profiles[0].name})`:''}</option>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>

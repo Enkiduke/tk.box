@@ -533,6 +533,20 @@ export class PlexAdapter {
   }
   // What the server holds, for request statuses: every movie and show with its TMDB/TVDB ids and date added, and
   // every season of each show. Read 500 at a time; `complete` is false when a page failed, so callers keep what they had.
+  // A partial scan of `folder` (docs/ARR-REPLACEMENT.md, "Import", step 6), in the library whose location holds it.
+  // False when no library does.
+  async scanFolder(serverToken: string, folder: string) {
+    const sections = z.object({ MediaContainer: z.object({ Directory: z.array(z.object({ key: z.string(),
+      Location: z.array(z.object({ path: z.string() })).default([]) })).default([]) }) })
+      .parse(await this.json(new URL('/library/sections', this.config.PLEX_URL), serverToken)).MediaContainer.Directory;
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, ''), target = norm(folder);
+    const section = sections.find(d => d.Location.some(l => target === norm(l.path) || target.startsWith(`${norm(l.path)}/`)));
+    if (!section) return false;
+    const url = new URL(`/library/sections/${section.key}/refresh`, this.config.PLEX_URL);
+    url.searchParams.set('path', folder);
+    await this.json(url, serverToken);
+    return true;
+  }
   async availability(grant:PlexGrant):Promise<PlexAvailability> {
     const libraries=grant.libraries.filter(l=>l.type==='movie'||l.type==='show');
     const result:PlexAvailability={titles:[],seasons:[],complete:true};

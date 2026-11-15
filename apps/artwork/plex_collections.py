@@ -778,7 +778,10 @@ def validate_collections(config):
     # Without a quality profile ID, downloads use Radarr's first quality profile.
     if "quality_profile_id" in radarr and (type(radarr["quality_profile_id"]) is not int or radarr["quality_profile_id"] < 1):
         raise ValueError("radarr.quality_profile_id must be a positive integer")
-    if any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
+    if config.get("acquire_via", "radarr") not in ("radarr", "tkbox"):
+        raise ValueError("acquire_via must be radarr or tkbox")
+    # With movies on tk.box, tk.box adds them to its own library; Radarr isn't used.
+    if config.get("acquire_via") != "tkbox" and any(entry.get("acquire") and entry.get("enabled", True) for entry in definitions):
         for key in ("url", "api_key", "root_folder"):
             if not isinstance(radarr.get(key), str) or not radarr[key].strip():
                 raise ValueError(f"radarr.{key} is required for acquisition")
@@ -863,6 +866,9 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
         return
     if READ_ONLY:
         print("READ-ONLY: Radarr acquisition and cleanup skipped", flush=True)
+        return
+    if artwork.config.get("acquire_via") == "tkbox":
+        seasonal_tkbox(artwork, definitions, items, apply, today)
         return
     settings = artwork.config["radarr"]
     url = settings["url"].rstrip("/")
@@ -988,6 +994,91 @@ def seasonal_radarr(artwork, definitions, items, apply, today):
             request("DELETE", f"movie/{record['id']}", params={"deleteFiles": "true", "addImportExclusion": "false"})
             del state["movies"][key]
             save()
+
+
+def seasonal_tkbox(artwork, definitions, items, apply, today):
+    """Movies are on tk.box. The movies active acquiring collections want and Plex lacks go in collections-acquire.json
+    as `tmdb_ids`, and tk.box adds each its library doesn't have yet. Each is recorded in collections-tkbox.json with
+    the collections that wanted it, as the Radarr journal does. Once every one of them lets it go (a seasonal one's
+    season ended, or it left a rotating one's list, not while watched, nor when the list came back less than half as
+    long), it goes in `remove_ids`: tk.box deletes it with its files, but only one it added for collections and that
+    nobody has requested or kept since. Radarr's journal is left as it is."""
+    state_path = artwork.base / "collections-tkbox.json"
+    try:
+        state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "movies": {}, "lists": {}}
+    except (OSError, ValueError):
+        raise ValueError("Cannot read collections-tkbox.json; tk.box acquisition and removal refused. Restore it from backup") from None
+    if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("movies"), dict):
+        raise ValueError("Invalid collections-tkbox.json; tk.box acquisition and removal refused. Restore it from backup")
+    save = lambda: atomic_write(state_path, json.dumps(state, indent=2).encode())
+    def identity(entry):
+        return entry["library"] + ":" + collection_key(entry["name"])
+    def acquiring(entry):
+        return entry.get("enabled", True) and entry.get("acquire") and entry["type"] == "movie" and collection_active(entry.get("schedule"), today)
+    owners = {identity(entry): entry for entry in definitions}
+    active_ids, wanted = set(), {}
+    for entry in definitions:
+        if not entry.get("enabled", True) or not collection_active(entry.get("schedule"), today) or entry["type"] != "movie":
+            continue
+        ids = {m["tmdb_id"] for m in entry.get("members", []) if "tmdb_id" in m}
+        candidates = [i for i in items if i["library"] == entry["library"] and i["type"] == entry["type"]]
+        keys = collection_members(entry, candidates)[0]
+        active_ids.update(ids)
+        active_ids.update(i["tmdb_id"] for i in candidates if i["rating_key"] in keys and i.get("tmdb_id"))
+        if acquiring(entry):
+            for tmdb_id in ids:
+                wanted.setdefault(tmdb_id, set()).add(identity(entry))
+    present = {i["tmdb_id"] for i in items if i["type"] == "movie" and i.get("tmdb_id")}
+    missing = sorted(set(wanted) - present)
+    for tmdb_id in missing:
+        print(f"{' ' if apply else 'PLAN '}TK.BOX ADD tmdb:{tmdb_id}", flush=True)
+        if apply:
+            record = state["movies"].setdefault(str(tmdb_id), {"owners": []})
+            record["owners"] = sorted(set(record["owners"]) | wanted[tmdb_id])
+    # Movies already recorded that other acquiring collections now share: all of them must let go before removal.
+    for key, record in state["movies"].items():
+        shared = wanted.get(int(key), set())
+        if apply and shared - set(record["owners"]):
+            record["owners"] = sorted(set(record["owners"]) | shared)
+    # A list that suddenly shrank is more likely a bad answer than a new week: nothing leaves it on this run.
+    lists, held = state.setdefault("lists", {}), set()
+    for entry in definitions:
+        if entry.get("enabled", True) and entry.get("cleanup") == "rotate":
+            owner, count = identity(entry), sum("tmdb_id" in m for m in entry.get("members", []))
+            if count < lists.get(owner, 0) / 2:
+                held.add(owner)
+                print(f"WARN {entry['name']} [{entry['library']}]: the list has {count} movies, down from {lists[owner]}; none are removed this run", flush=True)
+            if apply:
+                lists[owner] = count
+    def releases(entry):
+        if entry is None or not entry.get("enabled", True):
+            return False
+        if entry.get("cleanup") == "rotate":
+            return identity(entry) not in held
+        return entry.get("cleanup", "keep") == "remove-delete" and not collection_active(entry.get("schedule"), today)
+    removals, playing = [], None
+    for key, record in list(state["movies"].items()):
+        tmdb_id = int(key)
+        if tmdb_id in active_ids:
+            continue
+        responsible = [owners.get(owner) for owner in record.get("owners", [])]
+        if not responsible or not all(map(releases, responsible)):
+            continue
+        if any(e.get("cleanup") == "rotate" for e in responsible):
+            if playing is None:
+                playing = now_playing(artwork.plex, items)
+            if playing is False or tmdb_id in playing:
+                print(f"KEEP tmdb:{tmdb_id}: left the list, but " + ("Plex didn't say what is playing" if playing is False else "someone is watching it"), flush=True)
+                continue
+        print(f"{' ' if apply else 'PLAN '}TK.BOX REMOVE + DELETE FILES tmdb:{tmdb_id} (added for collections)", flush=True)
+        if apply:
+            removals.append(tmdb_id)
+            del state["movies"][key]
+    if apply:
+        # The list for tk.box first, then the journal: a crash between the two asks for the same removals again.
+        if missing or removals:
+            atomic_write(artwork.base / "collections-acquire.json", json.dumps({"tmdb_ids": missing, "remove_ids": removals}).encode())
+        save()
 
 
 def now_playing(plex, items):

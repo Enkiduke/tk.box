@@ -24,6 +24,12 @@ type Deps = {
   // Watch history: each account's latest watch of each title on a Plex server.
   watches: (serverId: string) => CleanupWatch[];
   identity: Pick<IdentityService, 'accountToken'>;
+  // tk.box's library: a movie it fulfils that a run deleted is forgotten there (library.title.removed, which requests
+  // hear), instead of being marked removed here. Until movies are switched to tk.box, nothing goes through it.
+  // With movies on tk.box, movies are kept by library_titles.keep and never deleted through Radarr.
+  library?: { fulfils: (kind: 'movie' | 'show') => boolean;
+    store: { titleByTmdb(kind: 'movie' | 'show', tmdbId: number): { id: number } | undefined; keptMovies(): Set<number> };
+    forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void };
 };
 
 // Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
@@ -32,7 +38,7 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, arr, watches, identity }: Deps) {
+  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, arr, watches, identity, library }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
       return { radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr') };
@@ -65,15 +71,25 @@ export const cleanupModule = defineModule({
     engine.requests = () => requests.forCleanup();
     engine.serverId = () => config.PLEX_MACHINE_ID;
     engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
-    engine.deleted = titles => requests.removedByCleanup(titles);
+    engine.deleted = titles => {
+      const ours = titles.filter(t => library?.fulfils(t.kind) && library.store.titleByTmdb(t.kind, t.tmdb));
+      for (const t of ours) library!.forget(library!.store.titleByTmdb(t.kind, t.tmdb)!.id, 'cleanup');
+      requests.removedByCleanup(titles.filter(t => !ours.includes(t)));
+    };
     requests.keepTag = () => store.settings().exemptArrTags[0];
+    engine.movies = () => {
+      const onTkbox = !!library?.fulfils('movie');
+      return { onTkbox, kept: onTkbox ? library!.store.keptMovies() : new Set<number>(),
+        keep: tmdbId => { const t = library?.store.titleByTmdb('movie', tmdbId); if (t) library!.keep(t.id, true); return !!t; } };
+    };
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
       status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },
       run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
       // The saved watch history, for Explore's suggestions.
-      api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
+      // Its protected tags, which the cutover imports as Keep.
+      api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId), keepTags: () => store.settings().exemptArrTags },
       start() { engine.start(); },
       stop() { engine.close(); }
     };

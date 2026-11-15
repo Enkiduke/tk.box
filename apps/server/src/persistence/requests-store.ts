@@ -111,6 +111,29 @@ export class RequestStore {
   // Radarr or Sonarr took it.
   sent(id: number, arrId: number) { prepared(this.db, 'UPDATE requests SET arr_id=?, last_error=NULL, next_attempt_at=NULL WHERE id=?').run(arrId, id); }
   setArrId(id: number, arrId: number) { prepared(this.db, 'UPDATE requests SET arr_id=? WHERE id=?').run(arrId, id); }
+  // The cutover (docs/ARR-REPLACEMENT.md): a kind's requests move from one service's ids to the other's. `map` turns an
+  // id into the other side's. A row whose id isn't in it, or (switching back) one made at or after `since`, loses its
+  // id; an open one goes back to queued so the sweep sends it again, without the profile it was given for the other
+  // side (and, going to Radarr, without tk.box's Keep, a negative tag Radarr doesn't have).
+  moveArrIds(kind: RequestKind, map: Map<number, number>, opts: { since?: number; toArr: boolean }) {
+    const now = this.now();
+    return this.db.transaction(() => {
+      const rows = prepared(this.db, 'SELECT id, arr_id, status, created_at, tags FROM requests WHERE kind=? AND arr_id IS NOT NULL').all(kind) as
+        { id: number; arr_id: number; status: RequestStatus; created_at: number; tags: string }[];
+      let moved = 0, resent = 0, cleared = 0;
+      for (const r of rows) {
+        const to = opts.since !== undefined && r.created_at >= opts.since ? undefined : map.get(r.arr_id);
+        if (to !== undefined) { prepared(this.db, 'UPDATE requests SET arr_id=? WHERE id=?').run(to, r.id); moved++; continue; }
+        const tags = opts.toArr ? (JSON.parse(r.tags) as number[]).filter(t => t >= 0) : JSON.parse(r.tags) as number[];
+        if (r.status === 'requested' || r.status === 'downloading') {
+          prepared(this.db, `UPDATE requests SET arr_id=NULL, profile_id=NULL, tags=?, status='queued', status_at=?, attempts=0, next_attempt_at=?, last_error=NULL WHERE id=?`)
+            .run(JSON.stringify(tags), now, now, r.id);
+          resent++;
+        } else { prepared(this.db, 'UPDATE requests SET arr_id=NULL, profile_id=NULL, tags=? WHERE id=?').run(JSON.stringify(tags), r.id); cleared++; }
+      }
+      return { moved, resent, cleared };
+    })();
+  }
   attemptFailed(id: number, error: string, nextAt: number) { prepared(this.db, 'UPDATE requests SET attempts=attempts+1, last_error=?, next_attempt_at=? WHERE id=?').run(error.slice(0, 500), nextAt, id); }
   seasonAvailable(id: number, season: number, at: number) { prepared(this.db, 'UPDATE request_seasons SET available_at=COALESCE(available_at,?) WHERE request_id=? AND season=?').run(at, id, season); }
   settings(): RequestSettings & { revision: number } {

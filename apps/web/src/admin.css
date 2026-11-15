@@ -620,3 +620,29 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .jobs-note.failed{color:var(--bad)}
 .jobs-note.waiting{color:var(--warn)}
 @media(max-width:1100px){.jobs-timeline{grid-template-columns:1fr}.jobs-day{border-left:0;padding-left:0}}
+
+/* Admin › Downloads */
+.downloads-progress{width:120px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.downloads-progress span{display:block;height:100%;background:var(--accent)}
+.downloads-grabs td:first-child,.downloads-releases td:first-child{max-width:520px;word-break:break-word}
+.downloads-releases td:first-child small+small{margin-top:2px}
+.downloads-path{font-family:var(--mono,ui-monospace,monospace);font-size:12px;word-break:break-all}
+.downloads-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;align-content:start}
+.downloads-facts span,.downloads-formats span,.downloads-preview span{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.downloads-facts small,.downloads-formats small,.downloads-preview small{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.downloads-formats,.downloads-preview{display:flex;flex-direction:column;gap:12px}
+.downloads-formats code,.downloads-preview code{font-size:12px;word-break:break-all;white-space:pre-wrap}
+.downloads-preview{padding:14px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.downloads-sample{grid-template-columns:1fr 160px}
+.downloads-profile{display:flex;flex-direction:column;gap:16px}
+.downloads-profile>label{max-width:320px}
+.downloads-ladder{max-width:520px}
+.downloads-ladder td{padding:7px 12px}
+.downloads-ladder td:not(:first-child),.downloads-ladder th:not(:first-child){width:90px;text-align:center}
+.downloads-range{display:flex;align-items:center;gap:8px;border:0;padding:0;margin:0}
+.downloads-range legend{margin-bottom:6px;font-size:13px}
+.downloads-range input{width:100px}
+.downloads-rules td{padding:6px 8px}
+.downloads-rules input:not([type=checkbox]),.downloads-rules select{padding:6px 8px;font-size:13px}
+.downloads-rules input[type=number]{width:80px}
+.downloads-pattern{min-width:260px;font-family:var(--mono,ui-monospace,monospace)}

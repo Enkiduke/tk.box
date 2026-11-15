@@ -7,10 +7,13 @@ import type { RequestRelease } from '../../../../packages/contracts/src/index.js
 // How a request reaches a downloader. Radarr and Sonarr today (ArrFulfiller); a later replacement implements the same.
 export type FulfilKind = 'movie' | 'show';
 export type FulfilTarget = { kind: FulfilKind; tmdbId: number; tvdbId?: number; title: string; seasons: number[]; monitorFuture: boolean;
-  profileId?: number; rootFolder?: string; tags: number[]; search: boolean; seasonFolders?: boolean };
+  profileId?: number; rootFolder?: string; tags: number[]; search: boolean; seasonFolders?: boolean;
+  // The requester's account id (tk.box's library records who added a title; Radarr and Sonarr ignore it).
+  requestedBy?: string };
 // What Radarr or Sonarr is downloading: movie ids, and for Sonarr each series' seasons (`undefined` when a record names none).
 export type QueueState = { movies: Set<number>; series: Map<number, Set<number | undefined>> };
-export type ArrOptions = { connected: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[] };
+// `tkbox`: tk.box's own library answers for the kind (its pick profiles; no folders or tags).
+export type ArrOptions = { connected: boolean; tkbox?: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[] };
 export type FulfilProgress = { at?: number; release?: RequestRelease };
 export interface Fulfiller {
   // Adds the title, or monitors and searches it when it's already there. Returns its id in Radarr or Sonarr.

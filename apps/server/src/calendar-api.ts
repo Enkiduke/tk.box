@@ -4,7 +4,8 @@ import { z } from 'zod';
 import type { CalendarEntry, CalendarPage } from '../../../packages/contracts/src/index.js';
 import type { ArrService } from './providers/arr-tags.js';
 import type { PlexAdapter } from './providers/plex.js';
-import { imagePath } from './providers/explore-images.js';
+import { imagePath, tmdbImage } from './providers/explore-images.js';
+import type { LibraryTitle } from './persistence/library-store.js';
 import { remoteJson } from './providers/remote-json.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
@@ -71,8 +72,34 @@ function episodeEntry(raw: unknown): Scheduled[] {
     episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
 }
 
+// With movies on tk.box (the cutover), the calendar's movies are the library's, on the day its TMDB dates give (the same
+// choice of digital, physical or theatrical as Radarr's). The picture and summary are TMDB's, from the details the
+// library already reads (cached).
+export type CalendarLibrary = { fulfils(kind: 'movie' | 'show'): boolean; store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[] } };
+export function libraryMovieEntries(movies: (LibraryTitle & { hasFile: boolean })[], from: string, to: string): Scheduled[] {
+  return movies.flatMap(m => {
+    const release = movieReleaseDate({inCinemas: m.released.theatrical, digitalRelease: m.released.digital, physicalRelease: m.released.physical});
+    if (!release || release.day < from || release.day > to) return [];
+    return [{key: `movie:${m.tmdbId}`, title: m.title, ...(m.year ? {year: m.year} : {}), ids: {tmdb: m.tmdbId, ...(m.imdbId ? {imdb: m.imdbId} : {})},
+      day: release.day, kind: release.format, hasFile: m.hasFile}];
+  });
+}
+
 export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, connections: () => {radarr: ArrService; sonarr: ArrService},
-  transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales'>) {
+  transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales' | 'get'>, library?: CalendarLibrary) {
+  const pictures = async (entries: Scheduled[]) => {
+    if (!tmdb) return;
+    const pending = entries.values();
+    await Promise.all(Array.from({length: Math.min(6, entries.length)}, async () => {
+      for (const entry of pending) {
+        const movie = await tmdb.get(`/movie/${entry.ids.tmdb}`, {append_to_response: 'alternative_titles,release_dates,external_ids'}).catch(() => undefined) as
+          {poster_path?: string | null; backdrop_path?: string | null; overview?: string} | undefined;
+        entry.posterUrl = tmdbImage(movie?.poster_path, 'w500');
+        entry.backdropUrl = tmdbImage(movie?.backdrop_path, 'w1280');
+        if (movie?.overview) entry.summary = movie.overview;
+      }
+    }));
+  };
   // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
   const cache = new TtlCache<Promise<Scheduled[]>>(100);
   const read = (source: Source, connection: ArrService, start: string, end: string) => {
@@ -102,6 +129,12 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     const {radarr, sonarr} = connections();
     const sources: CalendarPage['sources'] = {Radarr: 'disconnected', Sonarr: 'disconnected'};
     const fetchSource = async (source: Source, connection: ArrService) => {
+      if (source === 'Radarr' && library?.fulfils('movie')) {
+        const rows = libraryMovieEntries(library.store.calendarMovies(), upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10));
+        await pictures(rows);
+        sources.Radarr = 'ready';
+        return rows;
+      }
       if (!connection.url || !connection.key) return [];
       try {
         const rows = await read(source, connection, upstreamStart, upstreamEnd);

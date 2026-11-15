@@ -2,7 +2,8 @@ import { defineModule } from './module.js';
 import { requestsMigrations } from './migrations/requests.js';
 import { requireThat } from '../errors.js';
 import { RequestStore } from '../persistence/requests-store.js';
-import { ArrFulfiller } from '../providers/arr-fulfiller.js';
+import { ArrFulfiller, type FulfilKind, type Fulfiller } from '../providers/arr-fulfiller.js';
+import { fulfillerByKind } from '../providers/library-fulfiller.js';
 import type { ArrService } from '../providers/arr-tags.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { RequestAvailability } from '../services/request-availability.js';
@@ -20,6 +21,9 @@ type Deps = {
   // TMDB names the title and gives a show's seasons and TVDB id.
   titles: Pick<TmdbTitles, 'get'>;
   arrTransport?: typeof fetch;
+  // tk.box's own library (docs/ARR-REPLACEMENT.md): a kind it fulfils (library_settings.fulfil) goes to it; the rest to
+  // Radarr and Sonarr.
+  library?: { fulfiller: Fulfiller; fulfils: (kind: FulfilKind) => boolean };
   // The Requests site's listener (app.ts), started from its saved settings and moved when they change.
   site?: RequestsSite;
 };
@@ -34,14 +38,16 @@ export const requestsModule = defineModule({
   name: 'requests',
   portal: true,
   migrations: requestsMigrations,
-  setup(routes, { config, db, plex, bus, background, jobs, log }, { arr, titles, arrTransport, site }: Deps) {
-    const store = new RequestStore(db), fulfiller = new ArrFulfiller(arr.connection, arrTransport);
+  setup(routes, { config, db, plex, bus, background, jobs, log }, { arr, titles, arrTransport, site, library }: Deps) {
+    const store = new RequestStore(db), arrFulfiller = new ArrFulfiller(arr.connection, arrTransport);
+    const fulfiller = library ? fulfillerByKind(kind => library.fulfils(kind) ? library.fulfiller : arrFulfiller) : arrFulfiller;
     const availability = new RequestAvailability(async () => {
       const grant = await background.grant();
       if (!grant) throw new Error('No Plex admin token in Admin › Connections');
       return plex.availability(grant);
     }, (message, detail) => log.warn(message, detail));
     const requests = new Requests(store, fulfiller, availability, titles, arr.connection, (message, detail) => log.info(message, detail));
+    if (library) requests.fulfilledHere = kind => library.fulfils(kind);
     // Each change also tells the bell: the requester how it went, the admins of new and failed requests.
     requests.changed = change => {
       bus.emit('requests.changed', change);
@@ -51,6 +57,16 @@ export const requestsModule = defineModule({
       }
     };
     bus.on('plex.library.changed', () => availability.soon());
+    // tk.box's library imported a file (Plex has been told to scan), or Clean Up removed a title it fulfils.
+    // A grab moved on (sent, downloading, imported, failed): the next sweep reads it at once, not up to a minute later.
+    let grabSweep: NodeJS.Timeout | undefined;
+    bus.on('library.grab.changed', () => {
+      if (!library?.fulfils('movie') || grabSweep) return;
+      grabSweep = setTimeout(() => { grabSweep = undefined; void requests.sweep().catch(e => log.warn('request sweep failed', errorDetail(e))); }, 2000);
+      grabSweep.unref();
+    });
+    bus.on('library.file.imported', () => availability.soon(10000));
+    bus.on('library.title.removed', ({ kind, tmdbId, by }) => { if (by === 'cleanup' && library?.fulfils(kind)) requests.removedByCleanup([{ kind, tmdb: tmdbId }]); });
     bus.on('library.edited', ({ by }) => { if (by === 'cleanup') availability.soon(5000); });
     registerRequests(routes, store, requests, fulfiller);
     // Admin › Requests › Requests site. A change applies at once; a port that's taken is refused and nothing is saved.
@@ -81,7 +97,7 @@ export const requestsModule = defineModule({
         sweep = every(SWEEP_MS, () => requests.sweep(), e => log.warn('request sweep failed', errorDetail(e)));
         rebuild = every(REBUILD_MS, rebuildNow, e => log.warn('request availability failed', errorDetail(e)));
       },
-      stop() { sweep?.stop(); rebuild?.stop(); availability.close(); }
+      stop() { sweep?.stop(); rebuild?.stop(); clearTimeout(grabSweep); availability.close(); }
     };
   }
 });
