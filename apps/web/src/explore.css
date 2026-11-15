@@ -124,9 +124,13 @@
 .request-options{display:flex;flex-direction:column;gap:12px}
 .request-options select{width:100%}
 .request-keep{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;color:var(--text);cursor:pointer}
+.explore-ranking-toggle{gap:5px;min-height:32px;padding:4px 8px;white-space:nowrap}
+.explore-ranking-panel{gap:12px;margin:0 10px 12px 28px;padding:10px 14px;border-inline-start:1px solid var(--line)}
+.explore-ranking-panel>p{margin:0}
 .explore-ranking-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
 .explore-ranking-fields label{align-self:start}
 .explore-ranking-fields label small{font-weight:normal}
 .explore-ranking-preview h3{margin:0 0 8px}
 .explore-ranking-preview ol{margin:0;padding-inline-start:24px}
 .explore-ranking-preview li+li{margin-top:4px}
+@media(max-width:600px){.explore-ranking-panel{margin-inline-start:12px;padding-inline:10px}}

@@ -3,7 +3,7 @@ import {tmdbExploreRows,type ExploreItem,type ExploreLayout,type ExploreRowInfo,
 import {exploreRankingDefaults,exploreRankingFields,exploreRankingFor,type ExploreRanking,type ExploreRankingField,type ExploreRowRanking} from '../../../packages/contracts/src/explore-ranking.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
-import {ErrorNotice,Loading} from './components.js';
+import {ErrorNotice,Icon,Loading} from './components.js';
 import {Card,MoveButtons,SectionHead,moveTo,useDragOrder,useMutation} from './settings-ui.js';
 import {rowKey,setExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs,setStreamingProviders,setStreamingRegion} from './explore-prefs.js';
 import {useStreamingCatalog} from './explore-streaming.js';
@@ -87,19 +87,20 @@ export function ExploreAdmin() {
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {
   const view=useApi<LayoutView>('/admin/explore/layout'),[draft,setDraft]=useState<ExploreLayout>(),[open,setOpen]=useState<ExploreBrowseSource[]>([]);
+  const [openRanking,setOpenRanking]=useState<TmdbExploreRow>();
   const mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.layout;setDraft(value);}},[view.data?.layout.revision]);
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;
-  const data=view.data,tmdb=data.sources.find(source=>source.source==='tmdb');
+  const data=view.data;
   const set=(patch:Partial<ExploreLayout>)=>{setDraft(d=>d&&{...d,...patch});};
   const move=(from:number,to:number)=>set({order:moveTo(draft.order,from,to)});
   const showSource=(s:ExploreBrowseSource,on:boolean)=>set({hidden:on?draft.hidden.filter(h=>h!==s):[...draft.hidden,s]});
   const showRow=(key:string,on:boolean)=>set({hiddenRows:on?draft.hiddenRows.filter(r=>r!==key):[...draft.hiddenRows,key]});
   const toggle=(s:ExploreBrowseSource)=>setOpen(o=>o.includes(s)?o.filter(x=>x!==s):[...o,s]);
-  return <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');toast.success('Explore settings saved');});}}>
-    <Card title="Order and rows" description="Move sources to change their order on Explore. Open a source to hide individual rows.">
+  return <Card title="Order and rows" description="Expand TMDB to reorder its rows or adjust their rankings.">
+    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');toast.success('Explore settings saved');});}}>
       <ol className="sports-order">{draft.order.map((s,i)=>{
         const info=data.sources.find(x=>x.source===s),on=!draft.hidden.includes(s);
         const order=draft.tmdbOrder??[...tmdbExploreRows];
@@ -113,19 +114,32 @@ function ExploreLayoutSettings() {
             <input type="checkbox" role="switch" className="switch" aria-label={`Show ${sourceNames[s]} on Explore`} checked={on} onChange={e=>showSource(s,e.target.checked)}/>
             <MoveButtons name={sourceNames[s]} index={i} count={draft.order.length} onMove={to=>move(i,to)}/></div>
           {expanded&&<ol className="sports-leagues">
-            {rows.map((r,index)=>{const key=`${s}:${r.id}`;return <li key={key} className="sports-row">
-            <label className="checkbox-label grow"><input type="checkbox" disabled={!on} checked={!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
-            {r.personal&&<small className="muted">Each viewer’s own</small>}
-            {s==='tmdb'&&<MoveButtons name={r.title} index={index} count={rows.length} onMove={to=>set({tmdbOrder:moveTo(order,index,to)})}/>}
-          </li>;})}</ol>}
+            {rows.map((r,index)=>{
+              const key=`${s}:${r.id}`, row=s==='tmdb'?tmdbExploreRows.find(id=>id===r.id):undefined;
+              const rankingOpen=row!==undefined&&row===openRanking, panelId=`explore-ranking-${r.id}`;
+              return <li key={key}>
+                <div className="sports-row">
+                  <label className="checkbox-label grow"><input type="checkbox" disabled={!on} checked={!draft.hiddenRows.includes(key)} onChange={e=>showRow(key,e.target.checked)}/>{r.title}</label>
+                  {r.personal&&<small className="muted">Each viewer’s own</small>}
+                  {row&&<button type="button" className="explore-ranking-toggle" aria-expanded={rankingOpen} aria-controls={panelId}
+                    aria-label={`Ranking for ${r.title}`} onClick={()=>setOpenRanking(current=>current===row?undefined:row)}>
+                    Ranking <Icon name={rankingOpen?'up':'down'} size={14}/>
+                  </button>}
+                  {s==='tmdb'&&<MoveButtons name={r.title} index={index} count={rows.length} onMove={to=>set({tmdbOrder:moveTo(order,index,to)})}/>}
+                </div>
+                {row&&<div id={panelId} hidden={!rankingOpen}>
+                  {rankingOpen&&<ExploreRankingSettings row={row} configured={!!info?.configured} revision={data.layout.revision}
+                    ranking={draft.ranking} onChange={ranking=>set({ranking})}/>}
+                </div>}
+              </li>;
+            })}
+          </ol>}
         </li>;})}</ol>
       {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the Discover shelves and their order. Streaming-service rows come from TMDB.</p>}
-    </Card>
-    {tmdb&&<ExploreRankingSettings rows={tmdb.rows} configured={tmdb.configured} revision={data.layout.revision}
-      ranking={draft.ranking} onChange={ranking=>set({ranking})}/>}
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Explore settings</button></div>
-  </form>;
+      {mutation.error&&<ErrorNotice message={mutation.error}/>}
+      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save Explore settings</button></div>
+    </form>
+  </Card>;
 }
 
 const rankingLabels:Record<ExploreRankingField,{label:string;help:string}> = {
@@ -185,9 +199,8 @@ function RankingInput({field,value,popular,onChange}:{field:ExploreRankingField;
   </label>;
 }
 
-function ExploreRankingSettings({rows,configured,revision,ranking,onChange}:{rows:ExploreRowInfo[];configured:boolean;revision:number;
+function ExploreRankingSettings({row,configured,revision,ranking,onChange}:{row:TmdbExploreRow;configured:boolean;revision:number;
   ranking?:ExploreRanking;onChange:(ranking:ExploreRanking)=>void}) {
-  const [row,setRow]=useState<TmdbExploreRow>('popular-movies');
   const [preview,setPreview]=useState<{key:string;saved:ExploreItem[];preview:ExploreItem[]}>();
   const mutation=useMutation(()=>{});
   const settings=exploreRankingFor(row,ranking) as ExploreRowRanking;
@@ -199,30 +212,25 @@ function ExploreRankingSettings({rows,configured,revision,ranking,onChange}:{row
     delete next[row];
     onChange(next);
   };
-  return <Card title="Row ranking" description="Tune how titles are ordered within a TMDB row for all viewers.">
-    <div className="form-stack">
-      <label className="narrow">TMDB row<select value={row} onChange={e=>setRow(e.target.value as TmdbExploreRow)}>
-        {rows.map(r=><option key={r.id} value={r.id}>{r.title}</option>)}
-      </select></label>
-      <p className="muted small">{rankingSummary[row]}</p>
-      {fields.length>0&&<div className="explore-ranking-fields">
-        {fields.map(field=><RankingInput key={`${row}:${field}`} field={field} value={settings[field]!} popular={popular} onChange={value=>{
-          onChange({...ranking,[row]:{...ranking?.[row],[field]:value}});
-        }}/>)}</div>}
-      <div className="button-row">
-        {fields.length>0&&<button type="button" disabled={!ranking?.[row]} onClick={reset}>Reset row to defaults</button>}
-        {popular&&<button type="button" disabled={!configured||mutation.busy} onClick={()=>void mutation.run(async()=>{
-          const result=await api<{saved:ExploreItem[];preview:ExploreItem[]}>('/admin/explore/ranking/preview','POST',{row,settings});
-          setPreview({key,...result});
-        })}>{mutation.busy?'Loading preview…':'Preview ranking'}</button>}
-      </div>
-      {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      {preview?.key===key&&<div className="explore-ranking-fields explore-ranking-preview">
-        {([['Saved order',preview.saved],['Draft order',preview.preview]] as const).map(([title,items])=><section key={title}>
-          <h3>{title}</h3>
-          {items.length?<ol>{items.slice(0,8).map(item=><li key={item.key}>{item.title}{item.year&&<small className="muted"> ({item.year})</small>}</li>)}</ol>:<p className="muted small">No titles found.</p>}
-        </section>)}
-      </div>}
-    </div>
-  </Card>;
+  return <div className="form-stack explore-ranking-panel">
+    <p className="muted small">{rankingSummary[row]}</p>
+    {fields.length>0&&<div className="explore-ranking-fields">
+      {fields.map(field=><RankingInput key={field} field={field} value={settings[field]!} popular={popular} onChange={value=>{
+        onChange({...ranking,[row]:{...ranking?.[row],[field]:value}});
+      }}/>)}</div>}
+    {fields.length>0&&<div className="button-row">
+      <button type="button" disabled={!ranking?.[row]} onClick={reset}>Reset row to defaults</button>
+      {popular&&<button type="button" disabled={!configured||mutation.busy} onClick={()=>void mutation.run(async()=>{
+        const result=await api<{saved:ExploreItem[];preview:ExploreItem[]}>('/admin/explore/ranking/preview','POST',{row,settings});
+        setPreview({key,...result});
+      })}>{mutation.busy?'Loading preview…':'Preview ranking'}</button>}
+    </div>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    {preview?.key===key&&<div className="explore-ranking-fields explore-ranking-preview">
+      {([['Saved order',preview.saved],['Draft order',preview.preview]] as const).map(([title,items])=><section key={title}>
+        <h3>{title}</h3>
+        {items.length?<ol>{items.slice(0,8).map(item=><li key={item.key}>{item.title}{item.year&&<small className="muted"> ({item.year})</small>}</li>)}</ol>:<p className="muted small">No titles found.</p>}
+      </section>)}
+    </div>}
+  </div>;
 }
