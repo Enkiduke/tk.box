@@ -125,12 +125,24 @@
 .request-options select{width:100%}
 .request-keep{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;color:var(--text);cursor:pointer}
 .explore-ranking-toggle{gap:5px;min-height:32px;padding:4px 8px;white-space:nowrap}
-.explore-ranking-panel{gap:12px;margin:0 10px 12px 28px;padding:10px 14px;border-inline-start:1px solid var(--line)}
+.explore-ranking-panel{display:grid;gap:10px;max-inline-size:680px;margin:0 10px 14px 28px;padding:6px 14px 10px;border-inline-start:1px solid var(--line)}
 .explore-ranking-panel>p{margin:0}
-.explore-ranking-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
+.explore-ranking-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px}
+.explore-ranking-toolbar select{max-inline-size:100%;min-height:34px;padding-block:4px;font-size:13px}
+.explore-ranking-list{list-style:none;margin:0;padding:0;border-block-start:1px solid var(--line)}
+.explore-ranking-list>li{border-block-end:1px solid var(--line)}
+.explore-ranking-signal{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;min-height:36px}
+.explore-ranking-link{justify-content:flex-start;gap:6px;min-width:0;min-height:32px;padding:4px 6px;border:0;background:none;text-align:start;font-size:13px}
+.explore-ranking-signal>.explore-ranking-link:first-child{white-space:normal}
+.explore-ranking-signal svg{flex:none}
+.explore-ranking-signal>.explore-ranking-link:last-child{color:var(--muted)}
+.explore-ranking-link:hover:not(:disabled){color:var(--text)}
+.explore-ranking-edit{display:grid;gap:10px;padding:0 10px 12px 25px}
+.explore-ranking-edit p{margin:0}
+.explore-ranking-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,155px),1fr));gap:10px}
 .explore-ranking-fields label{align-self:start}
-.explore-ranking-fields label small{font-weight:normal}
+.explore-ranking-preview{margin-block-start:4px}
 .explore-ranking-preview h3{margin:0 0 8px}
 .explore-ranking-preview ol{margin:0;padding-inline-start:24px}
 .explore-ranking-preview li+li{margin-top:4px}
-@media(max-width:600px){.explore-ranking-panel{margin-inline-start:12px;padding-inline:10px}}
+@media(max-width:600px){.explore-ranking-panel{margin-inline-start:8px;padding-inline:8px}}

@@ -6,7 +6,7 @@ import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './pro
 import {externalRatings} from './providers/plex-catalog.js';
 import type {Requests} from './services/requests.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreLayoutInput,exploreRankingInput,tmdbRowOrder} from './persistence/explore-store.js';
+import {ExploreStore,exploreLayoutInput,exploreRankingInput,exploreRankingOptionsInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
 import {viewer as caller} from './modules/access.js';
 import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
@@ -28,6 +28,7 @@ const regionCode=z.string().regex(/^[A-Z]{2}$/);
 const providerId=z.string().regex(/^[1-9]\d{0,9}$/).transform(Number);
 const tmdbPage=page.extend({region:regionCode.optional(),provider:z.union([z.literal('all'),providerId]).optional(),
   providers:z.string().max(131).regex(/^(?:[1-9]\d{0,9}(?:,[1-9]\d{0,9}){0,11})?$/).transform(value=>value?value.split(',').map(Number):[]).optional()});
+const streamingQuery=tmdbPage.pick({region:true,provider:true,providers:true});
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
 
@@ -98,6 +99,13 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   });
   const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb),people=new TmdbPeople(tmdbClient);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=caller(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
+  async function streamingScope({region,provider,providers}:z.infer<typeof streamingQuery>) {
+    const country=region??'US', catalog=await tmdb.providers(country), available=new Set(catalog.providers.map(p=>p.id));
+    const chosen=providers??catalog.defaults;
+    requireThat(chosen.every(id=>available.has(id))&&(typeof provider!=='number'||(available.has(provider)&&(providers===undefined||chosen.includes(provider)))),
+      'INVALID_PROVIDER','Choose a streaming service available in this region.',400);
+    return {region:country,ids:typeof provider==='number'?[provider]:[...new Set(chosen)].sort((a,b)=>a-b)};
+  }
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     await viewer(request);
     return {plex:true,order:shownSources(store.layout()),requests:{movie:requests.connected('movie'),show:requests.connected('show')},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
@@ -128,14 +136,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
         const {items}=await labelled({items:result.items.map(c=>c.item)});
         return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>!c.item.status&&passes(c.item,filter)),at,result.title);
       }
-      let streaming:{region:string;ids:number[]}|undefined;
-      if (def.streaming) {
-        const country=region??'US', catalog=await tmdb.providers(country), available=new Set(catalog.providers.map(p=>p.id));
-        const chosen=providers??catalog.defaults;
-        requireThat(chosen.every(id=>available.has(id))&&(typeof provider!=='number'||(available.has(provider)&&(providers===undefined||chosen.includes(provider)))),
-          'INVALID_PROVIDER','Choose a streaming service available in this region.',400);
-        streaming={region:country,ids:typeof provider==='number'?[provider]:[...new Set(chosen)].sort((a,b)=>a-b)};
-      }
+      const streaming=def.streaming?await streamingScope({region,provider,providers}):undefined;
       const {kind:mediaKind,...otherFilters}=filter;
       if (!filtering(otherFilters)) return labelled(await tmdb.page(row,at,streaming,mediaKind,layout.ranking));
       const pages:ExplorePage[]=[];
@@ -241,15 +242,22 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const {grant}=caller(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
     return store.updateLayout(grant.accountId,expectedRevision,value);
   });
-  app.post('/api/v1/admin/explore/ranking/preview',{config:{access:'admin'}},async request=>{
-    caller(request);
-    const {row,settings}=z.object({row:z.enum(['popular-movies','popular-shows']),settings:z.record(z.string(),z.number())}).strict().parse(request.body);
-    const draft=exploreRankingInput.parse({[row]:settings});
-    const [saved,preview]=await Promise.all([
-      tmdb.page(row,1,undefined,undefined,store.layout().ranking),
-      tmdb.page(row,1,undefined,undefined,draft)
-    ]);
-    return {saved:saved.items,preview:preview.items};
+  app.post('/api/v1/admin/explore/ranking/preview',{config:{access:'admin',rateLimit:{max:30,timeWindow:60000}}},async request=>{
+    const {grant,token}=await viewer(request);
+    const {row,settings}=z.object({row:tmdbRow,settings:exploreRankingOptionsInput}).strict().parse(request.body);
+    const query=streamingQuery.parse(request.query), def=tmdbRows[row];
+    requireThat(def.streaming||!Object.keys(query).length,'INVALID_REQUEST','This row has no streaming selector.',400);
+    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+    const current=store.layout().ranking, draft={...current,...exploreRankingInput.parse({[row]:settings})};
+    const streaming=def.streaming?await streamingScope(query):undefined;
+    const read=async (ranking:typeof current,isPreview:boolean)=>{
+      if (!def.personal) return (await tmdb.page(row,1,streaming,undefined,ranking)).items;
+      const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,ranking,isPreview))[row];
+      const {items}=await labelled({items:result?.items.map(c=>c.item)??[]});
+      return items.filter(item=>!item.status).slice(0,20);
+    };
+    const [saved,preview]=await Promise.all([read(current,false),read(draft,true)]);
+    return {saved,preview};
   });
 
   // A request changed: details (what can still be requested) are read again.

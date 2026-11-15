@@ -1,23 +1,33 @@
 import { z } from 'zod';
 import { exploreBrowseSources, tmdbExploreRows, type ExploreLayout } from '../../../../packages/contracts/src/index.js';
-import { exploreRankingDefaults, exploreRankingFields, type ExploreRankingField } from '../../../../packages/contracts/src/explore-ranking.js';
+import { exploreRankingBounds, exploreRankingDefaults, exploreSignal, exploreSignalIds, exploreSignalsFor, type ExploreRanking, type ExploreRankingField } from '../../../../packages/contracts/src/explore-ranking.js';
 import type { Db } from './database.js';
 import { AppError } from '../errors.js';
 
 const exploreSource = z.enum(exploreBrowseSources);
-export const exploreRankingInput = z.partialRecord(z.enum(tmdbExploreRows), z.record(z.string(), z.number())).superRefine((ranking, ctx) => {
+export const exploreRankingOptionsInput = z.record(z.string(),z.union([z.number(),z.partialRecord(z.enum(exploreSignalIds),z.boolean())]));
+export const exploreRankingInput = z.partialRecord(z.enum(tmdbExploreRows), exploreRankingOptionsInput).superRefine((ranking, ctx) => {
   for (const row of tmdbExploreRows) for (const [field, value] of Object.entries(ranking[row] ?? {})) {
-    if (!Object.hasOwn(exploreRankingDefaults[row], field)) {
+    if (field==='signals' && typeof value==='object') {
+      const supported=exploreSignalsFor(row);
+      for (const id of exploreSignalIds) if (value[id]!==undefined && !supported.includes(id)) {
+        ctx.addIssue({code:'custom',path:[row,field,id],message:'This signal is unavailable for this row.'});
+      }
+      continue;
+    }
+    const legacyWindow=field==='releaseDays'&&(row==='popular-movies'||row==='popular-shows');
+    if (typeof value!=='number'||(!legacyWindow&&!exploreSignalsFor(row).some(id=>exploreSignal(id).fields.includes(field as ExploreRankingField)))) {
       ctx.addIssue({code:'custom', path:[row,field], message:'This row does not support that ranking setting.'});
       continue;
     }
-    const {min,max,step} = exploreRankingFields[field as ExploreRankingField];
+    const values={...exploreRankingDefaults[row],...ranking[row]};
+    const {min,max,step} = exploreRankingBounds(field as ExploreRankingField,values);
     const steps = (value - min) / step;
     if (value < min || value > max || Math.abs(steps - Math.round(steps)) > 1e-8) {
       ctx.addIssue({code:'custom', path:[row,field], message:`Use a value from ${min} to ${max} in steps of ${step}.`});
     }
   }
-});
+}).transform(ranking=>ranking as ExploreRanking);
 export const exploreLayoutInput = z.object({
   order: z.array(exploreSource).max(exploreBrowseSources.length).refine(list => new Set(list).size === list.length, 'List each source once'),
   hidden: z.array(exploreSource).max(exploreBrowseSources.length),

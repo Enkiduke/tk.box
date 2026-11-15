@@ -4,7 +4,7 @@ import type {ExploreGenre, ExploreItem, TmdbExploreRow} from '../../../packages/
 import {exploreRankingDefaults,exploreRankingFor,type ExploreRanking} from '../../../packages/contracts/src/explore-ranking.js';
 import {exploreGenresOf} from './providers/explore-genres.js';
 import type {PlexAdapter, PlexGrant} from './providers/plex.js';
-import {audienceQuality,type Candidate,type TmdbExplore} from './providers/tmdb-explore.js';
+import {audienceQuality,passesRating,popularityMultiplier,recentBoost,type Candidate,type TmdbExplore} from './providers/tmdb-explore.js';
 
 // Explore's suggestions: each viewer's Top Movie Picks, Top Show Picks and one Because You Watched row for each kind,
 // from everything they watched, wherever they watched it (tk.box's player, Plex's apps on this server, Plex elsewhere,
@@ -53,7 +53,8 @@ export function mergeHistory(lists: WatchedTitle[][]): WatchedTitle[] {
 // a quarter), and a title watched often (a show's many episodes) counts up to twice.
 export function seedWeight(title: WatchedTitle, rank: number, now: number, settings:SeedScoring = defaultTop) {
   const age = title.at === undefined ? 0 : Math.max(0, now - title.at) / DAY;
-  return (settings.watchRankRetention / 100) ** rank * Math.max(0.25, 0.5 ** (age / settings.watchHalfLife))
+  const recency=settings.watchHalfLife?Math.max(0.25, 0.5 ** (age / settings.watchHalfLife)):1;
+  return (settings.watchRankRetention / 100) ** rank * recency
     * (1 + settings.watchFrequency / 100 * Math.min(1, Math.log10(Math.max(1, title.plays ?? 1))));
 }
 
@@ -81,12 +82,12 @@ export function eraTaste(history: WatchedTitle[], now: number, seeds?:SeedScorin
 }
 
 // How new a title is: 1 in its first 6 months, fading to 0 at 3 years; something not out yet counts a little.
-export function freshness(date: string | undefined, now: number) {
+export function freshness(date: string | undefined, now: number, fullDays=182, endDays=1095) {
   if (!date) return 0;
   const age = (now - Date.parse(date)) / DAY;
   if (!Number.isFinite(age)) return 0;
   if (age < 0) return 0.3;
-  return age <= 182 ? 1 : age >= 1095 ? 0 : 1 - (age - 182) / 913;
+  return age <= fullDays ? 1 : Math.max(0,1-(age-fullDays)/(endDays-fullDays));
 }
 
 // TMDB's score as a multiplier from 0.6 (5.5 or less) to 1.4 (8 or more), pulled toward 6.5 until about 200 votes.
@@ -118,7 +119,7 @@ const familyOf = (item: ExploreItem) => normalized(item.title).split(/\s*[:â€“â€
 export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], taste: Taste, now: number, random: () => number, settings:Scoring = defaultScoring): Candidate[] {
   const relevance = new Map<string, number>(), byKey = new Map<string, Candidate>(), source = new Map<string, {list: number; part: number}>();
   lists.forEach(({weight, items}, list) => unique(items).forEach((c, position) => {
-    const part = weight / (1 + position / settings.recommendationDecay);
+    const part = settings.recommendationDecay ? weight / (1 + position / settings.recommendationDecay) : weight;
     relevance.set(c.item.key, (relevance.get(c.item.key) ?? 0) + part);
     if (!byKey.has(c.item.key)) byKey.set(c.item.key, c);
     if ((source.get(c.item.key)?.part ?? -1) < part) source.set(c.item.key, {list, part});
@@ -127,8 +128,11 @@ export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], t
   for (const [key, c] of byKey) {
     const affinity = Math.min(1, (c.item.genres ?? []).reduce((sum, g) => sum + (taste.genres.get(g) ?? 0), 0));
     const shuffled = 1 + settings.shuffle / 100 * (2 * random() - 1);
-    score.set(key, relevance.get(key)! * (1 + settings.freshness / 100 * freshness(c.date, now)) * (taste.era?.(c.item.year) ?? 1)
-      * (1 + settings.genreAffinity / 100 * affinity) * audienceQuality(c, settings.audienceRating / 100, settings.ratingPriorVotes) * shuffled);
+    const fresh=1+(settings.freshness/100)*freshness(c.date,now,settings.freshnessFullDays,settings.freshnessEndDays)
+      +recentBoost(c.seasonPremiere,now,settings.seasonDays,settings.seasonBoost);
+    score.set(key, relevance.get(key)! * fresh * (taste.era?.(c.item.year) ?? 1)
+      * (1 + settings.genreAffinity / 100 * affinity) * audienceQuality(c, settings.audienceRating / 100, settings.ratingPriorVotes)
+      * popularityMultiplier(c,settings.popularityBoost) * shuffled);
   }
   const ranked = [...byKey.values()].sort((a, b) => score.get(b.item.key)! - score.get(a.item.key)! || a.item.ids.tmdb! - b.item.ids.tmdb!);
   const result: Candidate[] = [], supplied = new Map<number, number>(), capped = settings.seedDiversity !== 0 && lists.length > 1;
@@ -170,7 +174,7 @@ export class ExploreRecommendations {
     for (const key of this.pools.keys()) if (key.startsWith(`${account}\n`)) this.pools.delete(key);
     this.rolls.set(account, (this.rolls.get(account) ?? 0) + 1);
   }
-  get(grant: PlexGrant, generation: number, accountToken?: string, ranking?:ExploreRanking): Promise<ExplorePool> {
+  get(grant: PlexGrant, generation: number, accountToken?: string, ranking?:ExploreRanking, preview=false): Promise<ExplorePool> {
     const scope = createHash('sha256').update(JSON.stringify([grant.serverToken, grant.libraries.map(l => [l.key, l.type]).sort()])).digest('hex');
     const tokenScope = createHash('sha256').update(accountToken ?? '').digest('hex');
     const now = this.now(), today = new Date(now), day = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
@@ -180,7 +184,8 @@ export class ExploreRecommendations {
       movie:{top:exploreRankingFor('top-movies', ranking), because:exploreRankingFor('because-movie', ranking)},
       show:{top:exploreRankingFor('top-shows', ranking), because:exploreRankingFor('because-show', ranking)}
     };
-    const key = `${grant.accountId}\n${scope}:${tokenScope}:${generation}:${roll}:${JSON.stringify(settings)}`, hit = this.pools.get(key);
+    const prefix=`${grant.accountId}\n${scope}:${preview?'preview':'live'}:`;
+    const key = `${prefix}${tokenScope}:${generation}:${roll}:${JSON.stringify(settings)}`, hit = this.pools.get(key);
     if (hit && hit.until > now) return hit.pending;
     const local = this.plex.exploreRecentlyWatched(grant, now).catch(() => []);
     const account = accountToken ? this.plex.exploreAccountHistory(grant, accountToken).catch(() => []) : Promise.resolve([]);
@@ -203,7 +208,7 @@ export class ExploreRecommendations {
       throw error;
     })};
     // An earlier day's or roll's pool for this viewer is replaced.
-    for (const old of this.pools.keys()) if (old.startsWith(`${grant.accountId}\n${scope}:`) && old !== key) this.pools.delete(old);
+    for (const old of this.pools.keys()) if (old.startsWith(prefix) && old !== key) this.pools.delete(old);
     this.pools.delete(key); this.pools.set(key, entry);
     while (this.pools.size > 64) this.pools.delete(this.pools.keys().next().value!);
     return entry.pending;
@@ -241,7 +246,10 @@ export class ExploreRecommendations {
       // Each kind has its own random numbers, so the two kinds' reads finishing in either order give the same rows.
       const random = seededRandom(`${seed}:${kind}`);
       const seeds = mine.slice(0, SEEDS);
-      const seedLists = await Promise.all(seeds.map(async (seed, rank) => ({weight: seedWeight(seed, rank, now, topSettings), items: await suggestions(seed)})));
+      const seedLists = await Promise.all(seeds.map(async (seed, rank) => ({weight:seedWeight(seed,rank,now,topSettings),
+        items:(await suggestions(seed)).filter(candidate=>passesRating(candidate,topSettings))})));
+      const topSeasons = kind==='show'&&topSettings.seasonBoost?await this.tmdb.returningSeasons(seedLists.flatMap(list=>list.items),now):undefined;
+      if(topSeasons) for(const list of seedLists) list.items=list.items.map(c=>({...c,seasonPremiere:topSeasons.get(c.item.key)}));
       // Eras are per kind: someone may watch old movies and new shows.
       const taste: Taste = {genres:genreTaste(history, now, topSettings), era:eraTaste(mine, now, topSettings, topSettings.eraAffinity / 100)};
       const top = scoreCandidates(seedLists, taste, now, random, topSettings).slice(0, TOP_LIMIT);
@@ -249,12 +257,14 @@ export class ExploreRecommendations {
       // What the Top Picks row shows isn't suggested again just below it.
       const shown = new Set(top.slice(0, ROW_SHOWN).map(c => c.item.key));
       for (const seed of becauseOrder(mine, random)) {
-        const items = (await suggestions(seed)).filter(c => !shown.has(c.item.key));
+        const items = (await suggestions(seed)).filter(c => !shown.has(c.item.key)&&passesRating(c,becauseSettings));
         if (items.length < BECAUSE_MIN) continue;
         const title = seed.title ?? await this.tmdb.title(kind === 'movie' ? 'movie' : 'tv', seed.tmdbId).catch(() => undefined);
         if (!title) continue;
         const becauseTaste: Taste = {genres:genreTaste(history, now), era:eraTaste(mine, now, undefined, becauseSettings.eraAffinity / 100)};
-        pool[kind === 'movie' ? 'because-movie' : 'because-show'] = {title: `Because You Watched ${title}`, items: scoreCandidates([{weight: 1, items}], becauseTaste, now, random, becauseSettings).slice(0, BECAUSE_LIMIT)};
+        const seasons=kind==='show'&&becauseSettings.seasonBoost?await this.tmdb.returningSeasons(items,now):undefined;
+        const candidates=seasons?items.map(c=>({...c,seasonPremiere:seasons.get(c.item.key)})):items;
+        pool[kind === 'movie' ? 'because-movie' : 'because-show'] = {title: `Because You Watched ${title}`, items: scoreCandidates([{weight: 1, items:candidates}], becauseTaste, now, random, becauseSettings).slice(0, BECAUSE_LIMIT)};
         break;
       }
     }));
