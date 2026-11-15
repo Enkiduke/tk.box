@@ -27,10 +27,14 @@ const key='tk.box.explore.prefs',listeners=new Set<()=>void>();
 let current:ExplorePrefs|undefined;
 const load=()=>{try{return parseExplorePrefs(localStorage.getItem(key));}catch{return defaultExplorePrefs;}};
 export const getExplorePrefs=()=>current??=load();
+// Each row's chosen streaming service lasts only while Explore is open, so it is never saved.
 export function setExplorePrefs(next:ExplorePrefs) {
   current=next;
-  try{localStorage.setItem(key,JSON.stringify(next));}catch{/* storage unavailable; applies until reload */}
+  try{localStorage.setItem(key,JSON.stringify({...next,selections:{}}));}catch{/* storage unavailable; applies until reload */}
   for(const listener of listeners)listener();
+}
+export function clearStreamingSelections() {
+  const p=getExplorePrefs();if(Object.keys(p.selections).length)setExplorePrefs({...p,selections:{}});
 }
 export function showExploreSource(source:ExploreBrowseSource,on:boolean) {
   const p=getExplorePrefs();setExplorePrefs({...p,hidden:on?p.hidden.filter(s=>s!==source):[...p.hidden.filter(s=>s!==source),source]});
