@@ -22,6 +22,7 @@ export type EngineScript = 'artwork' | 'collections';
 export type KeptCollections = { updated: string | null; collections: { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom'; items: number; rating_key?: string; off?: boolean }[] };
 type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
 type Inputs = { settings: ArtworkSettings; layouts: Record<string, Record<string, unknown>>; collections?: ArtworkCollections };
+type EngineStatus = { at: number } & ({ ready: true; version: string } | { ready: false; error: string; interrupted?: true });
 // The long-lived worker process (artwork-worker.ts), which answers checks and the collections engine's questions too.
 type Worker = { request<T>(run: ArtworkRun, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> };
 const MAX_LINES = 5000, SAVED_LINES = 2000;
@@ -55,6 +56,8 @@ export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
   const env: NodeJS.ProcessEnv = Object.fromEntries(pass.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
   Object.assign(env, { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' });
+  // Match artwork_engine.py's defaults when the dependency check imports NumPy directly.
+  Object.assign(env, { OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1' });
   if (run) env.PLEX_TOKEN = run.token;
   for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY'], ['mdblist', 'MDBLIST_API_KEY'],
     ['radarr', 'RADARR_API_KEY']] as const) if (keys[name]) env[variable] = keys[name];
@@ -65,8 +68,8 @@ const redact = (line: string, secrets: string[]) => secrets.reduce((text, secret
 export class ArtworkEngine {
   private queue: { id: number; script: EngineScript; args: string[]; run: ArtworkRun; done?: () => void }[] = [];
   private current?: Running & { script: EngineScript; args: string[] };
-  private known?: { at: number; ready: boolean; version?: string; error?: string };
-  private checking?: Promise<NonNullable<ArtworkEngine['known']>>;
+  private known?: EngineStatus;
+  private checking?: Promise<EngineStatus>;
   private worker?: Worker;
   private defaults?: Promise<unknown[]>;
   readonly workDir: string;
@@ -102,13 +105,26 @@ export class ArtworkEngine {
   }
   useWorker(worker: Worker) { this.worker = worker; }
   secrets(): EngineSecrets { const radarr = this.moviesOnTkbox() ? undefined : this.radarr().key; return { ...this.store.keys(), ...(radarr ? { radarr } : {}) }; }
-  // Whether Python and the engine's packages are installed. Asked again at most once a minute unless forced.
+  // Cache the dependency check for a minute. An interrupted check can be tried again on the next request.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);
-    this.checking ??= this.capture(['-c', 'import sys, PIL, numpy, requests, yaml; print(sys.version.split()[0])'], 20000)
-      .then(r => ({ at: Date.now(), ready: r.code === 0, ...(r.code === 0 ? { version: r.output.trim() } : { error: r.output.trim().split('\n').at(-1) || 'Python could not be started.' }) }))
-      .then(known => { this.known = known; return known; }).finally(() => { this.checking = undefined; });
+    this.checking ??= this.checkPython().then(status => {
+      this.known = !status.ready && status.interrupted ? undefined : status;
+      return status;
+    }).finally(() => { this.checking = undefined; });
     return this.checking;
+  }
+  private async checkPython(): Promise<EngineStatus> {
+    const args = ['-c', 'import sys, PIL, numpy, requests, yaml; print(sys.version.split()[0])'];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { code, signal, output } = await this.capture(args, 20000);
+      if (code === 0) return { at: Date.now(), ready: true, version: output.trim() };
+      const error = output.trim().split('\n').at(-1) || 'Python could not be started.';
+      // Python can report Ctrl+C as a signal, an exit status, or the last line of a traceback.
+      if (signal === 'SIGINT' || code === 130 || /^KeyboardInterrupt(?::|$)/.test(error)) continue;
+      return { at: Date.now(), ready: false, error };
+    }
+    return { at: Date.now(), ready: false, interrupted: true, error: 'The Python dependency check was interrupted twice.' };
   }
   // Both engines' own validation of what is about to be saved (on top of what is saved now), asked of the worker. Until
   // Python is set up only the database's own checks apply (settings can be saved first); the engines check everything again
@@ -213,7 +229,7 @@ export class ArtworkEngine {
     try {
       this.store.jobStarted(job.id);
       const engine = await this.status();
-      if (!engine.ready) throw new Error(`The artwork engine is not set up: ${engine.error}`);
+      if (!engine.ready) throw new Error(`Artwork engine unavailable. ${engine.error}`);
       const file = this.writeConfig(job.run.libraries, 'config.json');
       const collections = job.script === 'collections';
       say(`> ${collections ? 'plex_collections' : 'artwork_engine'} ${job.args.join(' ')}`);
@@ -255,13 +271,13 @@ export class ArtworkEngine {
   }
   // A short run with no credentials (whether Python and its packages are installed); `output` is everything it printed.
   private capture(args: string[], timeoutMs: number) {
-    return new Promise<{ code: number | null; output: string }>(resolve => {
+    return new Promise<{ code: number | null; signal: NodeJS.Signals | null; output: string }>(resolve => {
       let output = '';
       const child = spawn(this.paths.python, args, { cwd: this.paths.dataDir, env: childEnv(undefined, {}), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: timeoutMs });
       const add = (chunk: Buffer) => { if (output.length < 65536) output += chunk.toString('utf8'); };
       child.stdout.on('data', add); child.stderr.on('data', add);
-      child.once('error', e => resolve({ code: null, output: (e as NodeJS.ErrnoException).code === 'ENOENT' ? `${this.paths.python} was not found. Set PYTHON_PATH.` : e.message }));
-      child.once('close', code => resolve({ code, output }));
+      child.once('error', e => resolve({ code: null, signal: null, output: (e as NodeJS.ErrnoException).code === 'ENOENT' ? `${this.paths.python} was not found. Set PYTHON_PATH.` : e.message }));
+      child.once('close', (code, signal) => resolve({ code, signal, output }));
     });
   }
 }

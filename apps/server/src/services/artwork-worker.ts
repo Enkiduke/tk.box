@@ -50,7 +50,7 @@ export class ArtworkWorker {
     if (this.starting && this.fingerprint === fingerprint) return this.starting;
     this.stop(); this.fingerprint = fingerprint;
     const status = await this.engine.status();
-    if (!status.ready) throw new AppError('ARTWORK_ENGINE_UNAVAILABLE', `The artwork engine is not set up: ${status.error}`, 503);
+    if (!status.ready) throw new AppError('ARTWORK_ENGINE_UNAVAILABLE', `Artwork engine unavailable. ${status.error}`, 503);
     this.starting = new Promise<ChildProcessWithoutNullStreams>((resolve, reject) => {
       const config = this.engine.refreshConfig(run.libraries);
       const child = spawn(this.engine.paths.python, [this.engine.paths.script, config, '--worker'], { cwd: this.engine.workDir, env: childEnv(run, secrets), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });

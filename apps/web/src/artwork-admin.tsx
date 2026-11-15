@@ -14,7 +14,7 @@ import {toast} from './toasts.js';
 // Admin › Artwork: custom posters, season posters and episode title cards, made by the artwork engine
 // (apps/artwork/artwork_engine.py) and sent to Plex, where every Plex app and tk.box picks them up.
 type Library={key:string;title:string;type:string};
-type Engine={ready:boolean;version?:string;error?:string};
+type Engine={ready:boolean;version?:string;error?:string;interrupted?:true};
 type LayoutType='movie'|'tv'|'custom'|'collection'|'streaming'|'chart';
 type Schedules={scrub:Scheduled;added:Scheduled};
 type Settings={revision:number;libraries:string[];upload:boolean;uploadLogo:boolean;includeSeasons:boolean;includeEpisodes:boolean;includeCollections:boolean;
@@ -60,14 +60,14 @@ export function CollectionsAdmin() {
 const used=(settings:Settings,name:string)=>[settings.defaultLayout,...Object.values(settings.layoutByLibrary),...Object.values(settings.layoutByType)].includes(name);
 function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
   if(engine.ready)return <p className="muted small" role="status"><span className="status-dot ok" aria-hidden="true"/> Artwork engine ready · Python {engine.version}</p>;
-  return <Card title="Set up the artwork engine" description="A bundled Python script, run as its own process." actions={<button onClick={recheck}><Icon name="restart" size={16}/>Check again</button>}>
+  return <Card title={engine.interrupted?'Artwork engine unavailable':'Set up the artwork engine'} actions={<button onClick={recheck}><Icon name="restart" size={16}/>Check again</button>}>
     <div className="notice error"><span>{engine.error}</span></div>
-    <ol className="artwork-steps">
+    {!engine.interrupted&&<ol className="artwork-steps">
       <li>Install Python 3.10 or later on this server.</li>
       <li>From the tk.box folder, create a virtual environment for it: <code>python3 -m venv artwork-venv</code></li>
       <li>Install its packages: <code>artwork-venv/bin/pip install -r apps/artwork/requirements.txt</code></li>
       <li>Set <code>PYTHON_PATH</code> to <code>artwork-venv/bin/python</code> (its full path) in tk.box’s environment and restart tk.box.</li>
-    </ol>
+    </ol>}
   </Card>;
 }
 
