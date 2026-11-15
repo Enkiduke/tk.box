@@ -1,8 +1,9 @@
-import type { ExploreSeason, RequestItem, RequestLabel } from '../../../../packages/contracts/src/index.js';
+import type { ExploreSeason, RequestArtwork, RequestItem, RequestLabel } from '../../../../packages/contracts/src/index.js';
 import { readOnly, requireThat, requireWritable } from '../errors.js';
 import { FulfilError, type Fulfiller, type QueueState } from '../providers/arr-fulfiller.js';
 import type { ArrService } from '../providers/arr-tags.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
+import { tmdbImage } from '../providers/explore-images.js';
 import { openStatuses, type RequestKind, type RequestRow, type RequestStatus, type RequestStore } from '../persistence/requests-store.js';
 import type { RequestAvailability } from './request-availability.js';
 
@@ -20,17 +21,19 @@ export type Override = { profileId?: number; rootFolder?: string; tags?: number[
 export type RequestChange = { id: number; kind: RequestKind; tmdb: number; accountId?: string; status: RequestStatus };
 export type CleanupRequest = { id: number; kind: 'movie' | 'tv'; tmdb: number; tvdb: number | null; title: string; year: number | null;
   requester_plex_id: number | null; available_at: string | null; seasons: number[] };
-type TmdbTitle = { title?: string; name?: string; release_date?: string; first_air_date?: string; external_ids?: { tvdb_id?: number | null };
+type TmdbTitle = { title?: string; name?: string; release_date?: string; first_air_date?: string; poster_path?: string | null; backdrop_path?: string | null;
+  external_ids?: { tvdb_id?: number | null };
   seasons?: { season_number?: number; name?: string; episode_count?: number; air_date?: string | null }[] };
 
 export class Requests {
   private labelCache?: Map<string, RequestLabel>;
+  private keyCache?: Map<string, number>;
   private checked = new Map<number, number>();
   // Told after every change to a row: made, sent, moved on, cancelled.
   changed?: (change: RequestChange) => void;
   constructor(private store: RequestStore, private fulfiller: Fulfiller, private availability: RequestAvailability, private tmdb: Pick<TmdbTitles, 'get'>,
     private connection: (name: 'radarr' | 'sonarr') => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
-    availability.changed = () => { this.labelCache = undefined; };
+    availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
   connected(kind: RequestKind) { const c = this.connection(kind === 'movie' ? 'radarr' : 'sonarr'); return !!(c.url && c.key); }
   private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus) {
@@ -75,12 +78,34 @@ export class Requests {
 
   // This server's rating key for the title, when Plex has it.
   plexKey(kind: RequestKind, tmdbId: number, tvdbId?: number) { return this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) })?.ratingKey; }
+  // The other way: the TMDB id of a movie or show this server holds, by its rating key.
+  tmdbForKey(kind: RequestKind, ratingKey: string) {
+    if (!this.keyCache) {
+      this.keyCache = new Map();
+      for (const [k, id, held] of this.availability.titles()) this.keyCache.set(`${k}:${held.ratingKey}`, id);
+    }
+    return this.keyCache.get(`${kind}:${ratingKey}`);
+  }
+
+  private tmdbTitle(kind: RequestKind, tmdbId: number) {
+    return this.tmdb.get(`/${kind === 'movie' ? 'movie' : 'tv'}/${tmdbId}`, { append_to_response: 'external_ids' }) as Promise<TmdbTitle | undefined>;
+  }
+
+  async artwork(id: number): Promise<RequestArtwork> {
+    const row = this.store.get(id);
+    requireThat(row, 'NOT_FOUND', 'Request not found.', 404);
+    // Resolve separately from the request list so TMDB outages and cache misses do not delay its controls.
+    const title = await this.tmdbTitle(row.kind, row.tmdbId).catch(() => undefined);
+    const posterUrl = typeof title?.poster_path === 'string' ? tmdbImage(title.poster_path, 'w342') : undefined;
+    const backdropUrl = typeof title?.backdrop_path === 'string' ? tmdbImage(title.backdrop_path, 'w1280') : undefined;
+    return { ...(posterUrl ? { posterUrl } : {}), ...(backdropUrl ? { backdropUrl } : {}) };
+  }
 
   // Explore's details dialog: what can still be requested, and each regular season's state (TMDB's seasons).
   async titleState(kind: RequestKind, tmdbId: number, tvdbId?: number): Promise<{ requestable: boolean; seasons: ExploreSeason[] }> {
     const held = this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) }), live = this.store.forTitle(kind, tmdbId);
     if (kind === 'movie') return { requestable: !held && !live.length, seasons: [] };
-    const raw = await this.tmdb.get(`/tv/${tmdbId}`, { append_to_response: 'external_ids' }) as TmdbTitle | undefined;
+    const raw = await this.tmdbTitle(kind, tmdbId);
     const seasons = (raw?.seasons ?? []).filter(s => Number.isInteger(s.season_number) && s.season_number! > 0).sort((a, b) => a.season_number! - b.season_number!).map(s => {
       const n = s.season_number!, rows = live.filter(r => r.seasons.some(rs => rs.season === n));
       const status: RequestLabel | undefined = held?.seasons.has(n) ? 'available' : rows.some(r => r.status === 'downloading') ? 'downloading'
@@ -94,7 +119,7 @@ export class Requests {
     requireWritable();
     requireThat(this.connected(input.kind), 'REQUESTS_NOT_CONNECTED', `Requests need ${input.kind === 'movie' ? 'Radarr' : 'Sonarr'} connected in Admin › Connections.`, 409);
     if (!this.availability.ready()) await this.availability.rebuild();
-    const raw = await this.tmdb.get(`/${input.kind === 'movie' ? 'movie' : 'tv'}/${input.tmdb}`, { append_to_response: 'external_ids' }) as TmdbTitle | undefined;
+    const raw = await this.tmdbTitle(input.kind, input.tmdb);
     requireThat(raw, 'NOT_FOUND', 'TMDB does not know this title.', 404);
     const title = raw.title || raw.name || `TMDB ${input.tmdb}`, date = raw.release_date || raw.first_air_date, year = date && /^\d{4}/.test(date) ? Number(date.slice(0, 4)) : undefined;
     const tvdbId = input.kind === 'show' && raw.external_ids?.tvdb_id && raw.external_ids.tvdb_id > 0 ? raw.external_ids.tvdb_id : undefined;

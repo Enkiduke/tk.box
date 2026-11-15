@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Db } from './database.js';
 import { AppError } from '../errors.js';
 import { prepared } from './statements.js';
+import type { RequestsSiteSettings } from '../services/requests-site.js';
 
 // The requests module's rows (docs/REQUESTS.md). SQL for requests lives here only.
 export const requestStatuses = ['queued', 'requested', 'downloading', 'partial', 'available', 'failed', 'removed'] as const;
@@ -85,8 +86,10 @@ export class RequestStore {
   }
   unseen(accountId: string) { return (prepared(this.db, 'SELECT COUNT(*) AS n FROM requests WHERE account_id=? AND seen=0').get(accountId) as { n: number }).n; }
   markSeen(accountId: string) { prepared(this.db, 'UPDATE requests SET seen=1 WHERE account_id=? AND seen=0').run(accountId); }
-  list(filter: { status?: RequestStatus; kind?: RequestKind; account?: string; q?: string; page: number; size: number }) {
+  // `active` leaves out removed requests (the Requests page's All requests).
+  list(filter: { status?: RequestStatus; kind?: RequestKind; account?: string; q?: string; active?: boolean; page: number; size: number }) {
     const where: string[] = [], params: unknown[] = [];
+    if (filter.active) where.push("status!='removed'");
     if (filter.status) { where.push('status=?'); params.push(filter.status); }
     if (filter.kind) { where.push('kind=?'); params.push(filter.kind); }
     if (filter.account) { where.push('account_id=?'); params.push(filter.account); }
@@ -122,6 +125,20 @@ export class RequestStore {
       prepared(this.db, 'INSERT INTO requests_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(value));
       prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'request_settings_changed', now, JSON.stringify(value));
       return this.settings();
+    })();
+  }
+  // The Requests site's saved settings; checking them is the caller's (services/requests-site.ts).
+  site(): RequestsSiteSettings & { revision: number } {
+    const row = prepared(this.db, 'SELECT revision,port,public_url FROM requests_site WHERE id=1').get() as { revision: number; port: number | null; public_url: string | null } | undefined;
+    return { revision: row?.revision ?? 0, port: row?.port ?? null, publicUrl: row?.public_url ?? null };
+  }
+  updateSite(actor: string, expectedRevision: number, value: RequestsSiteSettings) {
+    return this.db.transaction(() => {
+      const revision = this.site().revision;
+      if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Requests site settings changed. Reload and retry.', 409);
+      prepared(this.db, 'INSERT INTO requests_site VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,port=excluded.port,public_url=excluded.public_url').run(revision + 1, value.port, value.publicUrl);
+      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'requests_site_changed', this.now(), JSON.stringify(value));
+      return this.site();
     })();
   }
 }

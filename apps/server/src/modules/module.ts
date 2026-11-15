@@ -32,7 +32,9 @@ export type ModuleInstance<Api> = { api: Api; start?: () => void | Promise<void>
 // `access`, when set, is the level of every route of the module that declares none (a module whose routes are all admin).
 // `migrations` are the module's own tables, applied by name before setup (persistence/migrate.ts); list them in
 // modules/migrations/index.ts too, for tests and scripts that open the database without mounting.
-export type AppModule<Deps, Api> = { name: string; access?: AccessLevel; migrations?: readonly Migration[]; setup: (routes: FastifyInstance, ctx: ModuleContext, deps: Deps) => ModuleInstance<Api> | Promise<ModuleInstance<Api>> };
+// `portal` puts the module's routes on the Requests site too (app.ts), except its admin and owner routes and any route
+// that sets `portal: false` itself.
+export type AppModule<Deps, Api> = { name: string; access?: AccessLevel; portal?: boolean; migrations?: readonly Migration[]; setup: (routes: FastifyInstance, ctx: ModuleContext, deps: Deps) => ModuleInstance<Api> | Promise<ModuleInstance<Api>> };
 export const defineModule = <Deps, Api>(module: AppModule<Deps, Api>) => module;
 
 // Modules stop in reverse mount order, so a module stops before the modules it depends on (live sessions before the
@@ -45,6 +47,7 @@ export async function mountModule<Deps, Api>(app: FastifyInstance, ctx: ModuleCo
   let instance: ModuleInstance<Api> | undefined;
   await app.register(async routes => {
     routes.addHook('onRoute', route => {
+      if (module.portal && route.config?.portal === undefined) route.config = { ...route.config, portal: true };
       if (route.config?.access) return;
       if (!module.access) throw new Error(`Module ${module.name}: ${String(route.method)} ${route.url} declares no access level.`);
       route.config = { ...route.config, access: module.access };

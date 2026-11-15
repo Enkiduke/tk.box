@@ -132,11 +132,17 @@ export type RequestLabel = 'available' | 'partial' | 'downloading' | 'requested'
 export type ExploreStatus = RequestLabel;
 export type RequestStatus = 'queued' | 'requested' | 'downloading' | 'partial' | 'available' | 'failed' | 'removed';
 export type RequestItem = { id: number; kind: 'movie' | 'show'; tmdbId: number; title: string; year?: number; status: RequestStatus; statusAt: number; createdAt: number;
-  seen: boolean; seasons: { season: number; available: boolean }[]; accountName: string; error?: string; removedBy?: string };
+  seen: boolean; seasons: { season: number; available: boolean }[]; accountName: string; error?: string; removedBy?: string;
+  // The Requests page's All requests: the request is the viewer's own, so they may cancel it.
+  mine?: boolean };
 export type RequestPage = { items: RequestItem[]; total: number; page: number; hasMore: boolean };
+export type RequestArtwork = { posterUrl?: string; backdropUrl?: string };
 export type MyRequests = { items: RequestItem[]; unseen: number };
 export type RequestDestination = { profileId: number; rootFolder: string; tags: number[] };
 export type RequestSettings = { revision: number; movie: RequestDestination; show: RequestDestination & { seasonFolders: boolean }; searchOnAdd: boolean };
+// Admin › Requests › Requests site. `running` is the port it is listening on now; `publicAddress` says tk.box has a
+// public address, so the site needs one too.
+export type RequestsSiteStatus = { revision: number; port: number | null; publicUrl: string | null; publicAddress: boolean; appPort: number; running: number | null; error?: string };
 export type RequestOptions = { connected: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[];
   defaults: RequestDestination };
 // The genres Explore filters on: TMDB's movie and TV genres and Plex's, merged into one list.

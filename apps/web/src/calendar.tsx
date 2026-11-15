@@ -117,7 +117,8 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
   </li>;
 }
 
-type CalendarProps = {accountId: string; params: URLSearchParams; onOpen: (id: string) => void; onSelect: (item: ExploreItem) => void};
+// Without `onOpen` (the Requests site), titles already in Plex open as Explore titles too.
+type CalendarProps = {accountId: string; params: URLSearchParams; onOpen?: (id: string) => void; onSelect: (item: ExploreItem) => void};
 
 export function Calendar(props: CalendarProps) {
   const current = localDayFormat.format(new Date());
@@ -250,7 +251,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
   const failed = sources.filter(([, status]) => status === 'unavailable').map(([source]) => source);
   const disconnected = sources.filter(([, status]) => status === 'disconnected').map(([source]) => source);
   const open = (entry: CalendarEntry, plexId?: string) => {
-    if (plexId) {onOpen(plexId); return;}
+    if (plexId && onOpen) {onOpen(plexId); return;}
     onSelect({key: entry.key, title: entry.title, year: entry.year, summary: entry.summary, posterUrl: entry.posterUrl, backdropUrl: entry.backdropUrl,
       kind: entry.kind === 'episode' ? 'show' : 'movie', source: 'plex', ids: entry.ids});
   };

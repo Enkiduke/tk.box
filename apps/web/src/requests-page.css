@@ -1,0 +1,51 @@
+/* The Requests site's Requests page (requests-page.tsx). */
+.requests-toolbar .requests-status-filter{width:auto;min-width:150px;height:var(--toolbar-control-size);padding:0 12px;font-size:13px;font-weight:600}
+.requests-unseen{min-width:18px;height:18px;margin-left:2px;padding:0 5px;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:11px;font-weight:700;line-height:18px;text-align:center}
+
+.request-cards{display:grid;gap:14px;max-width:1280px;margin:0 auto;padding:0;list-style:none}
+.request-card{
+  position:relative;isolation:isolate;overflow:hidden;display:grid;align-items:center;gap:22px;min-height:148px;padding:16px 22px 16px 16px;
+  grid-template-columns:84px minmax(0,1fr) minmax(260px,330px) 170px;
+  border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 8px 24px #0005;transition:border-color .2s,transform .2s var(--ease)
+}
+.request-card:hover{border-color:var(--line-strong);transform:translateY(-1px)}
+.request-card.is-new{border-color:rgba(245,184,46,.45)}
+/* The backdrop sits on the right and fades into the card under the text. */
+.request-card-backdrop{position:absolute;inset:0 0 0 auto;z-index:-2;width:72%;height:100%;object-fit:cover;object-position:center 25%;opacity:.55}
+.request-card-shade{position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,var(--surface) 26%,rgba(21,21,27,.86) 46%,rgba(21,21,27,.55) 72%,rgba(21,21,27,.78)),linear-gradient(0deg,rgba(12,12,16,.5),transparent 60%)}
+
+.request-card-poster{position:relative;aspect-ratio:2/3;width:84px;padding:0;overflow:hidden;border:0;border-radius:6px;background:var(--surface-2);box-shadow:0 6px 16px #0008;cursor:pointer;transition:transform .2s var(--ease)}
+.request-card-poster:hover{background:var(--surface-2);transform:scale(1.04)}
+.request-card-poster img{width:100%;height:100%;object-fit:cover}
+.request-card-poster .art-fallback{padding:0}
+.request-card-poster .art-fallback svg{width:24px;height:24px}
+
+.request-card-title{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
+.request-card-year{color:var(--muted);font-size:13px;font-weight:600;letter-spacing:.02em}
+.request-card-name{display:block;max-width:100%;padding:0;border:0;background:none;color:var(--text);font-size:22px;font-weight:750;letter-spacing:-.01em;line-height:1.2;text-align:left;white-space:normal;overflow-wrap:anywhere;text-shadow:0 2px 12px #000a}
+.request-card-name:hover{background:none;color:var(--accent-hover)}
+.request-card-kind{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:#d4d4dc;font-size:13px;font-weight:600}
+.request-season{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:rgba(127,184,232,.18);color:#a9cff0;font-size:11.5px;font-weight:700}
+.request-season.available{background:rgba(127,216,160,.18);color:#8fe0ad}
+
+.request-card-facts{display:grid;gap:7px;margin:0;font-size:13.5px}
+.request-card-facts>div{display:grid;grid-template-columns:82px minmax(0,1fr);align-items:baseline;gap:10px}
+.request-card-facts dt{color:var(--muted);font-weight:650}
+.request-card-facts dd{margin:0;min-width:0;color:#e4e4ea;overflow-wrap:anywhere}
+.request-card-facts dd strong{color:var(--text);font-weight:650}
+.request-card-facts .badge{font-size:11.5px}
+.request-card-error{display:block;margin-top:4px;color:var(--danger);font-size:12px}
+
+.request-card-actions{display:flex;justify-content:flex-end}
+.request-card-actions button{background:rgba(255,122,110,.12);border-color:rgba(255,122,110,.4);color:#ffb0a8;font-size:13px}
+.request-card-actions button:hover:not(:disabled){background:rgba(255,122,110,.22);border-color:rgba(255,122,110,.6);color:#ffd2cc}
+
+.requests-more{justify-content:center;margin-top:18px}
+
+@media (max-width:1100px){
+  .request-card{grid-template-columns:76px minmax(0,1fr) minmax(220px,300px);grid-template-areas:"poster title facts" "poster title actions";row-gap:10px}
+  .request-card-poster{grid-area:poster;width:76px}
+  .request-card-title{grid-area:title}
+  .request-card-facts{grid-area:facts}
+  .request-card-actions{grid-area:actions}
+}

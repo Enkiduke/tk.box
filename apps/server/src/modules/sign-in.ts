@@ -16,6 +16,7 @@ type Deps = {
 // stops everything that browser session was watching.
 export const signInModule = defineModule({
   name: 'sign-in',
+  portal: true,
   setup(routes, { config, plex, bus, log }, { identity, admins, cookies }: Deps) {
     registerSetup(routes, config, plex, identity, { setup: cookies.setup, session: cookies.session, options: cookies.options, sessionAge: cookies.sessionAge });
     routes.post('/api/v1/auth/plex/start', { config: { access: 'public', rateLimit: { max: 10, timeWindow: 60000 } } }, async (_req, reply) => {

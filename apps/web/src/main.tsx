@@ -12,7 +12,7 @@ import {ServerWatch} from './server-restart.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
 import {HeaderStreams} from './header-streams.js';
-import {openPlexPopup} from './plex-popup.js';
+import {PlexSignIn} from './sign-in.js';
 import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 import {getPlayerPreferences} from './player-preferences.js';
@@ -63,8 +63,7 @@ function App() {
     return()=>events.close();
   },[signedIn,admin]);
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
-  const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>(),[authUrl,setAuthUrl]=useState('');
-  const plexPopup=useRef<Window|null>(null);
+  const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>();
   const failover=useRef(new LiveFailover()),[switchingLive,setSwitchingLive]=useState(false);
   const server=useRef(new ServerWatch()),[reconnecting,setReconnecting]=useState(false),reconnectToken=useRef<object>(undefined),lastRetry=useRef(0);
   useEffect(()=>{void server.current.remember();},[]);
@@ -103,10 +102,6 @@ function App() {
     if(libraryId)openItem(libraryId);
     else openExploreItem(item);
   },[openItem,openExploreItem]);
-  async function checkAuth() {
-    const result=await api<{status:string}>('/auth/plex/status','POST');if(result.status==='authenticated'){setAuthUrl('');plexPopup.current?.close();plexPopup.current=null;identity.reload();catalog.reload();}
-  }
-  useEffect(()=>{if(!authUrl)return;let running=false;const timer=setInterval(()=>{if(running)return;running=true;void checkAuth().catch(e=>{if(e instanceof ApiClientError&&['AUTH_EXPIRED','PLEX_ACCESS_DENIED'].includes(e.code)){setAuthUrl('');setError(e.message);}}).finally(()=>{running=false;});},3000);return()=>clearInterval(timer);},[authUrl]);
   async function action(fn:()=>Promise<void>) {if(locking.current)return;locking.current=true;setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{locking.current=false;setBusy(false);}}
   async function stop(replacingLive=false) {
     failover.current.cancel();setSwitchingLive(false);
@@ -269,7 +264,7 @@ function App() {
     const current=sessionRef.current;if(current?.kind!=='live'||busy)return;
     rememberFeed(current.channel.stack,id);watchChannel(tuneTarget(current.channel,id),current.program,current.id);
   };
-  const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();setAuthUrl('');identity.reload();window.location.hash='home';}});
+  const logout=()=>void action(async()=>{try{await stop();}finally{await api('/auth/logout','POST');invalidate();identity.reload();window.location.hash='home';}});
   useEffect(()=>{if(identity.error?.status===401){cancelTuning();player.current?.stop();sessionRef.current=undefined;setSession(undefined);setSwitchingLive(false);}},[identity.error]);
   const progress=(timeMs:number,state?:'playing'|'paused'|'stopped',observation?:PlaybackObservation,epoch=0)=>{
     const current=session;
@@ -285,10 +280,9 @@ function App() {
   const queueIndex=item&&queue?queue.items.findIndex(i=>i.id===item.id):-1;
   const subtitle=channel?channel.program:item?.type==='episode'?`${item.showTitle??''} · S${item.seasonNumber??'?'}:E${item.episodeNumber??'?'}`:item?.year?String(item.year):undefined;
   const signIn=setup.data&&!setup.data.plexConfigured?<section className="sign-in"><FirstRun plexUrl={setup.data.plexUrl} onDone={()=>{setup.reload();identity.reload();catalog.reload();}}/></section>
-    :<section className="sign-in"><div className="sign-in-card"><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p>
-    {setup.error?<ErrorNotice message={setup.error.message} retry={setup.reload}/>:setup.data?.plexConfigured?<><button className="primary large" disabled={busy} onClick={()=>{if(locking.current)return;const popup=openPlexPopup();plexPopup.current=popup;void action(async()=>{try{const result=await api<{authUrl:string}>('/auth/plex/start','POST');setAuthUrl(result.authUrl);if(popup&&!popup.closed)popup.location.href=result.authUrl;else plexPopup.current=openPlexPopup(result.authUrl)??(window.open(result.authUrl,'_blank','noopener,noreferrer'),null);}catch(e){popup?.close();throw e;}});}}>Sign in with Plex</button>
-      {authUrl&&<div className="linking"><span className="spinner"/><p>Finish signing in in the Plex window. tk.box connects automatically.</p><a href={authUrl} target="_blank" rel="noreferrer" onClick={event=>{const popup=openPlexPopup(authUrl);if(popup){event.preventDefault();plexPopup.current=popup;}}}>Reopen Plex sign-in</a><button className="text-button" disabled={busy} onClick={()=>void action(checkAuth)}>I've signed in</button></div>}</>
-    :<Loading/>}<small className="muted">Your Plex password stays with Plex.</small></div></section>;
+    :<section className="sign-in">{setup.error?<div className="sign-in-card"><ErrorNotice message={setup.error.message} retry={setup.reload}/></div>:setup.data?.plexConfigured
+      ?<PlexSignIn onSignedIn={()=>{identity.reload();catalog.reload();}}><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p></PlexSignIn>
+      :<div className="sign-in-card"><Loading/></div>}</section>;
   const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>

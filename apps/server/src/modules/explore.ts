@@ -20,6 +20,7 @@ type Deps = {
 // Explore: Plex Discover and TMDB rows, title details with request labels, and the watchlist, and Admin › Explore's layout.
 export const exploreModule = defineModule({
   name: 'explore',
+  portal: true,
   migrations: exploreMigrations,
   setup(routes, { db, plex, bus }, { accountToken, titles, requests, watches, transports }: Deps) {
     const store = new ExploreStore(db);

@@ -207,7 +207,8 @@ function ActiveFilters({filters,searching,onChange}:{filters:Filters;searching:b
   </div>;
 }
 
-export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:boolean;onSelect:(item:ExploreItem)=>void}) {
+// `requestsButton` false leaves out My requests, for the Requests site, which has its own Requests page.
+export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLSearchParams;admin:boolean;onSelect:(item:ExploreItem)=>void;requestsButton?:boolean}) {
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,prefs=useExplorePrefs();
   // Sources in the administrator's order, leaving out those switched off (by the administrator or the viewer) or not set up.
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
@@ -233,7 +234,7 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
       </div>
       <form className="browse-search explore-search" role="search" onSubmit={e=>{e.preventDefault();replaceRoute(link('explore',{q:text.trim()}));}}><Icon name="search"/><input aria-label={searchLabel} placeholder={searchLabel} maxLength={120} value={text} onChange={e=>setText(e.target.value)}/>{text&&<button className="icon-button" type="button" aria-label="Clear search" onClick={()=>{setText('');replaceRoute(link('explore'));}}><Icon name="close"/></button>}</form>
       <FilterMenu filters={filters} labels onChange={changeFilters}/>
-      <MyRequestsButton/>
+      {requestsButton&&<MyRequestsButton/>}
       <button className="icon-button toolbar-icon" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
     <ActiveFilters filters={filters} searching={!!query} onChange={changeFilters}/>
@@ -249,7 +250,7 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
   </div>;
 }
 
-export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{item:ExploreItem;admin:boolean;onClose:()=>void;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
+export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{item:ExploreItem;admin:boolean;onClose:()=>void;onOpen?:(id:string)=>void;onOpenRelated:OpenRelatedTitle}) {
   const {region}=useExplorePrefs();
   const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,request=info?.request;
   // The card's own artwork and text show at once; details fill in what the card lacked.
@@ -276,8 +277,8 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
             {status&&<p className="explore-badges"><span className={`badge explore-status ${status}`}>{statusNames[status]}</span></p>}
           </div>
           <div className="button-row">
-            {info?.libraryId&&<button className="primary large" onClick={()=>onOpen(info.libraryId!)}><Icon name="play"/>Watch</button>}
-            {canRequest&&<button className={info?.libraryId?'secondary large':'primary large'} disabled={busy} onClick={()=>{setDone('');setError('');setRequesting(true);}}><Icon name="plus"/>Request</button>}
+            {info?.libraryId&&onOpen&&<button className="primary large" onClick={()=>onOpen(info.libraryId!)}><Icon name="play"/>Watch</button>}
+            {canRequest&&<button className={info?.libraryId&&onOpen?'secondary large':'primary large'} disabled={busy} onClick={()=>{setDone('');setError('');setRequesting(true);}}><Icon name="plus"/>Request</button>}
             {info?.watchlisted!==undefined&&item.ids.plex&&<button className="secondary large" aria-pressed={info.watchlisted} disabled={busy} onClick={()=>watchlist(!info.watchlisted)}><Icon name={info.watchlisted?'check':'star'}/>{info.watchlisted?'On Watchlist':'Watchlist'}</button>}
             {(details.loading&&!info||busy)&&<span className="spinner small-spinner" aria-label={busy?'Working':'Loading details'}/>}
           </div>

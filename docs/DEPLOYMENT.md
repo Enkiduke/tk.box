@@ -26,6 +26,14 @@ npm run build
 https://media.example.com/* -> http://<reachable APP_HOST>:<APP_PORT>/*
 ```
 
+The optional Requests site (Explore, Calendar and each viewer's requests, for Plex users who only request) is a second listener in the same process. Turn it on in Admin › Requests › Requests site with a port and, remotely, its own HTTPS address such as `https://requests.example.com`; it starts, moves or stops as soon as it is saved. Give its subdomain its own proxy entry:
+
+```text
+https://requests.example.com/* -> http://<reachable APP_HOST>:<Requests site port>/*
+```
+
+That listener answers only the sign-in, Explore, Calendar, requests and event routes; admin, playback, live and catalog routes are not found there. It accepts changes only from its own origin, and viewers sign in to it separately.
+
 All compiled frontend/API/media paths share that listener. Do not install another proxy, provision certificates, expose worker ports, or prescribe port forwarding/tunnels. Remote browser access must use the configured HTTPS origin; never derive Plex links or cookie security from untrusted Host/forwarded headers. A mismatched `PUBLIC_BASE_URL` correctly rejects state-changing requests via the origin/JSON CSRF boundary.
 
 For eventual long-lived HLS and byte-range delivery: retain Range/Content-Range/Accept-Ranges and upstream status, allow sustained responses and sensible upstream read timeouts, disable buffering that delays live segments, avoid caching protected responses, preserve same-origin authenticated cookies, and forward manifests/segments without path rewriting. No WebSocket implementation currently requires upgrade handling. The current direct VOD route rechecks account/item access at request boundaries and periodically during long responses, aborts on logout/Stop, and proxies only validated Plex part paths. Remote streaming behavior still requires verification.

@@ -12,6 +12,7 @@ type Deps = {
 // The release calendar: Radarr and Sonarr schedules matched to the viewer's Plex libraries, with TMDB season finales.
 export const calendarModule = defineModule({
   name: 'calendar',
+  portal: true,
   setup(routes, { plex }, { connections, titles }: Deps) {
     registerCalendar(routes, plex, connections, undefined, titles);
     return { api: {} };

@@ -1,4 +1,5 @@
 import Fastify, { LogController } from 'fastify';
+import { RequestsSite } from './services/requests-site.js';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
@@ -20,6 +21,8 @@ import { ServerMetrics } from './services/metrics.js';
 import { installAccess, requireDeclaredAccess } from './modules/access.js';
 import { EventBus } from './modules/bus.js';
 import { mountModule, type ModuleContext } from './modules/module.js';
+import { Jobs } from './services/jobs.js';
+import { jobsModule } from './modules/jobs.js';
 import { iptvModule } from './modules/iptv.js';
 import { customChannelsModule } from './modules/custom-channels.js';
 import { liveSessionsModule } from './modules/live-sessions.js';
@@ -40,8 +43,19 @@ import { adminModule } from './modules/admin.js';
 import { connectionHealth } from './services/connection-health.js';
 import { webModule } from './modules/web.js';
 
-export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box', exploreTransports: {tmdb?:typeof fetch; seerr?:typeof fetch; images?:typeof fetch} = {}) {
+declare module 'fastify' {
+  interface FastifyRequest { portal: boolean }
+}
+
+export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexAdapter, logging = true, cookieNamespace = 'tk.box', exploreTransports: {tmdb?:typeof fetch; images?:typeof fetch} = {}) {
+  // The Requests site (Admin › Requests) is a second listener on this same app: one set of services, jobs and caches.
+  // Its requests reach only routes marked `portal` (modules/module.ts).
+  // It takes requests through app.routing, the handler the main server uses. (A serverFactory would stop Fastify
+  // binding both 127.0.0.1 and ::1 for APP_HOST=localhost.)
   const app = Fastify({ logger: logging ? {level: 'info'} : false, logController: new LogController({disableRequestLogging: true}), bodyLimit: 65536, trustProxy: config.trustedProxies.length ? config.trustedProxies : false });
+  const site = new RequestsSite(config, () => app.routing);
+  app.addHook('onClose', async () => { await site.close(); });
+  app.decorateRequest('portal', false);
   const identity = new IdentityService(db, vault, plex, config.PLEX_RECHECK_SECONDS * 1000), settings = new SettingsStore(db);
   const budget = new EncoderBudget(() => settings.get().maxConcurrentCpuVideoTranscodes);
   const localMedia = new LocalMedia(config.localMedia), subtitles = new SubtitleService(plex, config.FFMPEG_PATH, config.CACHE_DIR, localMedia);
@@ -69,13 +83,20 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     {old: `${legacyNamespace}_link`, current: linkCookie, maxAge: 600}
   ];
   app.addHook('onRequest', async (req, reply) => {
+    // Unknown routes, routes not on the Requests site, and every admin and owner route are not found there.
+    if (site.has(req.raw)) {
+      req.portal = true;
+      const route = req.routeOptions.config as {portal?: boolean; access?: string} | undefined;
+      requireThat(route?.portal && route.access !== 'admin' && route.access !== 'owner', 'NOT_FOUND', 'Not found.', 404);
+    }
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
     if (config.secureCookies) reply.header('Strict-Transport-Security', 'max-age=31536000');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       const host = req.headers.host, peer = req.raw.socket.remoteAddress;
-      const validOrigin = previewHosts
+      const validOrigin = req.portal ? !!site.origin && req.headers.origin === site.origin
+        : previewHosts
         ? !!host && previewHosts.has(host) && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer ?? '') && req.headers.origin === `http://${host}`
         : req.headers.origin === config.browserOrigin;
       requireThat(validOrigin, 'CSRF_REJECTED', 'Request origin is not permitted.', 403);
@@ -128,10 +149,11 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   bus.on('library.edited', () => plex.forgetMetadata());
   // Background work reads Plex with the owner's Plex token from Admin › Connections.
   const serviceKeys = new ServiceKeys(db, vault), background = new PlexBackground(serviceKeys, plex, (message, detail) => app.log.warn(detail, message));
-  const ctx: ModuleContext = {config, db, vault, plex, bus, budget, serviceKeys, background,
+  const jobs = new Jobs((message, detail) => app.log.info(detail, message));
+  const ctx: ModuleContext = {config, db, vault, plex, bus, budget, serviceKeys, background, jobs,
     log: {info: (message, detail) => app.log.info(detail ?? {}, message), warn: (message, detail) => app.log.warn(detail ?? {}, message)}};
   // Watch history and Admin › Activity come first: every playback module reports to them.
-  const {history, monitor: plexMonitor, latestWatches} = await mountModule(app, ctx, watchHistoryModule, undefined);
+  const {history, monitor: plexMonitor, latestWatches, accountWatches} = await mountModule(app, ctx, watchHistoryModule, undefined);
   const plexSessions = (grant: Parameters<typeof plex.sessions>[0]) => plexMonitor.sessions(grant);
   const activityApi = await mountModule(app, ctx, activityModule, {history, plexSessions}), {activity} = activityApi;
   // Custom channels share the live session routes with IPTV; their sessions belong to CustomTv.
@@ -146,14 +168,21 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const arr = await mountModule(app, ctx, arrModule, undefined);
   const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb, arr}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
-  const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles});
-  await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, transports: exploreTransports});
-  await mountModule(app, ctx, plexNotificationsModule, undefined);
+  const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site});
   const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches});
+  // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and Tautulli's saved dates.
+  const watches = (account: string) => {
+    const server = config.PLEX_MACHINE_ID;
+    return server ? [...accountWatches(server, account),
+      ...cleanup.watchSnapshot(server).flatMap(w => w.account === account && w.scope !== 'season' ? [{kind: w.scope, ratingKey: w.ratingKey, at: w.at}] : [])] : [];
+  };
+  await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, watches, transports: exploreTransports});
+  await mountModule(app, ctx, plexNotificationsModule, undefined);
   await mountModule(app, ctx, calendarModule, {connections: () => ({radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr')}), titles: tmdbTitles});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(),
     checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports)});
+  await mountModule(app, ctx, jobsModule, undefined);
   await mountModule(app, ctx, webModule, undefined);
   return app;
 }

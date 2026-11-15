@@ -29,5 +29,8 @@ export const requestsMigrations: Migration[] = [
       available_at INTEGER,
       PRIMARY KEY(request_id, season)
     );
-    CREATE TABLE requests_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);` }
+    CREATE TABLE requests_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);` },
+  // Admin › Requests › Requests site: its port (none: off) and public address.
+  { name: 'requests_site', up: `
+    CREATE TABLE requests_site(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, port INTEGER, public_url TEXT);` }
 ];
