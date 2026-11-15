@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from './module.js';
-import { viewer } from './access.js';
+import { asConnectionAdmin, connectionActor, viewer } from './access.js';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import type { FastifyRequest } from 'fastify';
 import { playbackSettings, type PlexUsersView } from '../../../../packages/contracts/src/index.js';
@@ -30,8 +30,8 @@ export const adminModule = defineModule({
     routes.get('/api/v1/admin/metrics', async () => metrics.snapshot());
     // Admin › Connections: keys no feature's own settings hold. A new TheSportsDB key is used from the next download on,
     // a new Plex admin token from the next background task (and the Plex notification feed reconnects).
-    routes.get('/api/v1/admin/keys', async () => serviceKeys.view());
-    routes.get('/api/v1/admin/connections/services', async () => checkConnections());
+    routes.get('/api/v1/admin/keys', asConnectionAdmin, async () => serviceKeys.view());
+    routes.get('/api/v1/admin/connections/services', asConnectionAdmin, async () => checkConnections());
     routes.get('/api/v1/admin/connections/plex', async req => {
       const { hash, grant } = viewer(req);
       const accountToken = identity.accountToken(hash), adminToken = serviceKeys.get('plex');
@@ -49,10 +49,10 @@ export const adminModule = defineModule({
       return { account: account.status === 'fulfilled', server: server.status === 'fulfilled', admin, checkedAt: Date.now() };
     });
     // A Plex admin token is saved only once Plex vouches for it as the server owner's.
-    routes.put('/api/v1/admin/keys', async req => {
-      const { grant } = viewer(req), input = serviceKeysInput.parse(req.body);
+    routes.put('/api/v1/admin/keys', asConnectionAdmin, async req => {
+      const actor = connectionActor(req), input = serviceKeysInput.parse(req.body);
       if (input.plex) await background.check(input.plex).catch((e: AppError) => { throw e.code === 'PLEX_TOKEN_NOT_OWNER' || e.code === 'PLEX_UNAVAILABLE' ? e : new AppError('PLEX_TOKEN_REJECTED', 'Plex didn’t accept that token.', 400); });
-      const saved = serviceKeys.update(grant.accountId, input); background.invalidate(); bus.emit('service-keys.changed', { plex: input.plex !== undefined });
+      const saved = serviceKeys.update(actor, input); background.invalidate(); bus.emit('service-keys.changed', { plex: input.plex !== undefined });
       return saved;
     });
     const asOwner = { config: { access: 'owner' as const } };

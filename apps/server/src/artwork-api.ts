@@ -3,14 +3,14 @@ import {join} from 'node:path';
 import {z} from 'zod';
 import type {PlexGrant} from './providers/plex.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,layoutName,layoutValue} from './persistence/artwork-store.js';
+import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,artworkKeysInput,layoutName,layoutValue} from './persistence/artwork-store.js';
 import type {ArtworkEngine,ArtworkRun} from './services/artwork-engine.js';
 import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
 import {ArtworkFiles,imageType} from './services/artwork-files.js';
 import {ArtworkPictures,type PlexJson} from './services/artwork-pictures.js';
 import {AppError,readOnly,requireThat} from './errors.js';
-import {viewer} from './modules/access.js';
+import {asConnectionAdmin,connectionActor,viewer} from './modules/access.js';
 import {remoteJson} from './providers/remote-json.js';
 import {TmdbTitles} from './providers/tmdb-titles.js';
 
@@ -84,6 +84,15 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   // After settings, layouts or collections change, the worker's config is written again.
   const changed=(grant:PlexGrant)=>worker.refresh(runOf(grant));
 
+  app.get('/api/v1/admin/connections/artwork',asConnectionAdmin,async()=>{
+    const {revision,keysSet}=store.view();
+    return {revision,keysSet};
+  });
+  app.put('/api/v1/admin/connections/artwork',asConnectionAdmin,async request=>{
+    const {expectedRevision,...keys}=artworkKeysInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
+    const {revision,keysSet}=store.updateKeys(connectionActor(request),expectedRevision,keys);
+    return {revision,keysSet};
+  });
   app.get('/api/v1/admin/artwork',async request=>{
     const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
     const status=await engine.status(!!query.recheck);

@@ -1,12 +1,12 @@
 import {useState} from 'react';
 import {ApiClientError,api} from './api.js';
 import {invalidate,link,useApi} from './hooks.js';
-import {ErrorNotice,Icon,Modal} from './components.js';
+import {ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {date,SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 
 type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
-type ArtworkView={settings:{revision:number;keysSet:Record<KeyName,boolean>}&Record<string,unknown>};
+type ArtworkKeysView={revision:number;keysSet:Record<KeyName,boolean>};
 type ArrView=Record<'radarr'|'sonarr',{revision:number;url:string;keySet:boolean}>;
 type KeysView={plex:boolean;thesportsdb:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
@@ -93,7 +93,7 @@ function feedStatus({state,lastSuccess,lastChecked,failedRequests,retryAt}:FeedH
 }
 
 function readHealth<T>(view:ReturnType<typeof useApi<T>>,read:(data:T)=>HealthStatus):HealthStatus {
-  if(view.error)return {label:'Status unavailable',tone:'warning',detail:view.error.message};
+  if(view.error)return {label:'Status unavailable',tone:'warning',detail:view.error.name==='TimeoutError'?'The status check timed out.':view.error.message};
   if(view.data===undefined)return {label:'Checking…'};
   return read(view.data);
 }
@@ -114,13 +114,20 @@ function categoryStatus(connections:Connection[]) {
   return {tone,summary,configured,count:configured?`${configured}/${connections.length}`:'–'};
 }
 
+export function ConnectionsRecovery({params}:{params:URLSearchParams}) {
+  const keys=useApi<KeysView>('/admin/keys');
+  if(keys.error)return <ErrorNotice message={keys.error.message} retry={keys.reload}/>;
+  if(!keys.data)return <Loading/>;
+  return <ConnectionsSettings params={params}/>;
+}
+
 export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const [editing,setEditing]=useState<Connection>();
   const serviceKeys=useApi<KeysView>('/admin/keys');
   const plex=useApi<PlexHealth>('/admin/connections/plex');
   const sports=useApi<SportsHealth>('/admin/connections/sports');
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
-  const artwork=useApi<ArtworkView>('/admin/artwork');
+  const artwork=useApi<ArtworkKeysView>('/admin/connections/artwork');
   const arr=useApi<ArrView>('/admin/arr');
 
   const serviceStatus=(id:string)=>readHealth(services,results=>{
@@ -170,12 +177,13 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     ]},
     {id:'metadata',title:'Metadata & artwork',icon:'image',connections:artworkProviders.map(([id,name,description,keyHint])=>({
       name,description,keyHint,
-      health:artwork.data?.settings.keysSet[id]?serviceStatus(id):undefined,
-      ...readSettings(artwork,({settings:{revision,keysSet,...settings}})=>({
+      health:artwork.data?.keysSet[id]?serviceStatus(id):undefined,
+      ...readSettings(artwork,({revision,keysSet})=>({
         keySaved:keysSet[id],
         removableKey:true,
         save:async ({key})=>{
-          await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...settings,[`${id}Key`]:key??''});
+          await api('/admin/connections/artwork','PUT',{expectedRevision:revision,[`${id}Key`]:key??''});
+          invalidate('/admin/connections/artwork');
           invalidate('/admin/artwork');
           invalidate('/admin/connections/services');
         },

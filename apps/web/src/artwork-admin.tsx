@@ -81,7 +81,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
   const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
+    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/admin/connections/artwork');invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Libraries">
@@ -129,7 +129,7 @@ function ArtworkSchedules({data,changed}:{data:Overview;changed:()=>void}) {
   useEffect(()=>setDraft(data.settings.schedules),[data.settings.revision]);
   const save=()=>void mutation.run(async()=>{
     const {revision,keysSet:_,...saved}=data.settings;
-    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});toast.success('Schedules saved');
+    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});invalidate('/admin/connections/artwork');toast.success('Schedules saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <SchedulesCard schedules={draft} states={data.schedules} set={value=>{setDraft(value);}}/>

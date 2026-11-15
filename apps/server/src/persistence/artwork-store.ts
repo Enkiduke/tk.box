@@ -36,7 +36,8 @@ export type ScheduleName = keyof ArtworkSettings['schedules'];
 export type CollectionScheduleName = keyof ArtworkCollections['schedules'];
 const key = z.string().trim().max(200).regex(/^[\w-]*$/);
 // Omitted keeps a saved key; an empty string removes it.
-export const artworkSettingsInput = artworkSettings.extend({ tmdbKey: key.optional(), tvdbKey: key.optional(), fanartKey: key.optional(), mdblistKey: key.optional() }).strict();
+export const artworkKeysInput = z.object({ tmdbKey: key.optional(), tvdbKey: key.optional(), fanartKey: key.optional(), mdblistKey: key.optional() }).strict();
+export const artworkSettingsInput = artworkSettings.extend(artworkKeysInput.shape).strict();
 export type ArtworkSettingsInput = z.infer<typeof artworkSettingsInput>;
 export const layoutValue = z.record(z.string().regex(/^[a-z_]{1,60}$/), z.unknown()).refine(value => JSON.stringify(value).length <= 40000, 'Layout is too large');
 export type ArtworkKeys = { tmdb?: string; tvdb?: string; fanart?: string; mdblist?: string };
@@ -182,6 +183,13 @@ export class ArtworkStore {
       if (templates.has(name)) throw new AppError('LAYOUT_IS_TEMPLATE', `${name} is a season or episode template; choose its show layout.`, 422);
     }
     await check(settings);
+    return this.saveSettings(actor, expectedRevision, { tmdbKey, tvdbKey, fanartKey, mdblistKey }, now, settings);
+  }
+  updateKeys(actor: string, expectedRevision: number, input: z.input<typeof artworkKeysInput>, now = Date.now()) {
+    return this.saveSettings(actor, expectedRevision, artworkKeysInput.parse(input), now);
+  }
+  private saveSettings(actor: string, expectedRevision: number, input: z.infer<typeof artworkKeysInput>, now: number, settings?: ArtworkSettings) {
+    const { tmdbKey, tvdbKey, fanartKey, mdblistKey } = input;
     return this.db.transaction(() => {
       const { revision, value } = this.stored();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
@@ -190,7 +198,7 @@ export class ArtworkStore {
         if (given === undefined) continue;
         if (given) keys[name] = this.vault.seal(given, `artwork:${name}-key`); else delete keys[name];
       }
-      prepared(this.db, 'INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...settings, keys }));
+      prepared(this.db, 'INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...(settings ?? value), keys }));
       this.audit(actor, 'artwork_settings_changed', { ...settings, keysSet: Object.keys(keys) }, now);
       return this.view();
     })();

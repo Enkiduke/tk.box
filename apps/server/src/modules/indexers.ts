@@ -2,7 +2,7 @@ import { defineModule } from './module.js';
 import { indexersMigrations } from './migrations/indexers.js';
 import { every, errorDetail } from '../lib/every.js';
 import { z } from 'zod';
-import { viewer } from './access.js';
+import { connectionActor } from './access.js';
 import { Indexers, indexerInput, indexerNames, type FeedListener, type MovieQuery, type Release } from '../services/indexers.js';
 
 const RSS_MINUTES = 15;
@@ -12,7 +12,7 @@ const RSS_MINUTES = 15;
 // shows in Admin › Schedule.
 export const indexersModule = defineModule({
   name: 'indexers',
-  access: 'admin',
+  access: 'connectionAdmin',
   migrations: indexersMigrations,
   setup(routes, { db, vault, jobs, log }, deps: { transport?: typeof fetch } | undefined) {
     const indexers = new Indexers(db, vault, { ...(deps?.transport ? { transport: deps.transport } : {}), log: (message, detail) => log.warn(message, detail) });
@@ -22,8 +22,8 @@ export const indexersModule = defineModule({
       status: () => jobs.tracked('indexers.rss'), run: pollNow });
     const name = z.object({ name: z.enum(indexerNames) }).strict();
     routes.get('/api/v1/admin/indexers', async () => indexers.view());
-    routes.put('/api/v1/admin/indexers/:name', async request => indexers.configure(viewer(request).grant.accountId, name.parse(request.params).name, request.body as z.input<typeof indexerInput>));
-    routes.post('/api/v1/admin/indexers/:name/test', { config: { access: 'admin', rateLimit: { max: 10, timeWindow: 60000 } } },
+    routes.put('/api/v1/admin/indexers/:name', async request => indexers.configure(connectionActor(request), name.parse(request.params).name, request.body as z.input<typeof indexerInput>));
+    routes.post('/api/v1/admin/indexers/:name/test', { config: { access: 'connectionAdmin', rateLimit: { max: 10, timeWindow: 60000 } } },
       async request => indexers.test(name.parse(request.params).name));
     let timer: { stop(): void } | undefined;
     return {

@@ -24,6 +24,7 @@ import {DialogNavContext,useDialogHistory} from './dialog-history.js';
 // Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
+const ConnectionsRecovery=lazy(()=>import('./admin.js').then(m=>({default:m.ConnectionsRecovery})));
 const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 const ExploreDialog=lazy(()=>import('./explore.js').then(m=>({default:m.ExploreDialog})));
@@ -309,7 +310,9 @@ function App() {
     :<section className="sign-in">{setup.error?<div className="sign-in-card"><ErrorNotice message={setup.error.message} retry={setup.reload}/></div>:setup.data?.plexConfigured
       ?<PlexSignIn onSignedIn={()=>{identity.reload();catalog.reload();}}><span className="brand large">tk.box</span><h1>Your movies, shows and channels.</h1><p className="muted">Everything from your Plex server, in one place.</p></PlexSignIn>
       :<div className="sign-in-card"><Loading/></div>}</section>;
-  const content=!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
+  const recoverConnections=!me&&identity.error&&identity.error.status!==401&&route.page==='admin'&&route.params.get('section')==='connections';
+  const content=recoverConnections?<div className="page admin-page"><Suspense fallback={<Loading/>}><ConnectionsRecovery params={route.params}/></Suspense></div>
+    :!me?signIn:route.page==='home'?<Home libraries={libraries} onOpen={openItem} onPlay={play} onWatch={watchChannel} busy={busy}/>
     :libraryPage?<LibraryView key={`${me.accountId}-${route.page}`} accountId={me.accountId} type={route.page==='movies'?'movie':'show'} libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onPlayAll={playAll}/>
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
     :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onSelect={openExploreItem}/></Suspense></div>

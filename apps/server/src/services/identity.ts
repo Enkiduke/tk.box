@@ -62,12 +62,20 @@ export class IdentityService {
   // Local-only session check for high-frequency media segments. Callers must
   // pair it with periodic full Plex reauthorization (authenticateHash).
   session(cookie: string | undefined, now = Date.now()) {
+    const { hash, expires } = this.localSession(cookie, now);
+    this.renew(hash, expires, now);
+    return hash;
+  }
+  // Existing tk.box identity for connection recovery. This check does not extend the session.
+  sessionAccount(cookie: string | undefined, now = Date.now()) {
+    return this.localSession(cookie, now).account_id;
+  }
+  private localSession(cookie: string | undefined, now: number) {
     requireThat(cookie, 'UNAUTHENTICATED', 'Sign in with Plex.', 401);
     const hash = digest(cookie);
-    const row = prepared(this.db, 'SELECT s.expires,u.allowed FROM sessions s JOIN users u ON u.account_id=s.account_id WHERE s.hash=? AND s.expires>?').get(hash, now) as {expires: number; allowed: number} | undefined;
+    const row = prepared(this.db, 'SELECT s.account_id,s.expires,u.allowed FROM sessions s JOIN users u ON u.account_id=s.account_id WHERE s.hash=? AND s.expires>?').get(hash, now) as {account_id: string; expires: number; allowed: number} | undefined;
     requireThat(row?.allowed, 'UNAUTHENTICATED', 'Session expired or revoked.', 401);
-    this.renew(hash, row.expires, now);
-    return hash;
+    return { hash, ...row };
   }
   async authenticateHash(hash: string, now = Date.now()) {
     const row = prepared(this.db, 'SELECT s.*,u.allowed FROM sessions s JOIN users u ON u.account_id=s.account_id WHERE hash=? AND expires>?').get(hash, now) as {account_id: string; encrypted_credential: string; expires: number; allowed: number} | undefined;

@@ -95,7 +95,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     if (site.has(req.raw)) {
       req.portal = true;
       const route = req.routeOptions.config as {portal?: boolean | 'admin'; access?: string} | undefined;
-      requireThat(route?.portal && (route.portal === 'admin' ? route.access === 'admin' : route.access !== 'admin' && route.access !== 'owner'), 'NOT_FOUND', 'Not found.', 404);
+      requireThat(route?.portal && (route.portal === 'admin' ? route.access === 'admin' : route.access !== 'admin' && route.access !== 'owner' && route.access !== 'connectionAdmin'), 'NOT_FOUND', 'Not found.', 404);
     }
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
@@ -148,8 +148,18 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   app.addHook('onClose', async () => { metrics.stop(); });
   app.addHook('onResponse', async (req, reply) => { metrics.route(`${req.method} ${req.routeOptions.url ?? 'unmatched'}`, reply.elapsedTime, reply.statusCode < 500); });
   const ownerOnly = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(a.grant.role === 'admin', 'FORBIDDEN', 'Only the Plex server owner can do that.', 403); return a; };
+  const connectionAdmin = async (req: {cookies: Record<string, string | undefined>}) => {
+    const accountId = identity.sessionAccount(req.cookies[sessionCookie]);
+    // The configured owner can recover these settings using an existing session during a Plex outage.
+    if (config.plexConfigured && accountId === config.PLEX_OWNER_ACCOUNT_ID) return accountId;
+    // Delegated admins still need current Plex access. These routes never need the saved owner's grant.
+    requireThat(admins.has(accountId), 'FORBIDDEN', 'Administrator access required.', 403);
+    await auth(req);
+    requireThat(admins.has(accountId), 'FORBIDDEN', 'Administrator access required.', 403);
+    return accountId;
+  };
   // Every route declares an access level, checked here before its handler runs; one that declares none stops startup.
-  installAccess(app, {viewer: auth, admin, owner: ownerOnly, session: async req => identity.session(req.cookies[sessionCookie])});
+  installAccess(app, {viewer: auth, admin, owner: ownerOnly, connectionAdmin, session: async req => identity.session(req.cookies[sessionCookie])});
   requireDeclaredAccess(app);
   const bus = new EventBus((message, detail) => app.log.warn(detail, message));
   // Plex caches go first, so every module reacting to the same change (and every page told to reload) reads Plex anew.

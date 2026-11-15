@@ -5,7 +5,7 @@ import { SportsStore, sportsPolicy, sportsSettings, SPORT_ORDER } from './persis
 import type { SportsSchedule } from './services/sports-schedule.js';
 import { LEAGUE_NAMES, leagueSport } from './providers/sports-feeds.js';
 import { requireThat } from './errors.js';
-import { viewer } from './modules/access.js';
+import { asConnectionAdmin, viewer } from './modules/access.js';
 
 // Administrator-only: the event-driven source policy and which channel carries which event.
 export function registerSports(app: FastifyInstance, iptv: IptvStore, store: SportsStore, schedule: SportsSchedule) {
@@ -16,7 +16,7 @@ export function registerSports(app: FastifyInstance, iptv: IptvStore, store: Spo
     return { policy: store.policy(id), lastSync: schedule.lastSync, lastError: schedule.lastError, events: store.count(now), summary: { matched: channels.length, airing: channels.filter(c => c.airing).length }, channels };
   };
   app.get('/api/v1/admin/iptv/sources/:id/sports',{config:{access:'admin'}}, async req => { return view(params(req.params)); });
-  app.get('/api/v1/admin/connections/sports', {config:{access:'admin'}}, async () => schedule.feedStatus());
+  app.get('/api/v1/admin/connections/sports', asConnectionAdmin, async () => schedule.feedStatus());
   app.put('/api/v1/admin/iptv/sources/:id/sports',{config:{access:'admin'}}, async req => {
     const { grant } = viewer(req), id = params(req.params); store.setPolicy(grant.accountId, id, sportsPolicy.parse(req.body)); schedule.invalidate(); return view(id);
   });
