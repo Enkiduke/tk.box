@@ -2,20 +2,23 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { DownloadsActivity, DownloadsGrab, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, NamingPreview, PickProfile, PickRules,
-  WantedList } from '../../../packages/contracts/src/downloads.js';
+import type { DownloadsActivity, DownloadsGrab, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, MovieList, NamingPreview, PickProfile,
+  PickRules, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import { EARLY_COPIES, LADDER, isQuality, qualityOf, scoreRelease, type Profile, type Quality, type ScoreRule } from './lib/quality.js';
 import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
-import { seedingDecision } from './lib/seeding.js';
+import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
+import { tmdbImage } from './providers/explore-images.js';
+import type { TmdbTitles } from './providers/tmdb-titles.js';
 import type { Grab, LibraryStore } from './persistence/library-store.js';
 import type { Library } from './services/library.js';
 import type { QueueApi } from './services/queue.js';
 
-// Admin › Downloads for movies (docs/ARR-REPLACEMENT.md, "Admin UI"): activity, wanted, a title with its interactive
-// search, pick rules (profiles and score rules) and the library settings with a naming preview. All admin.
+// Admin › Manage for movies (docs/ARR-REPLACEMENT.md, "Admin UI"; docs/PHASE-3.5.md): downloads, wanted, every movie,
+// a title with its interactive search, pick rules (profiles and score rules) and the library settings with a naming
+// preview. All admin.
 
 const GB_MAX = 500;
 const version = (value: unknown) => createHash('sha1').update(JSON.stringify(value)).digest('hex').slice(0, 12);
@@ -62,6 +65,9 @@ export const settingsInput = z.object({
   earlyCopies: z.boolean().optional(),
   protocol: z.enum(['usenet-first', 'torrent-first']).optional(),
   defaultProfile: z.number().int().positive().optional(),
+  // Validated again by librarySettings, which holds the IPTorrents floor (ratio 1, 14 days).
+  seeding: z.object({ ratio: z.number().max(100), minDays: z.number().max(3650), maxDays: z.number().max(3650) }).strict()
+    .refine(s => s.minDays <= s.maxDays, 'The minimum days must not be over the maximum.').optional(),
 }).strict();
 
 const previewInput = z.object({ release: z.string().trim().min(1).max(300), tmdbId: z.number().int().positive().max(99999999).optional() }).strict();
@@ -83,9 +89,10 @@ export function namingPreview(store: Pick<LibraryStore, 'rules' | 'settings'>, i
   return { quality, folder, file, path: `${store.settings().roots.movie.replace(/[\\/]+$/, '')}/${folder}/${file}` };
 }
 
-type Deps = { store: LibraryStore; library: Library; queue: QueueApi };
+// `titles`: TMDB details, cached (the library and the calendar read the same ones), for posters.
+type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'> };
 
-export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue }: Deps) {
+export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles }: Deps) {
   const admin = { config: { access: 'admin' as const } };
   const actor = (request: Parameters<typeof viewer>[0]) => viewer(request).grant.accountId;
   const titleName = new Map<number, { title: string; year?: number }>();
@@ -109,7 +116,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     return { profiles: store.profileRows().map(p => ({ ...p, value: p.value as PickProfile, version: version([p.name, p.value]) })), rules, rulesVersion: version(rules),
       ladder: [...LADDER], earlyCopies: LADDER.filter(q => EARLY_COPIES.has(q)) };
   };
-  const settingsView = (): LibrarySettingsView => store.settings();
+  const settingsView = (): LibrarySettingsView => ({ ...store.settings(), seedingFloor: { ...IPT_FLOOR } });
   const titleView = async (titleId: number): Promise<LibraryTitleView> => {
     const title = store.title(titleId);
     requireThat(title && title.kind === 'movie', 'NOT_FOUND', 'No such movie in the library.', 404);
@@ -148,6 +155,17 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   });
 
   app.get('/api/v1/admin/library/wanted', admin, async () => ({ items: await library.wantedList() }) satisfies WantedList);
+  app.get('/api/v1/admin/library/movies', admin, async () => ({ items: library.movieList() }) satisfies MovieList);
+  // A movie's poster: a redirect to TMDB's, through the image proxy, from the cached details. 404 without one.
+  app.get('/api/v1/admin/library/titles/:id/poster', { config: { access: 'admin', rateLimit: { max: 1200, timeWindow: 60000 } } }, async (request, reply) => {
+    const title = store.title(id.parse(request.params).id);
+    requireThat(title && titles, 'NOT_FOUND', 'No poster.', 404);
+    const details = await titles.get(`/movie/${title.tmdbId}`, { append_to_response: 'alternative_titles,release_dates,external_ids' }).catch(() => undefined) as
+      { poster_path?: string | null } | undefined;
+    const url = tmdbImage(details?.poster_path, 'w154');
+    requireThat(url, 'NOT_FOUND', 'No poster.', 404);
+    return reply.header('Cache-Control', 'private, max-age=86400').redirect(url);
+  });
   app.get('/api/v1/admin/library/titles/:id', admin, async request => titleView(id.parse(request.params).id));
   app.put('/api/v1/admin/library/titles/:id', admin, async request => {
     const { id: titleId } = id.parse(request.params);

@@ -49,7 +49,7 @@ export const libraryModule = defineModule({
       log: (message, detail) => log.info(message, detail),
     });
     library.register();
-    registerLibraryAdmin(routes, { store, library, queue });
+    registerLibraryAdmin(routes, { store, library, queue, titles });
     bus.on('plex.library.changed', () => availability.soon());
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library
@@ -71,7 +71,7 @@ export const libraryModule = defineModule({
     const checkNow = () => jobs.track('library.downloads', () => library.checkDownloads());
     const seedNow = () => jobs.track('library.seeding', () => library.seedingCheck());
     jobs.add(
-      { id: 'library.wanted', label: 'Search for wanted movies', area: 'Library', section: 'downloads',
+      { id: 'library.wanted', label: 'Search for wanted movies', area: 'Library', section: 'wanted',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SWEEP_MINUTES } }), status: () => jobs.tracked('library.wanted'), run: sweepNow },
       { id: 'library.downloads', label: 'Check downloads', area: 'Library', section: 'downloads',
         schedule: () => ({ enabled: store.hasOpenGrabs(), schedule: { kind: 'every', minutes: CHECK_MS / 60000 } }), status: () => jobs.tracked('library.downloads'), run: checkNow },

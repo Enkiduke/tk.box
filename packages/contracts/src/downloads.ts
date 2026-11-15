@@ -16,9 +16,15 @@ export type DownloadsJob = { id: number; kind: string; label: string; subject?: 
 export type DownloadsSeeding = DownloadsGrab & { ratio?: number; seedingDays?: number; checkedAt?: number; removeAt?: number };
 export type DownloadsActivity = { open: DownloadsGrab[]; seeding: DownloadsSeeding[]; failed: DownloadsGrab[]; history: DownloadsGrab[]; jobs: DownloadsJob[] };
 
-export type WantedItem = { id: number; title: string; year?: number; why: 'missing' | 'cutoff'; quality?: string; paused: boolean; pausedReason?: string;
-  nextAt?: number; lastAt?: number; misses: number; grab?: GrabState };
+export type WantedItem = { id: number; tmdbId: number; title: string; year?: number; why: 'missing' | 'cutoff'; quality?: string; paused: boolean; pausedReason?: string;
+  nextAt?: number; lastAt?: number; misses: number; grab?: GrabState; addedAt: number };
 export type WantedList = { items: WantedItem[] };
+
+// Admin › Manage › Movies: every movie in the library. `quality`/`size` are its file's; `belowCutoff` only with a file;
+// `grab` is the last grab's state.
+export type MovieRow = { id: number; tmdbId: number; title: string; year?: number; quality?: string; size?: number; profileId: number; profile: string;
+  keep: boolean; paused: boolean; monitored: boolean; belowCutoff: boolean; grab?: GrabState; addedAt: number };
+export type MovieList = { items: MovieRow[] };
 
 export type LibraryFileView = { id: number; path: string; size: number; quality: string; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;
   importedAt: number; media: { durationSec?: number; videoCodec?: string; dynamicRange?: string; audioCodec?: string; audioChannels?: string; copied?: boolean } };
@@ -55,5 +61,7 @@ export type LibrarySettingsView = {
   revision: number; roots: { movie: string; show: string };
   naming: { movieFolder: string; movieFile: string; seriesFolder: string; seasonFolder: string; episodeFile: string };
   earlyCopies: boolean; protocol: 'usenet-first' | 'torrent-first'; defaultProfile: number; fulfil: { show: 'sonarr' | 'tkbox' };
+  // When a seeding torrent is removed; `seedingFloor` is IPTorrents' minimum, which the settings can't go below.
+  seeding: { ratio: number; minDays: number; maxDays: number }; seedingFloor: { ratio: number; days: number };
 };
 export type NamingPreview = { quality?: string; folder: string; file: string; path: string };

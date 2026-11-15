@@ -155,6 +155,14 @@ export class LibraryStore {
     rules.forEach((r, i) => insert.run(r.name, r.label ?? null, r.pattern, r.ban ? 0 : r.points, r.ban ? 1 : 0, r.applies, i));
   }
 
+  // Every movie in the library with its newest file and last grab (Admin › Manage › Movies).
+  allMovies() {
+    return (prepared(this.db, `SELECT t.*, f.quality AS file_quality, f.size AS file_size,
+        (SELECT g.state FROM grabs g WHERE g.title_id = t.id ORDER BY g.id DESC LIMIT 1) AS grab_state
+      FROM library_titles t LEFT JOIN library_files f ON f.id = (SELECT id FROM library_files WHERE title_id = t.id ORDER BY imported_at DESC, id DESC LIMIT 1)
+      WHERE t.kind = 'movie' ORDER BY t.title COLLATE NOCASE, t.id`).all() as (TitleRaw & { file_quality: string | null; file_size: number | null; grab_state: GrabState | null })[])
+      .map(r => ({ ...title(r), ...opt('fileQuality', r.file_quality === null ? null : quality(r.file_quality)), ...opt('fileSize', r.file_size), ...opt('grab', r.grab_state) }));
+  }
   // Every movie tk.box watches (Admin › Downloads › Wanted).
   monitoredMovies() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'movie' AND monitor != 'none' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }
   grabsFor(titleId: number, limit = 50) { return (prepared(this.db, 'SELECT * FROM grabs WHERE title_id = ? ORDER BY id DESC LIMIT ?').all(titleId, limit) as GrabRaw[]).map(grab); }

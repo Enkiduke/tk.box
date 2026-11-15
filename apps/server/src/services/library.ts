@@ -586,10 +586,20 @@ export class Library {
       const file = this.store.files(title.id)[0], search = this.store.search(title.id, 'movie'), grab = this.store.openGrabFor(title.id);
       const wanted = movieWanted({ monitor: title.monitor, paused: false, inPlex: this.deps.plex.has(title.tmdbId), ...(file ? { file } : {}) }, this.profile(title));
       if (!wanted.wanted) return [];
-      return [{ id: title.id, title: title.title, ...(title.year ? { year: title.year } : {}), why: wanted.why, ...(file ? { quality: file.quality } : {}),
+      return [{ id: title.id, tmdbId: title.tmdbId, title: title.title, ...(title.year ? { year: title.year } : {}), addedAt: title.addedAt, why: wanted.why, ...(file ? { quality: file.quality } : {}),
         paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
         ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}), misses: search.misses } : { misses: 0 }),
         ...(grab ? { grab: grab.state } : {}) }];
+    });
+  }
+  // Every movie, for Admin › Manage › Movies. Below cutoff is the profile's rule on its file (paused or not).
+  movieList() {
+    const names = new Map(this.store.profiles().map(p => [p.id, p.name]));
+    return this.store.allMovies().map(t => {
+      const belowCutoff = !!t.fileQuality && movieWanted({ monitor: 'all', paused: false, inPlex: true, file: { quality: t.fileQuality } }, this.profile(t)).wanted;
+      return { id: t.id, tmdbId: t.tmdbId, title: t.title, ...(t.year ? { year: t.year } : {}), ...(t.fileQuality ? { quality: t.fileQuality } : {}),
+        ...(t.fileSize !== undefined ? { size: t.fileSize } : {}), profileId: t.profileId, profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused,
+        monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt };
     });
   }
   async titleWanted(title: LibraryTitle) { await this.deps.plex.ready(); return this.wanted(title); }

@@ -15,7 +15,10 @@ import {HistoryAdmin} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
 import {UsersAdmin} from './users-admin.js';
 import {ScheduleAdmin} from './schedule-admin.js';
-import {DownloadsAdmin} from './downloads-admin.js';
+import {DownloadsPage,WantedPage} from './downloads-admin.js';
+import {MoviesPage} from './movies-admin.js';
+import {PickRulesPage} from './pick-rules-admin.js';
+import {LibrarySettingsPage} from './library-settings-admin.js';
 import './admin.css';
 
 export {ConnectionsRecovery} from './admin-connections.js';
@@ -24,8 +27,9 @@ export {ConnectionsRecovery} from './admin-connections.js';
 // It is its own bundle, loaded only when an administrator opens it, so none of it reaches viewers or the player.
 const groups=[
   ['Live TV',[['channels','Channels','shows'],['iptv','IPTV','live'],['sports','Live Events','star']]],
-  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['requests','Requests','download'],['downloads','Downloads','queue']]],
-  ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['playback','Playback','speed'],['cleanup','Clean Up','trash'],['schedule','Schedule','clock']]]
+  ['Manage',[['requests','Requests','download'],['downloads','Downloads','queue'],['wanted','Wanted','search'],['movies','Movies','movies'],['rules','Pick rules','filter'],['library-settings','Library settings','gear']]],
+  ['Library',[['collections','Collections','collection'],['artwork','Artwork','image'],['explore','Explore','explore'],['cleanup','Clean Up','trash']]],
+  ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['playback','Playback','speed'],['schedule','Schedule','clock']]]
 ] as const;
 type Section=typeof groups[number][1][number][0];
 const ownerOnly=new Set<string>(['users']);
@@ -36,13 +40,18 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
   const sectionIds=groups.flatMap(([,items])=>items.map(([id])=>id as string)).filter(id=>me.owner||!ownerOnly.has(id));
   const section=params.get('section');
   const requested=section??remembered('admin','iptv');
-  const asked=requested==='keys'?'connections':requested==='history'?'activity':requested==='admins'?'users':requested;
+  // Old Downloads links: its tabs are pages of their own now, and a title opens under Movies.
+  const tab=params.get('tab'),title=params.get('title');
+  const downloadsPage=title?'movies':tab==='wanted'?'wanted':tab==='rules'?'rules':tab==='library'?'library-settings':'downloads';
+  const asked=requested==='keys'?'connections':requested==='history'?'activity':requested==='admins'?'users':requested==='downloads'?downloadsPage:requested;
   const current=(sectionIds.includes(asked)?asked:'iptv') as Section;
   const open=(id:string)=>{remember('admin',id);const next=new URLSearchParams();next.set('section',id);window.location.hash=`admin?${next}`;};
-  // The open section is always in the address, so a reload or a shared link lands on it.
+  // The open section is always in the address, so a reload or a shared link lands on it. History keeps its filters,
+  // and Movies the title it opens.
   const query=section==='history'?new URLSearchParams(params):new URLSearchParams();
   query.set('section',current);
-  const canonicalRoute=section===current?undefined:`#admin?${query}`;
+  if(current==='movies'&&title)query.set('title',title);
+  const canonicalRoute=section===current&&!(section==='downloads'&&tab)?undefined:`#admin?${query}`;
   useEffect(()=>{if(canonicalRoute)replaceRoute(canonicalRoute);},[canonicalRoute]);
   if(me.role!=='admin')return <Empty title="Administrator access required"><a href="#settings">Open your settings</a></Empty>;
   return <div className="settings admin">
@@ -51,7 +60,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<SourceSettings/>:current==='sports'?<LiveSportsSettings/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='downloads'?<DownloadsAdmin params={params}/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='downloads'?<DownloadsPage/>:current==='wanted'?<WantedPage/>:current==='movies'?<MoviesPage params={params}/>:current==='rules'?<PickRulesPage/>:current==='library-settings'?<LibrarySettingsPage/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
     </div>
     <AdminConsole/>
   </div>;
