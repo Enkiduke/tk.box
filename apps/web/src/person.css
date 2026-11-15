@@ -1,0 +1,39 @@
+/* Person view (person.tsx). */
+.person-head{display:flex;align-items:flex-start;gap:clamp(16px,3vw,28px);padding:64px clamp(20px,4vw,48px) 12px;background:linear-gradient(180deg,var(--surface) 0%,var(--bg) 100%)}
+.person-photo{display:grid;place-items:center;flex:none;width:clamp(110px,14vw,150px);aspect-ratio:2/3;overflow:hidden;border-radius:10px;background:var(--surface-2);box-shadow:0 8px 24px rgba(0,0,0,.4);font-size:28px;color:var(--muted)}
+.person-photo img{width:100%;height:100%;object-fit:cover}
+.person-intro{min-width:0;display:grid;gap:8px}
+.person-intro h1{margin:0;font-size:clamp(24px,3vw,34px);line-height:1.1}
+.person-intro .detail-meta{margin:0}
+.person-bio{margin:0;max-width:68ch;color:var(--muted);font-size:14px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line}
+.person-bio.open{display:block}
+.person-links{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0;font-size:13px}
+.person-links a{color:var(--muted)}
+.person-links a:hover{color:var(--accent)}
+.person-body{display:grid;gap:18px;padding-top:12px}
+.title-discovery.person-body .person-row .row-scroll{grid-auto-columns:clamp(112px,14vw,140px);gap:12px}
+.person-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:2px 2px 6px;border:0;background:none;text-align:left;color:var(--text)}
+.person-title[aria-busy="true"]{cursor:progress;opacity:.7}
+.person-title:hover strong{color:var(--accent)}
+.person-title strong,.person-title .muted{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.person-title strong{font-size:13px}
+.person-title .muted{font-size:11px}
+.person-title-art{position:relative;display:block;width:100%;aspect-ratio:2/3;overflow:hidden;border-radius:8px;background:var(--surface-2);transition:transform .25s var(--ease)}
+.person-title:hover .person-title-art,.person-title:focus-visible .person-title-art{transform:translateY(-2px);box-shadow:0 0 0 2px var(--accent)}
+.person-title-art img{width:100%;height:100%;object-fit:cover}
+.person-title-art .explore-badge{display:inline-flex;align-items:center}
+.person-rank{position:absolute;left:6px;bottom:2px;font-size:34px;font-weight:800;line-height:1;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.8)}
+.person-section{display:grid;gap:10px}
+.person-section-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.person-section-head h2{margin:0;font-size:20px}
+.person-controls{display:flex;flex-wrap:wrap;gap:8px}
+.person-decade h3{margin:10px 0 4px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.person-credits{margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
+.person-credits li{border-bottom:1px solid var(--line)}
+.person-credits button{display:grid;grid-template-columns:48px minmax(0,1.4fr) minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;padding:7px 4px;border:0;background:none;text-align:left;font-size:14px;color:var(--text)}
+.person-credits button:hover{background:var(--surface)}
+.person-credits button:hover .person-credit-title{color:var(--accent)}
+.person-credits button[aria-busy="true"]{cursor:progress;opacity:.7}
+.person-credit-year{color:var(--muted);font-variant-numeric:tabular-nums}
+.person-credit-title,.person-credit-role{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.person-credit-role{font-size:13px}

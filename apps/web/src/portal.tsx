@@ -8,6 +8,7 @@ import {PlexSignIn} from './sign-in.js';
 import {requestsChanged} from './my-requests.js';
 import {RequestsPage} from './requests-page.js';
 import type {OpenRelatedTitle} from './title-discovery.js';
+import {DialogNavContext,useDialogHistory} from './dialog-history.js';
 import './style.css';
 // Request status badges are styled with Explore's.
 import './explore.css';
@@ -16,6 +17,7 @@ import './explore.css';
 // serves this site the routes these pages use, so nothing here plays or administers anything.
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 const ExploreDialog=lazy(()=>import('./explore.js').then(m=>({default:m.ExploreDialog})));
+const PersonDialog=lazy(()=>import('./person.js').then(m=>({default:m.PersonDialog})));
 const Calendar=lazy(()=>import('./calendar.js').then(m=>({default:m.Calendar})));
 window.addEventListener('vite:preloadError',event=>{
   let last=0;
@@ -28,11 +30,12 @@ const navigation=[['explore','Explore','explore'],['calendar','Calendar','calend
 function Portal() {
   const route=useRoute(),identity=useApi<Principal>('/me'),setup=useApi<{plexConfigured:boolean}>('/setup');
   const me=identity.error?.status===401?undefined:identity.data,signedIn=me?.accountId;
-  const [explored,setExplored]=useState<{account?:string;item:ExploreItem}>(),[error,setError]=useState('');
+  // The open title or person dialog and the steps behind it; this site has no library titles to open.
+  const dialogs=useDialogHistory(),dialog=dialogs.current,[error,setError]=useState('');
   const page=route.page==='home'?'explore':route.page;
-  useEffect(()=>{setExplored(undefined);},[page,signedIn]);
-  const select=useCallback((item:ExploreItem)=>setExplored({account:signedIn,item}),[signedIn]);
-  const openRelated:OpenRelatedTitle=useCallback(({item})=>select(item),[select]);
+  useEffect(()=>{dialogs.close();},[page,signedIn]);
+  const select=useCallback((item:ExploreItem)=>dialogs.start({type:'title',item}),[]);
+  const openRelated:OpenRelatedTitle=useCallback(({item})=>dialogs.push({type:'title',item}),[]);
   // A request changing (available, failed) reloads Explore's labels and the list, and says so.
   useEffect(()=>{
     if(!signedIn||!('EventSource' in window))return;
@@ -42,7 +45,6 @@ function Portal() {
     return()=>events.close();
   },[signedIn]);
   const logout=()=>void api('/auth/logout','POST').then(()=>{invalidate();identity.reload();window.location.hash='explore';},e=>setError((e as Error).message));
-  const exploredItem=explored&&explored.account===signedIn?explored.item:undefined;
   const fallback=<div className="page"><Loading/></div>;
   const content=!me?<section className="sign-in">{setup.error?<div className="sign-in-card"><ErrorNotice message={setup.error.message} retry={setup.reload}/></div>
       :!setup.data?<div className="sign-in-card"><Loading/></div>
@@ -63,7 +65,9 @@ function Portal() {
       {error&&<div className="toast"><ErrorNotice message={error} dismiss={()=>setError('')}/></div>}
       {identity.loading&&!me?fallback:content}
     </main>
-    {me&&exploredItem&&<Suspense fallback={null}><ExploreDialog key={exploredItem.key} item={exploredItem} admin={false} onClose={()=>setExplored(undefined)} onOpenRelated={openRelated}/></Suspense>}
+    {me&&dialog&&dialog.type!=='library'&&<DialogNavContext.Provider value={dialogs.nav}><Suspense fallback={null}>{dialog.type==='title'
+      ?<ExploreDialog key={dialog.item.key} item={dialog.item} admin={false} onClose={dialogs.close} onOpenRelated={openRelated}/>
+      :<PersonDialog key={dialog.person.id??dialog.person.name} person={dialog.person} onClose={dialogs.close} onOpenRelated={openRelated}/>}</Suspense></DialogNavContext.Provider>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<Portal/>);

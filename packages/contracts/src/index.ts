@@ -165,6 +165,16 @@ export type TitleCredit = {
   personId?: number; name: string; role: 'actor' | 'director' | 'creator'; character?: string; portraitUrl?: string;
 };
 export type TitleCredits = {tmdbId?: number; credits: TitleCredit[]};
+// A person's page (TMDB): their credits, each carrying tk.box's request label like Explore cards.
+// `roles`: acting and/or directing (a show's creator counts as directing).
+export type PersonCredit = { item: ExploreItem; roles: ('actor' | 'director')[]; character?: string; job?: string; votes: number; popularity: number; date?: string };
+export type PersonDetails = {
+  id: number; name: string; photoUrl?: string; department?: string; since?: number; biography?: string;
+  birthday?: string; deathday?: string; birthplace?: string; imdb?: string; movies: number; shows: number;
+  knownFor: PersonCredit[]; upcoming: PersonCredit[]; library: PersonCredit[]; credits: PersonCredit[];
+};
+export type PersonCoStar = { id: number; name: string; portraitUrl?: string; shared: number };
+export type PersonCoStars = { people: PersonCoStar[] };
 export type RelatedRowKind = 'similar' | 'maker' | 'actor';
 export type TitleRelated = {
   rows: {kind: RelatedRowKind; person?: TitleCredit; items: ExploreItem[]}[];
@@ -212,4 +222,7 @@ export type ExploreDetails = {
   // What is still open to request: the movie, or each regular season with its state. Absent when Radarr (movies) or
   // Sonarr (shows) isn't connected, or TMDB doesn't know the title.
   request?: { requestable: boolean; seasons: ExploreSeason[] };
+  // TMDB's YouTube trailer (or teaser), by YouTube video key.
+  trailer?: TitleTrailer;
 };
+export type TitleTrailer = { key: string; name?: string };

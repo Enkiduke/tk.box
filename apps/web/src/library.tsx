@@ -8,6 +8,8 @@ import {api} from './api.js';
 import {plural} from './settings-ui.js';
 import {liveSpeedPx,useHomeSettings} from './home-settings.js';
 import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
+import {DialogNavBar} from './dialog-history.js';
+import {TrailerButton} from './trailer.js';
 import {TitleFacts} from './title-facts.js';
 import {useExplorePrefs} from './explore-prefs.js';
 
@@ -255,7 +257,7 @@ type DetailProps={id:string;onOpen:(id:string)=>void;onOpenRelated:OpenRelatedTi
 // One dialog stays open while it moves from title to title (show, season, episode); only its contents change.
 export function Details({onClose,...props}:{onClose:()=>void}&DetailProps) {
   const item=useApi<CatalogItem>(`/catalog/items/${props.id}`);
-  return <Modal title={item.data?.title??'Media details'} onClose={onClose} variant="media" scrollKey={props.id}><DetailBody key={props.id} {...props}/></Modal>;
+  return <Modal title={item.data?.title??'Media details'} onClose={onClose} variant="media" scrollKey={props.id}><DialogNavBar title={item.data?.title}/><DetailBody key={props.id} {...props}/></Modal>;
 }
 function DetailBody({id,onOpen,onOpenRelated,onPlay,busy,error,admin}:DetailProps) {
   // A title from a list on screen draws at once; the full record fills in cast, ratings and the rest.
@@ -291,6 +293,7 @@ function DetailBody({id,onOpen,onOpenRelated,onPlay,busy,error,admin}:DetailProp
     <div className="button-row">
       <button className="primary large" disabled={busy||!target} onClick={()=>target&&onPlay(target,target.viewOffsetMs>0?'resume':undefined)}><Icon name="play"/>{!target?'Play':target.viewOffsetMs>0?'Resume':'Play'}{target&&target!==media&&<span className="button-detail">S{target.seasonNumber??'?'}:E{target.episodeNumber??'?'}</span>}{target&&target.viewOffsetMs>0&&target.durationMs?<span className="button-detail">{duration(target.durationMs-target.viewOffsetMs)} left</span>:null}</button>
       {target&&target.viewOffsetMs>0&&<button className="secondary large" disabled={busy} onClick={()=>onPlay(target,'beginning')}>Start over</button>}
+      {titleKind&&<TrailerButton trailer={info?.trailer} title={media.title}/>}
       {admin&&artworkKey(media)&&<button className="secondary large" onClick={()=>editArtwork(artworkKey(media)!)}><Icon name="image"/>Edit artwork</button>}
       {actions.trigger}{actions.menu}
     </div>

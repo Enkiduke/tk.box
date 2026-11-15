@@ -1332,3 +1332,15 @@ dialog:has(.picker){width:min(880px,calc(100% - 32px))}
 .up-next-play.counting::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--accent);transform-origin:left;animation:up-next-fill var(--countdown) linear forwards}
 @keyframes up-next-fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @media(prefers-reduced-motion:reduce){.up-next-play.counting::before{animation:none;transform:none}}
+/* Dialog history (dialog-history.tsx): Back and where it goes, over a title or person dialog's top left. */
+.dialog-nav{position:absolute;left:14px;top:14px;z-index:5;display:flex;align-items:center;gap:4px;max-width:calc(100% - 90px);padding:3px 10px 3px 3px;border-radius:20px;background:rgba(12,12,16,.6);backdrop-filter:blur(6px);font-size:13px;color:#ddd}
+.dialog-nav .icon-button{width:30px;height:30px;min-width:30px;background:transparent}
+.dialog-nav-crumb{overflow:hidden;max-width:220px;padding:0 2px;border:0;background:none;color:#bbb;text-overflow:ellipsis;white-space:nowrap}
+.dialog-nav-crumb:hover{color:var(--accent)}
+.dialog-nav-current{overflow:hidden;color:#fff;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+/* Trailer player (trailer.tsx): centered, as large as the window allows at 16:9, with Close above the video. */
+dialog:has(>.modal-content>.trailer-frame){width:min(calc(100vw - 96px),calc((100vh - 120px) * 16 / 9));max-height:none;margin:auto;border:0;border-radius:10px;background:#000;overflow:visible}
+dialog:has(>.modal-content>.trailer-frame)>.modal-content{padding:0}
+dialog:has(>.modal-content>.trailer-frame) .modal-close{top:-46px;right:0}
+.trailer-frame{position:relative;aspect-ratio:16/9;width:100%;overflow:hidden;border-radius:10px;background:#000}
+.trailer-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}

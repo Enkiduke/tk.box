@@ -1,15 +1,36 @@
-import {useContext,useEffect,useId,useRef,useState} from 'react';
+import {useCallback,useContext,useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import type {ExploreDetails,ExploreItem,RelatedRowKind,TitleCredit,TitleCredits,TitleRelated} from '../../../packages/contracts/src/index.js';
 import {Artwork,ErrorNotice,Icon,MediaModalEdge,personHref,Row} from './components.js';
 import {fetchCached,useApi} from './hooks.js';
 import {useExplorePrefs} from './explore-prefs.js';
+import {useDialogNav} from './dialog-history.js';
 import './title-discovery.css';
 
 type Kind=ExploreItem['kind'];
 type Ids=ExploreItem['ids'];
 type TitleSelection={item:ExploreItem;libraryId?:string};
 export type OpenRelatedTitle=(selection:TitleSelection)=>void;
+
+// Opens a title from a card: its copy on this server when one matches, else its Explore dialog. One at a time;
+// `opening` is the card being looked up.
+export function useOpenTitle(onOpen:OpenRelatedTitle) {
+  const {region}=useExplorePrefs();
+  const [opening,setOpening]=useState<string>(),active=useRef<symbol|undefined>(undefined);
+  useEffect(()=>()=>{active.current=undefined;},[]);
+  const open=useCallback(async(item:ExploreItem)=>{
+    if(active.current)return;
+    const token=Symbol();
+    active.current=token;
+    setOpening(item.key);
+    const details=await fetchCached<ExploreDetails>(detailsPath(item,region)).catch(()=>undefined);
+    if(active.current!==token)return;
+    active.current=undefined;
+    setOpening(undefined);
+    onOpen({item,libraryId:details?.matchedLibraryId});
+  },[onOpen,region]);
+  return {open,opening};
+}
 
 function titleParams(kind:Kind,ids:Ids) {
   const q=new URLSearchParams({kind});
@@ -29,40 +50,30 @@ export function detailsPath(item:Pick<ExploreItem,'kind'|'ids'|'title'|'year'>,r
   return `/explore/details?${q}`;
 }
 
+export const initials=(name:string)=>name.split(/\s+/u).slice(0,2).map(part=>Array.from(part)[0]).join('').toLocaleUpperCase();
+// A cast or crew member opens their person view; outside a dialog history it links to IMDb.
 function CastMember({person,kind,tmdb}:{person:TitleCredit;kind:Kind;tmdb?:number}) {
-  const initials=person.name.split(/\s+/u).slice(0,2).map(part=>Array.from(part)[0]).join('').toLocaleUpperCase();
+  const nav=useDialogNav();
   const caption=person.character??(person.role==='director'?'Director':person.role==='creator'?'Creator':undefined);
-  return <a className="title-credit" href={personHref(person.name,kind,tmdb)} target="_blank" rel="noreferrer">
+  const body=<>
     <span className="title-credit-portrait" aria-hidden="true">
-      <Artwork key={person.portraitUrl} src={person.portraitUrl} fallback={<strong>{initials}</strong>}/>
+      <Artwork key={person.portraitUrl} src={person.portraitUrl} fallback={<strong>{initials(person.name)}</strong>}/>
     </span>
     <strong className="title-credit-name" title={person.name}>{person.name}</strong>
     {caption&&<span className="title-credit-role" title={caption}>{caption}</span>}
-  </a>;
+  </>;
+  if(nav)return <button type="button" className="title-credit" onClick={()=>nav.openPerson({id:person.personId,name:person.name,kind,tmdb,portraitUrl:person.portraitUrl})}>{body}</button>;
+  return <a className="title-credit" href={personHref(person.name,kind,tmdb)} target="_blank" rel="noreferrer">{body}</a>;
 }
 
 const rowNames:Record<RelatedRowKind,string>={similar:'More like this',maker:'More from the director or creator',actor:'More with the lead actor'};
 
 function RelatedTitles({kind,tmdb,onOpen}:{kind:Kind;tmdb:number;onOpen:OpenRelatedTitle}) {
   const edge=useContext(MediaModalEdge);
-  const {region:streamingRegion}=useExplorePrefs();
   const [open,setOpen]=useState(false),[requested,setRequested]=useState(false);
   const related=useApi<TitleRelated>(requested?`/explore/title-related?kind=${kind}&tmdb=${tmdb}`:undefined);
   const region=useId();
-  const [opening,setOpening]=useState<string>(),activePick=useRef<symbol|undefined>(undefined);
-  useEffect(()=>()=>{activePick.current=undefined;},[]);
-
-  async function pick(item:ExploreItem) {
-    if(activePick.current)return;
-    const token=Symbol();
-    activePick.current=token;
-    setOpening(item.key);
-    const details=await fetchCached<ExploreDetails>(detailsPath(item,streamingRegion)).catch(()=>undefined);
-    if(activePick.current!==token)return;
-    activePick.current=undefined;
-    setOpening(undefined);
-    onOpen({item,libraryId:details?.matchedLibraryId});
-  }
+  const {open:pick,opening}=useOpenTitle(onOpen);
 
   return <>
     <div id={region} className="title-related-rows" hidden={!open}>

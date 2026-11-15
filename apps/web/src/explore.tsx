@@ -10,6 +10,8 @@ import {rowKey,useExplorePrefs} from './explore-prefs.js';
 import {StreamingSelector,StreamingStatus,useStreamingSelection} from './explore-streaming.js';
 import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
 import {displayName,TitleFacts} from './title-facts.js';
+import {DialogNavBar} from './dialog-history.js';
+import {TrailerButton} from './trailer.js';
 import './explore.css';
 
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves) and TMDB, on one page:
@@ -264,6 +266,7 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
   const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist.':'Removed from your Plex watchlist.');
   const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{done&&<p className="success explore-done" role="status"><Icon name="check" size={16}/>{done}</p>}</>;
   return <Modal title={item.title} onClose={onClose} variant="media">
+    <DialogNavBar title={item.title}/>
     <div className={`detail-hero${art?'':' no-art'}`}>
       {art&&<FadeImage src={art} alt="" decoding="async" fetchPriority="high" onError={e=>{e.currentTarget.hidden=true;}}/>}<div className="detail-shade"/>
       <div className="detail-hero-content explore-hero">
@@ -279,6 +282,7 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
           <div className="button-row">
             {info?.libraryId&&onOpen&&<button className="primary large" onClick={()=>onOpen(info.libraryId!)}><Icon name="play"/>Watch</button>}
             {canRequest&&<button className={info?.libraryId&&onOpen?'secondary large':'primary large'} disabled={busy} onClick={()=>{setDone('');setError('');setRequesting(true);}}><Icon name="plus"/>Request</button>}
+            <TrailerButton trailer={info?.trailer} title={item.title}/>
             {info?.watchlisted!==undefined&&item.ids.plex&&<button className="secondary large" aria-pressed={info.watchlisted} disabled={busy} onClick={()=>watchlist(!info.watchlisted)}><Icon name={info.watchlisted?'check':'star'}/>{info.watchlisted?'On Watchlist':'Watchlist'}</button>}
             {(details.loading&&!info||busy)&&<span className="spinner small-spinner" aria-label={busy?'Working':'Loading details'}/>}
           </div>

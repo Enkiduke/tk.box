@@ -17,12 +17,14 @@ import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
 import {getPlayerPreferences} from './player-preferences.js';
 import type {OpenRelatedTitle} from './title-discovery.js';
+import {DialogNavContext,useDialogHistory} from './dialog-history.js';
 // Settings and the Admin console are rarely visited, so they load on demand; the Admin console is its own bundle.
 const Settings=lazy(()=>import('./settings.js').then(m=>({default:m.Settings})));
 const Admin=lazy(()=>import('./admin.js').then(m=>({default:m.Admin})));
 const TitleArtwork=lazy(()=>import('./artwork-titles.js').then(m=>({default:m.TitleArtwork})));
 const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 const ExploreDialog=lazy(()=>import('./explore.js').then(m=>({default:m.ExploreDialog})));
+const PersonDialog=lazy(()=>import('./person.js').then(m=>({default:m.PersonDialog})));
 const Calendar=lazy(()=>import('./calendar.js').then(m=>({default:m.Calendar})));
 // A deploy replaces the hashed bundles, so a tab opened before it asks for files that are gone. Reload once to pick up
 // the new build; the timestamp stops a loop if the file is still missing after the reload.
@@ -72,9 +74,23 @@ function App() {
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
   const itemId=route.params.get('item');
-  const [explored,setExplored]=useState<{account?:string;page:string;item:ExploreItem}>();
-  const exploredItem=explored&&explored.account===signedIn&&explored.page===route.page?explored.item:undefined;
-  useEffect(()=>{setExplored(undefined);},[route.page,signedIn]);
+  // The open title or person dialog and the steps behind it. A library title's dialog also keeps `item` in the address.
+  const dialogs=useDialogHistory(),dialog=dialogs.current,dialogRef=useRef(dialog);dialogRef.current=dialog;
+  useEffect(()=>{dialogs.close();},[route.page,signedIn]);
+  // The address changed by itself (Back in the browser, a link): open that library title, or close its dialog.
+  const libraryItem=itemId&&/^\d+$/.test(itemId)?itemId:undefined;
+  useEffect(()=>{
+    const top=dialogRef.current;
+    if(libraryItem){if(top?.type!=='library'||top.id!==libraryItem)dialogs.openLibrary(libraryItem);}
+    else if(top?.type==='library')dialogs.close();
+  },[libraryItem]);
+  // Leaving a library title for an Explore title or a person takes `item` out of the address; coming back puts it in.
+  const withItem=(id:string|undefined)=>{
+    const {page,params}=routeRef.current,next=new URLSearchParams(params);
+    if(id)next.set('item',id);else next.delete('item');
+    replaceRoute(`#${page==='watch'?'home':page}${next.size?'?'+next:''}`);
+  };
+  useEffect(()=>{if(dialog)withItem(dialog.type==='library'?dialog.id:undefined);},[dialog]);
   const searchReturnTo=useRef('#home');
   const routeHash=link(route.page,Object.fromEntries(route.params));
   useEffect(()=>{if(['home','movies','shows','explore','live','settings','admin'].includes(route.page))searchReturnTo.current=routeHash;},[route.page,routeHash]);
@@ -88,20 +104,18 @@ function App() {
   useEffect(()=>{const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const banner=document.querySelector<HTMLButtonElement>('.nav-search-toggle');if(banner?.getClientRects().length){banner.click();return;}const input=document.querySelector<HTMLInputElement>('.browse-search input,.search-box input');if(input)input.focus();else window.location.hash='search';}};window.addEventListener('keydown',shortcut);return()=>window.removeEventListener('keydown',shortcut);},[]);
   useEffect(()=>{if(!itemId)window.scrollTo({top:0,behavior:'instant'});},[route.page]);
   // Stable callbacks keep memoized cards from re-rendering on unrelated shell updates.
-  const openItem=useCallback((id:string)=>{setExplored(undefined);setError('');const {page,params}=routeRef.current,next=new URLSearchParams(params);next.set('item',id);window.location.hash=`${page==='watch'?'home':page}?${next}`;},[]);
-  const closeItem=()=>{const params=new URLSearchParams(route.params);params.delete('item');window.location.hash=`${route.page}${params.size?'?'+params:''}`;};
-  const openExploreItem=useCallback((item:ExploreItem)=>{
-    const {page,params}=routeRef.current,next=new URLSearchParams(params);
-    if(next.has('item')){
-      next.delete('item');
-      replaceRoute(`#${page}${next.size?'?'+next:''}`);
-    }
-    setExplored({account:signedIn,page,item});
-  },[signedIn]);
+  // From a page, a library title opens with a new history (and a browser history entry); from a dialog it is a step.
+  const openItem=useCallback((id:string)=>{
+    setError('');
+    if(dialogRef.current){dialogs.openLibrary(id);return;}
+    const {page,params}=routeRef.current,next=new URLSearchParams(params);next.set('item',id);window.location.hash=`${page==='watch'?'home':page}?${next}`;
+  },[]);
+  const closeDialog=()=>{dialogs.close();withItem(undefined);};
+  const openExploreItem=useCallback((item:ExploreItem)=>dialogs.start({type:'title',item}),[]);
   const openRelated:OpenRelatedTitle=useCallback(({item,libraryId})=>{
-    if(libraryId)openItem(libraryId);
-    else openExploreItem(item);
-  },[openItem,openExploreItem]);
+    if(libraryId)dialogs.push({type:'library',id:libraryId,label:item.title});
+    else dialogs.push({type:'title',item});
+  },[]);
   async function action(fn:()=>Promise<void>) {if(locking.current)return;locking.current=true;setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{locking.current=false;setBusy(false);}}
   async function stop(replacingLive=false) {
     failover.current.cancel();setSwitchingLive(false);
@@ -307,9 +321,12 @@ function App() {
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={22}/><span>{label}</span></a>)}</nav>}
     <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} reconnecting={reconnecting} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
-    {me&&(itemId&&/^\d+$/.test(itemId)
-      ?<Details id={itemId} onClose={closeItem} onOpen={openItem} onOpenRelated={openRelated} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>
-      :exploredItem&&<Suspense fallback={null}><ExploreDialog key={exploredItem.key} item={exploredItem} admin={admin} onClose={()=>setExplored(undefined)} onOpen={openItem} onOpenRelated={openRelated}/></Suspense>)}
+    {me&&dialog&&<DialogNavContext.Provider value={dialogs.nav}>{dialog.type==='library'
+      ?<Details id={dialog.id} onClose={closeDialog} onOpen={openItem} onOpenRelated={openRelated} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>
+      :<Suspense fallback={null}>{dialog.type==='title'
+        ?<ExploreDialog key={dialog.item.key} item={dialog.item} admin={admin} onClose={closeDialog} onOpen={openItem} onOpenRelated={openRelated}/>
+        :<PersonDialog key={dialog.person.id??dialog.person.name} person={dialog.person} onClose={closeDialog} onOpenRelated={openRelated}/>}</Suspense>}
+    </DialogNavContext.Provider>}
     {artwork&&<Suspense fallback={null}><TitleArtwork key={artwork} ratingKey={artwork} onClose={()=>setArtwork(undefined)}/></Suspense>}
   </div>;
 }

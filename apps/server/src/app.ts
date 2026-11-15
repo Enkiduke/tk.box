@@ -91,7 +91,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     }
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
-    reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
     if (config.secureCookies) reply.header('Strict-Transport-Security', 'max-age=31536000');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       const host = req.headers.host, peer = req.raw.socket.remoteAddress;

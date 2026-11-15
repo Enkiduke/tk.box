@@ -1,4 +1,4 @@
-import type {ExploreDetails,RelatedRowKind,TitleCredit,TitleCredits,TitleRelated} from '../../../../packages/contracts/src/index.js';
+import type {ExploreDetails,RelatedRowKind,TitleCredit,TitleCredits,TitleRelated,TitleTrailer} from '../../../../packages/contracts/src/index.js';
 import {flagImage,tmdbImage} from './explore-images.js';
 import {tmdbCandidate,type Candidate,type TmdbExplore} from './tmdb-explore.js';
 import type {TitleKind,TmdbTitles} from './tmdb-titles.js';
@@ -18,7 +18,16 @@ type TmdbDetail=NonNullable<Parameters<typeof tmdbCandidate>[0]>&{
   release_dates?:{results?:{iso_3166_1:string;release_dates?:{certification?:string}[]}[]};
   content_ratings?:{results?:{iso_3166_1:string;rating?:string}[]};
   'watch/providers'?:{results?:Record<string,{flatrate?:Provider[]}>};
+  videos?:{results?:Video[]};
 };
+type Video={site?:unknown;key?:unknown;type?:unknown;official?:unknown;name?:unknown};
+// A title's trailer: an official YouTube trailer first, then any trailer, then a teaser (official first).
+export function pickTrailer(videos:Video[]|undefined):TitleTrailer|undefined {
+  const usable=list(videos).filter(v=>v?.site==='YouTube'&&typeof v.key==='string'&&/^[\w-]{6,20}$/.test(v.key));
+  const rank=(v:Video)=>(v.type==='Trailer'?0:v.type==='Teaser'?2:9)+(v.official===true?0:1);
+  const best=usable.filter(v=>rank(v)<9).sort((a,b)=>rank(a)-rank(b))[0];
+  return best?{key:best.key as string,...(typeof best.name==='string'&&best.name.trim()?{name:best.name.trim()}:{})}:undefined;
+}
 const positiveId=(value:unknown):value is number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>0;
 const list=<T>(value:T[]|undefined):T[]=>Array.isArray(value)?value:[];
 const text=(value:unknown)=>typeof value==='string'?value.trim():'';
@@ -61,7 +70,7 @@ export class TmdbTitleDiscovery {
     const tmdbId=await this.resolve(type,ids);
     if(!tmdbId)return;
     const credits=type==='tv'?'aggregate_credits,credits,content_ratings':'credits,release_dates';
-    const raw=await this.client.get(`/${type}/${tmdbId}`,{append_to_response:`${credits},external_ids,watch/providers`}) as TmdbDetail|undefined;
+    const raw=await this.client.get(`/${type}/${tmdbId}`,{append_to_response:`${credits},external_ids,watch/providers,videos`}) as TmdbDetail|undefined;
     if(raw&&!raw.adult)return {tmdbId,raw};
   }
 
@@ -102,19 +111,25 @@ export class TmdbTitleDiscovery {
       item,genres:list(raw.genres).map(g=>g.name),cast:people([...list(raw.aggregate_credits?.cast),...list(raw.credits?.cast)],'actor',8).map(p=>p.name),
       tagline:raw.tagline||undefined,network:raw.networks?.[0]?.name,status:raw.status,contentRating,
       released:release&&/^\d{4}-\d{2}-\d{2}$/.test(release)?release:undefined,language:item.language,countries,
-      studios:list(raw.production_companies).flatMap(c=>c.name??[]).slice(0,3),providers
+      studios:list(raw.production_companies).flatMap(c=>c.name??[]).slice(0,3),providers,trailer:pickTrailer(raw.videos?.results)
     } satisfies Partial<ExploreDetails>;
   }
 
-  async imdbPerson(name:string,type?:TitleKind,tmdb?:number) {
+  // A person's TMDB ID by name: from the title's own credits when given, else an exact-name search.
+  async personId(name:string,type?:TitleKind,tmdb?:number):Promise<number|undefined> {
     if(!this.client.configured())return;
     const title=type&&tmdb?await this.readTitle(type,{tmdb}).catch(()=>undefined):undefined;
     const exact=(candidates:Person[])=>candidates.find(p=>positiveId(p?.id)&&text(p.name).toLowerCase()===name.toLowerCase());
     const raw=title?.raw;
     const candidates=[...list(raw?.aggregate_credits?.cast),...list(raw?.credits?.cast),...list(raw?.credits?.crew),...list(raw?.created_by)];
     const found=exact(candidates)??exact(list((await this.client.get('/search/person',{query:name}) as {results?:Person[]}|undefined)?.results));
-    if(!found)return;
-    const ids=await this.client.get(`/person/${found.id}/external_ids`) as {imdb_id?:string}|undefined;
+    return found?found.id as number:undefined;
+  }
+
+  async imdbPerson(name:string,type?:TitleKind,tmdb?:number) {
+    const id=await this.personId(name,type,tmdb);
+    if(!id)return;
+    const ids=await this.client.get(`/person/${id}/external_ids`) as {imdb_id?:string}|undefined;
     if(ids?.imdb_id&&/^nm\d{1,12}$/.test(ids.imdb_id))return ids.imdb_id;
   }
 

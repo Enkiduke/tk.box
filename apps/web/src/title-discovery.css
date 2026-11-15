@@ -5,10 +5,14 @@
 .title-discovery .row-scroll::-webkit-scrollbar{display:block;height:6px}
 .title-cast-row .row-track{display:flex;min-width:100%;gap:12px}
 .title-cast-row .title-credit{width:88px;flex:1 0 88px}
-.title-credit{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:0;padding:4px 2px 8px;text-align:center;color:var(--text);text-decoration:none}
+.title-credit{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:5px;min-width:0;padding:6px 2px 8px;border:0;border-radius:0;background:none;text-align:center;color:var(--text);text-decoration:none;white-space:normal;font-weight:inherit}
+.title-credit:hover,.title-credit:focus-visible{background:none;outline:none}
 .title-credit:hover .title-credit-name{color:var(--accent)}
-.title-credit-portrait{position:relative;display:block;width:68px;aspect-ratio:1;overflow:hidden;border-radius:50%;background:var(--surface-2);margin-bottom:3px;box-shadow:0 0 0 2px transparent,0 2px 6px rgba(0,0,0,.28);transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
-.title-credit:hover .title-credit-portrait,.title-credit:focus-visible .title-credit-portrait{transform:scale(1.05);box-shadow:0 0 0 2px var(--accent),0 4px 10px rgba(0,0,0,.38)}
+/* Portraits look like the home page's poster cards: a faint edge, a soft shadow, and lift with an accent edge on hover. */
+.title-credit-portrait{position:relative;display:block;width:68px;aspect-ratio:1;overflow:hidden;border-radius:50%;background:var(--surface-2);margin-bottom:3px;box-shadow:0 2px 10px rgba(0,0,0,.35);transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
+.title-credit-portrait:after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);transition:box-shadow .2s}
+.title-credit:hover .title-credit-portrait,.title-credit:focus-visible .title-credit-portrait{transform:translateY(-3px) scale(1.04);box-shadow:0 10px 22px rgba(0,0,0,.55)}
+.title-credit:hover .title-credit-portrait:after,.title-credit:focus-visible .title-credit-portrait:after{box-shadow:inset 0 0 0 2px var(--accent)}
 .title-credit-portrait img{width:100%;height:100%;object-fit:cover}
 .title-credit-portrait .art-fallback{color:var(--text);font-size:19px}
 .title-credit-name,.title-credit-role,.title-related-card strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -12,6 +12,7 @@ import {viewer as caller} from './modules/access.js';
 import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
 import type {TmdbTitles} from './providers/tmdb-titles.js';
 import {TmdbTitleDiscovery} from './providers/tmdb-title-discovery.js';
+import {TmdbPeople} from './providers/tmdb-people.js';
 import {ExploreRecommendations,type WatchedTitle} from './explore-recommendations.js';
 import { TtlCache } from './lib/ttl-cache.js';
 
@@ -95,7 +96,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const tmdbId=requests.tmdbForKey?.(kind,ratingKey);
     return tmdbId?[{kind,tmdbId,at,...(plays?{plays}:{}),...(title?{title}:{}),...(year?{year}:{})}]:[];
   });
-  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb);
+  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb),people=new TmdbPeople(tmdbClient,titleDiscovery);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=caller(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     await viewer(request);
@@ -199,6 +200,24 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const image=await images.get(u);
     return reply.type(image.type).header('Cache-Control','private, max-age=86400').send(image.bytes);
   });
+  // A person's page: by TMDB ID, or by name (and the title they were listed in) for cast Plex named without one.
+  app.get('/api/v1/explore/people',{config:{access:'viewer',rateLimit:{max:120,timeWindow:60000}}},async request=>{
+    const input=z.object({id:z.coerce.number().int().positive().optional(),name:z.string().trim().min(1).max(200).optional(),
+      kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query);
+    await viewer(request);
+    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+    requireThat(input.id||input.name,'INVALID_REQUEST','Choose a person.',400);
+    const id=input.id??await titleDiscovery.personId(input.name!,input.kind==='show'?'tv':input.kind,input.tmdb);
+    const person=id?await people.details(id,labelItems):undefined;
+    requireThat(person,'PERSON_MISSING','TMDB has no page for this person.',404);
+    return person;
+  });
+  app.get('/api/v1/explore/people/co-stars',{config:{access:'viewer',rateLimit:{max:120,timeWindow:60000}}},async request=>{
+    const {id}=z.object({id:z.coerce.number().int().positive()}).strict().parse(request.query);
+    await viewer(request);
+    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+    return people.coStars(id);
+  });
   // Resolve IMDb person IDs through TMDB, with an IMDb name-search fallback.
   app.get('/api/v1/explore/person',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{
     const input=z.object({name:z.string().trim().min(1).max(200),kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query);
@@ -247,11 +266,14 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   }
   // tk.box's request labels on Plex and TMDB titles: on this server, partly, downloading or requested.
   async function labelled<T extends {items:ExploreItem[]}>(page:T):Promise<T> {
+    return {...page,items:labelItems(page.items)};
+  }
+  function labelItems(items:ExploreItem[]) {
     const index=requests.labels();
-    return {...page,items:page.items.map(item=>{
+    return items.map(item=>{
       const status=item.ids.tmdb?index.get(`${item.kind}:tmdb:${item.ids.tmdb}`):undefined;
       return status?{...item,status}:item;
-    })};
+    });
   }
   // One title's details from every source that knows it, its copy on this server, its watchlist state and what can be requested.
   async function details(input:z.infer<typeof ids>&{kind:'movie'|'show';title:string;year?:number;region:string;library:'true'|'false'},grant:PlexGrant,account:string,token:string):Promise<ExploreDetails> {
