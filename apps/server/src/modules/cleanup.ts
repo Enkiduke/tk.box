@@ -27,7 +27,7 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, log }, { artwork, requests, arr, watches }: Deps) {
+  setup(routes, { config, db, vault, bus, background, jobs, log }, { artwork, requests, arr, watches }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
       const own = store.connections();
@@ -42,6 +42,9 @@ export const cleanupModule = defineModule({
     engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
     engine.deleted = titles => requests.removedByCleanup(titles);
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
+    jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
+      status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },
+      run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
       // Tautulli's saved dates, for Explore's suggestions.
       api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },

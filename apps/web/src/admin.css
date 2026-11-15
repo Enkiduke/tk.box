@@ -516,3 +516,70 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .requests-tags{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px}
 .requests-tags>span{width:100%;font-size:13px;font-weight:600}
 .requests-tags label{display:inline-flex;align-items:center;gap:6px;font-size:13px}
+
+/* Admin › Schedule */
+.jobs-card{--ok:#4fc47e;--warn:#e9b949;--bad:#e5675a}
+.jobs-count{font-size:12px;color:var(--muted);padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface)}
+.jobs-dim{color:var(--dim)}
+.jobs-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 8px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap;color:var(--muted);background:rgba(255,255,255,.05)}
+.jobs-pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.8}
+.jobs-pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.jobs-pill.failed{color:var(--bad);background:color-mix(in srgb,var(--bad) 13%,transparent)}
+.jobs-pill.waiting,.jobs-pill.running{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.jobs-pill.running::before{animation:jobs-pulse 1.2s ease-in-out infinite}
+@keyframes jobs-pulse{50%{opacity:.25}}
+
+/* Timeline: the rail */
+.jobs-timeline{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(0,1.3fr);gap:28px}
+.jobs-rail{position:relative;list-style:none;margin:0;padding:4px 0;display:grid;align-content:start;font-size:13px}
+.jobs-rail::before{content:"";position:absolute;left:87px;top:14px;bottom:14px;width:1px;background:var(--line-strong)}
+.jobs-rail li{display:grid;grid-template-columns:76px 22px minmax(0,1fr) auto;align-items:center;min-height:30px;gap:0}
+.jobs-rail li>i{position:relative;justify-self:center;width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px var(--bg)}
+.jobs-rail li.past>i{background:var(--muted)}
+.jobs-rail li.past.ok>i{background:var(--ok)}
+.jobs-rail li.past.failed>i{background:var(--bad)}
+.jobs-rail li.past.waiting>i,.jobs-rail li.past.running>i{background:var(--warn)}
+.jobs-rail li.past .jobs-label{color:var(--muted)}
+.jobs-rail .jobs-when{color:var(--muted);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;padding-right:4px}
+.jobs-rail .jobs-label{padding-left:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jobs-rail li.now{min-height:34px}
+.jobs-rail li.now .jobs-when{color:var(--accent);font-weight:700}
+.jobs-rail li.now>i{width:11px;height:11px;background:var(--accent);box-shadow:0 0 0 3px var(--bg),0 0 0 6px var(--accent-tint)}
+.jobs-line{grid-column:3/5;height:1px;margin-left:10px;background:linear-gradient(90deg,var(--accent),transparent)}
+
+/* Timeline: the day, hour by hour */
+.jobs-day{min-width:0;border-left:1px solid var(--line);padding-left:24px}
+.jobs-day-head{font-size:12px;font-weight:600;color:var(--muted);margin:4px 0 10px}
+.jobs-hours{display:grid;align-content:start;max-height:440px;overflow-y:auto;padding-right:4px;scrollbar-width:thin}
+.jobs-hour{display:grid;grid-template-columns:52px minmax(0,1fr);gap:10px;min-height:22px}
+.jobs-hour-label{font-size:11px;color:var(--dim);text-align:right;padding-top:5px;font-variant-numeric:tabular-nums}
+.jobs-hour-runs{position:relative;display:flex;flex-wrap:wrap;gap:4px;padding:3px 0;border-top:1px solid var(--line)}
+.jobs-hour.quiet .jobs-hour-runs{min-height:22px}
+.jobs-hour.now{min-height:18px}
+.jobs-hour.now .jobs-hour-label{color:var(--accent);font-weight:700;padding-top:0;line-height:18px}
+.jobs-hour.now .jobs-hour-runs{border-top:0;padding:0;align-items:center}
+.jobs-now-line{position:relative;flex:1;height:2px;background:linear-gradient(90deg,var(--accent),color-mix(in srgb,var(--accent) 15%,transparent));border-radius:2px}
+.jobs-now-line::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.jobs-quiet{font-size:11px;color:var(--dim);padding-top:3px}
+.jobs-hour.folded .jobs-hour-runs{border-top-style:dashed}
+.jobs-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;padding:4px 9px;border-radius:5px;font-size:12px;background:var(--surface-2,rgba(255,255,255,.05));border:1px solid var(--line);border-left:3px solid var(--line-strong)}
+.jobs-chip.ok{border-left-color:var(--ok)}
+.jobs-chip.failed{border-left-color:var(--bad)}
+.jobs-chip.waiting,.jobs-chip.running{border-left-color:var(--warn)}
+.jobs-chip .jobs-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:550}
+.jobs-chip .jobs-times{color:var(--accent);font-weight:600;font-size:11px}
+.jobs-chip .jobs-at{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+
+/* All jobs */
+.jobs-table td{padding:11px 12px}
+.jobs-table tbody tr:hover{background:rgba(255,255,255,.025)}
+.jobs-table tr.is-off td{color:var(--dim)}
+.jobs-table tr.is-off .jobs-name{color:var(--muted)}
+.jobs-table td:last-child{width:1%;white-space:nowrap;text-align:right}
+.jobs-name{color:var(--text);font-weight:600;font-size:14px;text-decoration:none}
+.jobs-name:hover{text-decoration:underline}
+.jobs-area{margin-left:10px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.jobs-note{max-width:420px;white-space:normal}
+.jobs-note.failed{color:var(--bad)}
+.jobs-note.waiting{color:var(--warn)}
+@media(max-width:1100px){.jobs-timeline{grid-template-columns:1fr}.jobs-day{border-left:0;padding-left:0}}

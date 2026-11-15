@@ -131,3 +131,17 @@ export const scheduleEvery = (minutes: number) => schedule.superRefine((value, c
   else if (gap < minutes) ctx.addIssue({ code: 'custom', message: `Runs too often: at most ${everyText(minutes).toLowerCase()}.` });
 });
 export const scheduled = (minutes: number) => z.preprocess(toScheduled, z.object({ enabled: z.boolean(), schedule: scheduleEvery(minutes) }).strict());
+
+// Admin › Schedule: every background job, when it last ran and when it runs next.
+export type JobState = 'running' | 'ok' | 'failed' | 'waiting' | 'off' | 'never';
+export type JobView = {
+  id: string; label: string; area: string;
+  // The Admin section where its schedule is set.
+  section: string;
+  // "Every 6 hours", "Daily at 04:00" (whether or not it is on), or "Manual only".
+  schedule: string; state: JobState; note?: string;
+  lastRun?: number; nextRun?: number;
+  // Its runs from now to `until`, the first being nextRun.
+  upcoming: number[]; canRun: boolean;
+};
+export type JobList = { now: number; until: number; jobs: JobView[] };

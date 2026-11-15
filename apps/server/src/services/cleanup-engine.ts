@@ -246,6 +246,12 @@ export class CleanupEngine {
     } catch { return { updated: null, dryRun: true, complete: true, items: [] }; }
   }
   scheduleState() { return this.store.state<{ lastRun?: number; note?: string }>('schedule') ?? {}; }
+  // The scheduled run, now (Admin › Schedule): it counts as the schedule's last run.
+  runNow(actor: string, token: string) {
+    const job = this.enqueue(actor, false, token);
+    this.store.setState('schedule', { lastRun: Date.now(), note: 'Queued.' });
+    return job;
+  }
   start() { this.timer = every(60000, () => this.tick(), e => this.log('clean up schedule failed', errorDetail(e))); }
   close() { this.timer?.stop(); this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
   // On its schedule (server local time), or up to two hours late if tk.box was down then.

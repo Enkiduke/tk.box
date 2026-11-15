@@ -57,6 +57,8 @@ export class HealthStore {
     })();
     return this.policy(sourceId);
   }
+  // When the source's next channel falls due on its schedule (Admin › Schedule); undefined while checks are manual only.
+  nextDue(sourceId: string) { return (prepared(this.db, `SELECT MIN(COALESCE(h.due,0)) AS due ${joins} WHERE c.source_id=? AND ${eligible} AND COALESCE(p.interval_hours,24)>0`).get(sourceId) as { due: number | null }).due ?? undefined; }
   dueSources(now = Date.now()) { return (prepared(this.db, `SELECT DISTINCT c.source_id AS id ${joins} WHERE ${eligible} AND ${isDue}`).all({ now }) as { id: string }[]).map(r => r.id); }
   // Requested checks first, then channels that have played (what viewers see), then the oldest results.
   due(sourceId: string, limit: number, skip: Set<string>, now = Date.now()) {

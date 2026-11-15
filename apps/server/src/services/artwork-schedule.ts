@@ -3,6 +3,7 @@ import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import type { ArtworkEngine } from './artwork-engine.js';
 import type { Finished } from './plex-notifications.js';
 import { WAITING } from './plex-background.js';
+import { AppError } from '../errors.js';
 import { dueAt, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
@@ -20,7 +21,9 @@ export const TASKS = {
   'collections-custom': { label: 'Scheduled: custom and seasonal collections', script: 'collections', args: ['custom', 'apply'], upload: true },
   'collections-all': { label: 'Scheduled: update every collection', script: 'collections', args: ['all', 'apply'], upload: true }
 } as const;
-type Task = keyof typeof TASKS;
+export type Task = keyof typeof TASKS;
+// A newly added check, run now by name (Admin › Schedule) even while it is off; `true` runs those that are on.
+type Soon = boolean | 'added' | 'collections-added';
 type StateName = ScheduleName | `collections-${CollectionScheduleName}` | 'index-added';
 type AddedItem = { id: string; title: string; showTitle?: string; addedAt?: number };
 export type ScheduleState = { lastRun?: number; note?: string };
@@ -39,7 +42,7 @@ export class ArtworkSchedule {
   private settle?: NodeJS.Timeout;
   private settleSince?: number;
   private ticking = false;
-  private again = false;
+  private again: Soon = false;
   private libraries: PlexGrant['libraries'] = [];
   constructor(private store: ArtworkStore, private engine: ArtworkEngine, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private streaming: (grant: PlexGrant) => Promise<number> = async () => 0) {}
@@ -70,9 +73,9 @@ export class ArtworkSchedule {
   private state(name: StateName) { return this.store.state<ScheduleState>(`schedule:${name}`) ?? {}; }
   states() { return Object.fromEntries((['scrub', 'added'] as ScheduleName[]).map(name => [name, this.state(name)])) as Record<ScheduleName, ScheduleState>; }
   collectionStates() { return Object.fromEntries((['custom', 'all', 'added'] as CollectionScheduleName[]).map(name => [name, this.state(`collections-${name}`)])) as Record<CollectionScheduleName, ScheduleState>; }
-  // `soon` runs the newly added checks that are on now, whenever they last ran.
-  async tick(now = new Date(), soon = false) {
-    if (this.ticking) { this.again ||= soon; return; }
+  // `soon` runs the newly added checks that are on now, whenever they last ran (or the one it names, on or not).
+  async tick(now = new Date(), soon: Soon = false) {
+    if (this.ticking) { if (soon) this.again = !this.again || this.again === soon ? soon : true; return; }
     this.ticking = true;
     try {
       const settings = this.store.settings(), collections = this.store.collections(), schedules = settings.schedules, own = collections.schedules;
@@ -83,9 +86,9 @@ export class ArtworkSchedule {
         return due === undefined ? [] : [[name, due] as const];
       }));
       const dueDaily = [...dueTimes.keys()];
-      const checks = (name: StateName, value: Scheduled) => value.enabled && (soon || dueAt(value.schedule, this.state(name).lastRun, now.getTime(), LATE_MS) !== undefined);
+      const checks = (name: StateName, value: Scheduled) => soon === name || value.enabled && (soon === true || dueAt(value.schedule, this.state(name).lastRun, now.getTime(), LATE_MS) !== undefined);
       const added = checks('added', schedules.added), collectionsAdded = checks('collections-added', own.added);
-      const indexAdded = soon || now.getTime() - (this.state('index-added').lastRun ?? 0) >= INDEX_EVERY_MS;
+      const indexAdded = soon !== false || now.getTime() - (this.state('index-added').lastRun ?? 0) >= INDEX_EVERY_MS;
       if (!dueDaily.length && !added && !collectionsAdded && !indexAdded) return;
       const grant = await this.adminGrant().catch(() => undefined);
       if (!grant) {
@@ -135,7 +138,7 @@ export class ArtworkSchedule {
     } catch (e) { this.log('artwork schedule failed', { error: (e as Error).message }); }
     finally {
       this.ticking = false;
-      if (this.again) { this.again = false; void this.tick(new Date(), true); }
+      if (this.again) { const again = this.again; this.again = false; void this.tick(new Date(), again); }
     }
   }
   // Each library's titles added since this check's watermark, one job each (a show's new episodes count once), oldest
@@ -164,6 +167,15 @@ export class ArtworkSchedule {
     this.store.setState(mark, newest);
     const left = found.length - handled, titles = (n: number) => `${n} newly added title${n === 1 ? '' : 's'}`;
     done(left ? `Queued ${titles(queued)}; ${left} more next check.` : queued ? `Queued ${titles(queued)}.` : 'Nothing new.');
+  }
+  // A full run now (Admin › Schedule), by whoever asked, with their grant.
+  runNow(name: Task, actor: string, grant: PlexGrant) {
+    const task = TASKS[name], upload = this.store.settings().upload;
+    const args = task.upload && !upload ? name === 'collections-all' ? ['index', 'build'] : undefined : [...task.args];
+    if (!args) throw new AppError('ARTWORK_UPLOAD_OFF', 'Send results to Plex is off (Admin › Artwork).', 409);
+    if (this.engine.pending(args, task.script)) throw new AppError('JOB_QUEUED', 'Already queued.', 409);
+    this.engine.enqueue(actor, args[0] === 'index' ? 'Discover index: build' : task.label.replace('Scheduled: ', ''), args, { token: grant.serverToken, libraries: grant.libraries }, { script: task.script });
+    this.store.setState(`schedule:${name}`, { lastRun: Date.now(), note: 'Queued.' });
   }
   private note(name: StateName, note: string) { this.store.setState(`schedule:${name}`, { ...this.state(name), note }); }
 }

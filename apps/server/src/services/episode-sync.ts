@@ -10,11 +10,13 @@ import { every, errorDetail, type Repeating } from '../lib/every.js';
 export class EpisodeSync {
   private running = new Map<string, Promise<SyncResult>>();
   private timer?: Repeating;
+  // Wraps each background check, so Admin › Schedule can tell when it last ran.
+  track: (task: () => Promise<void>) => Promise<void> = task => task();
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private intervalMs = 3600000) {}
   start() {
     const failed = (e: unknown) => this.log('automatic new episodes failed', errorDetail(e));
-    this.timer = every(this.intervalMs, () => this.tick(), failed); void this.tick().catch(failed);
+    this.timer = every(this.intervalMs, () => this.track(() => this.tick()), failed); void this.track(() => this.tick()).catch(failed);
   }
   close() { this.timer?.stop(); }
   // One check per selection at a time; a second request joins the running one.

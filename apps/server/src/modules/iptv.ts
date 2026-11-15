@@ -18,6 +18,7 @@ import { DEFAULT_ESPN, DEFAULT_TSDB } from '../providers/sports-feeds.js';
 import { registerSports } from '../sports-api.js';
 import type { CustomChannelStore } from '../persistence/custom-channels.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
+import type { Job } from '../services/jobs.js';
 
 const list = (value: string | undefined, fallback: string[]) => { const items = (value ?? '').split(',').map(s => s.trim()).filter(Boolean); return items.length ? items : fallback; };
 
@@ -26,7 +27,7 @@ const list = (value: string | undefined, fallback: string[]) => { const items = 
 export const iptvModule = defineModule({
   name: 'iptv',
   migrations: iptvMigrations,
-  setup(routes, { config, db, vault, plex, bus, budget, serviceKeys, log }, { custom }: { custom: CustomChannelStore }) {
+  setup(routes, { config, db, vault, plex, bus, budget, serviceKeys, jobs, log }, { custom }: { custom: CustomChannelStore }) {
     const iptv = new IptvStore(db, vault), refresh = new SourceRefresh(iptv);
     refresh.published = sourceId => bus.emit('iptv.source.published', { sourceId });
     registerIptv(routes, iptv, refresh, { custom, plexArtwork: async (req, id, kind) => plex.artwork(viewer(req).grant, id, kind) });
@@ -59,6 +60,22 @@ export const iptvModule = defineModule({
     // New listings or a new TheSportsDB key: match events again.
     bus.on('iptv.source.published', () => sports.invalidate());
     bus.on('service-keys.changed', () => sports.invalidate());
+    // Admin › Schedule: each remote source's refresh, and each M3U source's channel checks.
+    const words = (code: string) => code.replaceAll('_', ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+    jobs.addEach(() => iptv.list().flatMap(source => {
+      const area = source.kind === 'm3u' ? 'IPTV' : 'Guide', section = 'iptv';
+      const refreshJob: Job[] = source.remote ? [{ id: `iptv.refresh.${source.id}`, label: `Refresh ${source.name}`, area, section,
+        schedule: () => ({ enabled: true, schedule: source.schedule }), next: () => source.nextDue ?? undefined,
+        status: () => ({ lastRun: source.lastAttempt ?? undefined, running: refresh.active(source.id), ...(source.lastError ? { note: words(source.lastError),
+          waiting: source.lastError === 'SNAPSHOT_REVIEW_REQUIRED', failed: source.lastError !== 'SNAPSHOT_REVIEW_REQUIRED' } : {}) }),
+        run: by => { void refresh.refresh(by.actor, source.id).catch(() => {}); } }] : [];
+      if (source.kind !== 'm3u' || !health.enabled) return refreshJob;
+      const policy = healthStore.policy(source.id);
+      return [...refreshJob, { id: `iptv.checks.${source.id}`, label: `Check channels: ${source.name}`, area, section,
+        schedule: () => policy.schedule ? { enabled: true, schedule: policy.schedule } : undefined, next: () => healthStore.nextDue(source.id),
+        status: () => ({ lastRun: healthStore.summary(source.id).lastChecked ?? undefined, running: health.active(source.id) > 0 }),
+        run: () => { health.queueSource(source.id); } }];
+    }));
     let timer: Repeating | undefined;
     return {
       api: { store: iptv, live },

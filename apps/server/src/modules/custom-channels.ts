@@ -14,10 +14,14 @@ type Deps = { localMedia: LocalMedia; pauseRetentionMs: () => number };
 export const customChannelsModule = defineModule({
   name: 'custom-channels',
   migrations: customChannelsMigrations,
-  setup(routes, { config, db, plex, bus, budget, background, log }, { localMedia, pauseRetentionMs }: Deps) {
+  setup(routes, { config, db, plex, bus, budget, background, jobs, log }, { localMedia, pauseRetentionMs }: Deps) {
     const store = new CustomChannelStore(db);
     const episodes = new EpisodeSync(store, plex, () => background.grant(), (message, detail) => log.info(message, detail));
     registerCustomChannels(routes, store, plex, episodes);
+    episodes.track = task => jobs.track('channels.episodes', task);
+    jobs.add({ id: 'channels.episodes', label: 'Add new episodes', area: 'Channels', section: 'channels',
+      schedule: () => ({ enabled: store.autoSources().length > 0, schedule: { kind: 'every', minutes: 60 } }), status: () => jobs.tracked('channels.episodes'),
+      run: () => episodes.track(() => episodes.tick()) });
     const parts = new PartProxy(plex), tv = new CustomTv(store, plex, localMedia, parts, budget, config.CACHE_DIR, pauseRetentionMs, config.SEGMENT_CACHE_MAX_BYTES,
       config.FFMPEG_PATH, (message, detail) => log.warn(message, detail));
     tv.historyServerId = config.PLEX_MACHINE_ID;

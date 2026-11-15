@@ -7,6 +7,7 @@ import type { EncoderBudget } from '../streaming/policy.js';
 import type { ServiceKeys } from '../persistence/service-keys.js';
 import type { PlexBackground } from '../services/plex-background.js';
 import type { EventBus } from './bus.js';
+import type { Jobs } from '../services/jobs.js';
 import type { AccessLevel } from './access.js';
 import { migrate, type Migration } from '../persistence/migrate.js';
 
@@ -19,6 +20,8 @@ export type ModuleContext = {
   serviceKeys: ServiceKeys;
   // The owner's Plex grant from the saved Plex admin token, for work no viewer started.
   background: PlexBackground;
+  // Admin › Schedule: each module registers its background jobs here.
+  jobs: Jobs;
   log: { info: (message: string, detail?: object) => void; warn: (message: string, detail?: object) => void };
 };
 
