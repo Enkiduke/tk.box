@@ -24,11 +24,11 @@ const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:u
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
 const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.ListFormat(undefined,{type}).format(parts);
 
-// Filters: original languages, genres, a release year range, a minimum score and request labels to hide. They, the
-// content type and each row's streaming service start over every time Explore opens.
+// Filters: original languages, genres, a release year range, a minimum score and request labels to hide, kept in this
+// browser. The content type and each row's streaming service start over every time Explore opens.
 type Filters={languages:string[];genres:ExploreGenre[];from:string;to:string;min:string;hide:Hideable[]};
 type Hideable=ExploreStatus;
-const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]};
+const noFilters:Filters={languages:[],genres:[],from:'',to:'',min:'',hide:[]},FILTERS_KEY='tk.box.explore.filters';
 const contentTypes=[['all','All'],['movie','Movies'],['show','Shows']] as const;
 type ContentType=typeof contentTypes[number][0];
 const hideable:Hideable[]=['requested','downloading','partial','available'];
@@ -46,6 +46,8 @@ function cleanFilters(value:Partial<Record<keyof Filters,unknown>>):Filters {
 }
 // Until a viewer changes them, rows leave out what is already on its way or here; search never does.
 const defaultFilters:Filters={...noFilters,hide:['requested','downloading','available']};
+const loadFilters=():Filters=>{try{const saved=localStorage.getItem(FILTERS_KEY);return saved===null?defaultFilters:cleanFilters(JSON.parse(saved));}catch{return defaultFilters;}};
+const saveFilters=(f:Filters)=>{try{localStorage.setItem(FILTERS_KEY,JSON.stringify(f));}catch{/* storage unavailable; applies until reload */}};
 function filterQuery(f:Filters,hide=true) {
   const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.genres.length)q.set('genre',f.genres.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);if(hide&&f.hide.length)q.set('hide',f.hide.join(','));
   const text=q.toString();return text?`&${text}`:'';
@@ -208,7 +210,8 @@ export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLS
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
   const source=available.find(s=>s===params.get('source'));
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
-  const [filters,changeFilters]=useState(defaultFilters),[contentType,changeContentType]=useState<ContentType>('all');
+  const [filters,setFilters]=useState(loadFilters),[contentType,changeContentType]=useState<ContentType>('all');
+  const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
   const kindQuery=contentType==='all'?'':`&kind=${contentType}`,fq=filterQuery(filters)+kindQuery,searchFq=filterQuery(filters,false)+kindQuery;
   // Leaving Explore forgets each row's chosen streaming service, so coming back shows All again.
   useEffect(()=>clearStreamingSelections,[]);
