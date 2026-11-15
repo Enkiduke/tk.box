@@ -10,6 +10,7 @@ import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
 import { viewer } from './modules/access.js';
 import { TtlCache } from './lib/ttl-cache.js';
+import { movieReleaseDate, releaseDay } from './lib/release-day.js';
 
 const day = z.iso.date();
 const query = z.object({from: day, to: day, zone: z.string().min(1).max(100).default('UTC'), account: z.string().optional()}).strict();
@@ -32,12 +33,6 @@ const episode = z.object({
 type Scheduled = CalendarEntry & { hasFile?: boolean };
 type Source = keyof CalendarPage['sources'];
 
-function datePart(value: unknown) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value)) return undefined;
-  const date = value.slice(0, 10);
-  return day.safeParse(date).success && date > '0001-01-01' ? date : undefined;
-}
-
 function cover(art: z.infer<typeof images>, types: string[]) {
   return types.flatMap(type => (art ?? []).filter(image => image.coverType.toLowerCase() === type)
     .flatMap(image => imagePath(image.remoteUrl ?? undefined) ?? imagePath(image.url ?? undefined) ?? []))[0];
@@ -54,11 +49,9 @@ function movieEntry(raw: unknown): Scheduled[] {
   const result = movie.safeParse(raw);
   if (!result.success || !result.data.tmdbId) return [];
   const item = result.data;
-  const digital = datePart(item.digitalRelease), physical = datePart(item.physicalRelease);
-  const useDigital = digital && (!physical || digital <= physical);
-  const release = useDigital ? digital : physical ?? datePart(item.inCinemas);
+  const release = movieReleaseDate(item);
   if (!release) return [];
-  return [{...titleFields(item), key: `movie:${item.tmdbId}`, day: release, kind: useDigital ? 'digital' : physical ? 'physical' : 'theatrical', hasFile: item.hasFile}];
+  return [{...titleFields(item), key: `movie:${item.tmdbId}`, day: release.day, kind: release.format, hasFile: item.hasFile}];
 }
 
 function episodeEntry(raw: unknown): Scheduled[] {
@@ -68,8 +61,8 @@ function episodeEntry(raw: unknown): Scheduled[] {
   const seriesKey = series.tvdbId ? `tvdb:${series.tvdbId}` : series.tmdbId ? `tmdb:${series.tmdbId}` : series.imdbId;
   if (!seriesKey) return [];
   const timed = z.iso.datetime({offset: true}).safeParse(airDateUtc);
-  const airTime = timed.success && datePart(timed.data) ? new Date(timed.data) : undefined;
-  const release = datePart(airDate) ?? (airTime && datePart(airTime.toISOString()));
+  const airTime = timed.success && releaseDay(timed.data) ? new Date(timed.data) : undefined;
+  const release = releaseDay(airDate) ?? (airTime && releaseDay(airTime.toISOString()));
   if (!release) return [];
   return [{...titleFields(series), key: `episode:${seriesKey}:${seasonNumber}:${episodeNumber}`, kind: 'episode',
     day: release, airTime: airTime?.toISOString(), season: seasonNumber, episode: episodeNumber,

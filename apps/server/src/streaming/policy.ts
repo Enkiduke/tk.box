@@ -51,8 +51,11 @@ export function qualityOptions(source: SourceVideo, client: ClientCapabilities, 
 export class EncoderBudget {
   private active = new Set<string>();
   constructor(private getLimit: () => number) {}
+  // Told when a stream is turned away at the limit (system-alerts).
+  refused?: (limit: number) => void;
   reserve(pipelineId: string) {
     requireThat(!this.active.has(pipelineId), 'DUPLICATE_PIPELINE', 'Encoder is already reserved.', 409);
+    if (this.active.size >= this.getLimit()) this.refused?.(this.getLimit());
     if (this.active.size >= this.getLimit()) throw new AppError('TRANSCODE_CAPACITY_REACHED', 'Transcoding capacity reached. Please try again.', 503, true);
     // Synchronous admission in the single Node process, before any asynchronous startup.
     this.active.add(pipelineId); let released = false;

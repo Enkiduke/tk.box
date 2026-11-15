@@ -27,6 +27,8 @@ export class Jobs {
   private sources: (() => Job[])[] = [];
   private kept = new Map<string, JobStatus>();
   constructor(private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {}
+  // Told of each Run now, so its finish can be announced (system-alerts).
+  ranByHand?: (id: string) => void;
   add(...jobs: Job[]) { this.sources.push(() => jobs); }
   // Jobs that come and go, one per IPTV source say.
   addEach(jobs: () => Job[]) { this.sources.push(jobs); }
@@ -50,6 +52,7 @@ export class Jobs {
     requireThat(job, 'JOB_NOT_FOUND', 'That job no longer exists.', 404);
     requireThat(job.run, 'JOB_NOT_RUNNABLE', 'This job can’t be run by hand.', 409);
     this.log('job run by hand', { job: id, actor: by.actor });
+    this.ranByHand?.(id);
     const result = job.run(by);
     // Errors that come quickly (already running, not set up) go back to whoever asked; later ones show in its status.
     if (result instanceof Promise) {

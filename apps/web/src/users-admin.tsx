@@ -4,6 +4,7 @@ import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Loading,Modal} from './components.js';
 import {Card,SectionHead,Switch,date,plural,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 const PATH='/admin/users';
 const initials=(name:string)=>name.trim().split(/\s+/).slice(0,2).map(word=>word.charAt(0).toUpperCase()).join('')||'?';
@@ -14,7 +15,6 @@ export function UsersAdmin() {
   const view=useApi<PlexUsersView>(PATH);
   const [query,setQuery]=useState('');
   const [removing,setRemoving]=useState<PlexUserSettings>();
-  const [notice,setNotice]=useState('');
   const mutation=useMutation(()=>invalidate(PATH));
   const head=<SectionHead title="Users" description="Manage Plex access to this server and choose who can administer tk.box.">
     <button type="button" onClick={view.reload} disabled={view.loading||mutation.busy}>Refresh</button>
@@ -39,8 +39,9 @@ export function UsersAdmin() {
   function revoke(user:PlexUserSettings) {
     void mutation.run(async()=>{
       await api(`${PATH}/${user.key}/plex-access`,'DELETE');
+      invalidate('/admin/cleanup/users');
       setRemoving(undefined);
-      setNotice(user.access==='pending'?`Cancelled the Plex invitation for ${user.name}.`:`Revoked Plex access for ${user.name}.`);
+      toast.success(user.access==='pending'?`Cancelled the Plex invitation for ${user.name}`:`Revoked Plex access for ${user.name}`);
     });
   }
 
@@ -49,7 +50,6 @@ export function UsersAdmin() {
     {data.directoryIncomplete&&<div className="notice" role="status">Plex couldn’t load the full Friends and Home lists. Server shares are shown below.</div>}
     {!data.canRevoke&&<div className="notice" role="status">Plex access changes are disabled in read-only mode.</div>}
     {!data.ownerTokenSaved&&data.admins.length>0&&<div className="notice"><span>Save your Plex admin token in <a href="#admin?section=connections">Admin › Connections</a> to let other admins run Clean Up, Artwork and Collections.</span></div>}
-    {notice&&<div className="notice" role="status">{notice}</div>}
     {!removing&&mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     <Card title="Plex users" description={`${people.size} ${people.size===1?'entry':'entries'} · ${plural(data.admins.length,'delegated admin')}`}>
       <input type="search" className="users-search" placeholder="Find a Plex user" aria-label="Find a Plex user" value={query} onChange={e=>setQuery(e.target.value)}/>
@@ -71,12 +71,12 @@ export function UsersAdmin() {
               {isOwner?<span className="muted small">tk.box admin</span>:user.accountId&&(user.canAdmin||admin)&&
                 <Switch label="tk.box admin" ariaLabel={`tk.box admin for ${user.name}`} description={admin?`Since ${date(admin.addedAt)}`:undefined}
                   checked={!!admin} disabled={busy} onChange={on=>{
-                    setNotice('');
+                    
                     void mutation.run(()=>api(PATH,'POST',{accountId:user.accountId,admin:on}));
                   }}/>}
               {!isOwner&&user.access!=='none'&&<button type="button" className="danger" disabled={busy||!data.canRevoke||!!view.error}
                 aria-label={user.access==='pending'?`Cancel invitation for ${user.name}`:`Remove Plex access for ${user.name}`}
-                onClick={()=>{setNotice('');mutation.setError('');setRemoving(user);}}>{user.access==='pending'?'Cancel':'Remove'}</button>}
+                onClick={()=>{mutation.setError('');setRemoving(user);}}>{user.access==='pending'?'Cancel':'Remove'}</button>}
             </div>
           </li>;
         })}</ul>}

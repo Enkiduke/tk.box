@@ -1,5 +1,8 @@
 import { resolve } from 'node:path';
+import type { CleanupUsersView } from '../../../../packages/contracts/src/index.js';
 import { defineModule } from './module.js';
+import { viewer } from './access.js';
+import { requireThat } from '../errors.js';
 import { cleanupMigrations } from './migrations/cleanup.js';
 import { CleanupStore } from '../persistence/cleanup-store.js';
 import { CleanupEngine, cleanupCollections, type CleanupServices } from '../services/cleanup-engine.js';
@@ -9,6 +12,7 @@ import type { ArtworkEngine } from '../services/artwork-engine.js';
 import type { ArrService } from '../providers/arr-tags.js';
 import type { Requests } from '../services/requests.js';
 import type { CleanupWatch } from '../persistence/cleanup-store.js';
+import type { IdentityService } from '../services/identity.js';
 
 type Deps = {
   // The collections artwork keeps are never purged.
@@ -19,6 +23,7 @@ type Deps = {
   requests: Pick<Requests, 'forCleanup' | 'removedByCleanup' | 'keepTag'>;
   // Watch history: each account's latest watch of each title on a Plex server.
   watches: (serverId: string) => CleanupWatch[];
+  identity: Pick<IdentityService, 'accountToken'>;
 };
 
 // Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
@@ -27,7 +32,7 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, jobs, log }, { artwork, requests, arr, watches }: Deps) {
+  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, arr, watches, identity }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
       return { radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr') };
@@ -35,6 +40,27 @@ export const cleanupModule = defineModule({
     const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
       dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, services, () => background.grant(), (message, detail) => log.info(message, detail));
     registerCleanup(routes, store, engine, services);
+    routes.get('/api/v1/admin/cleanup/users', async (req): Promise<CleanupUsersView> => {
+      const { hash, grant } = viewer(req);
+      const isOwner = grant.accountId === config.PLEX_OWNER_ACCOUNT_ID;
+      const token = isOwner ? identity.accountToken(hash) : serviceKeys.get('plex');
+      const owner = isOwner ? grant : await background.grant();
+      requireThat(token && owner && (isOwner || token === serviceKeys.get('plex')), 'PLEX_ADMIN_TOKEN_REQUIRED',
+        'Connect a working Plex admin token in Admin › Connections to load Plex users.', 503);
+
+      const { users, directoryIncomplete } = await plex.plexUsers(token);
+      const options = new Map<number, CleanupUsersView['users'][number]>();
+      for (const user of users.values()) {
+        if (user.accountId !== owner.accountId && !user.home && !user.access.some(share => !share.pending)) continue;
+        const accountId = Number(user.accountId);
+        if (Number.isSafeInteger(accountId) && accountId > 0) options.set(accountId, { accountId, name: user.name, username: user.username });
+      }
+      const ownerId = Number(owner.accountId);
+      if (Number.isSafeInteger(ownerId) && ownerId > 0) options.set(ownerId, {
+        accountId: ownerId, name: owner.name || options.get(ownerId)?.name || 'Plex server owner', username: options.get(ownerId)?.username,
+      });
+      return { users: [...options.values()], directoryIncomplete };
+    });
     engine.finished = () => bus.emit('library.edited', { by: 'cleanup' });
     engine.requests = () => requests.forCleanup();
     engine.serverId = () => config.PLEX_MACHINE_ID;

@@ -4,6 +4,7 @@ import {useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,remember,remembered,useMutation} from './settings-ui.js';
 import {BACKGROUND_LAYER,BANNER_CATEGORIES,CARD_LAYERS,POSTER_LAYERS,isOn,layerFields,turned,type Field,type Layer,type Section,type V} from './artwork-fields.js';
+import {toast} from './toasts.js';
 
 // Admin › Artwork › Layouts: pick a layout and edit it in the poster studio, a large window with the layout's layers on the
 // left, one of your titles drawn with the changes in the middle and the chosen layer's settings on the right. Edits are kept
@@ -73,7 +74,7 @@ type StudioProps={data:Template;layout:TemplateLayout;reload:()=>void;titles:Tit
   open:Record<string,boolean>;setOpen:Setter<Record<string,boolean>>;keys:boolean;setKeys:(on:boolean)=>void};
 function Studio({data,layout,reload,titles,edits,setEdits,setName,sample,setSample,layer,setLayer,open,setOpen,keys,setKeys}:StudioProps) {
   const current=layout.role,key=layout.name,mine=edits[key]??{},savedValues=layout.values,values:V={...savedValues,...mine},inherited=layout.inherited;
-  const [find,setFind]=useState(''),[banner,setBanner]=useState(''),[saved,setSaved]=useState(''),mutation=useMutation(()=>{});
+  const [find,setFind]=useState(''),[banner,setBanner]=useState(''),mutation=useMutation(()=>{});
   const [preview,setPreview]=useState<{url?:string;note:string;error?:boolean;busy:boolean;boxes?:Boxes}>({note:'',busy:false}),[hover,setHover]=useState<string>();
   // Preview on titles the layout is used for (any title when that isn't known); seasons and cards need a show.
   // Only titles of the kinds the layout is used for, collections by their kind; any title when that isn't known. None of
@@ -103,7 +104,7 @@ function Studio({data,layout,reload,titles,edits,setEdits,setName,sample,setSamp
   };
   useEffect(()=>{latest.current();},[key,JSON.stringify(mine),sampleId,banner,data.version]);
   useEffect(()=>()=>{if(shown.current)URL.revokeObjectURL(shown.current);},[]);
-  const set=(k:string,v:unknown)=>{setSaved('');setEdits(all=>{const next={...(all[key]??{})};if(same(v,savedValues[k]))delete next[k];else next[k]=v;return {...all,[key]:next};});};
+  const set=(k:string,v:unknown)=>{setEdits(all=>{const next={...(all[key]??{})};if(same(v,savedValues[k]))delete next[k];else next[k]=v;return {...all,[key]:next};});};
   const layers=layersFor(current,!!media?.some(m=>m.startsWith('collections:'))),selected=layers.find(l=>l.id===layer[current])??layers[0]!;
   const pick=(id:string)=>{setLayer(all=>({...all,[current]:id}));setFind('');};
   const reset=(f:Field)=>f.badge?set(f.k,turned(f,values[f.k],isOn(f,savedValues[f.k]))):keysOf(f).forEach(k=>set(k,savedValues[k]));
@@ -120,7 +121,7 @@ function Studio({data,layout,reload,titles,edits,setEdits,setName,sample,setSamp
   const count=Object.keys(mine).length,children=data.layouts.filter(l=>l.base===layout.name).map(l=>l.name);
   const save=()=>void mutation.run(async()=>{await api<Template>('/admin/artwork/template/save','POST',{layout:layout.name,values:mine});
     setEdits(all=>{const rest={...all};delete rest[key];return rest;});reload();
-    setSaved(`Saved. ${MADE[current]} using ${layout.name}${children.length?`, and the ${children.join(' and ')} settings that follow it,`:''} change the next time they’re made (Update changed titles, or push a title).`);});
+    toast.success('Layout saved',{detail:`${MADE[current]} using ${layout.name}${children.length?`, and the ${children.join(' and ')} settings that follow it,`:''} change the next time they’re made (Update changed titles, or push a title).`});});
   const row=(f:Field)=>f.glows?<Glows key={f.k} f={f} values={values} saved={savedValues} defaults={data.glows} set={set}/>
     :f.banners?<Banners key={f.k} f={f} values={values} saved={savedValues} defaults={data.banners} banner={banner} setBanner={setBanner} set={set}/>
     :f.anchor?<AnchorRow key={f.k} f={f} values={values} changed={differs(f,values,savedValues)} set={set} reset={()=>reset(f)} inherit={inherit(f)}/>
@@ -166,7 +167,6 @@ function Studio({data,layout,reload,titles,edits,setEdits,setName,sample,setSamp
       </div>
     </header>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    {saved&&!count&&<p className="success small" role="status">{saved}</p>}
     <div className="studio-body">
       <nav className="studio-layers" aria-label="Layers">
         <h4>Layers</h4>
@@ -295,7 +295,7 @@ export function LayoutAdvanced({layouts,inUse,changed,back}:{layouts:LayoutEntry
 }
 type Layout={name:string;revision:number;updatedAt:number;value:Record<string,unknown>};
 function JsonLayout({name,inUse,changed,removed}:{name:string;inUse:string|null;changed:()=>void;removed:()=>void}) {
-  const layout=useApi<Layout>(`/admin/artwork/layouts/${name}`),[text,setText]=useState(''),[done,setDone]=useState(false),mutation=useMutation(()=>{layout.reload();changed();});
+  const layout=useApi<Layout>(`/admin/artwork/layouts/${name}`),[text,setText]=useState(''),mutation=useMutation(()=>{layout.reload();changed();});
   useEffect(()=>{if(layout.data)setText(JSON.stringify(layout.data.value,null,2));},[layout.data?.revision]);
   if(layout.loading&&!layout.data)return <Loading/>;
   if(layout.error)return <ErrorNotice message={layout.error.message} retry={layout.reload}/>;
@@ -303,11 +303,11 @@ function JsonLayout({name,inUse,changed,removed}:{name:string;inUse:string|null;
   let parsed:unknown,problem='';try{parsed=JSON.parse(text);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))problem='A layout is a JSON object of settings.';}catch(e){problem=(e as Error).message;}
   return <Card title={name} description="Every field, as the engine reads it."
     actions={<button type="button" className="danger" disabled={!!inUse||mutation.busy} title={inUse??undefined} onClick={()=>void mutation.run(async()=>{await api(`/admin/artwork/layouts/${name}`,'DELETE');removed();})}>Delete</button>}>
-    <form className="form-stack" onSubmit={e=>{e.preventDefault();if(problem)return;setDone(false);void mutation.run(async()=>{await api(`/admin/artwork/layouts/${name}`,'PUT',{expectedRevision:current.revision,value:parsed});setDone(true);});}}>
-      <textarea className="code-input" rows={24} spellCheck={false} value={text} aria-label={`${name} layout settings`} onChange={e=>{setText(e.target.value);setDone(false);}}/>
+    <form className="form-stack" onSubmit={e=>{e.preventDefault();if(problem)return;void mutation.run(async()=>{await api(`/admin/artwork/layouts/${name}`,'PUT',{expectedRevision:current.revision,value:parsed});toast.success('Layout saved');});}}>
+      <textarea className="code-input" rows={24} spellCheck={false} value={text} aria-label={`${name} layout settings`} onChange={e=>{setText(e.target.value);}}/>
       {problem&&<p className="danger small">{problem}</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={!!problem||mutation.busy}>Save layout</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+      <div className="button-row"><button className="primary" disabled={!!problem||mutation.busy}>Save layout</button></div>
     </form>
   </Card>;
 }

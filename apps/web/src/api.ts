@@ -4,6 +4,11 @@ export async function api<T>(path: string, method = 'GET', body?: unknown,signal
   const r = await fetch(`/api/v1${path}`, {method, signal:signal?AbortSignal.any([signal,deadline]):deadline,credentials: 'same-origin', headers: method === 'GET' ? {} : {'Content-Type': 'application/json'}, ...(method === 'GET' ? {} : {body: JSON.stringify(body ?? {})})});
   // Empty (204) or non-JSON proxy errors must still surface as API errors.
   const data = r.status===204?{}:await r.json().catch(()=>({}));
+  if (r.status===401&&sessionEnded&&!path.startsWith('/auth/')&&path!=='/me')sessionEnded();
   if (!r.ok) throw new ApiClientError(data.message ?? 'Request failed.',data.code??'REQUEST_FAILED',r.status);
   return data as T;
 }
+
+// Told when a call comes back 401 while the page thinks it is signed in (the session ended elsewhere or expired).
+let sessionEnded:(()=>void)|undefined;
+export function onSessionEnded(handler:()=>void) {sessionEnded=handler;return()=>{if(sessionEnded===handler)sessionEnded=undefined;};}

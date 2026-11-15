@@ -1,12 +1,14 @@
-import {useEffect,useId,useState} from 'react';
+import {useEffect,useId,useRef,useState} from 'react';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {Card,SectionHead,Switch,remember,remembered,useMutation} from './settings-ui.js';
 import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
+import type {CleanupUsersView} from '../../../packages/contracts/src/index.js';
 import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
 import {openConsole,type Job} from './admin-console.js';
 import {CleanupStatus} from './cleanup-status.js';
+import {toast} from './toasts.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
 // by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Radarr and
@@ -67,15 +69,15 @@ function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
 
 // Its own tab, saved with the rest of the settings as they were last saved.
 function CleanupSchedules({data,changed}:{data:Overview;changed:()=>void}) {
-  const [draft,setDraft]=useState(data.settings.schedule),[done,setDone]=useState(false),mutation=useMutation(changed);
+  const [draft,setDraft]=useState(data.settings.schedule),mutation=useMutation(changed);
   useEffect(()=>setDraft(data.settings.schedule),[data.settings.revision]);
-  const save=()=>void mutation.run(async()=>{const {revision,...saved}=data.settings;await api('/admin/cleanup/settings','PUT',{expectedRevision:revision,...saved,schedule:draft});setDone(true);});
+  const save=()=>void mutation.run(async()=>{const {revision,...saved}=data.settings;await api('/admin/cleanup/settings','PUT',{expectedRevision:revision,...saved,schedule:draft});toast.success('Schedules saved');});
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Schedules" description="Server local time. Needs the Plex token.">
-      <div className="artwork-schedules"><ScheduleRow label="Clean up" hint="A preview while Preview only is on." state={data.schedule} min={60} value={draft} set={value=>{setDone(false);setDraft(value);}}/></div>
+      <div className="artwork-schedules"><ScheduleRow label="Clean up" hint="A preview while Preview only is on." state={data.schedule} min={60} value={draft} set={value=>{setDraft(value);}}/></div>
     </Card>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button></div>
   </form>;
 }
 
@@ -90,20 +92,59 @@ function RetentionRow({audience,title,anchor,value,onChange}:{audience:string;ti
     <div className="cleanup-duration"><span aria-hidden="true">Keep for</span><div><input id={id} type="number" min="0" max="3650" step="1" required value={value} aria-describedby={`${id}-anchor ${id}-unit`} onChange={e=>onChange(Number(e.target.value))}/><span id={`${id}-unit`}>days</span></div></div>
   </div>;
 }
+function RetentionUsers({selected,onChange}:{selected:number[];onChange:(ids:number[])=>void}) {
+  const directory=useApi<CleanupUsersView>('/admin/cleanup/users');
+  const [query,setQuery]=useState(''),popup=useRef<HTMLDetailsElement>(null),id=useId();
+  useEffect(()=>{
+    const outside=(event:MouseEvent)=>{if(popup.current?.open&&!popup.current.contains(event.target as Node))popup.current.open=false;};
+    document.addEventListener('click',outside);
+    return()=>document.removeEventListener('click',outside);
+  },[]);
+  const users=[...(directory.data?.users??[])].sort((a,b)=>a.name.localeCompare(b.name));
+  const known=new Map(users.map(user=>[user.accountId,user.name]));
+  const unavailable=[...new Set(selected)].filter(accountId=>!known.has(accountId));
+  const options:CleanupUsersView['users']=[...users,...unavailable.map(accountId=>({accountId,name:`Plex user ${accountId}`}))];
+  const search=query.trim().toLowerCase();
+  const visible=options.filter(user=>!search||user.name.toLowerCase().includes(search)||user.username?.toLowerCase().includes(search));
+  return <div className="cleanup-users">
+    <span id={`${id}-label`}>Plex users</span>
+    <details ref={popup} className="checklist" onToggle={e=>{if(!e.currentTarget.open)setQuery('');}} onKeyDown={e=>{
+      if(e.key==='Escape'&&e.currentTarget.open){e.stopPropagation();e.currentTarget.open=false;e.currentTarget.querySelector('summary')?.focus();}
+    }}>
+      <summary aria-labelledby={`${id}-label ${id}-value`} aria-describedby={`${id}-hint`}>
+        <span id={`${id}-value`}>{selected.length?selected.map(accountId=>known.get(accountId)??`Plex user ${accountId}`).join(', '):'Select Plex users'}</span>
+        <Icon name="next" size={14}/>
+      </summary>
+      <div className="checklist-menu" role="group" aria-labelledby={`${id}-label`}>
+        {options.length>0&&<input type="search" placeholder="Find a Plex user" aria-label="Find a Plex user" value={query}
+          onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')e.preventDefault();}}/>}
+        {directory.loading&&<p className="small muted" role="status">Loading Plex users…</p>}
+        {directory.error&&<p className="small" role="status">{directory.error.message}</p>}
+        {!directory.error&&directory.data?.directoryIncomplete&&<p className="small muted" role="status">Plex returned a partial user list.</p>}
+        {(directory.error||directory.data?.directoryIncomplete)&&<button type="button" className="link-button small" onClick={directory.reload} disabled={directory.loading}>Retry user list</button>}
+        {!directory.loading&&!directory.error&&!visible.length&&<p className="small muted" role="status">{search?'No matching Plex users.':'No Plex users available.'}</p>}
+        {visible.map(({accountId,name,username})=><div key={accountId} className="checklist-row"><label>
+          <input type="checkbox" checked={selected.includes(accountId)} onChange={e=>onChange(e.target.checked?[...selected,accountId]:selected.filter(value=>value!==accountId))}/>
+          <span className="grow">{name}{username&&username!==name&&<small> ({username})</small>}</span>
+          {!known.has(accountId)&&!directory.loading&&<small>Saved selection</small>}
+        </label></div>)}
+      </div>
+    </details>
+    <small id={`${id}-hint`}>Choose the users whose requests get longer retention. Leave empty to use standard retention for everyone.</small>
+  </div>;
+}
 function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
-  const {revision:_,...saved}=data.settings,[draft,setDraft]=useState<Settings>(saved),[ids,setIds]=useState(saved.exemptUserIds.join(', ')),[tags,setTags]=useState(saved.exemptArrTags.join(', '));
-  const [done,setDone]=useState(false),mutation=useMutation(changed);
-  useEffect(()=>{const {revision:_,...value}=data.settings;setDraft(value);setIds(value.exemptUserIds.join(', '));setTags(value.exemptArrTags.join(', '));},[data.settings.revision]);
-  const set=(patch:Partial<Settings>)=>{setDone(false);setDraft(d=>({...d,...patch}));};
+  const {revision:_,...saved}=data.settings,[draft,setDraft]=useState<Settings>(saved),[tags,setTags]=useState(saved.exemptArrTags.join(', '));
+  const mutation=useMutation(changed);
+  useEffect(()=>{const {revision:_,...value}=data.settings;setDraft(value);setTags(value.exemptArrTags.join(', '));},[data.settings.revision]);
+  const set=(patch:Partial<Settings>)=>{setDraft(d=>({...d,...patch}));};
   const movies=data.libraries.filter(l=>l.type==='movie'),shows=data.libraries.filter(l=>l.type==='show'),{connected}=data;
   const toggle=(field:'movieLibraries'|'tvLibraries',key:string,on:boolean)=>set({[field]:on?[...draft[field],key]:draft[field].filter(k=>k!==key)});
   const library=(field:'movieLibraries'|'tvLibraries')=>(l:Library)=><label key={l.key} className="checkbox-label"><input type="checkbox" checked={draft[field].includes(l.key)} onChange={e=>toggle(field,l.key,e.target.checked)}/>{l.title}</label>;
   const rule=(field:RetentionField,audience:string,title:string,anchor:string)=><RetentionRow audience={audience} title={title} anchor={anchor} value={draft[field]} onChange={days=>set({[field]:days})}/>;
   const needs=(on:boolean,name:string)=>on?undefined:<>Connect {name} in {connections} first.</>;
   const save=()=>void mutation.run(async()=>{
-    const userIds=list(ids.replace(/\s+/g,',')).map(Number);
-    if(userIds.some(id=>!Number.isSafeInteger(id)||id<=0))throw new Error('Users with longer retention must be Plex user IDs (positive whole numbers), separated by commas.');
-    await api('/admin/cleanup/settings','PUT',{expectedRevision:data.settings.revision,...draft,exemptUserIds:userIds,exemptArrTags:list(tags)});setDone(true);
+    await api('/admin/cleanup/settings','PUT',{expectedRevision:data.settings.revision,...draft,exemptArrTags:list(tags)});toast.success('Clean Up settings saved');
   });
   return <form className="form-stack cleanup-settings" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Run mode" className={draft.dryRun?'':'danger-zone'}>
@@ -124,14 +165,14 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </div>
       <div className="cleanup-rule-group">
         <div className="cleanup-group-head"><h4>Longer retention for selected users <span className="badge">Optional</span></h4><p>Replaces the standard rules for their requests. These titles can still be deleted when their time is up.</p></div>
-        <label className="cleanup-user-ids">Plex user IDs<input value={ids} placeholder="e.g. 1234567, 7654321" onChange={e=>{setIds(e.target.value);setDone(false);}} aria-describedby="cleanup-users-hint"/><small id="cleanup-users-hint">Plex account IDs. Separate them with commas. Leave blank to use standard retention for everyone.</small></label>
+        <RetentionUsers selected={draft.exemptUserIds} onChange={exemptUserIds=>set({exemptUserIds})}/>
         {rule('daysAfterExemptWatch','Selected-user retention','Any selected user has watched','Count from the most recent watch by any user listed above. Watches by other users do not restart this timer.')}
         {rule('daysAfterAnyWatchExempt','Selected-user retention','No selected user has watched','Count from the most recent watch by anyone, or from when the title was added if nobody has watched.')}
       </div>
       <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play tk.box saw counts, in its own player or Plex’s apps, as does the saved watch history. A partial play counts. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
     </Card>
     <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
-      <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);setDone(false);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>
+      <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>
       <Switch label="Keep titles in Plex collections" description={`Never “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
       {draft.exemptIfInCollection&&<fieldset className="form-stack"><legend>Collections that protect</legend>
         {collectionKinds.map(([kind,label])=><label key={kind} className="checkbox-label"><input type="checkbox" checked={draft.collectionKinds[kind]} onChange={e=>set({collectionKinds:{...draft.collectionKinds,[kind]:e.target.checked}})}/>{label}</label>)}
@@ -160,6 +201,6 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </>}
     </Card>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save clean up settings'}</button>{done?<span className="success" role="status">Saved.</span>:<span className="muted small">Save settings, then run a preview (top right) to review the results.</span>}</div>
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save clean up settings'}</button><span className="muted small">Save settings, then run a preview (top right) to review the results.</span></div>
   </form>;
 }

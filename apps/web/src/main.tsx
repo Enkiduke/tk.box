@@ -1,10 +1,10 @@
 import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {Principal,Library,CatalogItem,CatalogPage,ExploreItem,PlaybackObservation,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
-import {api,ApiClientError} from './api.js';
+import {api,ApiClientError,onSessionEnded} from './api.js';
 import {useApi,useRoute,useScrolled,link,replaceRoute,invalidate} from './hooks.js';
 import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram,type SkipMarker} from './player.js';
-import {Icon,ErrorNotice,Loading,Empty,ActionNotice,setArtworkEditor,setHoldMenu} from './components.js';
+import {Icon,ErrorNotice,Loading,Empty,Toaster,setArtworkEditor,setHoldMenu} from './components.js';
 import {leavingEntries,loadLeaving} from './cleanup-holds.js';
 import {refreshCatalog} from './media-actions.js';
 import {LiveFailover,type LiveSession} from './live-failover.js';
@@ -12,6 +12,9 @@ import {ServerWatch} from './server-restart.js';
 import {Home,LibraryView,Search,Details,playableOf} from './library.js';
 import {HeaderSearch} from './header-search.js';
 import {HeaderStreams} from './header-streams.js';
+import {NotificationBell} from './notification-bell.js';
+import {notifications} from './notifications.js';
+import {serverLink} from './server-link.js';
 import {PlexSignIn} from './sign-in.js';
 import {FirstRun} from './first-run.js';
 import {showEpisodes,collectionItems,type PlayQueue} from './play-queue.js';
@@ -26,6 +29,7 @@ const Explore=lazy(()=>import('./explore.js').then(m=>({default:m.Explore})));
 const ExploreDialog=lazy(()=>import('./explore.js').then(m=>({default:m.ExploreDialog})));
 const PersonDialog=lazy(()=>import('./person.js').then(m=>({default:m.PersonDialog})));
 const Calendar=lazy(()=>import('./calendar.js').then(m=>({default:m.Calendar})));
+const RequestsPage=lazy(()=>import('./requests-page.js').then(m=>({default:m.RequestsPage})));
 // A deploy replaces the hashed bundles, so a tab opened before it asks for files that are gone. Reload once to pick up
 // the new build; the timestamp stops a loop if the file is still missing after the reload.
 window.addEventListener('vite:preloadError',event=>{
@@ -36,12 +40,13 @@ window.addEventListener('vite:preloadError',event=>{
   window.location.reload();
 });
 import {Live,ChannelPanel,rememberFeed,tuneTarget,hasFeed,stationName,type WatchChannel,type StationFeed} from './live.js';
+import {toast,useErrorToast} from './toasts.js';
 import './style.css';
 
 type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOffsetMs:number;tracks?:MediaTracks;markers?:SkipMarker[];source?:SourceInfo;quality?:Quality;qualityOptions?:QualityOption[];audioStreamId?:string;item:CatalogItem};
 type Session=VodSession|LiveSession;
 const fetchPage=(path:string)=>api<CatalogPage>(path);
-const navigation=[['home','Home'],['movies','Movies','film'],['shows','Shows'],['live','Live','signal'],['explore','Explore'],['calendar','Calendar']] as const;
+const navigation=[['home','Home'],['movies','Movies','film'],['shows','Shows'],['live','Live','signal'],['calendar','Calendar'],['explore','Explore'],['requests','Requests','download']] as const;
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean;plexUrl?:string}>('/setup'),scrolled=useScrolled();
   // Only a 401 means signed out. A 403 is Plex refusing a check, which the server has already retried; the viewer stays
@@ -57,21 +62,27 @@ function App() {
   const signedIn=me?.accountId;
   useEffect(()=>{
     if(!signedIn||!('EventSource' in window))return;
+    void notifications.reload();void serverLink.start();
+    const ended=onSessionEnded(()=>{serverLink.stop();toast.warning('You’ve been signed out',{key:'session',sticky:true,action:{label:'Sign in',run:()=>{invalidate();identity.reload();}}});});
     const events=new EventSource('/api/v1/events');let dropped=false;
     events.addEventListener('library',()=>{invalidate('/catalog');invalidate('/calendar');if(admin){invalidate('/admin/cleanup/titles');void loadLeaving();}});
     events.addEventListener('requests',()=>{void import('./my-requests.js').then(m=>m.requestsChanged());});
-    events.addEventListener('open',()=>{if(dropped){invalidate('/catalog');invalidate('/calendar');}dropped=false;});
-    events.addEventListener('error',()=>{dropped=true;});
-    return()=>events.close();
+    events.addEventListener('notifications',()=>{void notifications.reload();});
+    events.addEventListener('open',()=>{if(dropped){invalidate('/catalog');invalidate('/calendar');void notifications.reload();void serverLink.back();}dropped=false;});
+    events.addEventListener('error',()=>{dropped=true;serverLink.lost();});
+    return()=>{events.close();notifications.clear();serverLink.stop();ended();toast.dismissKey('session');};
   },[signedIn,admin]);
   const catalog=useApi<{libraries:Library[]}>(me&&!identity.data?.libraries?'/libraries':undefined),libraries=(identity.data?.libraries??catalog.data?.libraries??[]).filter(l=>['movie','show'].includes(l.type));
   const [session,setSession]=useState<Session>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[switching,setSwitching]=useState<'audio'|'quality'>();
+  useErrorToast(error,()=>setError(''));
   const failover=useRef(new LiveFailover()),[switchingLive,setSwitchingLive]=useState(false);
   const server=useRef(new ServerWatch()),[reconnecting,setReconnecting]=useState(false),reconnectToken=useRef<object>(undefined),lastRetry=useRef(0);
   useEffect(()=>{void server.current.remember();},[]);
   // The channel being tuned: the player opens on it with a spinner before the server has a stream.
   const [tuning,setTuning]=useState<{name:string;program?:string}>(),tuningRef=useRef<object>(undefined);
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
+  // Alerts that arrive while watching wait in the bell instead of popping up over the player.
+  useEffect(()=>{notifications.quiet=()=>routeRef.current.page==='watch';return()=>{notifications.quiet=()=>false;};},[]);
   const libraryPage=route.page==='movies'||route.page==='shows',watching=route.page==='watch';
   const itemId=route.params.get('item');
   // The open title or person dialog and the steps behind it. A library title's dialog also keeps `item` in the address.
@@ -203,7 +214,7 @@ function App() {
     player.current?.stop();setSwitchingLive(true);setError('');
     void recovery.recover(current,isCurrent).then(next=>{
       if(!isCurrent())return;
-      if(next){sessionRef.current=next;setSession(next);invalidate('/guide');invalidate('/iptv/channels');}
+      if(next){sessionRef.current=next;setSession(next);invalidate('/guide');invalidate('/iptv/channels');toast.info('Switched to a backup feed',{key:'playback',detail:message});}
       else setError(`${message} No available backup feed could be started.`);
     }).catch(e=>{if(isCurrent())setError((e as Error).message);})
       .finally(()=>{if(failover.current===recovery)setSwitchingLive(false);});
@@ -222,6 +233,7 @@ function App() {
       if(!retry){if(current.kind==='live')liveFailure(current,message);else setError(message);return;}
       if(state==='same')lastRetry.current=Date.now();
       await reopen(current,isCurrent);
+      if(isCurrent())toast.success('Reconnected',{key:'playback',...(state==='restarted'?{detail:'tk.box restarted. Playback picked up where it was.'}:{})});
     }).catch(e=>{if(isCurrent())setError((e as Error).message);})
       .finally(()=>{if(reconnectToken.current===token){reconnectToken.current=undefined;setReconnecting(false);}});
   };
@@ -302,6 +314,7 @@ function App() {
     :route.page==='search'?<Search libraries={libraries} params={route.params} onOpen={openItem} onPlay={play} onSearchChange={changeSearch}/>
     :route.page==='explore'?<div key={me.accountId}><Suspense fallback={<div className="page"><Loading/></div>}><Explore params={route.params} admin={me.role==='admin'} onSelect={openExploreItem}/></Suspense></div>
     :route.page==='calendar'?<Suspense fallback={<div className="page"><Loading/></div>}><Calendar key={me.accountId} accountId={me.accountId} params={route.params} onOpen={openItem} onSelect={openExploreItem}/></Suspense>
+    :route.page==='requests'?<Suspense fallback={<div className="page"><Loading/></div>}><RequestsPage key={me.accountId} params={route.params} onSelect={openExploreItem}/></Suspense>
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout} params={route.params}/></Suspense></div>
     :route.page==='admin'?<div className="page admin-page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
@@ -312,11 +325,10 @@ function App() {
     {!watching&&<header className={`nav ${scrolled||route.page!=='home'||!me?'solid':''}`}>
       <a href="#home" className="brand" aria-label="tk.box home">tk.box</a>
       {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={16}/><span>{label}</span></a>)}</nav>}
-      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<HeaderStreams/>}{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="nav-settings" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} title="Settings" aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
+      {me&&<div className="nav-actions"><HeaderSearch page={route.page} query={route.page==='search'?route.params.get('q')??'':''} onChange={changeSearch}/>{me.role==='admin'&&<HeaderStreams/>}<NotificationBell admin={me.role==='admin'}/>{me.role==='admin'&&<a href="#admin" className="nav-admin" aria-label="Admin console" title="Admin console" aria-current={route.page==='admin'?'page':undefined}><Icon name="shield" size={20}/></a>}<a href="#settings" className="nav-settings" aria-label={`Settings · ${me.role==='admin'?'Administrator':'Viewer'}`} title="Settings" aria-current={route.page==='settings'?'page':undefined}><Icon name="settings" size={20}/></a></div>}
     </header>}
     <main id="main-content" tabIndex={-1}>
-      <ActionNotice/>
-      {error&&<div className="toast"><ErrorNotice message={error} dismiss={()=>setError('')}/></div>}
+      <Toaster/>
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={22}/><span>{label}</span></a>)}</nav>}

@@ -7,6 +7,7 @@ import {Card,MoveButtons,SectionHead,moveTo,useDragOrder,useMutation} from './se
 import {rowKey,setExplorePrefs,showExploreRows,showExploreSource,useExplorePrefs,setStreamingProviders,setStreamingRegion} from './explore-prefs.js';
 import {useStreamingCatalog} from './explore-streaming.js';
 import './explore.css';
+import {toast} from './toasts.js';
 
 type LayoutView={layout:ExploreLayout&{revision:number};sources:{source:ExploreBrowseSource;configured:boolean;rows:ExploreRowInfo[];error?:string}[]};
 const sourceNames:Record<ExploreBrowseSource,string>={plex:'Plex',tmdb:'TMDB'};
@@ -84,20 +85,20 @@ export function ExploreAdmin() {
 }
 // The order sources are listed in on Explore, sources switched off, and single rows hidden.
 function ExploreLayoutSettings() {
-  const view=useApi<LayoutView>('/admin/explore/layout'),[draft,setDraft]=useState<ExploreLayout>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<ExploreBrowseSource[]>([]);
+  const view=useApi<LayoutView>('/admin/explore/layout'),[draft,setDraft]=useState<ExploreLayout>(),[open,setOpen]=useState<ExploreBrowseSource[]>([]);
   const mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.layout;setDraft(value);}},[view.data?.layout.revision]);
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;
   const data=view.data;
-  const set=(patch:Partial<ExploreLayout>)=>{setSaved(false);setDraft(d=>d&&{...d,...patch});};
+  const set=(patch:Partial<ExploreLayout>)=>{setDraft(d=>d&&{...d,...patch});};
   const move=(from:number,to:number)=>set({order:moveTo(draft.order,from,to)});
   const showSource=(s:ExploreBrowseSource,on:boolean)=>set({hidden:on?draft.hidden.filter(h=>h!==s):[...draft.hidden,s]});
   const showRow=(key:string,on:boolean)=>set({hiddenRows:on?draft.hiddenRows.filter(r=>r!==key):[...draft.hiddenRows,key]});
   const toggle=(s:ExploreBrowseSource)=>setOpen(o=>o.includes(s)?o.filter(x=>x!==s):[...o,s]);
   return <Card title="Order and rows" description="Move sources to change their order on Explore. Open a source to hide individual rows.">
-    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');setSaved(true);});}}>
+    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/explore/layout','PUT',{expectedRevision:data.layout.revision,...draft});invalidate('/explore/');toast.success('Explore order and rows saved');});}}>
       <ol className="sports-order">{draft.order.map((s,i)=>{
         const info=data.sources.find(x=>x.source===s),on=!draft.hidden.includes(s);
         const order=draft.tmdbOrder??[...tmdbExploreRows];
@@ -119,7 +120,7 @@ function ExploreLayoutSettings() {
         </li>;})}</ol>
       {data.sources.some(x=>x.source==='plex'&&x.rows.length)&&<p className="muted small">Plex supplies the Discover shelves and their order. Streaming-service rows come from TMDB.</p>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
+      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save order and rows</button></div>
     </form>
   </Card>;
 }

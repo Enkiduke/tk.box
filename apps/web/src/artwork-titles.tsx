@@ -6,6 +6,7 @@ import {useMutation} from './settings-ui.js';
 // The editor also opens from the library (Edit artwork), where the Admin page's styles aren't loaded yet.
 import './admin.css';
 import {openConsole,type Job} from './admin-console.js';
+import {toast} from './toasts.js';
 
 // Admin › Artwork › Titles: every title's asset folder, as the engine keeps it. Pick a poster or logo (a saved file, one
 // the providers offer, a crop of a backdrop, or your own), compare the preview with what was last made, then push.
@@ -31,7 +32,7 @@ const fileData=(file:Blob)=>new Promise<string>((resolve,reject)=>{const reader=
 
 export function ArtworkTitles({ratingKey,engineReady,upload}:{ratingKey?:string;engineReady:boolean;upload:boolean}) {
   const titles=useApi<TitlesView>(engineReady?'/admin/artwork/titles':undefined),[open,setOpen]=useState<string>(),[query,setQuery]=useState(''),[category,setCategory]=useState('');
-  const [missing,setMissing]=useState<string>(),push=useMutation(()=>{titles.reload();invalidate('/admin/artwork/jobs');}),[pushed,setPushed]=useState('');
+  const [missing,setMissing]=useState<string>(),push=useMutation(()=>{titles.reload();invalidate('/admin/artwork/jobs');});
   // Opened from a title's details (Edit artwork): its folder by Plex ID, or an offer to make it.
   useEffect(()=>{if(!ratingKey||!engineReady)return;void api<{id:string|null}>(`/admin/artwork/titles/find?ratingKey=${ratingKey}`).then(r=>{if(r.id)setOpen(r.id);else setMissing(ratingKey);},()=>{});},[ratingKey,engineReady]);
   const list=useMemo(()=>{
@@ -51,9 +52,9 @@ export function ArtworkTitles({ratingKey,engineReady,upload}:{ratingKey?:string;
     <div className="artwork-toolbar">
       <input type="search" className="grow" placeholder="Find a title" aria-label="Find a title" value={query} onChange={e=>setQuery(e.target.value)}/>
       <div className="toggle-group" role="radiogroup" aria-label="Show">{categories.map(([id,label])=><button key={id} type="button" role="radio" aria-checked={category===id} onClick={()=>setCategory(id)}>{label}{id==='pending'&&pending?` (${pending})`:''}</button>)}</div>
-      <button className="primary" disabled={!pending||push.busy} onClick={()=>void push.run(async()=>{const r=await api<{jobs:Job[]}>('/admin/artwork/push','POST',{});setPushed(`${r.jobs.length} ${r.jobs.length===1?'job':'jobs'} queued.`);openConsole(r.jobs[0]);})}>{verb} {pending||''} changed</button>
+      <button className="primary" disabled={!pending||push.busy} onClick={()=>void push.run(async()=>{const r=await api<{jobs:Job[]}>('/admin/artwork/push','POST',{});toast.info(`${r.jobs.length} ${r.jobs.length===1?'job':'jobs'} queued`);openConsole(r.jobs[0]);})}>{verb} {pending||''} changed</button>
     </div>
-    {pushed&&<p className="success small" role="status">{pushed}</p>}{push.error&&<ErrorNotice message={push.error}/>}
+    {push.error&&<ErrorNotice message={push.error}/>}
     {!data.titles.length?<Empty title="No titles yet">Titles appear here once a job has made their artwork. Run “Update changed titles” (top right).</Empty>
       :!list.length?<Empty title="Nothing matches">Try another search or filter.</Empty>
       :<div className="artwork-title-grid">{list.map(t=><button key={t.id} className="artwork-title" onClick={()=>setOpen(t.id)}>
@@ -81,7 +82,7 @@ type Candidate={type:'file';f:File;cur?:boolean;x?:RemoteItem}|{type:'remote';x:
 function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const detail=useApi<Detail>(`/admin/artwork/title?id=${encodeURIComponent(id)}`),state=useApi<{upload:boolean;pending:Record<string,Pending>}>('/admin/artwork/state');
   const [scope,setScope]=useState(0),[tab,setTab]=useState<Kind>('poster'),[source,setSource]=useState<'all'|'posters'|'backdrops'>('all'),[text,setText]=useState<'all'|'textless'|'text'>('all');
-  const [busy,setBusy]=useState<string>(),[message,setMessage]=useState(''),[error,setError]=useState(''),[crop,setCrop]=useState<{x:RemoteItem;target:[number,number]}>(),[zoom,setZoom]=useState<{src:string;label:string}>(),[adding,setAdding]=useState(false),[tint,setTint]=useState<{x:number;y:number}>();
+  const [busy,setBusy]=useState<string>(),[error,setError]=useState(''),[crop,setCrop]=useState<{x:RemoteItem;target:[number,number]}>(),[zoom,setZoom]=useState<{src:string;label:string}>(),[adding,setAdding]=useState(false),[tint,setTint]=useState<{x:number;y:number}>();
   const d=detail.data,section=d?.sections[Math.min(scope,d.sections.length-1)];
   const live=useApi<Live>(section?`/admin/artwork/title/live?id=${encodeURIComponent(section.id)}`:undefined);
   const seriesLive=useApi<Live>(d&&scope>0?`/admin/artwork/title/live?id=${encodeURIComponent(d.sections[0]!.id)}`:undefined);
@@ -93,8 +94,8 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   useEffect(()=>()=>{void api('/admin/artwork/title/clear','POST',{}).catch(()=>{});},[]);
   const reload=()=>{detail.reload();state.reload();live.reload();seriesLive.reload();background.reload();};
   const act=async(label:string,work:()=>Promise<{warning?:string|null}|unknown>,done:string)=>{
-    if(busy)return;setBusy(label);setError('');setMessage('');
-    try{const r=await work() as {warning?:string|null}|undefined;setMessage(r?.warning??done);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);reload();}
+    if(busy)return;setBusy(label);setError('');
+    try{const r=await work() as {warning?:string|null}|undefined;if(r?.warning)toast.warning(r.warning);else toast.success(done);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);reload();}
   };
   const upload$=async(file:Blob)=>{if(file.size>25*1024*1024){setError('That file is larger than 25 MB.');return;}
     await act('add',async()=>api('/admin/artwork/title/upload','POST',{id:target().id,kind:target().kind,data:await fileData(file),use:true}),`Added. It’s the selected ${tab} now.`);};
@@ -168,7 +169,7 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
           onClick={()=>void act('push',()=>api('/admin/artwork/push','POST',{ids:[d.id]}),`Queued. Follow it in the Console; ${pushedState.upload?'Plex':'this page'} shows the result when it’s done.`)}>{changed||!linked?verb:`${verb} again`}</button>
       </div>
     </div>
-    {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{message&&<p className="success small" role="status">{message}</p>}
+    {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}
     <div className="artwork-editor-layout">
       <aside className="artwork-shots">
         <figure><figcaption>Current<small>{pushedState.upload?'Last pushed':'Last render'}</small></figcaption>{section.rendered?<img src={section.rendered.thumb} alt="Current artwork"/>:<div className="artwork-blank">Not {pushedState.upload?'pushed':'rendered'} yet</div>}</figure>

@@ -10,6 +10,7 @@ import {chooseTitles,type Candidate,type LeftOut} from './list-choice.js';
 import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
 import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
 import {hidesFromRecent} from '../../../packages/contracts/src/collections.js';
+import {toast} from './toasts.js';
 
 // Admin › Collections: every Plex collection the engine keeps, in one grid. Franchise and streaming collections come
 // from TMDb and your libraries; custom and seasonal ones are defined here (by hand, from a curated universe or a public
@@ -45,7 +46,7 @@ const season=(schedule:string)=>schedule.split('-').map(part=>{const [m,d]=part.
 
 export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<Draft>();
-  const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[importing,setImporting]=useState(false),[dirty,setDirty]=useState(false),[saved,setSaved]=useState(''),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
+  const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[importing,setImporting]=useState(false),[dirty,setDirty]=useState(false),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
   const mutation=useMutation(view.reload);
   const reset=()=>{const d=view.data;if(!d)return;setDraft({definitions:(JSON.parse(JSON.stringify(d.definitions??d.defaults)) as (Definition&{sync?:string})[]).map(({sync:_,...x})=>x),automatic:d.automatic??[],franchise:d.franchise,radarr:d.radarr,schedules:d.schedules});setDirty(false);};
@@ -61,7 +62,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;
   const data=view.data,libraries=data.libraries.filter(l=>['movie','show'].includes(l.type));
-  const change=(next:Partial<Draft>)=>{setDraft({...draft,...next});setDirty(true);setSaved('');};
+  const change=(next:Partial<Draft>)=>{setDraft({...draft,...next});setDirty(true);};
   const franchise=(patch:Partial<Franchise>)=>change({franchise:{...draft.franchise,...patch}}),radarr=(patch:Partial<Radarr>)=>change({radarr:{...draft.radarr,...patch}});
   const setDefinition=(index:number,value:Definition|null)=>change({definitions:value?draft.definitions.map((d,i)=>i===index?value:d):draft.definitions.filter((_,i)=>i!==index)});
   // A franchise or streaming collection that's on, with no visibility of its own and nothing taken out, needs no entry.
@@ -74,9 +75,9 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
   // Saving also applies every collection to Plex (when results go to Plex); the run opens in the Console.
   const save=()=>void mutation.run(async()=>{
     await api('/admin/artwork/collections','PUT',{expectedRevision:data.revision,value:draft});
-    if(data.readOnly){setSaved('Saved in the read-only preview.');return;}
-    if(!data.upload){setSaved('Saved. Turn on Send results to Plex in Artwork › Settings to apply it.');return;}
-    openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'apply'}));invalidate('/admin/artwork/jobs');setSaved('Saved and applying to Plex.');
+    if(data.readOnly){toast.success('Collections saved',{detail:'Saved in the read-only preview.'});return;}
+    if(!data.upload){toast.success('Collections saved',{detail:'Turn on Send results to Plex in Artwork › Settings to apply it.'});return;}
+    openConsole(await api<Job>('/admin/artwork/collections/run','POST',{kind:'all',mode:'apply'}));invalidate('/admin/artwork/jobs');toast.success('Collections saved',{detail:'Applying to Plex.'});
   });
   const presets=data.defaults.filter(p=>!draft.definitions.some(e=>keyOf(e.name)===keyOf(p.name)));
   const tiles=collectionTiles(draft,data.kept.collections,data.kept.updated!==null,live),open=tiles.find(t=>t.id===opened);
@@ -136,7 +137,7 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
       </Card>}
     </div>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    {(dirty||saved)&&<div className="button-row sticky-actions">{dirty&&<><button className="primary" disabled={mutation.busy} onClick={save}>Save collections</button><button onClick={reset}>Discard changes</button></>}{saved&&!dirty&&<span className="success" role="status">{saved}</span>}</div>}
+    {dirty&&<div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy} onClick={save}>Save collections</button><button onClick={reset}>Discard changes</button></div>}
     {editing!==undefined&&draft.definitions[editing]&&<EditDefinition value={draft.definitions[editing]!} libraries={libraries} onClose={()=>setEditing(undefined)}
       save={value=>{setDefinition(editing,value);setEditing(undefined);}} remove={()=>{setDefinition(editing,null);setEditing(undefined);}}/>}
     {open&&<AutomaticCollection tile={open} setting={draft.automatic.find(a=>idOf(a)===open.id)} onClose={()=>setOpened(undefined)} save={patch=>{setAutomatic(open,patch);setOpened(undefined);}}/>}
@@ -529,13 +530,13 @@ function Discover({libraries,existing,onClose,add}:{libraries:Library[];existing
 }
 // One collection as JSON, with its settings and titles as the editor has them, to copy into Import (here or elsewhere).
 function ExportBox({definition}:{definition:Definition}) {
-  const text=exportCollection(definition),[copied,setCopied]=useState(false),box=useRef<HTMLTextAreaElement>(null);
-  const copy=()=>{box.current?.select();void navigator.clipboard.writeText(text).then(()=>setCopied(true),()=>{});};
+  const text=exportCollection(definition),box=useRef<HTMLTextAreaElement>(null);
+  const copy=()=>{box.current?.select();void navigator.clipboard.writeText(text).then(()=>toast.success('Copied'),()=>toast.error('Couldn’t copy. Select the text and copy it yourself.'));};
   return <section className="collection-editor-panel">
     <h3>Export</h3>
     <p className="muted small">This collection with its settings and titles. Paste it into Import.</p>
     <textarea ref={box} readOnly rows={10} spellCheck={false} aria-label="Exported collection" value={text} onFocus={e=>e.currentTarget.select()}/>
-    <div className="button-row"><button type="button" className="primary" onClick={copy}>Copy</button>{copied&&<span className="success small" role="status">Copied</span>}</div>
+    <div className="button-row"><button type="button" className="primary" onClick={copy}>Copy</button></div>
   </section>;
 }
 // Reads JSON from Export and adds the collections you pick, each in a library here of its type (the one with the same

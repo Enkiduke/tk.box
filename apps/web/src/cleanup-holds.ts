@@ -1,6 +1,6 @@
 import {api} from './api.js';
 import {fetchCached,invalidate} from './hooks.js';
-import {announce} from './media-actions.js';
+import {toast} from './toasts.js';
 import type {CatalogItem} from '../../../packages/contracts/src/index.js';
 import type {MenuEntry} from './components.js';
 
@@ -25,8 +25,8 @@ export function loadLeaving() {
 export async function holdTitle(item:{key:string;title:string},body:HoldAction) {
   try {
     const view=await api<{items:Held[]}>('/admin/cleanup/holds','POST',{key:item.key,...body}),now=view.items.find(i=>i.key===item.key),until=now?.held_until??now?.deletion_date;
-    announce(body.action==='clear'?`${item.title}: back to its rule’s date`:`${item.title}: kept until ${until?new Intl.DateTimeFormat(undefined,{dateStyle:'medium'}).format(Date.parse(until)):'later'}`);
-  } catch(error) {announce(`${item.title}: ${(error as Error).message}`,true);}
+    toast.success(body.action==='clear'?`${item.title}: back to its rule’s date`:`${item.title}: kept until ${until?new Intl.DateTimeFormat(undefined,{dateStyle:'medium'}).format(Date.parse(until)):'later'}`);
+  } catch(error) {toast.error(`${item.title}: ${(error as Error).message}`);}
   invalidate(PATH);void loadLeaving();
 }
 // Keep tags the movie in Radarr, or the whole show in Sonarr (from any of its seasons), with the first protected tag.
@@ -34,8 +34,8 @@ export async function keepTitle(item:{key:string;title:string}) {
   const show=item.key.startsWith('tv:'),name=show?item.title.split(' - ')[0]!:item.title;
   try {
     const {tag}=await api<{tag:string}>('/admin/cleanup/keep','POST',{key:item.key});
-    announce(`${name}: kept, tagged “${tag}” in ${show?'Sonarr':'Radarr'}`);
-  } catch(error) {announce(`${name}: ${(error as Error).message}`,true);}
+    toast.success(`${name}: kept, tagged “${tag}” in ${show?'Sonarr':'Radarr'}`);
+  } catch(error) {toast.error(`${name}: ${(error as Error).message}`);}
   invalidate(PATH);void loadLeaving();
 }
 // `prefix` names the season when the menu is a show's or an episode's.

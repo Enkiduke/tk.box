@@ -7,6 +7,7 @@ import type { ArrService } from '../providers/arr-tags.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { RequestAvailability } from '../services/request-availability.js';
 import { Requests } from '../services/requests.js';
+import { requestNotices } from '../services/request-notices.js';
 import { registerRequests } from '../requests-api.js';
 import { every, errorDetail } from '../lib/every.js';
 import { z } from 'zod';
@@ -41,7 +42,14 @@ export const requestsModule = defineModule({
       return plex.availability(grant);
     }, (message, detail) => log.warn(message, detail));
     const requests = new Requests(store, fulfiller, availability, titles, arr.connection, (message, detail) => log.info(message, detail));
-    requests.changed = change => bus.emit('requests.changed', change);
+    // Each change also tells the bell: the requester how it went, the admins of new and failed requests.
+    requests.changed = change => {
+      bus.emit('requests.changed', change);
+      for (const notice of requestNotices(change, store.get(change.id))) {
+        if (notice.post) bus.emit('notification.post', notice.post);
+        if (notice.resolve) bus.emit('notification.resolve', notice.resolve);
+      }
+    };
     bus.on('plex.library.changed', () => availability.soon());
     bus.on('library.edited', ({ by }) => { if (by === 'cleanup') availability.soon(5000); });
     registerRequests(routes, store, requests, fulfiller);

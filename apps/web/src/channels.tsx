@@ -5,6 +5,7 @@ import {useApi,useDebounced,useInfinitePages,invalidate,duration,clock} from './
 import {Empty,ErrorNotice,FadeImage,Icon,Loading,Modal} from './components.js';
 import {ChannelLogo} from './live.js';
 import {Card,MoveButtons,SectionHead,Switch,code,moveTo,plural,useDragOrder,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 // Channel Manager: custom channels are lists of Plex movies and episodes that play one after another, looping.
 // Every edit changes the draft; Publish hands over at the end of whatever is airing.
@@ -47,6 +48,14 @@ function status(c:Summary):{label:string;tone:Tone} {
 }
 const StatusBadge=({channel}:{channel:Summary})=>{const s=status(channel);return <span className={`badge ${s.tone}`}>{s.label}</span>;};
 const Logo=({channel}:{channel:Summary})=><ChannelLogo channel={{id:channel.id,name:channel.name,logo:!!channel.logoUrl||channel.plexLogo!=='none'}} size={28}/>;
+
+// Channel Manager's results as a success toast: the first sentence is the title, the rest the second line.
+function setNotice(text:string) {
+  if(!text)return;
+  const at=text.indexOf('. ');
+  if(at<0)toast.success(text.replace(/\.$/,''));
+  else toast.success(text.slice(0,at),{detail:text.slice(at+2)});
+}
 
 export function CustomChannelSettings() {
   const drag=useDragOrder(),list=useApi<{channels:Summary[]}>(base),[open,setOpen]=useState<{id:string;adding?:boolean}>(),[create,setCreate]=useState(false),ordering=useMutation(list.reload);
@@ -96,14 +105,14 @@ function CreateChannel({onClose,created}:{onClose:()=>void;created:(c:Detail)=>v
 
 const tabs=[['programs','Programs'],['sources','Shows & collections'],['details','Details']] as const;
 function ChannelEditor({id,back,startAdding}:{id:string;back:()=>void;startAdding?:boolean}) {
-  const detail=useApi<Detail>(`${base}/${id}`),[local,setLocal]=useState<Detail>(),[tab,setTab]=useState<string>('programs'),[publish,setPublish]=useState(false),[notice,setNotice]=useState('');
+  const detail=useApi<Detail>(`${base}/${id}`),[local,setLocal]=useState<Detail>(),[tab,setTab]=useState<string>('programs'),[publish,setPublish]=useState(false);
   const mutation=useMutation(changed);
   const view=local&&(!detail.data||local.revision>=detail.data.revision)?local:detail.data;
   if(detail.loading&&!view)return <Loading/>;
   if(!view)return <ErrorNotice message={detail.error?.message??'Channel could not be loaded.'} retry={detail.reload}/>;
   // Every draft operation returns the updated channel, so rapid edits never send a stale revision.
   const apply=(path:string,method:string,body:Record<string,unknown>,done?:(r:unknown)=>void)=>void mutation.run(async()=>{
-    setNotice('');const result=await api<Detail|AddResult>(`${base}/${id}${path}`,method,{expectedRevision:view.revision,...body});
+    const result=await api<Detail|AddResult>(`${base}/${id}${path}`,method,{expectedRevision:view.revision,...body});
     setLocal('channel' in result?result.channel:result);done?.(result);
   });
   const unpublished=view.entries.length>0&&(!view.live||view.changed),blocked=view.entries.some(e=>e.issue);
@@ -115,7 +124,7 @@ function ChannelEditor({id,back,startAdding}:{id:string;back:()=>void;startAddin
     </div>
     {view.live&&!view.enabled&&<div className="notice subtle"><span>Hidden from Live TV. Its schedule keeps running, so it’s on time when you show it again.</span><button onClick={()=>setTab('details')}>Change</button></div>}
     {view.pending&&!view.changed&&<div className="notice subtle"><span>Your last publish goes on air at {when(view.pending.effectiveAt)}, when the current program ends, starting with <strong>{view.pending.next}</strong>.</span></div>}
-    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}{notice&&<p className="success" role="status">{notice}</p>}
+    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     <div className="subtabs" role="tablist" aria-label={`${view.name} settings`}>{tabs.map(([t,label])=><button key={t} role="tab" aria-selected={tab===t} onClick={()=>setTab(t)}>{label}{t==='programs'&&<span className="count">{view.entries.length}</span>}{t==='sources'&&view.sources.length>0&&<span className="count">{view.sources.length}</span>}</button>)}</div>
     <div role="tabpanel" className="source-panel">
       {tab==='programs'?<ProgramsPanel view={view} busy={mutation.busy} apply={apply} setNotice={setNotice} startAdding={startAdding}/>
@@ -335,8 +344,8 @@ function syncSummary(s:Source) {
 }
 function SourcesPanel({view,updated,setNotice,addPrograms}:{view:Detail;updated:(c:Detail)=>void;setNotice:(s:string)=>void;addPrograms:()=>void}) {
   const mutation=useMutation(changed),enabled=view.sources.filter(s=>s.autoAdd).length,[removing,setRemoving]=useState<Source>();
-  const toggle=(s:Source,on:boolean)=>void mutation.run(async()=>{setNotice('');updated(await api<Detail>(`${base}/${view.id}/sources/${s.id}`,'PUT',{autoAdd:on}));});
-  const check=()=>void mutation.run(async()=>{setNotice('');const r=await api<{checked:number;added:number;failed:number;channel:Detail}>(`${base}/${view.id}/sync`,'POST',{});updated(r.channel);
+  const toggle=(s:Source,on:boolean)=>void mutation.run(async()=>{updated(await api<Detail>(`${base}/${view.id}/sources/${s.id}`,'PUT',{autoAdd:on}));});
+  const check=()=>void mutation.run(async()=>{const r=await api<{checked:number;added:number;failed:number;channel:Detail}>(`${base}/${view.id}/sync`,'POST',{});updated(r.channel);
     setNotice([r.added?`Added ${plural(r.added,'new program')}.`:'Nothing new in Plex.',r.added&&view.live?'They go on air at the end of the current program.':'',r.failed?`${plural(r.failed,'source')} couldn’t be checked.`:''].filter(Boolean).join(' '));});
   if(!view.sources.length)return <Empty title="No shows or collections yet">When you add a whole show, season, collection or category, it’s listed here. You can then have new episodes and titles added automatically, or take the whole group off the channel at once. <button className="link-button" onClick={addPrograms}>Go to Programs</button></Empty>;
   return <>

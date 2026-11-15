@@ -3,6 +3,7 @@ import {ApiClientError,api} from './api.js';
 import {invalidate,link,useApi} from './hooks.js';
 import {ErrorNotice,Icon,Modal} from './components.js';
 import {date,SectionHead,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
 type ArtworkView={settings:{revision:number;keysSet:Record<KeyName,boolean>}&Record<string,unknown>};
@@ -115,7 +116,6 @@ function categoryStatus(connections:Connection[]) {
 
 export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const [editing,setEditing]=useState<Connection>();
-  const [saved,setSaved]=useState<{category:string;message:string}>();
   const serviceKeys=useApi<KeysView>('/admin/keys');
   const plex=useApi<PlexHealth>('/admin/connections/plex');
   const sports=useApi<SportsHealth>('/admin/connections/sports');
@@ -137,6 +137,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       await api('/admin/keys','PUT',{[name]:key??''});
       invalidate('/admin/keys');
       invalidate(name==='plex'?'/admin/connections/plex':'/admin/connections/sports');
+      if(name==='plex')invalidate('/admin/cleanup/users');
     },
   }));
   const arrApps:Connection[]=([
@@ -255,18 +256,18 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
                 <span className={`badge connections-status ${tone??''}`}>{label}</span>
                 {settingsError
                   ? <button type="button" disabled={refreshing} aria-label={`Retry loading ${name} settings`} onClick={retry}>Retry</button>
-                  : action&&<button type="button" disabled={refreshing} aria-label={`${action} ${name}`} onClick={()=>{setSaved(undefined);setEditing(connection);}}>
+                  : action&&<button type="button" disabled={refreshing} aria-label={`${action} ${name}`} onClick={()=>setEditing(connection)}>
                     {action}
                   </button>}
               </li>;
             })}
           </ul>
-          <div className="connections-feedback success small" role="status">{saved?.category===group.id?saved.message:''}</div>
+          
         </section>
       </div>
     </section>
     {editing?.settings&&<ConnectionEditor connection={editing} settings={editing.settings} onClose={()=>setEditing(undefined)}
-      onSaved={()=>{setSaved({category:group.id,message:`${editing.name} settings saved.`});setEditing(undefined);}}/>}
+      onSaved={()=>{toast.success(`${editing.name} settings saved`);setEditing(undefined);}}/>}
   </>;
 }
 

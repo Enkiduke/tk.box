@@ -7,6 +7,7 @@ import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {SchedulePicker,scheduleProblem} from './schedule-picker.js';
 import {describeSchedule,type Schedule} from '../../../packages/contracts/src/schedule.js';
 import {Card,MoveButtons,SectionHead,Stat,Switch,code,date,moveTo,plural,remember,remembered,useDragOrder,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 type Source={id:string;name:string;kind:'m3u'|'xmltv';revision:number;intervalHours:number;schedule:Schedule;remote:boolean;allowPrivateStreams:boolean;lastAttempt:number|null;lastSuccess:number|null;nextDue:number|null;lastError:string|null;candidateDigest:string|null;running:boolean;feedId?:string};
 type Listing='auto'|'always'|'hidden';
@@ -134,7 +135,7 @@ function HealthBadge({health}:{health?:Health}) {
   return <><span className={`dot-label ${tone}`}>{label}</span>{health&&(health.status!=='unchecked'||rechecking)&&health.reason&&<small>{reasons[health.reason]??code(health.reason)}</small>}{health?.checkedAt&&<small>Checked {date(health.checkedAt)}</small>}</>;
 }
 function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<typeof useApi<HealthView>>;changed:()=>void}) {
-  const data=health.data,[hide,setHide]=useState(true),[saved,setSaved]=useState(false),mutation=useMutation(()=>{health.reload();changed();});
+  const data=health.data,[hide,setHide]=useState(true),mutation=useMutation(()=>{health.reload();changed();});
   useEffect(()=>{if(data)setHide(data.policy.hideFailing);},[data?.policy.hideFailing]);
   const s=data?.summary,busy=!!data&&(data.checking>0||data.summary.due>0);
   return <>
@@ -146,9 +147,9 @@ function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<ty
         {s.lastChecked&&(!s.lastOnline||s.lastOnline<Date.now()-12*3600000)&&<div className="notice"><span>No channel from this provider has played in the last 12 hours, so failures are not being applied. The provider may be down or refusing this server.</span></div>}
       </Card>
       <Card title="Check settings">
-        <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{schedule:data!.policy.schedule,hideFailing:hide});setSaved(true);});}}>
-          <Switch label="Hide channels that fail checks" description="Off keeps them listed, still checked." checked={hide} onChange={v=>{setHide(v);setSaved(false);}}/>
-          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save check settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}{saved&&<span className="success" role="status">Saved.</span>}</div>
+        <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{schedule:data!.policy.schedule,hideFailing:hide});toast.success('Check settings saved');});}}>
+          <Switch label="Hide channels that fail checks" description="Off keeps them listed, still checked." checked={hide} onChange={setHide}/>
+          <div className="button-row"><button className="primary" disabled={mutation.busy}>Save check settings</button>{s.slates>0&&<button type="button" disabled={mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/health/slates`,'DELETE',{}))}>Forget offline screens</button>}</div>
         </form>
       </Card>
     </>}
@@ -157,7 +158,7 @@ function ChecksPanel({source,health,changed}:{source:Source;health:ReturnType<ty
 type SportsView={policy:{enabled:boolean;leadMinutes:number};lastSync:number|null;lastError:string|null;events:number;summary:{matched:number;airing:number};channels:{channelId:string;name:string;title:string;league:string;start:number;end:number;state:string|null;matchedBy:string;airing:boolean}[]};
 const matchedBy:Record<string,string>={event:'Channel name',epg_event:'Guide listing',name_time:'Time in channel name',epg:'Guide listing only'};
 function SportsPanel({source,changed}:{source:Source;changed:()=>void}) {
-  const sports=useApi<SportsView>(`/admin/iptv/sources/${source.id}/sports`),data=sports.data,[enabled,setEnabled]=useState(false),[lead,setLead]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(()=>{sports.reload();changed();});
+  const sports=useApi<SportsView>(`/admin/iptv/sources/${source.id}/sports`),data=sports.data,[enabled,setEnabled]=useState(false),[lead,setLead]=useState(30),mutation=useMutation(()=>{sports.reload();changed();});
   useEffect(()=>{if(data){setEnabled(data.policy.enabled);setLead(data.policy.leadMinutes);}},[data?.policy.enabled,data?.policy.leadMinutes]);
   // Windows open and close with the clock, so keep the list current while the panel is open.
   useEffect(()=>{if(!data?.policy.enabled)return;const timer=window.setInterval(sports.reload,60000);return()=>window.clearInterval(timer);},[data?.policy.enabled]);
@@ -167,10 +168,10 @@ function SportsPanel({source,changed}:{source:Source;changed:()=>void}) {
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <Card title="Events" description="Channels list only while their matched event is live or starting soon.">
-      <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled,leadMinutes:lead});setSaved(true);});}}>
-        <Switch label="Use events for this source" checked={enabled} onChange={v=>{setEnabled(v);setSaved(false);}}/>
-        <label className="narrow">List before the start (minutes)<input type="number" min="0" max="720" required value={lead} disabled={!enabled} onChange={e=>{setLead(Number(e.target.value));setSaved(false);}}/><small>Stays 15 min after the end.</small></label>
-        <div className="button-row"><button className="primary" disabled={mutation.busy}>Save event settings</button>{saved&&<span className="success" role="status">Saved.</span>}</div>
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/sports`,'PUT',{enabled,leadMinutes:lead});toast.success('Event settings saved');});}}>
+        <Switch label="Use events for this source" checked={enabled} onChange={setEnabled}/>
+        <label className="narrow">List before the start (minutes)<input type="number" min="0" max="720" required value={lead} disabled={!enabled} onChange={e=>setLead(Number(e.target.value))}/><small>Stays 15 min after the end.</small></label>
+        <div className="button-row"><button className="primary" disabled={mutation.busy}>Save event settings</button></div>
       </form>
     </Card>
     {data.policy.enabled&&<Card title="Matched events">
@@ -181,15 +182,15 @@ function SportsPanel({source,changed}:{source:Source;changed:()=>void}) {
   </>;
 }
 function ChannelHealthDialog({channel,health,onClose,changed}:{channel:Channel;health?:Health;onClose:()=>void;changed:()=>void}) {
-  const mutation=useMutation(changed),[result,setResult]=useState('');
+  const mutation=useMutation(changed);
   return <Modal title="Channel check" onClose={onClose}><h2>{channel.name}</h2>
     {health?.thumbnail?<img className="health-thumb" src={`/api/v1/admin/iptv/channels/${channel.id}/health/thumbnail?at=${health.checkedAt??0}`} alt={`Picture captured from ${channel.name} during its last check`}/>:<Empty title="No picture captured">{health?.checkedAt?'The last check did not receive a video frame.':'Run a check to capture a picture from this channel.'}</Empty>}
     <div className="health-cell"><HealthBadge health={health}/></div>
     {health?.video&&<p className="muted small">{health.video.codec.toUpperCase()}{health.video.width?` · ${health.video.width}×${health.video.height}`:''}{health.still&&health.status==='online'?' · still picture, kept because it has sound':''}</p>}
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}{result&&<p role="status" className="success">{result}</p>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <div className="button-row">
-      <button className="primary" disabled={mutation.busy||health?.checking} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/channels/${channel.id}/health/check`,'POST',{});setResult('Check queued. This list updates when it finishes.');})}>Check now</button>
-      {health?.fingerprint&&health.reason!=='KNOWN_SLATE'&&<button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{const r=await api<{matched:number}>(`/admin/iptv/channels/${channel.id}/health/slate`,'POST',{});setResult(`Marked as an offline screen. ${r.matched} channel${r.matched===1?' matches':'s match'} it and ${r.matched===1?'is':'are'} hidden.`);})}>This is an offline screen</button>}
+      <button className="primary" disabled={mutation.busy||health?.checking} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/channels/${channel.id}/health/check`,'POST',{});toast.info('Check queued',{detail:'This list updates when it finishes.'});})}>Check now</button>
+      {health?.fingerprint&&health.reason!=='KNOWN_SLATE'&&<button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{const r=await api<{matched:number}>(`/admin/iptv/channels/${channel.id}/health/slate`,'POST',{});toast.success('Marked as an offline screen',{detail:`${r.matched} channel${r.matched===1?' matches':'s match'} it and ${r.matched===1?'is':'are'} hidden.`});})}>This is an offline screen</button>}
     </div>
     <p className="muted small">Marking an offline screen hides every channel showing it.</p>
   </Modal>;
@@ -207,23 +208,23 @@ function RemoveSource({source,sources,changed,removed,onClose}:{source:Source;so
   </Modal>;
 }
 function GuidePanel({source,guide,changed}:{source:Source;guide?:Source;changed:()=>void}) {
-  const [url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[remove,setRemove]=useState(false),[saved,setSaved]=useState(false);
+  const [url,setUrl]=useState(''),[headers,setHeaders]=useState(''),[insecure,setInsecure]=useState(false),[remove,setRemove]=useState(false);
   const mutation=useMutation(changed),busy=mutation.busy||!!guide?.running;
   useEffect(()=>{if(!guide?.running)return;const timer=window.setInterval(changed,3000);return()=>window.clearInterval(timer);},[guide?.running]);
   return <>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}{saved&&<p className="success" role="status">EPG saved.</p>}
-    {guide?<Card title="Program guide (EPG)" description="Channels with matching XMLTV IDs get listings automatically." actions={<><button disabled={busy||!guide.remote} onClick={()=>{setSaved(false);void mutation.run(()=>api(`/admin/iptv/sources/${guide.id}/refresh`,'POST',{}));}}>{guide.running?'Refreshing…':'Refresh EPG'}</button><button className="danger" disabled={busy} onClick={()=>setRemove(true)}>Remove EPG</button></>}>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    {guide?<Card title="Program guide (EPG)" description="Channels with matching XMLTV IDs get listings automatically." actions={<><button disabled={busy||!guide.remote} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/sources/${guide.id}/refresh`,'POST',{});toast.info('EPG refresh started');})}>{guide.running?'Refreshing…':'Refresh EPG'}</button><button className="danger" disabled={busy} onClick={()=>setRemove(true)}>Remove EPG</button></>}>
       <div className="stat-grid"><Stat label="Status" value={<span className="stat-small">{guide.lastError?code(guide.lastError):guide.lastSuccess?'Up to date':'Awaiting import'}</span>} tone={guide.lastError?'danger':guide.lastSuccess?'ok':undefined}/><Stat label="Last import" value={<span className="stat-small">{date(guide.lastSuccess)}</span>}/><Stat label="Next refresh" value={<span className="stat-small">{guide.remote?date(guide.nextDue):'Manual upload'}</span>}/></div>
     </Card>:<Card title="Program guide (EPG)" description="Channels with matching XMLTV IDs get listings automatically."/>}
     <Card title={guide?'Guide settings':'Add an EPG'}>
-      <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{
         if(!url.trim()&&(headers.trim()||insecure))throw new Error('Enter the EPG URL to replace its provider request options.');
         let requestHeaders:unknown={};
         if(headers.trim()){try{requestHeaders=JSON.parse(headers);}catch{throw new Error('Headers must be a JSON object.');}}
         const result=await api<{source:Source;guide:Source}>(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:source.revision,...(url.trim()?{endpoint:{url:url.trim(),headers:requestHeaders,allowInsecureHttp:insecure}}:{})});
         setUrl('');setHeaders('');setInsecure(false);
         if(result.guide.remote)try{await api(`/admin/iptv/sources/${result.guide.id}/refresh`,'POST',{});}catch{throw new Error('The EPG was saved for this source, but its import failed. Use Refresh EPG to retry, or enter a replacement EPG URL.');}
-        setSaved(true);
+        toast.success('EPG saved');
       });}}>
         <label>{guide?'Replacement EPG URL':'EPG URL'}<input type="url" value={url} onChange={e=>setUrl(e.target.value)} required={!guide} disabled={busy} autoComplete="off" spellCheck={false} placeholder="https://provider.example/guide.xml.gz"/><small>{guide?'Blank keeps the current guide · ':''}XML or .gz</small></label>
         <details><summary>Provider request options</summary><div className="form-stack"><label>Request headers (JSON)<textarea value={headers} disabled={busy} onChange={e=>setHeaders(e.target.value)} autoComplete="off" placeholder={'{"User-Agent":"tk.box"}'}/></label><label className="checkbox-label"><input type="checkbox" checked={insecure} disabled={busy} onChange={e=>setInsecure(e.target.checked)}/>This provider requires unencrypted HTTP</label></div></details>
@@ -235,34 +236,34 @@ function GuidePanel({source,guide,changed}:{source:Source;guide?:Source;changed:
         <div className="button-row"><button className="primary" disabled={busy}>{mutation.busy?'Saving EPG…':guide?'Save EPG':'Add EPG'}</button></div>
       </form>
     </Card>
-    {remove&&<Modal title="Remove source EPG" onClose={()=>{if(!mutation.busy)setRemove(false);}}><h2>Remove the EPG from {source.name}?</h2><p>Channels stay available without listings, unless this source requires guide data.</p><div className="button-row"><button className="danger" disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/guide`,'DELETE',{expectedRevision:source.revision});setRemove(false);setSaved(false);})}>Remove EPG</button><button disabled={mutation.busy} onClick={()=>setRemove(false)}>Cancel</button></div>{mutation.error&&<ErrorNotice message={mutation.error}/>}</Modal>}
+    {remove&&<Modal title="Remove source EPG" onClose={()=>{if(!mutation.busy)setRemove(false);}}><h2>Remove the EPG from {source.name}?</h2><p>Channels stay available without listings, unless this source requires guide data.</p><div className="button-row"><button className="danger" disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/guide`,'DELETE',{expectedRevision:source.revision});setRemove(false);toast.success('EPG removed');})}>Remove EPG</button><button disabled={mutation.busy} onClick={()=>setRemove(false)}>Cancel</button></div>{mutation.error&&<ErrorNotice message={mutation.error}/>}</Modal>}
   </>;
 }
 
 // Listing rules: channels list themselves. There is no approval step, only these rules and per-channel overrides.
 const lookAhead=[0,1,2,3,6,12,24];
 function ListingPanel({source,hasGuide,changed}:{source:Source;hasGuide:boolean;changed:()=>void}) {
-  const view=useApi<ListingView>(`/admin/iptv/sources/${source.id}/listing`),data=view.data,[draft,setDraft]=useState<ListingPolicy>(),[saved,setSaved]=useState(false);
+  const view=useApi<ListingView>(`/admin/iptv/sources/${source.id}/listing`),data=view.data,[draft,setDraft]=useState<ListingPolicy>();
   const mutation=useMutation(()=>{view.reload();changed();}),groupMutation=useMutation(()=>{view.reload();changed();});
   useEffect(()=>{if(data)setDraft(data.policy);},[data?.policy.requireCheck,data?.policy.requireGuide,data?.policy.guideHours,data?.policy.alwaysOn.join('\n')]);
   const sports=useApi<SportsView>(`/admin/iptv/sources/${source.id}/sports`),sportsOn=!!sports.data?.policy.enabled;
   if(view.loading&&!data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!data||!draft)return null;
-  const set=(patch:Partial<ListingPolicy>)=>{setSaved(false);setDraft(d=>d&&{...d,...patch});};
+  const set=(patch:Partial<ListingPolicy>)=>setDraft(d=>d&&{...d,...patch});
   const dirty=JSON.stringify(draft)!==JSON.stringify(data.policy);
   const saveGroup=(group:Group,patch:Partial<Pick<Group,'mode'|'guideExempt'>>)=>void groupMutation.run(()=>api(`/admin/iptv/sources/${source.id}/groups`,'PUT',{expectedRevision:source.revision,name:group.name,mode:group.mode,guideExempt:group.guideExempt,...patch}));
   return <>
     <Card title="Listing rules" description="Channels list automatically when they meet these rules.">
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/listing`,'PUT',{expectedRevision:source.revision,...draft});setSaved(true);});}}>
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/listing`,'PUT',{expectedRevision:source.revision,...draft});toast.success('Listing rules saved',{detail:'The lineup has been updated.'});});}}>
         <Switch label="Wait for a passing check" description="Unlisted until a check sees them play." checked={draft.requireCheck} onChange={v=>set({requireCheck:v})}/>
         <Switch label="Only list channels with guide data" description={<>Only while a program is airing or starting soon. {!hasGuide&&<strong className="warning-text">No EPG yet: this unlists regular channels.</strong>}</>} checked={draft.requireGuide} onChange={v=>set({requireGuide:v})}/>
         {draft.requireGuide&&<div className="nested">
           <label className="narrow">Look ahead<select value={draft.guideHours} onChange={e=>set({guideHours:Number(e.target.value)})}>{lookAhead.map(h=><option key={h} value={h}>{h===0?'Only what is airing now':`Airing now or within ${plural(h,'hour')}`}</option>)}</select></label>
           <div className="field"><span>Always-on keywords</span><Keywords value={draft.alwaysOn} onChange={v=>set({alwaysOn:v})}/><small>Matching channels never need guide data.</small></div>
         </div>}
-        <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>Save listing rules</button>{dirty&&<button type="button" onClick={()=>setDraft(data.policy)}>Discard changes</button>}{saved&&<span className="success" role="status">Saved. The lineup has been updated.</span>}</div>
+        <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty}>Save listing rules</button>{dirty&&<button type="button" onClick={()=>setDraft(data.policy)}>Discard changes</button>}</div>
       </form>
     </Card>
     <Card title="Categories" description={sportsOn?undefined:'Turn on events to use event categories.'}>
@@ -282,24 +283,23 @@ const filters:[string,string,(c:Channel)=>boolean][]=[['all','All channels',()=>
   ...(Object.keys(states) as ListingState[]).map(s=>[s,states[s].label,(c:Channel)=>c.state===s] as [string,string,(c:Channel)=>boolean])];
 const PAGE=100;
 function ChannelsPanel({source,channels,health,filter,setFilter,changed}:{source:Source;channels:ReturnType<typeof useApi<ChannelsView>>;health:Record<string,Health>;filter:string;setFilter:(f:string)=>void;changed:()=>void}) {
-  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[identity,setIdentity]=useState<Channel>(),[inspect,setInspect]=useState<Channel>(),[notice,setNotice]=useState('');
+  const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[shown,setShown]=useState(PAGE),[mapping,setMapping]=useState<Channel>(),[edit,setEdit]=useState<Channel>(),[identity,setIdentity]=useState<Channel>(),[inspect,setInspect]=useState<Channel>();
   const mutation=useMutation(changed);
   useEffect(()=>{setSelected([]);},[source.revision]);
-  useEffect(()=>{setNotice('');},[selected]);
   useEffect(()=>{setShown(PAGE);},[filter,search]);
   const entries=channels.data?.channels??[],match=filters.find(f=>f[0]===filter)?.[2]??(()=>true),q=search.toLocaleLowerCase();
   const filtered=entries.filter(c=>match(c)&&(!q||[c.name,c.tvgId,c.group,String(c.number??'')].some(v=>v.toLocaleLowerCase().includes(q))));
   const visible=filtered.slice(0,shown),selectable=filtered.slice(0,500).map(c=>c.id),stackSize=new Map<string,number>();
   for(const c of entries)stackSize.set(c.stackKey,(stackSize.get(c.stackKey)??0)+1);
   // Hidden channels are never checked, so the count can be lower than the selection.
-  const check=()=>void mutation.run(async()=>{const r=await api<{queued:number}>(`/admin/iptv/sources/${source.id}/health/check-channels`,'POST',{ids:selected});setNotice(r.queued?`${r.queued} check${r.queued===1?'':'s'} queued. This list updates as they finish.${r.queued<selected.length?' Hidden channels are not checked.':''}`:'Hidden channels are not checked.');});
+  const check=()=>void mutation.run(async()=>{const r=await api<{queued:number}>(`/admin/iptv/sources/${source.id}/health/check-channels`,'POST',{ids:selected});if(r.queued)toast.info(`${r.queued} check${r.queued===1?'':'s'} queued`,{detail:`This list updates as they finish.${r.queued<selected.length?' Hidden channels are not checked.':''}`});else toast.warning('Hidden channels are not checked');});
   const bulk=(listing:Listing)=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/channels/listing`,'POST',{expectedRevision:source.revision,ids:selected,listing}));
   return <>
     <div className="channel-toolbar">
       <label className="search-field"><Icon name="search" size={16}/><input aria-label="Find a channel" placeholder="Find by name, provider ID or category" value={search} maxLength={120} onChange={e=>{setSearch(e.target.value);setSelected([]);}}/></label>
       <select aria-label="Show channels" value={filter} onChange={e=>{setFilter(e.target.value);setSelected([]);}}>{filters.map(([f,label,test])=>{const n=entries.filter(test).length;return (f==='all'||n>0||f===filter)&&<option key={f} value={f}>{label} · {n}</option>;})}</select>
     </div>
-    {selected.length>0&&<div className="bulk-bar" role="region" aria-label="Selected channels"><strong>{selected.length} selected</strong><div className="button-row"><button disabled={mutation.busy} onClick={check}>Check now</button><button disabled={mutation.busy} onClick={()=>bulk('auto')}>List automatically</button><button disabled={mutation.busy} onClick={()=>bulk('always')}>Always list</button><button disabled={mutation.busy} onClick={()=>bulk('hidden')}>Hide</button><button className="text-button" onClick={()=>setSelected([])}>Clear</button></div>{notice&&<p role="status" className="success">{notice}</p>}</div>}
+    {selected.length>0&&<div className="bulk-bar" role="region" aria-label="Selected channels"><strong>{selected.length} selected</strong><div className="button-row"><button disabled={mutation.busy} onClick={check}>Check now</button><button disabled={mutation.busy} onClick={()=>bulk('auto')}>List automatically</button><button disabled={mutation.busy} onClick={()=>bulk('always')}>Always list</button><button disabled={mutation.busy} onClick={()=>bulk('hidden')}>Hide</button><button className="text-button" onClick={()=>setSelected([])}>Clear</button></div></div>}
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     {channels.loading&&!channels.data?<Loading/>:channels.error?<ErrorNotice message={channels.error.message} retry={channels.reload}/>:!filtered.length?<Empty title="No channels in this view">{entries.length?'Try another filter or search.':'Import a playlist to see its channels.'}</Empty>:<>
       <div className="table-scroll"><table className="channel-table"><thead><tr><th className="selection-cell"><input type="checkbox" aria-label={`Select ${selectable.length===filtered.length?'all':'the first 500'} channels in this view`} disabled={mutation.busy} checked={selectable.length>0&&selectable.every(id=>selected.includes(id))} onChange={e=>setSelected(e.target.checked?selectable:[])}/></th><th>Channel</th><th>Listing</th><th>Check</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{visible.map(c=><tr key={c.id} className={selected.includes(c.id)?'selected':''}>
@@ -341,25 +341,25 @@ function OverviewPanel({source,guide,summary,total,openChannels,openTab,review}:
   </>;
 }
 function ConnectionPanel({source,sources,changed,removed}:{source:Source;sources:Source[];changed:()=>void;removed:()=>void}) {
-  const [replacement,setReplacement]=useState(''),[insecure,setInsecure]=useState(false),[providerHeaders,setProviderHeaders]=useState(''),[remove,setRemove]=useState(false),[saved,setSaved]=useState('');
+  const [replacement,setReplacement]=useState(''),[insecure,setInsecure]=useState(false),[providerHeaders,setProviderHeaders]=useState(''),[remove,setRemove]=useState(false);
   const [lan,setLan]=useState(source.allowPrivateStreams),mutation=useMutation(changed);
   useEffect(()=>{setLan(source.allowPrivateStreams);},[source.revision]);
   return <>
-    {mutation.error&&<ErrorNotice message={mutation.error}/>}{saved&&<p className="success" role="status">{saved}</p>}
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <Card title="Local network streams" description="Channels play only from internet addresses, so a playlist can’t point tk.box at devices on your network. Allow it for a tuner or server on your own network, such as an HDHomeRun.">
-      <form className="inline-form" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,allowPrivateStreams:lan});setSaved(lan?'Local network streams allowed.':'Local network streams blocked.');});}}>
+      <form className="inline-form" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:source.revision,allowPrivateStreams:lan});toast.success(lan?'Local network streams allowed':'Local network streams blocked');});}}>
         <label className="checkbox-label"><input type="checkbox" checked={lan} onChange={e=>setLan(e.target.checked)}/>Allow streams on my local network</label>
         <button disabled={mutation.busy||lan===source.allowPrivateStreams}>Save</button>
       </form>
     </Card>
     {source.remote?<Card title="Playlist URL" description="Channels, numbers and favorites are kept.">
-      <form className="form-stack" onSubmit={e=>{e.preventDefault();setSaved('');void mutation.run(async()=>{let headers:unknown={};try{headers=providerHeaders.trim()?JSON.parse(providerHeaders):{};}catch{throw new Error('Headers must be a JSON object.');}await api(`/admin/iptv/sources/${source.id}/endpoint`,'PUT',{expectedRevision:source.revision,endpoint:{url:replacement,headers,allowInsecureHttp:insecure}});setReplacement('');setProviderHeaders('');setSaved('Playlist URL replaced. The next refresh uses it.');});}}>
+      <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{let headers:unknown={};try{headers=providerHeaders.trim()?JSON.parse(providerHeaders):{};}catch{throw new Error('Headers must be a JSON object.');}await api(`/admin/iptv/sources/${source.id}/endpoint`,'PUT',{expectedRevision:source.revision,endpoint:{url:replacement,headers,allowInsecureHttp:insecure}});setReplacement('');setProviderHeaders('');toast.success('Playlist URL replaced',{detail:'The next refresh uses it.'});});}}>
         <label>New URL<input type="url" value={replacement} onChange={e=>setReplacement(e.target.value)} required autoComplete="off" spellCheck={false}/></label>
         <details><summary>Provider request options</summary><div className="form-stack"><label>Request headers (JSON)<textarea value={providerHeaders} onChange={e=>setProviderHeaders(e.target.value)} autoComplete="off"/></label><label className="checkbox-label"><input type="checkbox" checked={insecure} onChange={e=>setInsecure(e.target.checked)}/>This provider requires unencrypted HTTP</label></div></details>
         <div className="button-row"><button disabled={mutation.busy}>Replace URL</button></div>
       </form>
     </Card>:<Card title="Playlist file" description="Channels, numbers and favorites are kept.">
-      <label>Choose a UTF-8 playlist<input type="file" accept=".m3u,.m3u8" disabled={mutation.busy} onChange={e=>{const input=e.currentTarget,file=input.files?.[0];if(file)void mutation.run(async()=>{if(file.size>16*1024*1024)throw new Error('File exceeds the 16 MiB import limit.');await api(`/admin/iptv/sources/${source.id}/upload`,'POST',{expectedRevision:source.revision,text:await file.text()});input.value='';setSaved('Playlist imported.');});}}/></label>
+      <label>Choose a UTF-8 playlist<input type="file" accept=".m3u,.m3u8" disabled={mutation.busy} onChange={e=>{const input=e.currentTarget,file=input.files?.[0];if(file)void mutation.run(async()=>{if(file.size>16*1024*1024)throw new Error('File exceeds the 16 MiB import limit.');await api(`/admin/iptv/sources/${source.id}/upload`,'POST',{expectedRevision:source.revision,text:await file.text()});input.value='';toast.success('Playlist imported');});}}/></label>
     </Card>}
     <Card title="Remove source" className="danger-zone" description="Deletes its channels, favorites and numbers." actions={<button className="danger" onClick={()=>setRemove(true)}>Remove source</button>}/>
     {remove&&<RemoveSource source={source} sources={sources} changed={changed} removed={removed} onClose={()=>setRemove(false)}/>}
@@ -368,12 +368,12 @@ function ConnectionPanel({source,sources,changed,removed}:{source:Source;sources
 // Every schedule of a source in one place: the playlist's refresh, its guide's refresh and the channel checks. Save sends
 // only those that changed, the playlist first since the guide's save expects the source's new revision.
 function SchedulesPanel({source,guide,health,changed}:{source:Source;guide?:Source;health:ReturnType<typeof useApi<HealthView>>;changed:()=>void}) {
-  const policy=health.data?.policy,[playlist,setPlaylist]=useState(source.schedule),[epg,setEpg]=useState(guide?.schedule),[checks,setChecks]=useState<Schedule|null|undefined>(policy?.schedule),[saved,setSaved]=useState(false);
+  const policy=health.data?.policy,[playlist,setPlaylist]=useState(source.schedule),[epg,setEpg]=useState(guide?.schedule),[checks,setChecks]=useState<Schedule|null|undefined>(policy?.schedule);
   const mutation=useMutation(()=>{health.reload();changed();});
   useEffect(()=>setPlaylist(source.schedule),[source.revision]);
   useEffect(()=>setEpg(guide?.schedule),[guide?.id,guide?.revision]);
   useEffect(()=>setChecks(policy?.schedule),[JSON.stringify(policy?.schedule)]);
-  const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b),edit=<T,>(set:(v:T)=>void)=>(v:T)=>{setSaved(false);set(v);};
+  const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b),edit=<T,>(set:(v:T)=>void)=>set;
   const dirty=!same(playlist,source.schedule)||!!guide&&!same(epg,guide.schedule)||!!policy&&checks!==undefined&&!same(checks,policy.schedule);
   const problem=!!scheduleProblem(playlist,60)||!!epg&&!!scheduleProblem(epg,60)||!!checks&&!!scheduleProblem(checks,60);
   const save=()=>void mutation.run(async()=>{
@@ -381,7 +381,7 @@ function SchedulesPanel({source,guide,health,changed}:{source:Source;guide?:Sour
     if(source.remote&&!same(playlist,source.schedule))revision=(await api<Source>(`/admin/iptv/sources/${source.id}`,'PATCH',{expectedRevision:revision,schedule:playlist})).revision;
     if(guide?.remote&&epg&&!same(epg,guide.schedule))await api(`/admin/iptv/sources/${source.id}/guide`,'PUT',{expectedRevision:revision,schedule:epg});
     if(policy&&checks!==undefined&&!same(checks,policy.schedule))await api(`/admin/iptv/sources/${source.id}/health`,'PUT',{schedule:checks,hideFailing:policy.hideFailing});
-    setSaved(true);
+    toast.success('Schedules saved');
   });
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
@@ -390,7 +390,7 @@ function SchedulesPanel({source,guide,health,changed}:{source:Source;guide?:Sour
         {source.remote?<div className="field">Refresh the playlist<SchedulePicker value={playlist} min={60} set={edit((v:Schedule|null)=>v&&setPlaylist(v))}/></div>:<p className="muted small">Uploaded playlists don’t refresh.</p>}
         {!guide?<p className="muted small">No EPG yet. Add one in the Guide tab.</p>:guide.remote&&epg?<div className="field">Refresh the guide<SchedulePicker value={epg} min={60} disabled={!!guide.running} set={edit((v:Schedule|null)=>v&&setEpg(v))}/></div>:<p className="muted small">Uploaded guides don’t refresh.</p>}
         {health.loading&&!policy?<Loading/>:health.error?<ErrorNotice message={health.error.message} retry={health.reload}/>:checks!==undefined&&<div className="field">Check each channel again<SchedulePicker value={checks} min={60} off="Manual only" set={edit(setChecks)}/></div>}
-        <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty||problem}>Save schedules</button>{saved&&!dirty&&<span className="success" role="status">Saved.</span>}</div>
+        <div className="button-row"><button className="primary" disabled={mutation.busy||!dirty||problem}>Save schedules</button></div>
       </form>
     </Card>
   </>;
@@ -411,7 +411,7 @@ function SourceDetail({source,sources,changed,removed,back}:{source:Source;sourc
     <button className="back-link" onClick={back}><Icon name="back" size={16}/>All sources</button>
     <div className="source-head">
       <div className="source-title"><span className={`status-dot ${source.lastError?'danger':source.lastSuccess?'ok':''}`} aria-hidden="true"/><div><h2>{source.name}</h2><p className="muted small">{source.remote?`Remote playlist · refreshes: ${describeSchedule(source.schedule)}`:'Uploaded playlist'} · {channels.data?`${listedCount(summary)} of ${plural(total,'channel')} listed`:'Loading channels…'}</p></div></div>
-      {source.remote&&<div className="button-row"><button disabled={source.running||mutation.busy} onClick={()=>void mutation.run(()=>api(`/admin/iptv/sources/${source.id}/refresh`,'POST',{}))}><Icon name="restart" size={16}/>{source.running?'Refreshing…':'Refresh now'}</button></div>}
+      {source.remote&&<div className="button-row"><button disabled={source.running||mutation.busy} onClick={()=>void mutation.run(async()=>{await api(`/admin/iptv/sources/${source.id}/refresh`,'POST',{});toast.info(`Refreshing ${source.name}`);})}><Icon name="restart" size={16}/>{source.running?'Refreshing…':'Refresh now'}</button></div>}
     </div>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
     <div className="subtabs" role="tablist" aria-label={`${source.name} settings`}>{sourceTabs.map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} onClick={()=>setTab(id)}>{label}{id==='channels'&&channels.data?<span className="count">{total}</span>:null}</button>)}</div>
@@ -431,7 +431,7 @@ function SourceDetail({source,sources,changed,removed,back}:{source:Source;sourc
 type IptvSettingsView={revision:number;maxConnections:number;connections:{limit:number;viewers:number;checks:number}};
 // Server-wide: shared by every source, viewer and channel check.
 function IptvAppSettings() {
-  const view=useApi<IptvSettingsView>('/admin/iptv/settings'),[max,setMax]=useState(1),[saved,setSaved]=useState(false),mutation=useMutation(view.reload),data=view.data;
+  const view=useApi<IptvSettingsView>('/admin/iptv/settings'),[max,setMax]=useState(1),mutation=useMutation(view.reload),data=view.data;
   useEffect(()=>{if(data)setMax(data.maxConnections);},[data?.revision]);
   // Usage changes as people tune in; keep it current while the page is open.
   useEffect(()=>{const timer=window.setInterval(view.reload,10000);return()=>window.clearInterval(timer);},[]);
@@ -439,11 +439,11 @@ function IptvAppSettings() {
   if(view.error&&!data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!data)return null;
   const used=data.connections.viewers+data.connections.checks,changed=max!==data.maxConnections;
-  return <form className="setting-line" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/iptv/settings','PUT',{expectedRevision:data.revision,maxConnections:max});setSaved(true);});}}>
+  return <form className="setting-line" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/iptv/settings','PUT',{expectedRevision:data.revision,maxConnections:max});toast.success('Connection limit saved');});}}>
     <label htmlFor="iptv-max-connections" className="grow"><strong>Max connections</strong><small className="muted">{used} of {data.connections.limit} in use · shared by all sources</small></label>
-    {mutation.error&&<span className="danger small">{mutation.error}</span>}{saved&&!changed&&<span role="status" className="success small">Saved</span>}
+    {mutation.error&&<span className="danger small">{mutation.error}</span>}
     {changed&&<button className="primary" disabled={mutation.busy}>Save</button>}
-    <input id="iptv-max-connections" type="number" min="1" max="16" required value={max} onChange={e=>{setMax(Number(e.target.value));setSaved(false);}}/>
+    <input id="iptv-max-connections" type="number" min="1" max="16" required value={max} onChange={e=>setMax(Number(e.target.value))}/>
   </form>;
 }
 export function SourceSettings() {
@@ -470,10 +470,10 @@ export function SourceSettings() {
 type CustomBuffer={bytes:number;maxBytesPerChannel:number;stations:number;delayedViewers:number;bufferedMs:number;storagePressure:boolean};
 const size=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(1)} GB`:`${Math.round(bytes/1024**2)} MB`;
 export function ServerPlaybackSettings() {
-  const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number;customBuffer:CustomBuffer}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),[saved,setSaved]=useState(false),mutation=useMutation(data.reload);
+  const data=useApi<PlaybackSettings&{revision:number;activeVideoEncoders:number;customBuffer:CustomBuffer}>('/admin/settings/playback'),[limit,setLimit]=useState(2),[minutes,setMinutes]=useState(30),mutation=useMutation(data.reload);
   useEffect(()=>{if(data.data){setLimit(data.data.maxConcurrentCpuVideoTranscodes);setMinutes(data.data.pauseRetentionMinutes);}},[data.data?.revision]);
   return <>{data.loading&&!data.data?<Loading/>:data.error?<ErrorNotice message={data.error.message} retry={data.reload}/>:data.data&&<Card title="Encoding & buffering">
-      <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();setSaved(false);void mutation.run(async()=>{await api('/admin/settings/playback','PATCH',{expectedRevision:data.data!.revision,maxConcurrentCpuVideoTranscodes:limit,pauseRetentionMinutes:minutes});setSaved(true);});}}>
+      <form className="form-stack narrow" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/settings/playback','PATCH',{expectedRevision:data.data!.revision,maxConcurrentCpuVideoTranscodes:limit,pauseRetentionMinutes:minutes});toast.success('Playback settings saved');});}}>
         <label>Maximum concurrent CPU video encoders<input type="number" min="1" max="16" required value={limit} onChange={e=>setLimit(Number(e.target.value))}/><small>{data.data.activeVideoEncoders} active · Direct Play and remux don’t count</small></label>
         <label>Maximum pause retention (minutes)<input type="number" min="5" max="120" required value={minutes} onChange={e=>setMinutes(Number(e.target.value))}/><small>How far behind live a viewer can fall on Plex channels.</small></label>
         {minutes<data.data.pauseRetentionMinutes&&<div className="notice"><span>Applies now: anyone over {minutes} min behind live must Go Live.{data.data.customBuffer.delayedViewers>0&&` ${data.data.customBuffer.delayedViewers} viewer${data.data.customBuffer.delayedViewers===1?' is':'s are'} behind live right now.`}</span></div>}
@@ -485,7 +485,7 @@ export function ServerPlaybackSettings() {
         </dl>
         {data.data.customBuffer.storagePressure&&<div className="notice error"><span>Low disk space: Plex channels keep only about 90 seconds.</span></div>}
         {mutation.error&&<ErrorNotice message={mutation.error}/>}
-        <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button>{saved&&<span role="status" className="success">Saved.</span>}</div>
+        <div className="button-row"><button disabled={mutation.busy} className="primary">Save settings</button></div>
       </form>
     </Card>}</>;
 }
@@ -495,14 +495,14 @@ type SportsSettingsView={settings:SportsSettingsValue&{revision:number};leagues:
 const sportNames:Record<string,string>={football:'American football',basketball:'Basketball',baseball:'Baseball',hockey:'Hockey',soccer:'Soccer',mma:'MMA',boxing:'Boxing',wrestling:'Wrestling',racing:'Motorsport',golf:'Golf',tennis:'Tennis',rugby:'Rugby',cricket:'Cricket',cycling:'Cycling',darts:'Darts',curling:'Curling',sports:'Other sports'};
 // Server-wide: which leagues event channels are shown for, the order sports and leagues appear in, and their numbers.
 export function LiveSportsSettings() {
-  const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[saved,setSaved]=useState(false),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload),drag=useDragOrder();
+  const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.settings;setDraft(value);}},[view.data?.settings.revision]);
   const head=<SectionHead title="Live Events"/>;
   if(view.loading&&!view.data)return <>{head}<Loading/></>;
   if(view.error)return <>{head}<ErrorNotice message={view.error.message} retry={view.reload}/></>;
   if(!view.data||!draft)return head;
   const data=view.data,selecting=draft.leagueMode==='selected';
-  const set=(patch:Partial<SportsSettingsValue>)=>{setSaved(false);setDraft(d=>d&&{...d,...patch});};
+  const set=(patch:Partial<SportsSettingsValue>)=>setDraft(d=>d&&{...d,...patch});
   const rank=(l:League)=>{const i=draft.leagueOrder.indexOf(l.key);return i<0?draft.leagueOrder.length:i;};
   // Only shown leagues compete for a place, so when selecting they are listed first.
   const hidden=(l:League)=>Number(selecting&&!draft.leagues.includes(l.key));
@@ -516,7 +516,7 @@ export function LiveSportsSettings() {
   return <>{head}
     <p className="muted small" role="status">{data.lastSync?`Schedules last downloaded ${date(data.lastSync)}`:'Schedules download while an IPTV source uses events.'}{data.lastError?` · Last error: ${code(data.lastError)}`:''}</p>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/sports/settings','PUT',{expectedRevision:data.settings.revision,...draft,leagueOrder:shownOrder()});setSaved(true);});}}>
+    <form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{await api('/admin/sports/settings','PUT',{expectedRevision:data.settings.revision,...draft,leagueOrder:shownOrder()});toast.success('Live Events settings saved',{detail:'The lineup has been updated.'});});}}>
       <Card title="Leagues">
         <div className="toggle-group" role="radiogroup" aria-label="Leagues shown"><button type="button" role="radio" aria-checked={!selecting} onClick={()=>set({leagueMode:'all'})}>Every league</button><button type="button" role="radio" aria-checked={selecting} onClick={()=>set({leagueMode:'selected'})}>Only leagues I select</button></div>
         <Switch label="Also show channels with no scheduled game" checked={draft.unscheduled} onChange={v=>set({unscheduled:v})}/>
@@ -542,7 +542,7 @@ export function LiveSportsSettings() {
         </div>
         <Switch label="Number event channels in their own block" description={draft.numberStart!==null?`Lowest free number from ${draft.numberStart} up.`:'Lowest free channel number.'} checked={draft.numberStart!==null} onChange={v=>set({numberStart:v?1000:null})}/>
       </Card>
-      <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save Live Events settings</button>{saved&&<span className="success" role="status">Saved. The lineup has been updated.</span>}</div>
+      <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save Live Events settings</button></div>
     </form>
   </>;
 }

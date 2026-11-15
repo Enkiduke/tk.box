@@ -11,6 +11,8 @@ export const SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 const RENEW_EVERY_MS = 60 * 60 * 1000;
 export class IdentityService {
   private authorizing = new Map<string,Promise<PlexGrant>>();
+  // Told when an account signs in to tk.box for the first time (system-alerts).
+  firstSignIn?: (account: Pick<PlexGrant, 'accountId' | 'name' | 'role'>) => void;
   // A Plex check that passed is reused for `recheckMs` (0 checks every request), so a page of artwork doesn't
   // wait on plex.tv for each image. Sign-out and disabled accounts still apply at once: the session row is read every time.
   private grants = new TtlCache<PlexGrant>(1000);
@@ -42,13 +44,15 @@ export class IdentityService {
   async signIn(accountToken: string, now = Date.now(), claim = () => {}) {
     const grant = await this.plex.authorize(accountToken);
     const cookie = opaque(), sessionHash = digest(cookie), expires = now + SESSION_IDLE_MS;
+    let first = false;
     this.db.transaction(() => {
       claim();
-      prepared(this.db, 'INSERT OR IGNORE INTO users(account_id) VALUES(?)').run(grant.accountId);
+      first = prepared(this.db, 'INSERT OR IGNORE INTO users(account_id) VALUES(?)').run(grant.accountId).changes === 1;
       const user = prepared(this.db, 'SELECT allowed FROM users WHERE account_id=?').get(grant.accountId) as {allowed: number};
       requireThat(user.allowed, 'ACCESS_DENIED', 'Account access is disabled.', 403);
       prepared(this.db, 'INSERT INTO sessions VALUES(?,?,?,?)').run(sessionHash, grant.accountId, this.vault.seal(accountToken, sessionHash), expires);
     })();
+    if (first) try { this.firstSignIn?.(grant); } catch { /* an alert never blocks signing in */ }
     return { cookie, grant };
   }
   async authenticate(cookie: string | undefined, now = Date.now()) {

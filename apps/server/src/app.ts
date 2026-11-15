@@ -34,6 +34,8 @@ import { cleanupModule } from './modules/cleanup.js';
 import { arrModule } from './modules/arr.js';
 import { requestsModule } from './modules/requests.js';
 import { clientEventsModule } from './modules/client-events.js';
+import { notificationsModule } from './modules/notifications.js';
+import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
 import { exploreModule } from './modules/explore.js';
 import { calendarModule } from './modules/calendar.js';
@@ -162,7 +164,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const {store: iptv, live} = await mountModule(app, ctx, iptvModule, {custom});
   await mountModule(app, ctx, liveSessionsModule, {live, iptv, customTv, custom, activity: activityApi, history, subtitles});
   await mountModule(app, ctx, vodPlaybackModule, {identity, activity: activityApi, history, subtitles, localMedia});
-  await mountModule(app, ctx, clientEventsModule, undefined);
+  // Owners and the accounts made admins see the shared system alerts.
+  const isAdmin = (grant: {role: string; accountId: string}) => grant.role === 'admin' || admins.has(grant.accountId);
+  await mountModule(app, ctx, clientEventsModule, {isAdmin});
+  await mountModule(app, ctx, notificationsModule, {isAdmin});
   // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
   const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length;
   // Radarr and Sonarr, read by Collections, Clean Up and the calendar.
@@ -170,7 +175,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb, arr}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
   const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site});
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches});
+  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches, identity});
   // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
   const watches = (account: string) => {
     const server = config.PLEX_MACHINE_ID;
@@ -181,8 +186,9 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   await mountModule(app, ctx, plexNotificationsModule, undefined);
   await mountModule(app, ctx, calendarModule, {connections: () => ({radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr')}), titles: tmdbTitles});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
-  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(),
-    checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports)});
+  // Admins' system alerts. Admin › Connections checks through it, so its result updates the alerts too.
+  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports)});
+  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(), checkConnections: alerts.checkConnections});
   await mountModule(app, ctx, jobsModule, undefined);
   await mountModule(app, ctx, webModule, undefined);
   return app;

@@ -4,6 +4,7 @@ import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
 import {seasonList,seasonModes,seasonsFor,type SeasonMode} from './request-seasons.js';
+import {toast} from './toasts.js';
 
 export const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',downloading:'Downloading',requested:'Requested'};
 const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
@@ -40,7 +41,7 @@ export function RequestDialog({item,request,extras,onClose,onDone}:{item:Explore
     if(busy||(show&&!chosen.length))return;setBusy(true);setError('');
     try {
       await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...(show&&chosen.length<open.length?{seasons:chosen}:{}),...extrasBody(extras)});
-      invalidate('/explore/');invalidate('/requests/mine');onDone(`Requested ${item.title}${show?` · ${seasonList(chosen)}`:''}.`);
+      invalidate('/explore/');invalidate('/requests/mine');onDone(`Requested ${item.title}${show?` · ${seasonList(chosen)}`:''}`);
     } catch(e){setError((e as Error).message);setBusy(false);}
   };
   return <dialog ref={ref} className="request-dialog" aria-label={`Request ${item.title}`} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===ref.current)close.current();}}>

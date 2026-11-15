@@ -3,36 +3,38 @@ import {api,ApiClientError} from './api.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
 import {SectionHead} from './settings-ui.js';
 import {qualityTiers} from '../../../packages/contracts/src/index.js';
+import {ACTIVITY_REFRESH_MS,activityElapsed,activityPosition,formatActivityTime,useActivityClock,type ActivityTiming} from './activity-time.js';
 import './activity.css';
 
 type Source={videoCodec?:string;audioCodec?:string;width?:number;height?:number;container?:string;bitrateKbps?:number};
 type Media={title:string;type:string;year?:number;show?:string;album?:string;season?:number;episode?:number;durationMs?:number;posterId?:string};
 // `plex` rows are other Plex apps' streams, read from Plex; they carry Plex's own video and audio descriptions.
-type Stream={id:string;kind:'vod'|'live'|'custom'|'plex';user:string;client:string;ip:string;local:boolean;startedAt?:number;state:'playing'|'paused'|'buffering';delivery:'direct'|'remux'|'transcode';
+type Stream=ActivityTiming&{id:string;kind:'vod'|'live'|'custom'|'plex';user:string;client:string;ip:string;local:boolean;startedAt?:number;delivery:'direct'|'remux'|'transcode';
   canStop:boolean;video?:string;audio?:string;speed?:number;live?:boolean;
   quality?:string;target?:{maxHeight?:number;maxBitrateKbps?:number};rateKbps:number;source?:Source;channelId?:string;channel?:{name:string;number:number};
-  media?:Media;program?:string;behindLiveMs?:number;positionMs?:number;durationMs?:number};
+  media?:Media;program?:string;behindLiveMs?:number};
 type View={streams:Stream[];transcodes:number;bandwidthKbps:number;wanBandwidthKbps:number;plexError?:string};
 
 const delivery={direct:'Direct play',remux:'Direct stream',transcode:'Transcode'} as const;
 const kinds={vod:'Library',live:'Live TV',custom:'Custom channel',plex:'Plex app'} as const;
 const states={playing:'Playing',paused:'Paused',buffering:'Buffering'} as const;
 const mbps=(kbps:number)=>`${(kbps/1000).toFixed(1)} Mbps`;
-const clock=(ms:number)=>{const s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s/60)%60,sec=String(s%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${sec}`:`${m}:${sec}`;};
 const resolution=(s?:Source)=>!s?.height?undefined:(s.height>=2000||(s.width??0)>=3800)?'4K':`${s.height>=1000||(s.width??0)>=1900?1080:s.height>=700||(s.width??0)>=1260?720:s.height}p`;
 const codec=(c?:string)=>c?.toUpperCase();
 const qualityName=(q?:string)=>{const tier=qualityTiers.find(t=>t.id===q);return tier?`${tier.height}p · ${mbps(tier.bitrateKbps)}`:q==='original'?'Original':'Auto';};
 
 // Admin › Activity: what everyone is watching right now, in tk.box (library, IPTV, custom channels) and in any other Plex app, refreshed every few seconds.
 export function ActivityAdmin() {
-  const [view,setView]=useState<View>(),[error,setError]=useState<string>(),[version,setVersion]=useState(0);
+  const [view,setView]=useState<View&{receivedAt:number}>(),[error,setError]=useState<string>(),[version,setVersion]=useState(0);
+  const now=useActivityClock(!!view?.streams.length);
   useEffect(()=>{
     let live=true;
-    const load=()=>api<View>('/admin/activity').then(v=>{if(live){setView(v);setError(undefined);}},(e:ApiClientError)=>{if(live)setError(e.message);});
-    void load();const timer=window.setInterval(()=>{if(!document.hidden)void load();},5000);
+    const load=()=>api<View>('/admin/activity').then(v=>{if(live){setView({...v,receivedAt:Date.now()});setError(undefined);}},(e:ApiClientError)=>{if(live)setError(e.message);});
+    void load();const timer=window.setInterval(()=>{if(!document.hidden)void load();},ACTIVITY_REFRESH_MS);
     return()=>{live=false;window.clearInterval(timer);};
   },[version]);
   const reload=()=>setVersion(v=>v+1);
+  const elapsedMs=view?activityElapsed(now,view.receivedAt):0;
   const summary=view&&(view.streams.length
     ?`${view.streams.length} active ${view.streams.length===1?'stream':'streams'}${view.transcodes?` (${view.transcodes} transcoding)`:''} · ${mbps(view.bandwidthKbps)}${view.wanBandwidthKbps?` (${mbps(view.wanBandwidthKbps)} WAN)`:''}`
     :'Nothing is playing');
@@ -40,11 +42,11 @@ export function ActivityAdmin() {
     {error&&<ErrorNotice message={error} retry={reload}/>}
     {view?.plexError&&<p className="notice">{view.plexError}</p>}
     {!view?(!error&&<Loading/>):view.streams.length>0&&
-      <section className="activity-grid" aria-label="Live activity">{view.streams.map(s=><StreamCard key={s.id} stream={s} ended={reload} failed={setError}/>)}</section>}
+      <section className="activity-grid" aria-label="Live activity">{view.streams.map(s=><StreamCard key={s.id} stream={s} now={now} elapsedMs={elapsedMs} ended={reload} failed={setError}/>)}</section>}
   </>;
 }
 
-function StreamCard({stream:s,ended,failed}:{stream:Stream;ended:()=>void;failed:(message:string)=>void}) {
+function StreamCard({stream:s,now,elapsedMs,ended,failed}:{stream:Stream;now:number;elapsedMs:number;ended:()=>void;failed:(message:string)=>void}) {
   const [stopping,setStopping]=useState(false),src=s.source,res=resolution(src);
   const name=s.channel?`${s.channel.number} · ${s.channel.name}`:undefined;
   const m=s.media,title=m?(m.type==='episode'?m.show??m.title:m.title):s.program??name??'Unknown';
@@ -62,12 +64,13 @@ function StreamCard({stream:s,ended,failed}:{stream:Stream;ended:()=>void;failed
     setStopping(true);
     api(`/admin/activity/${s.id}`,'DELETE').then(ended,(e:ApiClientError)=>{setStopping(false);if(e.status===404)ended();else failed(e.message);});
   };
-  const progress=s.positionMs!==undefined&&s.durationMs?Math.max(0,Math.min(1,s.positionMs/s.durationMs)):undefined;
-  const time=s.positionMs!==undefined&&s.durationMs?`${clock(s.positionMs)} / ${clock(s.durationMs)}`:s.startedAt?`Connected ${clock(Date.now()-s.startedAt)}`:undefined;
+  const playback=activityPosition(s,elapsedMs);
+  const time=playback?.time??(s.startedAt!==undefined?`Connected ${formatActivityTime(now-s.startedAt)}`:undefined);
+  const behindLiveMs=s.behindLiveMs===undefined?undefined:s.behindLiveMs+(s.state==='paused'?elapsedMs:0);
   const rows:[string,string|undefined][]=[
     ['Playback time',time],['Video',videoLine],['Audio',audioLine],['Speed',s.speed?.toFixed(1)],
     ['Quality',s.kind==='vod'?`${qualityName(s.quality)}${src?.bitrateKbps?` (source ${mbps(src.bitrateKbps)})`:''}`:undefined],
-    ['Behind live',s.behindLiveMs?clock(s.behindLiveMs):undefined],
+    ['Behind live',behindLiveMs?formatActivityTime(behindLiveMs):undefined],
     ['Location',`${s.local?'LAN':'WAN'}: ${s.ip}`],
     ['Bandwidth',s.state==='paused'&&!s.rateKbps?'Paused':`${s.delivery==='direct'&&s.kind!=='plex'?'~':''}${mbps(s.rateKbps)}`]
   ];
@@ -89,6 +92,6 @@ function StreamCard({stream:s,ended,failed}:{stream:Stream;ended:()=>void;failed
       <summary>Stream details</summary>
       <dl className="activity-details">{rows.filter(([,v])=>v).map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
     </details>
-    {progress!==undefined&&<div className="activity-progress" aria-hidden="true"><span style={{width:`${progress*100}%`}}/></div>}
+    {playback&&<div className="activity-progress" aria-hidden="true"><span style={{width:`${playback.progress*100}%`}}/></div>}
   </article>;
 }

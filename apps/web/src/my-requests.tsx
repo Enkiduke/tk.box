@@ -1,9 +1,9 @@
 import {useEffect,useState} from 'react';
 import type {MyRequests,RequestItem,RequestStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
-import {fetchCached,invalidate,useApi} from './hooks.js';
+import {invalidate,useApi} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
-import {announce} from './media-actions.js';
+import {toast} from './toasts.js';
 
 // Explore › My requests: the viewer's own requests, newest first, with Cancel while nothing is downloading yet.
 // The button shows how many changed (available, partly, failed) since the viewer last opened the list.
@@ -27,7 +27,7 @@ function MyRequestsBody({mine}:{mine:ReturnType<typeof useApi<MyRequests>>}) {
   const [busy,setBusy]=useState<number>(),[error,setError]=useState('');
   // Opening the list counts as having seen every change in it.
   useEffect(()=>{if(mine.data?.unseen)void api('/requests/mine/seen','POST').then(()=>invalidate('/requests/mine'),()=>undefined);},[mine.data?.unseen]);
-  const cancel=async(item:RequestItem)=>{setBusy(item.id);setError('');try{await api(`/requests/${item.id}`,'DELETE');invalidate('/requests/mine');invalidate('/explore/');}catch(e){setError((e as Error).message);}finally{setBusy(undefined);}};
+  const cancel=async(item:RequestItem)=>{setBusy(item.id);setError('');try{await api(`/requests/${item.id}`,'DELETE');invalidate('/requests/mine');invalidate('/explore/');toast.success(`Cancelled ${item.title}`);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);}};
   return <div className="my-requests">
       <h2>My requests</h2>
       {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}
@@ -40,15 +40,6 @@ function MyRequestsBody({mine}:{mine:ReturnType<typeof useApi<MyRequests>>}) {
     </div>;
 }
 
-// The server says one of the viewer's requests changed: lists reload, and a change worth hearing about gets a notice.
-const told=new Set<string>();
-export async function requestsChanged() {
-  invalidate('/requests/mine');invalidate('/requests?');invalidate('/explore/');
-  const mine=await fetchCached<MyRequests>('/requests/mine').catch(()=>undefined);
-  for(const item of mine?.items??[]){
-    const key=`${item.id}:${item.status}`;
-    if(item.seen||told.has(key)||!['available','partial','failed'].includes(item.status))continue;
-    told.add(key);
-    announce(item.status==='failed'?`${item.title} couldn’t be requested.`:item.status==='partial'?`Some of ${item.title} is ready to watch.`:`${item.title} is ready to watch.`,item.status==='failed');
-  }
-}
+// The server says one of the viewer's requests changed: the lists and Explore's labels reload. What happened comes
+// through the bell (docs/NOTIFICATIONS.md).
+export function requestsChanged() {invalidate('/requests/mine');invalidate('/requests?');invalidate('/explore/');}

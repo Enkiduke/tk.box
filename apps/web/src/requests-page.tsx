@@ -1,10 +1,13 @@
 import {memo,useEffect,useState} from 'react';
-import type {ExploreItem,MyRequests,RequestArtwork,RequestItem,RequestPage,RequestStatus} from '../../../packages/contracts/src/index.js';
+import type {ExploreItem,MyRequests,RequestArtwork,RequestItem,RequestPage,RequestRelease,RequestStatus,RequestTiming} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {invalidate,link,replaceRoute,useApi,useInfinitePages,useNearViewport} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading} from './components.js';
 import {requestStatusLabels,requestTone} from './my-requests.js';
+// Request status badges are styled with Explore's.
+import './explore.css';
 import './requests-page.css';
+import {toast} from './toasts.js';
 
 // The Requests site's Requests page: the viewer's own requests (first) or everyone's (not removed ones), as cards with the
 // title's backdrop and poster. A card opens the title; the viewer's own requests can be cancelled until downloading.
@@ -27,7 +30,7 @@ export function RequestsPage({params,onSelect}:{params:URLSearchParams;onSelect:
   const mine=useApi<MyRequests>('/requests/mine'),unseen=mine.data?.unseen??0;
   const go=(changes:Record<string,string>)=>replaceRoute(link('requests',Object.fromEntries(Object.entries({view,kind,status,...changes}).filter(([key,value])=>value&&!(key==='view'&&value==='mine')))));
   const [busy,setBusy]=useState<number>(),[error,setError]=useState('');
-  const cancel=async(item:RequestItem)=>{setBusy(item.id);setError('');try{await api(`/requests/${item.id}`,'DELETE');invalidate('/requests/mine');invalidate('/requests?');invalidate('/explore/');}catch(e){setError((e as Error).message);}finally{setBusy(undefined);}};
+  const cancel=async(item:RequestItem)=>{setBusy(item.id);setError('');try{await api(`/requests/${item.id}`,'DELETE');invalidate('/requests/mine');invalidate('/requests?');invalidate('/explore/');toast.success(`Cancelled ${item.title}`);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);}};
   const card=(item:RequestItem,own:boolean)=><RequestCard key={item.id} item={item} own={own} busy={busy===item.id} onCancel={cancel} onSelect={onSelect}/>;
   return <div className="page toolbar-page requests-page">
     <div className="page-toolbar requests-toolbar"><h1 className="sr-only">Requests</h1>
@@ -67,11 +70,46 @@ function Mine({mine,kind,status,card}:{mine:ReturnType<typeof useApi<MyRequests>
 }
 
 const seasonsText=(item:RequestItem)=>item.kind==='movie'?'Movie':item.seasons.length?`Season${item.seasons.length>1?'s':''}`:'Series';
+const releaseDateFormat=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'});
+const localDayFormat=new Intl.DateTimeFormat('sv-SE',{year:'numeric',month:'2-digit',day:'2-digit'});
+const movieReleaseLabels={
+  theatrical:{past:'Theatrical release',future:'In theaters from'},
+  digital:{past:'Released digitally',future:'Digital release'},
+  physical:{past:'Released on disc',future:'Disc release'}
+};
+
+function ReleaseFact({release}:{release:RequestRelease}) {
+  let day:string,label:string,note:string|undefined;
+  if(release.kind==='episode') {
+    day=release.day;
+    label=`S${release.season} E${release.episode} ${release.aired?'aired':'airs'}`;
+  } else {
+    if(!release.date)return <div><dt>Release</dt><dd>Waiting for release in Radarr</dd></div>;
+    const {format}=release.date;
+    day=release.date.day;
+    const future=day>localDayFormat.format(new Date());
+    label=movieReleaseLabels[format][future?'future':'past'];
+    if(format==='theatrical'&&!future)note='Home release date unknown';
+    else if(release.waitingForRelease&&!future)note='Waiting for release in Radarr';
+  }
+  return <div><dt>Release</dt><dd>{label} <time dateTime={day}>{releaseDateFormat.format(new Date(`${day}T00:00:00Z`))}</time>
+    {note&&<small className="request-card-release-note">{note}</small>}
+  </dd></div>;
+}
+
 const RequestCard=memo(function RequestCard({item,own,busy,onCancel,onSelect}:{item:RequestItem;own:boolean;busy:boolean;onCancel:(item:RequestItem)=>void;onSelect:(item:ExploreItem)=>void}) {
   const [ref,near]=useNearViewport<HTMLLIElement>('400px');
   const {data:art}=useApi<RequestArtwork>(near?`/requests/${item.id}/artwork`:undefined);
+  const timingPath=near&&item.status!=='removed'?`/requests/${item.id}/timing?v=${item.status}-${item.statusAt}`:undefined;
+  const {data:timing,error:timingError}=useApi<RequestTiming>(timingPath);
+  const added=timing?timing.kind==='added':item.status==='available';
+  let timingFallback='—';
+  if(timingError)timingFallback='Unavailable';
+  else if(timing?.kind==='added')timingFallback='Date unavailable';
+  else if(timing?.kind==='searched')timingFallback=timing.unavailable?'Search history unavailable':'No search recorded';
+  const tone=requestTone[item.status];
   const open=()=>onSelect(exploreItem(item,art));
-  return <li ref={ref} className={`request-card${own&&!item.seen?' is-new':''}`}>
+  return <li ref={ref} className={`request-card${own&&!item.seen?' is-new':''}`} data-tone={tone}>
     {art?.backdropUrl&&<FadeImage className="request-card-backdrop" src={art.backdropUrl} alt="" loading="lazy" decoding="async" onError={e=>{e.currentTarget.hidden=true;}}/>}
     <div className="request-card-shade"/>
     <button type="button" className="request-card-poster" aria-label={`Open ${item.title}`} onClick={open}>
@@ -83,9 +121,12 @@ const RequestCard=memo(function RequestCard({item,own,busy,onCancel,onSelect}:{i
       <span className="request-card-kind">{seasonsText(item)}{item.seasons.map(s=><span key={s.season} className={`request-season${s.available?' available':''}`} title={s.available?'In Plex':undefined}>{s.season}</span>)}</span>
     </div>
     <dl className="request-card-facts">
-      <div><dt>Status</dt><dd><span className={`badge explore-status ${requestTone[item.status]??''}`}>{requestStatusLabels[item.status]}</span>{item.error&&item.status==='failed'&&<small className="request-card-error">{item.error}</small>}</dd></div>
+      <div><dt>Status</dt><dd><span className={`badge explore-status ${tone??''}`}>{requestStatusLabels[item.status]}</span>{item.error&&item.status==='failed'&&<small className="request-card-error">{item.error}</small>}</dd></div>
       <div><dt>Requested</dt><dd><time dateTime={new Date(item.createdAt).toISOString()} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time> by <strong>{own?'you':item.accountName}</strong></dd></div>
-      <div><dt>Updated</dt><dd><time dateTime={new Date(item.statusAt).toISOString()} title={new Date(item.statusAt).toLocaleString()}>{ago(item.statusAt)}</time></dd></div>
+      {timing?.kind==='searched'&&timing.release&&<ReleaseFact release={timing.release}/>}
+      {item.status!=='removed'&&<div><dt>{added?'Added':'Searched'}</dt><dd>{timing?.at!==undefined
+        ?<time dateTime={new Date(timing.at).toISOString()} title={new Date(timing.at).toLocaleString()}>{ago(timing.at)}</time>
+        :timingFallback}</dd></div>}
     </dl>
     <div className="request-card-actions">{own&&cancellable(item)&&<button disabled={busy} onClick={()=>onCancel(item)}><Icon name="close" size={16}/>Cancel request</button>}</div>
   </li>;

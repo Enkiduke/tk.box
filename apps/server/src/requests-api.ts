@@ -47,6 +47,8 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   });
   app.get('/api/v1/requests/:id/artwork', { config: { access: 'viewer', rateLimit: { max: 180, timeWindow: 60000 } } },
     async request => requests.artwork(id.parse(request.params).id));
+  app.get('/api/v1/requests/:id/timing', { config: { access: 'viewer', rateLimit: { max: 180, timeWindow: 60000 } } },
+    async request => requests.timing(id.parse(request.params).id));
   app.post('/api/v1/requests/mine/seen', { config: { access: 'viewer' } }, async request => {
     store.markSeen(viewer(request).grant.accountId); return { unseen: 0 };
   });

@@ -4,6 +4,7 @@ import {api} from './api.js';
 import {clock,invalidate,useApi} from './hooks.js';
 import {Empty,ErrorNotice,Loading} from './components.js';
 import {Card,SectionHead,plural,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 // Admin › Schedule: every background job tk.box runs, when each ran and runs next, and running one now.
 const stateNames:Record<JobState,string>={running:'Running',ok:'OK',failed:'Failed',waiting:'Waiting',off:'Off',never:'Not run yet'};
@@ -30,7 +31,7 @@ export function ScheduleAdmin() {
   const [starting,setStarting]=useState('');
   const mutation=useMutation(()=>invalidate('/admin/jobs'));
   useEffect(()=>{const t=setInterval(()=>{setNow(Date.now());if(!document.hidden)list.reload();},REFRESH_MS);return()=>clearInterval(t);},[]);
-  const run=(job:JobView)=>{setStarting(job.id);void mutation.run(()=>api(`/admin/jobs/${encodeURIComponent(job.id)}/run`,'POST')).finally(()=>setStarting(''));};
+  const run=(job:JobView)=>{setStarting(job.id);void mutation.run(()=>api(`/admin/jobs/${encodeURIComponent(job.id)}/run`,'POST')).then(ok=>{if(ok)toast.info(`${job.label} started`);}).finally(()=>setStarting(''));};
   const data=list.data,attention=data?.jobs.filter(j=>j.state==='failed'||j.state==='waiting').length??0;
   return <><SectionHead title="Schedule" description={data&&(attention?`${plural(attention,'job')} need${attention===1?'s':''} attention`:'Everything is on schedule')}/>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}

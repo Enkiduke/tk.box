@@ -4,6 +4,7 @@ import {SubtitlePreview} from './subtitle-preview.js';
 import {defaultSubtitleStyle,effectKinds,effectRanges,maxCustomPresets,parseSubtitleStyle,saveCustomPreset,sameEffect,sameValue,subtitleFonts,subtitlePresets,subtitleRanges,subtitleSizes,useCustomPresets,withLook,
   type EffectKind,type SubtitleEffect,type SubtitleStyle} from './subtitle-style.js';
 import './subtitle-studio.css';
+import {toast} from './toasts.js';
 
 // Settings › Playback › Subtitles › Advanced: the subtitle studio, after the poster studio in Admin › Artwork › Layouts. Every part
 // of a subtitle is listed on the left, each shown or hidden with its eye; the preview is in the middle and the chosen part's
@@ -83,10 +84,10 @@ function PartRow({label,icon,active,shown,changed,onPick,onToggle}:{label:string
 }
 
 export function SubtitleStudio({saved,draft,setDraft,save}:{saved:Style;draft:Style;setDraft:(next:Style)=>void;save:()=>void}) {
-  const [part,setPart]=useState('text'),[open,setOpenState]=useState<Record<string,boolean>>({}),[sample,setSample]=useState(''),[name,setName]=useState(''),[note,setNote]=useState('');
+  const [part,setPart]=useState('text'),[open,setOpenState]=useState<Record<string,boolean>>({}),[sample,setSample]=useState(''),[name,setName]=useState('');
   const custom=useCustomPresets(),count=unsavedCount(draft,saved);
   const setOpen=(id:string,on:boolean)=>setOpenState(o=>({...o,[id]:on}));
-  const change=(patch:Partial<Style>)=>{setNote('');setDraft({...draft,...patch});};
+  const change=(patch:Partial<Style>)=>setDraft({...draft,...patch});
   const changeEffect=(kind:EffectKind,patch:Partial<SubtitleEffect>)=>change({effects:{...draft.effects,[kind]:{...draft.effects[kind],...patch}}});
   const parts=[TEXT,...BOX_PARTS,LAYOUT],selected=parts.find(p=>p.id===part),kind=effectKinds.find(([k])=>`effect:${k}`===part);
   const changed=(p:Part)=>[...new Set([p.toggle,...p.sections.flatMap(s=>s.fields.map(f=>f.k))])].filter((k):k is Key=>!!k&&!sameValue(k,draft,saved)).length;
@@ -106,8 +107,8 @@ export function SubtitleStudio({saved,draft,setDraft,save}:{saved:Style;draft:St
       </div>
       <div className="sub-head-group grow sub-head-end">
         {count>0&&<span className="sub-unsaved">{count} unsaved</span>}
-        {count>0&&<button type="button" onClick={()=>{setDraft(saved);setNote('');}}>Reset</button>}
-        <button type="button" className="primary" disabled={!count} onClick={()=>{save();setNote('Saved.');}}>Save</button>
+        {count>0&&<button type="button" onClick={()=>setDraft(saved)}>Reset</button>}
+        <button type="button" className="primary" disabled={!count} onClick={()=>{save();toast.success('Subtitle style saved');}}>Save</button>
       </div>
     </header>
     <div className="sub-body">
@@ -117,7 +118,7 @@ export function SubtitleStudio({saved,draft,setDraft,save}:{saved:Style;draft:St
         <h4>Effects</h4><ul>{effectKinds.map(([k,label])=>{const e=draft.effects[k];return <PartRow key={k} label={label} icon={<span className="sub-dot" style={{background:e.color}}/>} active={part===`effect:${k}`}
           shown={e.on} changed={effectChanged(k)} onPick={()=>setPart(`effect:${k}`)} onToggle={()=>changeEffect(k,{on:!e.on})}/>;})}</ul>
         <h4>Placement</h4><ul>{row(LAYOUT)}</ul>
-        <form className="sub-save" onSubmit={e=>{e.preventDefault();if(!name.trim())return;saveCustomPreset(name,parseSubtitleStyle(as(draft)));setNote(`Saved preset “${name.trim()}”.`);setName('');}}>
+        <form className="sub-save" onSubmit={e=>{e.preventDefault();if(!name.trim())return;saveCustomPreset(name,parseSubtitleStyle(as(draft)));toast.success(`Saved preset “${name.trim()}”`);setName('');}}>
           <h4>Save as preset</h4>
           <div className="sub-save-row"><input value={name} maxLength={40} placeholder="Preset name" aria-label="Preset name" onChange={e=>setName(e.target.value)}/>
             <button type="submit" disabled={!name.trim()}>{custom.some(p=>p.name===name.trim())?'Replace':'Save'}</button></div>
@@ -128,7 +129,6 @@ export function SubtitleStudio({saved,draft,setDraft,save}:{saved:Style;draft:St
         <div className="sub-stage"><SubtitlePreview style={draft} sample={sample} className="studio"/></div>
         <label className="sub-sample"><span className="muted small">Sample text</span>
           <textarea rows={2} value={sample} placeholder="Your own lines instead of the scenes’. <i>Italics</i> work." onChange={e=>setSample(e.target.value)}/></label>
-        {note&&<p className="success small" role="status">{note}</p>}
       </section>
       <aside className="sub-inspector" aria-label="Settings">
         {kind?<>

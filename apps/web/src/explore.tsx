@@ -14,6 +14,7 @@ import {displayName,TitleFacts} from './title-facts.js';
 import {DialogNavBar} from './dialog-history.js';
 import {TrailerButton} from './trailer.js';
 import './explore.css';
+import {toast} from './toasts.js';
 
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves) and TMDB, on one page:
 // every source's rows in turn, one search across them all, and filters that narrow both.
@@ -285,20 +286,20 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
   const details=useApi<ExploreDetails>(detailsPath(start,region)),info=details.data,request=info?.request;
   // The card's own artwork and text show at once; details fill in what the card lacked.
   const item:ExploreItem={...start,...info?.item,posterUrl:start.posterUrl??info?.item.posterUrl,backdropUrl:info?.item.backdropUrl??start.backdropUrl,summary:info?.item.summary??start.summary,ids:{...start.ids,...info?.item.ids}};
-  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[done,setDone]=useState('');
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
   const status=info?.item.status??start.status,art=item.backdropUrl??item.posterUrl;
   const facts=[item.year,info?.contentRating,item.kind==='show'?(item.episodeCount?`${item.episodeCount} episodes`:'TV series'):item.durationMs?duration(item.durationMs):undefined,info?.status,
     !info?.ratings.length&&item.rating?`★ ${item.rating.toFixed(1)}`:undefined].filter(Boolean);
   // The request window, for a show's seasons, with any options from Request's menu.
   const [requesting,setRequesting]=useState<false|{extras?:RequestExtras}>(false),canRequest=!!request?.requestable;
-  const run=async(action:()=>Promise<unknown>,message:string)=>{if(busy)return;setBusy(true);setError('');setDone('');try{await action();setDone(message);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
+  const run=async(action:()=>Promise<unknown>,message:string)=>{if(busy)return;setBusy(true);setError('');try{await action();toast.success(message);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   // Request asks only when there are seasons to choose; anything else is requested at once with Admin › Requests'
   // defaults, or for administrators the options from the ▾ menu beside it.
   const needsWindow=item.kind==='show'&&(request?.seasons.length??0)>1;
-  const requestNow=(extras?:RequestExtras)=>void run(async()=>{await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...extrasBody(extras)});invalidate('/explore/');invalidate('/requests/mine');},`Requested ${item.title}.`);
-  const startRequest=(extras?:RequestExtras)=>{if(!needsWindow){requestNow(extras);return;}setDone('');setError('');setRequesting({extras});};
-  const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist.':'Removed from your Plex watchlist.');
-  const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}{done&&<p className="success explore-done" role="status"><Icon name="check" size={16}/>{done}</p>}</>;
+  const requestNow=(extras?:RequestExtras)=>void run(async()=>{await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...extrasBody(extras)});invalidate('/explore/');invalidate('/requests/mine');},`Requested ${item.title}`);
+  const startRequest=(extras?:RequestExtras)=>{if(!needsWindow){requestNow(extras);return;}setError('');setRequesting({extras});};
+  const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist':'Removed from your Plex watchlist');
+  const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}</>;
   return <Modal title={item.title} onClose={onClose} variant="media">
     <DialogNavBar title={item.title}/>
     <div className={`detail-hero${art?'':' no-art'}`}>
@@ -333,6 +334,6 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
       <TitleFacts kind={item.kind} info={info} genres={item.genres}/>
     </div>
     <TitleDiscovery kind={item.kind} ids={item.ids} cast={info?.cast} onOpen={onOpenRelated}/>
-    {requesting&&request&&<RequestDialog item={item} request={request} extras={requesting.extras} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);setDone(message);}}/>}
+    {requesting&&request&&<RequestDialog item={item} request={request} extras={requesting.extras} onClose={()=>setRequesting(false)} onDone={message=>{setRequesting(false);toast.success(message);}}/>}
   </Modal>;
 }

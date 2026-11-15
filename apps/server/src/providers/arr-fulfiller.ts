@@ -1,6 +1,8 @@
 import { AppError } from '../errors.js';
+import { movieReleaseDate, releaseDay } from '../lib/release-day.js';
 import { remoteJson, remoteMessage } from './remote-json.js';
 import type { ArrService } from './arr-tags.js';
+import type { RequestRelease } from '../../../../packages/contracts/src/index.js';
 
 // How a request reaches a downloader. Radarr and Sonarr today (ArrFulfiller); a later replacement implements the same.
 export type FulfilKind = 'movie' | 'show';
@@ -9,6 +11,7 @@ export type FulfilTarget = { kind: FulfilKind; tmdbId: number; tvdbId?: number; 
 // What Radarr or Sonarr is downloading: movie ids, and for Sonarr each series' seasons (`undefined` when a record names none).
 export type QueueState = { movies: Set<number>; series: Map<number, Set<number | undefined>> };
 export type ArrOptions = { connected: boolean; profiles: { id: number; name: string }[]; rootFolders: { path: string; freeSpace?: number }[]; tags: { id: number; label: string }[] };
+export type FulfilProgress = { at?: number; release?: RequestRelease };
 export interface Fulfiller {
   // Adds the title, or monitors and searches it when it's already there. Returns its id in Radarr or Sonarr.
   add(target: FulfilTarget): Promise<number>;
@@ -17,6 +20,7 @@ export interface Fulfiller {
   find(kind: FulfilKind, tmdbId: number, tvdbId?: number): Promise<number | undefined>;
   // false once the title has been deleted there.
   exists(kind: FulfilKind, arrId: number): Promise<boolean>;
+  progress(kind: FulfilKind, arrId: number, seasons: number[], now: number): Promise<FulfilProgress>;
   // Stops watching the movie, or these seasons of the show.
   unmonitor(kind: FulfilKind, arrId: number, seasons: number[]): Promise<void>;
   options(kind: FulfilKind): Promise<ArrOptions>;
@@ -31,6 +35,11 @@ export class FulfilError extends AppError {
 
 type Json = Record<string, unknown>;
 const service = (kind: FulfilKind) => kind === 'movie' ? 'Radarr' : 'Sonarr';
+
+function timestamp(value: unknown) {
+  const at = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? at : undefined;
+}
 
 export class ArrFulfiller implements Fulfiller {
   constructor(private connection: (name: 'radarr' | 'sonarr') => ArrService, private transport: typeof fetch = fetch) {}
@@ -118,6 +127,37 @@ export class ArrFulfiller implements Fulfiller {
   }
   async exists(kind: FulfilKind, arrId: number) {
     return (await this.call(kind, `${kind === 'movie' ? 'movie' : 'series'}/${arrId}`, {}, true)) !== undefined;
+  }
+  async progress(kind: FulfilKind, arrId: number, seasons: number[], now: number): Promise<FulfilProgress> {
+    if (kind === 'movie') {
+      const movie = await this.call(kind, `movie/${arrId}`, {}, true) as Json | undefined;
+      if (!movie) return {};
+      const date = movieReleaseDate(movie);
+      const waitingForRelease = movie.isAvailable === false;
+      return { at: timestamp(movie.lastSearchTime), ...((date || waitingForRelease) && {
+        release: { kind: 'movie', date, ...(waitingForRelease && { waitingForRelease: true }) }
+      }) };
+    }
+    if (!seasons.length) return {};
+    const episodes = await this.call(kind, `episode?seriesId=${arrId}`) as Json[];
+    const today = new Date(now).toISOString().slice(0, 10);
+    type Airing = Extract<RequestRelease, { kind: 'episode' }>;
+    let latestSearch: number | undefined;
+    let latestAired: Airing | undefined, nextToAir: Airing | undefined;
+    for (const episode of episodes) {
+      if (episode.hasFile !== false || typeof episode.seasonNumber !== 'number' || !seasons.includes(episode.seasonNumber)) continue;
+      const at = timestamp(episode.lastSearchTime);
+      if (at !== undefined && (latestSearch === undefined || at > latestSearch)) latestSearch = at;
+      const utcDay = releaseDay(episode.airDateUtc);
+      const day = releaseDay(episode.airDate) ?? utcDay;
+      if (!day || typeof episode.episodeNumber !== 'number') continue;
+      const airTime = utcDay ? timestamp(episode.airDateUtc) : undefined;
+      const aired = airTime === undefined ? day < today : airTime <= now;
+      const airing: Airing = { kind: 'episode', day, aired, season: episode.seasonNumber, episode: episode.episodeNumber };
+      if (aired && (!latestAired || day > latestAired.day)) latestAired = airing;
+      if (!aired && (!nextToAir || day < nextToAir.day)) nextToAir = airing;
+    }
+    return { at: latestSearch, release: latestAired ?? nextToAir };
   }
   async unmonitor(kind: FulfilKind, arrId: number, seasons: number[]) {
     const path = `${kind === 'movie' ? 'movie' : 'series'}/${arrId}`, item = await this.call(kind, path, {}, true) as Json | undefined;

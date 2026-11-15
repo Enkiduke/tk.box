@@ -9,6 +9,7 @@ import {ArtworkCollections} from './artwork-collections.js';
 import {ScheduleRow,type ScheduleState} from './schedule-picker.js';
 import type {Scheduled} from '../../../packages/contracts/src/schedule.js';
 import {openConsole,type Job} from './admin-console.js';
+import {toast} from './toasts.js';
 
 // Admin › Artwork: custom posters, season posters and episode title cards, made by the artwork engine
 // (apps/artwork/artwork_engine.py) and sent to Plex, where every Plex app and tk.box picks them up.
@@ -71,16 +72,16 @@ function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
 }
 
 function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
-  const {revision:_,keysSet:___,schedules:__,...saved}=data.settings,[draft,setDraft]=useState(saved),[done,setDone]=useState(false),mutation=useMutation(changed);
+  const {revision:_,keysSet:___,schedules:__,...saved}=data.settings,[draft,setDraft]=useState(saved),mutation=useMutation(changed);
   useEffect(()=>{const {revision:_,keysSet:__,schedules:___,...value}=data.settings;setDraft(value);},[data.settings.revision]);
-  const set=(patch:Partial<typeof draft>)=>{setDone(false);setDraft(d=>({...d,...patch}));};
+  const set=(patch:Partial<typeof draft>)=>{setDraft(d=>({...d,...patch}));};
   const toggleLibrary=(key:string,on:boolean)=>{const layoutByLibrary={...draft.layoutByLibrary};if(!on)delete layoutByLibrary[key];set({libraries:on?[...draft.libraries,key]:draft.libraries.filter(k=>k!==key),layoutByLibrary});};
   const libraryLayout=(key:string,layout:string)=>{const layoutByLibrary={...draft.layoutByLibrary};if(layout)layoutByLibrary[key]=layout;else delete layoutByLibrary[key];set({layoutByLibrary});};
   const typeLayout=(type:LayoutType,layout:string)=>{const layoutByType={...draft.layoutByType};if(layout)layoutByType[type]=layout;else delete layoutByType[type];set({layoutByType});};
   const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
   const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');setDone(true);
+    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Libraries">
@@ -118,22 +119,22 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </div>
     </Card>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save artwork settings</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save artwork settings</button></div>
   </form>;
 }
 
 // Its own tab, saved with the rest of the settings as they were last saved.
 function ArtworkSchedules({data,changed}:{data:Overview;changed:()=>void}) {
-  const [draft,setDraft]=useState(data.settings.schedules),[done,setDone]=useState(false),mutation=useMutation(changed);
+  const [draft,setDraft]=useState(data.settings.schedules),mutation=useMutation(changed);
   useEffect(()=>setDraft(data.settings.schedules),[data.settings.revision]);
   const save=()=>void mutation.run(async()=>{
     const {revision,keysSet:_,...saved}=data.settings;
-    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});setDone(true);
+    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});toast.success('Schedules saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
-    <SchedulesCard schedules={draft} states={data.schedules} set={value=>{setDone(false);setDraft(value);}}/>
+    <SchedulesCard schedules={draft} states={data.schedules} set={value=>{setDraft(value);}}/>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+    <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button></div>
   </form>;
 }
 // When artwork jobs run on their own: changed titles on a schedule (server local time), and newly added titles as Plex

@@ -63,7 +63,6 @@
 .connections-status.success{color:#7fd8a0;background:rgba(127,216,160,.08);border-color:rgba(127,216,160,.2)}
 .connections-status:is(.success,.warning)::before{background:currentColor}
 .connections-row button{grid-column:3;min-width:62px;min-height:34px;padding:4px 10px;font-size:12.5px;font-weight:650}
-.connections-feedback:not(:empty){margin-top:8px}
 .connections-editor>h3{margin-bottom:4px;padding-right:36px}
 .connections-editor label small{color:var(--muted)}
 .connections-field{display:grid;gap:8px}
@@ -387,9 +386,13 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
 .cleanup-duration{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
 .cleanup-duration>div,.cleanup-days-input{display:flex;align-items:center;gap:9px}
 .cleanup-duration input,.cleanup-days-input input{width:86px;text-align:center;font-variant-numeric:tabular-nums}
-.cleanup-settings .cleanup-user-ids{margin:0;padding:16px;border-top:1px solid var(--line);font-size:13px}
-.cleanup-user-ids input{max-width:420px}
-.cleanup-user-ids small{max-width:76ch}
+.cleanup-users{display:grid;gap:8px;padding:16px;border-top:1px solid var(--line);font-size:13px}
+.cleanup-users .checklist{max-width:420px}
+.cleanup-users .checklist summary{margin:0}
+.cleanup-users .checklist-menu{position:static;min-width:0;margin-top:4px;box-shadow:none}
+.cleanup-users .checklist-menu>input{width:100%}
+.cleanup-users .checklist-menu>p,.cleanup-users .checklist-menu>button{margin:8px}
+.cleanup-users .checklist-row label .grow{white-space:normal;overflow-wrap:anywhere}
 .cleanup-settings .cleanup-help summary{margin:0;color:var(--muted);font-size:12px;cursor:pointer}
 .cleanup-help p{margin:10px 0 0;color:var(--muted);font-size:12px;line-height:1.65;max-width:85ch}
 .cleanup-season-options{display:flex;flex-direction:column;gap:18px;padding-left:16px;border-left:2px solid var(--line-strong)}
@@ -397,7 +400,7 @@ dialog:has(.collection-editor){width:min(1100px,calc(100% - 48px))}
   .cleanup-rule{grid-template-columns:minmax(0,1fr);gap:12px}
   .cleanup-duration{flex-direction:row;align-items:center;gap:12px}
   .cleanup-group-head,.cleanup-rule{padding:12px}
-  .cleanup-settings .cleanup-user-ids{padding:12px}
+  .cleanup-users{padding:12px}
 }
 
 /* Clean Up › Status */

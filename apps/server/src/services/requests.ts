@@ -1,6 +1,7 @@
-import type { ExploreSeason, RequestArtwork, RequestItem, RequestLabel } from '../../../../packages/contracts/src/index.js';
+import type { ExploreSeason, RequestArtwork, RequestItem, RequestLabel, RequestTiming } from '../../../../packages/contracts/src/index.js';
 import { readOnly, requireThat, requireWritable } from '../errors.js';
-import { FulfilError, type Fulfiller, type QueueState } from '../providers/arr-fulfiller.js';
+import { TtlCache } from '../lib/ttl-cache.js';
+import { FulfilError, type Fulfiller, type FulfilProgress, type QueueState } from '../providers/arr-fulfiller.js';
 import type { ArrService } from '../providers/arr-tags.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { tmdbImage } from '../providers/explore-images.js';
@@ -18,7 +19,8 @@ const EXISTS_MS = 3600000;
 export type Requester = { accountId: string; name: string };
 export type RequestInput = { kind: RequestKind; tmdb: number; seasons?: number[] };
 export type Override = { profileId?: number; rootFolder?: string; tags?: number[] };
-export type RequestChange = { id: number; kind: RequestKind; tmdb: number; accountId?: string; status: RequestStatus };
+// `made`: the request was just made (not retried or moved on).
+export type RequestChange = { id: number; kind: RequestKind; tmdb: number; accountId?: string; status: RequestStatus; made?: true };
 export type CleanupRequest = { id: number; kind: 'movie' | 'tv'; tmdb: number; tvdb: number | null; title: string; year: number | null;
   requester_plex_id: number | null; available_at: string | null; seasons: number[] };
 type TmdbTitle = { title?: string; name?: string; release_date?: string; first_air_date?: string; poster_path?: string | null; backdrop_path?: string | null;
@@ -31,6 +33,7 @@ export class Requests {
   private labelCache?: Map<string, RequestLabel>;
   private keyCache?: Map<string, number>;
   private checked = new Map<number, number>();
+  private progress = new TtlCache<Promise<FulfilProgress>>(500);
   // Told after every change to a row: made, sent, moved on, cancelled.
   changed?: (change: RequestChange) => void;
   constructor(private store: RequestStore, private fulfiller: Fulfiller, private availability: RequestAvailability, private tmdb: Pick<TmdbTitles, 'get'>,
@@ -38,9 +41,9 @@ export class Requests {
     availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
   connected(kind: RequestKind) { const c = this.connection(kind === 'movie' ? 'radarr' : 'sonarr'); return !!(c.url && c.key); }
-  private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus) {
+  private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus, made = false) {
     this.labelCache = undefined;
-    this.changed?.({ id: row.id, kind: row.kind, tmdb: row.tmdbId, ...(row.accountId ? { accountId: row.accountId } : {}), status });
+    this.changed?.({ id: row.id, kind: row.kind, tmdb: row.tmdbId, ...(row.accountId ? { accountId: row.accountId } : {}), status, ...(made ? { made: true as const } : {}) });
   }
   private held(row: Pick<RequestRow, 'kind' | 'tmdbId' | 'tvdbId'>) { return row.kind === 'movie' ? this.availability.movie(row.tmdbId) : this.availability.show(row.tmdbId, row.tvdbId); }
 
@@ -103,6 +106,31 @@ export class Requests {
     return { ...(posterUrl ? { posterUrl } : {}), ...(backdropUrl ? { backdropUrl } : {}) };
   }
 
+  async timing(id: number): Promise<RequestTiming> {
+    const row = this.store.get(id);
+    requireThat(row && row.status !== 'removed', 'NOT_FOUND', 'Request not found.', 404);
+    if (row.status === 'available') {
+      if (!this.availability.ready()) await this.availability.rebuild();
+      const held = this.held(row);
+      if (row.kind === 'movie') return { kind: 'added', at: held?.addedAt };
+      const dates = row.seasons.map(({ season }) => held?.seasons.get(season));
+      if (dates.length && dates.every(date => date !== undefined)) return { kind: 'added', at: Math.max(...dates) };
+      return { kind: 'added' };
+    }
+
+    const seasons = row.seasons.filter(s => s.availableAt === undefined).map(s => s.season);
+    const key = `${row.id}:${row.arrId ?? ''}:${row.statusAt}:${seasons.join(',')}`;
+    try {
+      const progress = await this.progress.remember(key, 30000, async () => {
+        const arrId = row.arrId ?? (row.seerrId && row.status !== 'queued' ? await this.fulfiller.find(row.kind, row.tmdbId, row.tvdbId) : undefined);
+        return arrId === undefined ? {} : this.fulfiller.progress(row.kind, arrId, seasons, this.now());
+      });
+      return { kind: 'searched', ...progress };
+    } catch {
+      return { kind: 'searched', unavailable: true };
+    }
+  }
+
   // Explore's details dialog: what can still be requested, and each regular season's state (TMDB's seasons).
   async titleState(kind: RequestKind, tmdbId: number, tvdbId?: number): Promise<{ requestable: boolean; seasons: ExploreSeason[] }> {
     const held = this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) }), live = this.store.forTitle(kind, tmdbId);
@@ -145,7 +173,7 @@ export class Requests {
       ...((override?.rootFolder ?? settings.rootFolder) ? { rootFolder: override?.rootFolder ?? settings.rootFolder } : {}),
       tags: override?.tags ?? settings.tags, monitorFuture, seasons: seasons.map(season => ({ season })) });
     this.log('request made', { id: row.id, kind: row.kind, tmdb: row.tmdbId, seasons });
-    this.emit(row, row.status);
+    this.emit(row, row.status, true);
     await this.send(row);
     return this.store.get(row.id)!;
   }

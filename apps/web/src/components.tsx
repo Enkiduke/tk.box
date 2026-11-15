@@ -1,7 +1,8 @@
 import {createContext,memo,useEffect,useLayoutEffect,useRef,useState,type ImgHTMLAttributes,type KeyboardEvent,type MouseEvent,type ReactNode,type PointerEvent as ReactPointerEvent,type FocusEvent as ReactFocusEvent} from 'react';
 import type {CatalogItem,CatalogPage} from '../../../packages/contracts/src/index.js';
 import {duration} from './hooks.js';
-import {fullyWatched,partlyWatched,updateWatchState,useNotice,useWithOverride} from './media-actions.js';
+import {fullyWatched,partlyWatched,updateWatchState,useWithOverride} from './media-actions.js';
+import {toast,useToasts,VISIBLE_TOASTS,type Toast} from './toasts.js';
 
 const paths:Record<string,ReactNode>={
   filter:<path d="M4 7h16M7 12h10M10 17h4"/>,sort:<path d="M4 6h11M4 12h8M4 18h5m8-9v12m-3-3 3 3 3-3"/>,list:<path d="M8 5h13M8 12h13M8 19h13M3 5h.1M3 12h.1M3 19h.1"/>,
@@ -15,6 +16,9 @@ const paths:Record<string,ReactNode>={
   pause:<><rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/></>,
   back:<path d="m15 4-8 8 8 8"/>,next:<path d="m9 4 8 8-8 8"/>,close:<path d="m5 5 14 14M19 5 5 19"/>,star:<path d="m12 2 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z"/>,
   info:<><circle cx="12" cy="12" r="9.5"/><path d="M12 11v6M12 7.5v.1"/></>,check:<path d="m4 12.5 5 5L20 6.5"/>,
+  warning:<><path d="M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4.5M12 17.2v.1"/></>,
+  bell:<><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></>,
+  error:<><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5.5M12 16.4v.1"/></>,
   volume:<><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></>,mute:<><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 9 5 6m0-6-5 6"/></>,
   fullscreen:<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>,minimize:<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>,
   rewind:<><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5"/><path d="M4 3.5v5h5"/><text x="12" y="15.5" fontSize="7" textAnchor="middle" fill="currentColor" stroke="none" fontWeight="700">10</text></>,
@@ -203,10 +207,39 @@ export const WideCard=memo(function WideCard({item:source,context='continue',onO
   </div>;
 });
 export function Posters({items,onOpen,onPlay}:{items:CatalogItem[];onOpen:(id:string)=>void;onPlay?:PlayFn}) {return <div className="poster-grid">{items.map(item=><Poster key={item.id} item={item} onOpen={onOpen} onPlay={onPlay}/>)}</div>;}
-// Confirms watch-state changes (and reports failures) without blocking the page.
-export function ActionNotice() {
-  const notice=useNotice();
-  return <div className="action-notice" role="status" aria-live="polite">{notice&&<div key={notice.id} className={`notice${notice.error?' error':''}`}><Icon name={notice.error?'info':'check'} size={18}/><span>{notice.text}</span></div>}</div>;
+// The toast stack (toasts.ts). It is a manual popover, so it sits in the top layer; when a toast arrives while a modal
+// dialog is open it is raised again, above the dialog.
+const toastIcons:Record<Toast['tone'],string>={success:'check',info:'info',warning:'warning',error:'error'};
+export function Toaster() {
+  const list=useToasts(),ref=useRef<HTMLDivElement>(null),shown=list.slice(-VISIBLE_TOASTS),folded=list.length-shown.length,newest=list.at(-1)?.version;
+  useLayoutEffect(()=>{
+    const el=ref.current;if(!el||!('showPopover' in el))return;
+    try {
+      const open=el.matches(':popover-open');
+      if(open&&newest!==undefined&&document.querySelector('dialog:modal'))el.hidePopover();
+      if(!el.matches(':popover-open'))el.showPopover();
+    } catch {/* not connected yet */}
+  },[newest]);
+  return <div ref={ref} className="toaster" popover="manual" aria-live="polite">
+    {folded>0&&<button className="toast-more" title="Dismiss all" onClick={()=>toast.clear()}>+{folded} more</button>}
+    {shown.map(item=><ToastView key={item.id} item={item}/>)}
+  </div>;
+}
+function ToastView({item}:{item:Toast}) {
+  const urgent=item.tone==='warning'||item.tone==='error';
+  return <div className={`toast-item ${item.tone}${item.sticky?' sticky':''}`} role={urgent?'alert':'status'}
+    onMouseEnter={()=>toast.pause(item.id)} onMouseLeave={()=>toast.resume(item.id)} onFocus={()=>toast.pause(item.id)}
+    onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node|null))toast.resume(item.id);}}
+    onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();toast.dismiss(item.id);}}}>
+    <span className="toast-icon"><Icon name={toastIcons[item.tone]} size={18}/></span>
+    <div className="toast-text">
+      <div className="toast-title">{item.title}{item.count>1&&<span className="toast-count">×{item.count}</span>}</div>
+      {item.detail&&<div className="toast-detail">{item.detail}</div>}
+    </div>
+    {item.action&&<button className="toast-action" onClick={()=>{item.action!.run();toast.dismiss(item.id);}}>{item.action.label}</button>}
+    <button className="icon-button toast-close" aria-label="Dismiss" onClick={()=>toast.dismiss(item.id)}><Icon name="close" size={14}/></button>
+    {item.tone==='warning'&&item.ms!==undefined&&<span key={item.version} className="toast-timer" style={{animationDuration:`${item.ms}ms`}} aria-hidden="true"/>}
+  </div>;
 }
 // Horizontal, swipeable row with edge arrows that appear on hover (pointer devices only).
 export function Row({title,href,children,className='',drift=0,headerActions}:{title:ReactNode;href?:string;children:ReactNode;className?:string;drift?:number;headerActions?:ReactNode}) {

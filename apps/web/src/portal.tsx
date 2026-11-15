@@ -1,14 +1,18 @@
 import {lazy,Suspense,useCallback,useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {ExploreItem,Principal} from '../../../packages/contracts/src/index.js';
-import {api} from './api.js';
+import {api,onSessionEnded} from './api.js';
 import {useApi,useRoute,link,invalidate} from './hooks.js';
-import {ActionNotice,Empty,ErrorNotice,Icon,Loading} from './components.js';
+import {Empty,ErrorNotice,Icon,Loading,Toaster} from './components.js';
 import {PlexSignIn} from './sign-in.js';
 import {requestsChanged} from './my-requests.js';
 import {RequestsPage} from './requests-page.js';
+import {NotificationBell} from './notification-bell.js';
+import {notifications} from './notifications.js';
+import {serverLink} from './server-link.js';
 import type {OpenRelatedTitle} from './title-discovery.js';
 import {DialogNavContext,useDialogHistory} from './dialog-history.js';
+import {toast,useErrorToast} from './toasts.js';
 import './style.css';
 // Request status badges are styled with Explore's.
 import './explore.css';
@@ -32,6 +36,7 @@ function Portal() {
   const me=identity.error?.status===401?undefined:identity.data,signedIn=me?.accountId;
   // The open title or person dialog and the steps behind it; this site has no library titles to open.
   const dialogs=useDialogHistory(),dialog=dialogs.current,[error,setError]=useState('');
+  useErrorToast(error,()=>setError(''));
   const page=route.page==='home'?'explore':route.page;
   useEffect(()=>{dialogs.close();},[page,signedIn]);
   const select=useCallback((item:ExploreItem)=>dialogs.start({type:'title',item}),[]);
@@ -39,10 +44,15 @@ function Portal() {
   // A request changing (available, failed) reloads Explore's labels and the list, and says so.
   useEffect(()=>{
     if(!signedIn||!('EventSource' in window))return;
-    const events=new EventSource('/api/v1/events');
+    void notifications.reload();void serverLink.start();
+    const ended=onSessionEnded(()=>{serverLink.stop();toast.warning('You’ve been signed out',{key:'session',sticky:true,action:{label:'Sign in',run:()=>{invalidate();identity.reload();}}});});
+    const events=new EventSource('/api/v1/events');let dropped=false;
     events.addEventListener('requests',()=>{void requestsChanged();});
+    events.addEventListener('notifications',()=>{void notifications.reload();});
+    events.addEventListener('open',()=>{if(dropped){void notifications.reload();void serverLink.back();}dropped=false;});
+    events.addEventListener('error',()=>{dropped=true;serverLink.lost();});
     events.addEventListener('library',()=>invalidate('/calendar'));
-    return()=>events.close();
+    return()=>{events.close();notifications.clear();serverLink.stop();ended();toast.dismissKey('session');};
   },[signedIn]);
   const logout=()=>void api('/auth/logout','POST').then(()=>{invalidate();identity.reload();window.location.hash='explore';},e=>setError((e as Error).message));
   const fallback=<div className="page"><Loading/></div>;
@@ -58,11 +68,10 @@ function Portal() {
     <header className="nav solid">
       <a href="#explore" className="brand" aria-label="tk.box Explore">tk.box</a>
       {me&&<nav className="nav-links" aria-label="Main navigation">{navigation.map(([id,label,icon])=><a key={id} href={link(id)} aria-current={page===id?'page':undefined}><Icon name={icon} size={16}/><span>{label}</span></a>)}</nav>}
-      {me&&<div className="nav-actions"><button className="text-button" onClick={logout}>Sign out</button></div>}
+      {me&&<div className="nav-actions"><NotificationBell admin={me.role==='admin'}/><button className="text-button" onClick={logout}>Sign out</button></div>}
     </header>
     <main id="main-content" tabIndex={-1}>
-      <ActionNotice/>
-      {error&&<div className="toast"><ErrorNotice message={error} dismiss={()=>setError('')}/></div>}
+      <Toaster/>
       {identity.loading&&!me?fallback:content}
     </main>
     {me&&dialog&&dialog.type!=='library'&&<DialogNavContext.Provider value={dialogs.nav}><Suspense fallback={null}>{dialog.type==='title'

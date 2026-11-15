@@ -92,6 +92,10 @@ export type PlexUsersView = {
   directoryIncomplete: boolean;
   canRevoke: boolean;
 };
+export type CleanupUsersView = {
+  users: { accountId: number; name: string; username?: string }[];
+  directoryIncomplete: boolean;
+};
 export type ApiError = { code: string; message: string; retryable: boolean };
 
 export type Library = {key: string; title: string; type: 'movie' | 'show'};
@@ -137,7 +141,17 @@ export type RequestItem = { id: number; kind: 'movie' | 'show'; tmdbId: number; 
   mine?: boolean };
 export type RequestPage = { items: RequestItem[]; total: number; page: number; hasMore: boolean };
 export type RequestArtwork = { posterUrl?: string; backdropUrl?: string };
+export type RequestRelease =
+  | { kind: 'movie'; date?: { format: 'theatrical' | 'digital' | 'physical'; day: string }; waitingForRelease?: true }
+  | { kind: 'episode'; season: number; episode: number; day: string; aired: boolean };
+export type RequestTiming = { kind: 'added'; at?: number } | { kind: 'searched'; at?: number; unavailable?: true; release?: RequestRelease };
 export type MyRequests = { items: RequestItem[]; unseen: number };
+// Alerts behind the header's bell (docs/NOTIFICATIONS.md). `audience` 'admins': a system alert every admin sees, with
+// read state per admin. `open`: a condition (a service down, a job failing) that stays until its cause is fixed.
+export type NotificationTone = 'success' | 'info' | 'warning' | 'error';
+export type NotificationItem = { id: number; audience: 'account' | 'admins'; kind: string; tone: NotificationTone; title: string; detail?: string;
+  link?: string; createdAt: number; updatedAt: number; read: boolean; open: boolean };
+export type NotificationList = { items: NotificationItem[]; unread: number };
 export type RequestDestination = { profileId: number; rootFolder: string; tags: number[] };
 export type RequestSettings = { revision: number; movie: RequestDestination; show: RequestDestination & { seasonFolders: boolean }; searchOnAdd: boolean };
 // Admin › Requests › Requests site. `running` is the port it is listening on now; `publicAddress` says tk.box has a

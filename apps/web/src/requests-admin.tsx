@@ -4,6 +4,7 @@ import {api} from './api.js';
 import {invalidate,useApi,useNearViewport} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading} from './components.js';
 import {Card,SectionHead,Switch,date,useMutation} from './settings-ui.js';
+import {toast} from './toasts.js';
 
 // Admin › Requests: every request (docs/REQUESTS.md), where requests go in Radarr and Sonarr, and the Requests site.
 export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',requested:'Requested',downloading:'Downloading',partial:'Partly available',available:'Available',failed:'Failed',removed:'Removed'};
@@ -37,7 +38,7 @@ function RequestList() {
   useEffect(()=>{const t=setTimeout(()=>{setSearch(q.trim());setPage(1);},300);return()=>clearTimeout(t);},[q]);
   const query=new URLSearchParams({page:String(page),...(status?{status}:{}),...(kind?{kind}:{}),...(search?{q:search}:{})});
   const list=useApi<RequestPage>(`/admin/requests?${query}`),mutation=useMutation(()=>invalidate('/admin/requests?'));
-  const act=(item:RequestItem,action:'retry'|'remove')=>void mutation.run(()=>action==='retry'?api(`/admin/requests/${item.id}/retry`,'POST'):api(`/admin/requests/${item.id}`,'DELETE'));
+  const act=(item:RequestItem,action:'retry'|'remove')=>void mutation.run(async()=>{if(action==='retry'){await api(`/admin/requests/${item.id}/retry`,'POST');toast.info(`Retrying ${item.title}`);}else{await api(`/admin/requests/${item.id}`,'DELETE');toast.success(`Removed ${item.title}`);}});
   return <Card>
     <div className="requests-filters">
       <RequestFilter label="Media type" options={kindFilters} value={kind} onChange={value=>{setKind(value);setPage(1);}}/>
@@ -86,21 +87,21 @@ function RequestRow({item,busy,act}:{item:RequestItem;busy:boolean;act:(item:Req
 function RequestDefaults() {
   const settings=useApi<RequestSettings>('/admin/requests/settings');
   const movie=useApi<RequestOptions>('/admin/requests/options?kind=movie'),show=useApi<RequestOptions>('/admin/requests/options?kind=show');
-  const [draft,setDraft]=useState<RequestSettings>(),[done,setDone]=useState(false),mutation=useMutation(()=>invalidate('/admin/requests/settings'));
+  const [draft,setDraft]=useState<RequestSettings>(),mutation=useMutation(()=>invalidate('/admin/requests/settings'));
   useEffect(()=>{if(settings.data)setDraft(settings.data);},[settings.data?.revision]);
   if(settings.error&&!settings.data)return <Card title="Where requests go"><ErrorNotice message={settings.error.message} retry={settings.reload}/></Card>;
   if(!draft)return <Card title="Where requests go"><Loading/></Card>;
-  const save=()=>void mutation.run(async()=>{const {revision,...value}=draft;await api('/admin/requests/settings','PUT',{expectedRevision:revision,...value});setDone(true);});
+  const save=()=>void mutation.run(async()=>{const {revision,...value}=draft;await api('/admin/requests/settings','PUT',{expectedRevision:revision,...value});toast.success('Request settings saved');});
   return <form onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Where requests go" description="Administrators can change these per request.">
       <div className="form-columns">
-        <Destination title="Movies" service="Radarr" options={movie} value={draft.movie} set={v=>{setDone(false);setDraft({...draft,movie:{...draft.movie,...v}});}}/>
-        <Destination title="Shows" service="Sonarr" options={show} value={draft.show} set={v=>{setDone(false);setDraft({...draft,show:{...draft.show,...v}});}}/>
+        <Destination title="Movies" service="Radarr" options={movie} value={draft.movie} set={v=>{setDraft({...draft,movie:{...draft.movie,...v}});}}/>
+        <Destination title="Shows" service="Sonarr" options={show} value={draft.show} set={v=>{setDraft({...draft,show:{...draft.show,...v}});}}/>
       </div>
-      <Switch label="Season folders" checked={draft.show.seasonFolders} onChange={v=>{setDone(false);setDraft({...draft,show:{...draft.show,seasonFolders:v}});}}/>
-      <Switch label="Search when added" checked={draft.searchOnAdd} onChange={v=>{setDone(false);setDraft({...draft,searchOnAdd:v});}}/>
+      <Switch label="Season folders" checked={draft.show.seasonFolders} onChange={v=>{setDraft({...draft,show:{...draft.show,seasonFolders:v}});}}/>
+      <Switch label="Search when added" checked={draft.searchOnAdd} onChange={v=>{setDraft({...draft,searchOnAdd:v});}}/>
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button></div>
     </Card>
   </form>;
 }
@@ -119,12 +120,12 @@ function Destination({title,service,options,value,set}:{title:string;service:str
 // The Requests site: Explore, Calendar and each viewer's requests on a port of its own. Saving applies it at once.
 function RequestsSite() {
   const site=useApi<RequestsSiteStatus>('/admin/requests/site');
-  const [on,setOn]=useState(false),[port,setPort]=useState(''),[url,setUrl]=useState(''),[done,setDone]=useState(false),mutation=useMutation(()=>invalidate('/admin/requests/site'));
+  const [on,setOn]=useState(false),[port,setPort]=useState(''),[url,setUrl]=useState(''),mutation=useMutation(()=>invalidate('/admin/requests/site'));
   useEffect(()=>{if(!site.data)return;setOn(site.data.port!==null);setPort(String(site.data.port??site.data.appPort+1));setUrl(site.data.publicUrl??'');},[site.data?.revision]);
   if(site.error&&!site.data)return <Card title="Requests site"><ErrorNotice message={site.error.message} retry={site.reload}/></Card>;
   if(!site.data)return <Card title="Requests site"><Loading/></Card>;
-  const data=site.data,edit=<T,>(set:(v:T)=>void)=>(v:T)=>{setDone(false);set(v);};
-  const save=()=>void mutation.run(async()=>{await api('/admin/requests/site','PUT',{expectedRevision:data.revision,port:on?Number(port):null,publicUrl:on&&data.publicAddress?url.trim()||null:null});setDone(true);});
+  const data=site.data,edit=<T,>(set:(v:T)=>void)=>set;
+  const save=()=>void mutation.run(async()=>{await api('/admin/requests/site','PUT',{expectedRevision:data.revision,port:on?Number(port):null,publicUrl:on&&data.publicAddress?url.trim()||null:null});toast.success('Requests site saved');});
   const status=data.running?<span className="success">Running on port {data.running}</span>:data.error?<span className="warning-text">{data.error}</span>:<span className="muted">Off</span>;
   return <form onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Requests site" actions={status}>
@@ -134,7 +135,7 @@ function RequestsSite() {
         {data.publicAddress&&<label>Public address<input type="url" required placeholder="https://requests.example.com" value={url} onChange={e=>edit(setUrl)(e.target.value)}/></label>}
       </div>}
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
-      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button>{done&&<span className="success" role="status">Saved.</span>}</div>
+      <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button></div>
     </Card>
   </form>;
 }

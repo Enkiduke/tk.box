@@ -1,6 +1,7 @@
 import type { Finished, PlexPlaybackState } from '../services/plex-notifications.js';
 import type { PlexGrant } from '../providers/plex.js';
 import type { RequestChange } from '../services/requests.js';
+import type { NewNotification, NotificationTarget, Resolution } from '../persistence/notifications-store.js';
 
 // In-process events between modules. A module announces what changed; others react, without either holding the other.
 // Listeners run synchronously in subscription order, and one listener's failure is logged without stopping the rest.
@@ -24,6 +25,11 @@ export type BusEvents = {
   'session.signed-out': { hash: string };
   // A request was made, sent, moved on (Plex, Radarr/Sonarr), cancelled or removed. `accountId` is the requester's.
   'requests.changed': RequestChange;
+  // Post a notification, or close an open condition (modules/notifications.ts), without depending on that module.
+  'notification.post': NewNotification;
+  'notification.resolve': { to: NotificationTarget; key: string; resolution?: Resolution };
+  // Someone's notifications changed (`to`: an account id, or 'admins' for every admin); their pages read them again.
+  'notifications.changed': { to: NotificationTarget };
 };
 type Listener<K extends keyof BusEvents> = (payload: BusEvents[K]) => void;
 
