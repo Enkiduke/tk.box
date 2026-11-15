@@ -23,7 +23,8 @@ export const watchHistoryModule = defineModule({
     bus.on('session.signed-out', ({ hash }) => history.endOwner(hash));
     registerHistory(routes, db);
     return {
-      api: { history, monitor, latestWatches: (serverId: string) => store.latestWatches(serverId) },
+      api: { history, monitor, latestWatches: (serverId: string) => store.latestWatches(serverId),
+        accountWatches: (serverId: string, account: string) => store.accountWatches(serverId, account) },
       start() { history.start(); monitor.start(); },
       stop() { monitor.close(); history.close(); store.close(); }
     };

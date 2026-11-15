@@ -4,16 +4,15 @@ import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSou
 import type {PlexAdapter,PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
-import {Seerr} from './providers/seerr.js';
 import type {Requests} from './services/requests.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreLayoutInput,exploreSettingsInput,tmdbRowOrder} from './persistence/explore-store.js';
+import {ExploreStore,exploreLayoutInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
 import {viewer as caller} from './modules/access.js';
 import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
 import type {TmdbTitles} from './providers/tmdb-titles.js';
 import {TmdbTitleDiscovery} from './providers/tmdb-title-discovery.js';
-import {ExploreRecommendations} from './explore-recommendations.js';
+import {ExploreRecommendations,type WatchedTitle} from './explore-recommendations.js';
 import { TtlCache } from './lib/ttl-cache.js';
 
 const source=z.enum(exploreBrowseSources);
@@ -85,11 +84,18 @@ export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout
 export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
 
 // Explore: rows, search and details from Plex Discover and TMDB, with tk.box's request labels, and the Plex watchlist.
-// Requests themselves are the requests module's routes. The Seerr address in Admin › Explore's settings serves Clean Up
-// only, until Clean Up reads tk.box's requests.
-export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,requests:Pick<Requests,'labels'|'connected'|'titleState'|'plexKey'>,transports:{seerr?:typeof fetch; images?:typeof fetch}={}) {
-  const discover=new PlexDiscover(plex),seerr=new Seerr(()=>store.seerr(),transports.seerr),images=new ExploreImages(transports.images),cache=new ExploreCache();
-  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb);
+// Requests themselves are the requests module's routes.
+// One watch on this server (tk.box's history, Tautulli's saved dates), by its rating key.
+export type ServerWatch={kind:'movie'|'show';ratingKey:string;at:number;plays?:number;title?:string|null;year?:number|null};
+export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,
+  requests:Pick<Requests,'labels'|'connected'|'titleState'|'plexKey'>&Partial<Pick<Requests,'tmdbForKey'>>,transports:{images?:typeof fetch}={},watches:(account:string)=>ServerWatch[]=()=>[]) {
+  const discover=new PlexDiscover(plex),images=new ExploreImages(transports.images),cache=new ExploreCache();
+  // Suggestions leave out what is on the server or has a request label.
+  const history=(account:string)=>watches(account).flatMap(({kind,ratingKey,at,plays,title,year}):WatchedTitle[]=>{
+    const tmdbId=requests.tmdbForKey?.(kind,ratingKey);
+    return tmdbId?[{kind,tmdbId,at,...(plays?{plays}:{}),...(title?{title}:{}),...(year?{year}:{})}]:[];
+  });
+  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=caller(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     await viewer(request);
@@ -117,8 +123,9 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
       if (def.personal) {
         const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token))[row];
         if (!result) return {items:[],page:at,hasMore:false} satisfies ExplorePage;
+        // Labels are read again here, so a title requested since the day's suggestions were built drops out at once.
         const {items}=await labelled({items:result.items.map(c=>c.item)});
-        return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>passes(c.item,filter)),at,result.title);
+        return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>!c.item.status&&passes(c.item,filter)),at,result.title);
       }
       let streaming:{region:string;ids:number[]}|undefined;
       if (def.streaming) {
@@ -220,16 +227,6 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   app.put('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
     const {grant}=caller(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
     return store.updateLayout(grant.accountId,expectedRevision,value);
-  });
-  app.get('/api/v1/admin/explore/settings',{config:{access:'admin'}},async request=>{return store.view();});
-  app.put('/api/v1/admin/explore/settings',{config:{access:'admin'}},async request=>{
-    const {grant}=caller(request),{expectedRevision,...value}=exploreSettingsInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
-    // A Seerr address is checked before it is saved, so viewers never get a dead Explore source.
-    if(value.seerrUrl){
-      await seerr.publicSettings(value.seerrUrl,true);
-      const key=value.seerrApiKey??store.seerrKey();if(key)await seerr.checkKey(value.seerrUrl,key);
-    }
-    const saved=store.update(grant.accountId,expectedRevision,value);cache.forget();return saved;
   });
 
   // A request changed: details (what can still be requested) are read again.

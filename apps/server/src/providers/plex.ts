@@ -526,52 +526,6 @@ export class PlexAdapter {
     const {items,more,total}=await read(query.offset,query.limit);
     return {items,offset:query.offset,limit:query.limit,total,hasMore:more};
   }
-  async exploreLibrary(grant:PlexGrant):Promise<{titles:ExploreLibraryTitle[]; complete:boolean; capped?:boolean}> {
-    const libraries = grant.libraries.filter(library => library.type === 'movie' || library.type === 'show');
-    // A library's first page gives its size, so the rest of its pages are queued at once and read four at a time,
-    // taking turns between libraries so the budget is shared. `last` marks the page that may find titles added since.
-    const pending:{library:typeof libraries[number]; offset:number; first?:boolean; last?:boolean}[] = libraries.map(library => ({library, offset:0, first:true}));
-    const titles:ExploreLibraryTitle[] = [];
-    let complete = true;
-    for (let budget = 10000; pending.length && budget > 0;) {
-      const batch = pending.splice(0, Math.min(4, Math.ceil(budget/200)));
-      const reads = await Promise.allSettled(batch.map(async ({library, offset, first, last}) => {
-        const size = Math.min(budget, 200); budget -= size;
-        const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
-        for (const [key,value] of Object.entries({type:library.type==='movie'?'1':'2', sort:'addedAt:desc', includeGuids:'1',
-          excludeElements:'Media,Role,Director,Writer,Country,Collection,Producer,Image',
-          'X-Plex-Container-Start':String(offset), 'X-Plex-Container-Size':String(size)})) url.searchParams.set(key,value);
-        const page = catalogContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
-        requireThat(page.Metadata.length <= size && (page.offset === undefined || page.offset === offset),
-          'PLEX_PAGINATION_INVALID','Plex returned an unexpected library page.',502);
-        const entries = page.Metadata.map(node => {
-          requireThat((node.librarySectionID ?? page.librarySectionID ?? library.key) === library.key && node.type === library.type,
-            'PLEX_ACCESS_DENIED','Plex returned media outside the requested library.',403);
-          const {title,year,genres,addedAt,tmdbId} = catalogDto(node,library.key);
-          return {kind:library.type==='movie'?'movie':'show',title,year,genres,addedAt,tmdbId} satisfies ExploreLibraryTitle;
-        });
-        const next = offset + page.Metadata.length;
-        return {entries, library, next, first, last, full:entries.length === size, total:page.totalSize,
-          more:next < (page.totalSize ?? (page.Metadata.length === size ? next+1 : next))};
-      }));
-      const queued:typeof pending[] = [];
-      for (const result of reads) {
-        if (result.status === 'rejected') { complete = false; continue; }
-        const {entries,library,next,first,last,full,total,more} = result.value;
-        titles.push(...entries);
-        if (!more) continue;
-        if (!entries.length) complete = false;
-        else if (first && full && total !== undefined) {
-          const count = Math.ceil((total - next) / 200);
-          queued.push(Array.from({length:count}, (_, i) => ({library, offset:next + i*200, ...(i === count-1 ? {last:true} : {})})));
-        } else if (first || last) queued.push([{library, offset:next, last:true}]);
-        // A queued page that came back short leaves a gap before the next one.
-        else if (!full) complete = false;
-      }
-      for (let i = 0; queued.some(list => i < list.length); i++) for (const list of queued) if (list[i]) pending.push(list[i]!);
-    }
-    return {titles,complete:complete && !pending.length,...(complete && pending.length ? {capped:true} : {})};
-  }
   // What the server holds, for request statuses: every movie and show with its TMDB/TVDB ids and date added, and
   // every season of each show. Read 500 at a time; `complete` is false when a page failed, so callers keep what they had.
   async availability(grant:PlexGrant):Promise<PlexAvailability> {

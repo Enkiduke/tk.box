@@ -7,7 +7,6 @@ import {loadConfig} from '../apps/server/src/config.js';
 import { openMigratedDatabase } from '../apps/server/src/modules/migrations/index.js';
 import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
 import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
-import {ExploreStore} from '../apps/server/src/persistence/explore-store.js';
 import {Vault} from '../apps/server/src/security/vault.js';
 import {PlexAdapter} from '../apps/server/src/providers/plex.js';
 import {IdentityService} from '../apps/server/src/services/identity.js';
@@ -120,28 +119,6 @@ store.ingest('1',pending.id,0,Buffer.from('#EXTM3U\n'+['Culture One','Culture Tw
 const artworkStore=new ArtworkStore(db,vault,'apps/artwork/defaults.json');
 const {revision:artworkRevision,...artworkSettings}=artworkStore.settings();
 await artworkStore.update('1',artworkRevision,{...artworkSettings,tmdbKey:'fixture-tmdb-key'},async()=>{});
-new ExploreStore(db,vault).update('1',0,{seerrUrl:'https://seerr.fixture.invalid',seerrApiKey:'fixture-seerr-key'});
-const requested=new Set<number>();
-const seerr=(async(input:string|URL|Request,init?:RequestInit)=>{
-  const url=new URL(String(input)),path=url.pathname.replace('/api/v1','');
-  if(path==='/settings/public')return Response.json({initialized:true,region:'US'});
-  if(path==='/auth/plex')return Response.json({}, {headers:{'set-cookie':'connect.sid=preview; Path=/'}});
-  if(path==='/auth/me')return Response.json({id:1,displayName:'Preview viewer',permissions:1});
-  if(path==='/media')return Response.json({results:[...requested].map(tmdbId=>({mediaType:'movie',tmdbId,status:2})),pageInfo:{pages:1}});
-  if(path==='/request'&&init?.method==='POST') {
-    const {mediaId}=JSON.parse(String(init.body)) as {mediaId:number};
-    requested.add(mediaId);return Response.json({id:mediaId});
-  }
-  if(path==='/service/radarr'||path==='/service/sonarr')return Response.json([]);
-  const match=/^\/(movie|tv)\/(\d+)$/.exec(path);
-  if(match){
-    const id=Number(match[2]),node=all.find(n=>Number(n.ratingKey)===id);
-    return Response.json({id,[match[1]==='tv'?'name':'title']:node?.title??'Fixture title',
-      mediaInfo:id===42?{status:5,ratingKey:'42'}:requested.has(id)?{status:2}:undefined});
-  }
-  if(/\/\d+\/ratingscombined$/.test(path))return Response.json({});
-  return Response.json({results:[],totalPages:1});
-}) as typeof fetch;
 let failedPage=false;
 const streamingServices=['Netflix','Amazon Prime Video','Disney Plus','Hulu','HBO Max','Apple TV','Paramount Plus Essential','Peacock Premium','MGM Plus','Discovery Plus'];
 const tmdb=(async(input:string|URL|Request)=>{
@@ -170,8 +147,8 @@ const exploreImages=(async(input:string|URL|Request)=>{
   const index=Number(/\/(\d+)\.png$/.exec(String(input))?.[1]??0)%images.length;
   return new Response(images[index],{headers:{'content-type':'image/png'}});
 }) as typeof fetch;
-const app=await buildApp(config,db,vault,plex,false,namespace,{tmdb,seerr,images:exploreImages});
-app.get('/__preview',async(_req,reply)=>reply.setCookie(`${namespace}_local`,session.cookie,{httpOnly:true,sameSite:'lax',path:'/'}).redirect('/#home'));
+const app=await buildApp(config,db,vault,plex,false,namespace,{tmdb,images:exploreImages});
+app.get('/__preview',{config:{access:'public'}},async(_req,reply)=>reply.setCookie(`${namespace}_local`,session.cookie,{httpOnly:true,sameSite:'lax',path:'/'}).redirect('/#home'));
 if(process.argv.includes('--check-explore')){
   try{
     const cookie=(await app.inject('/__preview')).cookies[0];
@@ -205,12 +182,7 @@ if(process.argv.includes('--check-explore')){
     assert.equal(owned.watchlisted,false);
     assert.equal((await api('watchlist','PUT',{plex:owned.item.ids.plex,add:true})).statusCode,200);
     assert.equal((await api(details)).json().watchlisted,true);
-    const candidate=netflix.items.find((item:{kind:string;ids:{tmdb:number}})=>item.kind==='movie'&&item.ids.tmdb!==42);
-    const unowned=(await api(`details?kind=movie&tmdb=${candidate.ids.tmdb}&title=${encodeURIComponent(candidate.title)}`)).json();
-    assert.equal(unowned.seerr.requestable,true);
-    assert.equal((await api('request','POST',{kind:'movie',tmdb:candidate.ids.tmdb})).statusCode,200);
-    assert.equal((await api(`${popular}?provider=1`)).json().items.find((item:{key:string})=>item.key===candidate.key).status,'requested');
-    console.log('Explore fixture passed provider changes, page retry, recommendations, Plex playback preparation and watchlist, and Seerr requests.');
+    console.log('Explore fixture passed provider changes, page retry, recommendations, Plex playback preparation and watchlist.');
   }finally{await app.close();db.close();}
 }else{
   await app.listen({host:'127.0.0.1',port});

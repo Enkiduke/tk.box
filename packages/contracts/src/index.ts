@@ -114,15 +114,16 @@ export type CatalogItem = {
 export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};
 
-// Explore: titles from catalog sources outside the Plex server (Plex Discover, Seerr).
-export const exploreSources = ['plex', 'seerr', 'tmdb'] as const;
+// Explore: titles from catalog sources outside the Plex server (Plex Discover, TMDB).
+export const exploreSources = ['plex', 'tmdb'] as const;
 export type ExploreSource = typeof exploreSources[number];
 export const exploreBrowseSources = ['plex', 'tmdb'] as const;
 export type ExploreBrowseSource = typeof exploreBrowseSources[number];
 export const streamingRows = ['popular-streaming', 'recent-streaming'] as const;
 export type StreamingRow = typeof streamingRows[number];
-export const tmdbExploreRows = [...streamingRows, 'top-picks', 'because-1', 'because-2', 'genre-1', 'genre-2', 'trending', 'acclaimed',
-  'popular-movies', 'popular-shows', 'upcoming-movies', 'upcoming-shows'] as const;
+// TMDB's rows in their default order. The `top-` and `because-` rows are each viewer's own suggestions.
+export const tmdbExploreRows = ['popular-movies', 'popular-shows', 'top-movies', 'top-shows', 'trending', 'because-movie', 'popular-streaming',
+  'because-show', 'recent-streaming', 'acclaimed', 'upcoming-movies', 'upcoming-shows'] as const;
 export type TmdbExploreRow = typeof tmdbExploreRows[number];
 export type ExploreWatchProvider = {id: number; name: string; logoUrl?: string};
 export type ExploreWatchProviders = {regions: {code: string; name: string}[]; providers: ExploreWatchProvider[]; defaults: number[]};
@@ -206,15 +207,3 @@ export type ExploreDetails = {
   // Sonarr (shows) isn't connected, or TMDB doesn't know the title.
   request?: { requestable: boolean; seasons: ExploreSeason[] };
 };
-// The viewer's Seerr account, read only when they go to request (it signs them in to Seerr with their Plex account).
-export type ExploreSeerrAccount = { user?: string; canRequest: { movie: boolean; show: boolean }; fourK: { movie: boolean; show: boolean };
-  // Requests Seerr approves without an administrator, by quality.
-  autoApprove: { movie: boolean; show: boolean; movie4k: boolean; show4k: boolean };
-  // `advanced` may pick the Radarr/Sonarr server, quality profile, root folder and tags; `requestAs` may request for another Seerr user.
-  advanced: boolean; requestAs: boolean };
-// Radarr or Sonarr choices for an advanced request, with the server's defaults selected.
-export type ExploreSeerrOptions = { servers: { id: number; name: string }[]; serverId?: number; profiles: { id: number; name: string }[]; profileId?: number;
-  rootFolders: { path: string; freeSpace?: number }[]; rootFolder?: string; languageProfiles: { id: number; name: string }[]; languageProfileId?: number;
-  tags: { id: number; label: string }[]; defaultTags: number[] };
-export type ExploreSeerrUser = { id: number; name: string; email?: string };
-export type ExploreRequestExtras = { serverId?: number; profileId?: number; rootFolder?: string; languageProfileId?: number; tags?: number[]; userId?: number };

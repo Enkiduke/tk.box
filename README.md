@@ -15,7 +15,7 @@ A self-hosted media app for your Plex server and IPTV channels. One web UI for w
 - **Plex sign-in.** Your friends and Plex Home members sign in with their own Plex accounts and see the libraries you share with them.
 - **Library.** Home, Movies and TV Shows with filters, sorting, collections and resume.
 - **Playback.** Direct Play when the browser can play the file, otherwise Plex transcodes it.
-- **Explore.** Browse Plex Discover and TMDB. Search, manage your Plex watchlist, request titles through Seerr, and discover subscription streaming catalogs and Plex-based recommendations.
+- **Explore.** Browse Plex Discover and TMDB. Search, manage your Plex watchlist, request titles (sent to Radarr and Sonarr), and discover subscription streaming catalogs and Plex-based recommendations.
 - **Live TV.** M3U/XMLTV sources with a guide and favorites, and live sports events with their own channels.
 - **Plex Channels.** Looping channels made from your movies, shows and collections, with Pause and Go Live.
 - **Admin.**
@@ -31,7 +31,7 @@ A self-hosted media app for your Plex server and IPTV channels. One web UI for w
 
 Save a TMDB API key in **Admin › Artwork › Settings**. In **Settings › Explore**, choose your streaming region and services. The default region is US. Each streaming row remembers its own service in this browser, and **See all** follows that selection. Streaming rows use subscription availability from JustWatch via TMDB. The recent row uses movie release and TV premiere dates.
 
-Library and Explore title details use TMDB directly, including JustWatch availability for your streaming region. Explore searches Plex Discover and TMDB. Seerr supplies request and availability status when connected. IMDb and Rotten Tomatoes scores appear when Plex supplies them.
+Library and Explore title details use TMDB directly, including JustWatch availability for your streaming region. Explore searches Plex Discover and TMDB. Titles show whether they are requested or on the server from tk.box's own requests. IMDb and Rotten Tomatoes scores appear when Plex supplies them.
 
 **Admin › Explore** controls the order of the TMDB group and its rows. Personal recommendations use titles and genres from the signed-in viewer’s accessible Plex libraries. Explore excludes known owned titles and uses popular titles when there are too few usable recommendations. Ownership checks cover up to 10,000 Plex titles and depend on a matching TMDB ID or an exact title and year. Use **Refresh** to rebuild your recommendations.
 
@@ -76,7 +76,7 @@ python -m venv .venv
 
 On Windows the pip path is `.venv\Scripts\pip`. Then enter that environment's `python` in the setup screen's Python field, or set `PYTHON_PATH` in `.env`.
 
-Seerr, Radarr, Sonarr, Tautulli and the artwork providers are set up later in **Admin › Connections**.
+Radarr, Sonarr, Tautulli and the artwork providers are set up later in **Admin › Connections**.
 
 ## Development
 

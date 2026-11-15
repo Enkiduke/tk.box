@@ -2,19 +2,17 @@ import {AppError} from '../errors.js';
 import type {ArtworkKeys} from '../persistence/artwork-store.js';
 import type {ArrService} from '../providers/arr-tags.js';
 import {remoteJson} from '../providers/remote-json.js';
-import {Seerr,type SeerrConnection} from '../providers/seerr.js';
 
-type Services = {seerr?:SeerrConnection;radarr:ArrService;sonarr:ArrService;tautulli:ArrService};
+type Services = {radarr:ArrService;sonarr:ArrService;tautulli:ArrService};
 type Result = {state:'working'|'limited'|'failed';checkedAt:number;detail?:string};
 
 export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkKeys,
-  transports:{tmdb?:typeof fetch;seerr?:typeof fetch;other?:typeof fetch} = {}) {
-  const seerr = new Seerr(()=>undefined,transports.seerr);
+  transports:{tmdb?:typeof fetch;other?:typeof fetch} = {}) {
   // Share checks if two admins open the page at the same time. A settings change gets a fresh check.
   let pending: {config:string;result:Promise<Record<string,Result>>} | undefined;
   return () => {
-    const {seerr:request,radarr,sonarr,tautulli} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
-    const config = JSON.stringify([request,radarr,sonarr,tautulli,tmdb,tvdb,fanart,mdblist]);
+    const {radarr,sonarr,tautulli} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
+    const config = JSON.stringify([radarr,sonarr,tautulli,tmdb,tvdb,fanart,mdblist]);
     if (pending?.config === config) return pending.result;
 
     const checks: Record<string,Promise<Result>> = {};
@@ -34,10 +32,6 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
     };
     const object = (data:unknown) => data !== null && typeof data === 'object' ? data as Record<string,unknown> : undefined;
 
-    if (request) run('seerr',async () => {
-      if (request.apiKey) await seerr.checkKey(request.url,request.apiKey);
-      else await seerr.publicSettings(request.url,true);
-    },request.apiKey?undefined:'Seerr is reachable. Add an API key for availability badges and Clean Up.');
     for (const [id,name,service] of [['radarr','Radarr',radarr],['sonarr','Sonarr',sonarr]] as const) {
       if (service.url&&service.key) run(id,()=>json(new URL(`${service.url}/api/v3/system/status`),name,
         data=>typeof object(data)?.version==='string',{headers:{'X-Api-Key':service.key!}}));

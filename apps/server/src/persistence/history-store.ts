@@ -80,6 +80,21 @@ export class HistoryStore {
       .all(serverId) as { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number }[];
   }
 
+  // Explore's suggestions: one account's movies and shows on this Plex server, in tk.box's player or Plex's own apps,
+  // with the latest watch, how many sessions (episodes count toward their show) and the year (a show's earliest
+  // episode's), newest first.
+  accountWatches(serverId: string, account: string, limit = 200) {
+    return this.connection().prepare(`WITH w AS (SELECT json_extract(m.metadata,'$.type') AS type,
+        CASE WHEN json_extract(m.metadata,'$.type')='movie' THEN m.rating_key ELSE json_extract(m.metadata,'$.showId') END AS rk,
+        CASE WHEN json_extract(m.metadata,'$.type')='movie' THEN json_extract(m.metadata,'$.title') ELSE json_extract(m.metadata,'$.showTitle') END AS title,
+        json_extract(m.metadata,'$.year') AS year,s.started_at AS at
+        FROM history_sessions s JOIN history_media m ON m.id=s.media_id
+        WHERE s.source IN ('vod','plex') AND s.watch_ms>0 AND m.server_id=? AND s.account_id=?)
+      SELECT CASE WHEN type='movie' THEN 'movie' ELSE 'show' END AS kind,rk AS ratingKey,MAX(title) AS title,MIN(year) AS year,MAX(at) AS at,COUNT(*) AS plays
+      FROM w WHERE rk IS NOT NULL AND type IN ('movie','episode') GROUP BY kind,rk ORDER BY at DESC LIMIT ?`)
+      .all(serverId, account, limit) as { kind: 'movie' | 'show'; ratingKey: string; title: string | null; year: number | null; at: number; plays: number }[];
+  }
+
   recover(since: number): HistorySession[] {
     const db = this.connection();
     return db.transaction(() => {

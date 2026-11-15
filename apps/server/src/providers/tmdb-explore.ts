@@ -11,11 +11,10 @@ const EXPLORE_PAGE_SIZE = 20;
 export const tmdbRows: Record<TmdbExploreRow, ExploreRowInfo> = {
   'popular-streaming': {id:'popular-streaming', title:'Popular on Streaming', icon:'play', streaming:true},
   'recent-streaming': {id:'recent-streaming', title:'Recently Released on Streaming', icon:'play', streaming:true},
-  'top-picks': {id:'top-picks', title:'Top Picks for You', icon:'star', personal:true},
-  'because-1': {id:'because-1', title:'Because You Watched · First Pick', icon:'star', personal:true},
-  'because-2': {id:'because-2', title:'Because You Watched · Second Pick', icon:'star', personal:true},
-  'genre-1': {id:'genre-1', title:'More in Your Favorite Genres · First Genre', icon:'star', personal:true},
-  'genre-2': {id:'genre-2', title:'More in Your Favorite Genres · Second Genre', icon:'star', personal:true},
+  'top-movies': {id:'top-movies', title:'Top Movie Picks for You', icon:'movies', personal:true},
+  'top-shows': {id:'top-shows', title:'Top Show Picks for You', icon:'shows', personal:true},
+  'because-movie': {id:'because-movie', title:'Because You Watched · Movie', icon:'star', personal:true},
+  'because-show': {id:'because-show', title:'Because You Watched · Show', icon:'star', personal:true},
   trending: {id:'trending', title:'Trending Now', icon:'star'},
   acclaimed: {id:'acclaimed', title:'Critically Acclaimed New Releases', icon:'star'},
   'popular-movies': {id:'popular-movies', title:'Popular Movies', icon:'movies'},
@@ -112,13 +111,12 @@ export class TmdbExplore {
   async suggestions(type: TitleKind, id: number, similar = false) {
     return (await this.titles(type, `/${type}/${id}/${similar ? 'similar' : 'recommendations'}`, {}, undefined, true)).items;
   }
-  async popular(genreIds?: (kind: TitleKind) => number[]) {
-    return mixCandidates(await Promise.all(kinds.map(async type => {
-      const ids = genreIds?.(type);
-      if (ids && !ids.length) return [];
-      return (await this.titles(type, `/discover/${type}`, {include_adult:'false', sort_by:'popularity.desc', page:'1',
-        ...(ids && {with_genres:ids.join('|')})}, 12 * HOUR)).items;
-    })));
+  // A title's name, for a Because You Watched row whose watched title came without one.
+  async title(type: TitleKind, id: number) {
+    const data = await this.client.get(`/${type}/${id}`) as {title?: unknown; name?: unknown} | undefined;
+    const name = type === 'movie' ? data?.title : data?.name;
+    requireThat(typeof name === 'string' && !!name.trim(), 'CATALOG_UNAVAILABLE', 'TMDB could not name this title.', 502);
+    return name;
   }
   private async upcoming(type:TitleKind, page:number, now:number):Promise<ExplorePage> {
     const field=type==='movie'?'primary_release_date':'first_air_date';

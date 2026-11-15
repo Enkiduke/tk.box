@@ -47,7 +47,7 @@
 .explore-chips{display:flex;flex-wrap:wrap;gap:8px}
 .explore-chip{gap:6px;height:34px;padding:0 14px;border-radius:17px;border-color:var(--line-strong);background:transparent;color:var(--text);font-size:13px;font-weight:600}
 .explore-chip:hover{background:var(--surface-2)}
-/* Request window: a smaller dialog over the title's, laid out like Seerr's. */
+/* Request window: a smaller dialog over the title's. */
 .request-dialog{width:min(620px,calc(100% - 32px));background:var(--surface);scrollbar-width:thin}
 .request-form{display:flex;flex-direction:column;gap:18px;padding:24px 26px 22px}
 .request-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}

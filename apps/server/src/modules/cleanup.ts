@@ -43,7 +43,8 @@ export const cleanupModule = defineModule({
     engine.deleted = titles => requests.removedByCleanup(titles);
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     return {
-      api: { services },
+      // Tautulli's saved dates, for Explore's suggestions.
+      api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
       start() { engine.start(); },
       stop() { engine.close(); }
     };

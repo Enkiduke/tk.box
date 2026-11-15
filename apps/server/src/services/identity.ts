@@ -98,7 +98,7 @@ export class IdentityService {
   }
   // Drops a reused Plex check, so the session's next request asks Plex again (after Plex refused it something).
   forget(cookie: string | undefined) { if (cookie) this.grants.delete(digest(cookie)); }
-  // The viewer's Plex account token, for Plex's cloud catalog and Seerr sign-in. Call only after authenticate().
+  // The viewer's Plex account token, for Plex's cloud catalog. Call only after authenticate().
   accountToken(hash: string) {
     const row = prepared(this.db, 'SELECT encrypted_credential FROM sessions WHERE hash=?').get(hash) as {encrypted_credential: string} | undefined;
     requireThat(row, 'UNAUTHENTICATED', 'Session expired or revoked.', 401);

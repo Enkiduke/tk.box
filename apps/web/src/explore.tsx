@@ -15,7 +15,7 @@ import './explore.css';
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves) and TMDB, on one page:
 // every source's rows in turn, one search across them all, and filters that narrow both.
 // A title's dialog opens this server's copy when there is one, requests it (Radarr or Sonarr), or watchlists it on Plex.
-const names:Record<ExploreSource,string>={plex:'Plex',seerr:'Seerr',tmdb:'TMDB'};
+const names:Record<ExploreSource,string>={plex:'Plex',tmdb:'TMDB'};
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
@@ -48,10 +48,12 @@ function cleanFilters(value:Partial<Record<keyof Filters,unknown>>):Filters {
   const genres=Array.isArray(value.genres)?exploreGenres.filter(g=>(value.genres as unknown[]).includes(g)):[];
   return {languages,genres,from,to,min:typeof value.min==='string'&&minScores.includes(value.min)?value.min:'',hide};
 }
-const loadFilters=():Filters=>{try{return cleanFilters(JSON.parse(localStorage.getItem(FILTERS_KEY)??'{}'));}catch{return noFilters;}};
+// Until a viewer changes them, rows leave out what is already on its way or here; search never does.
+const defaultFilters:Filters={...noFilters,hide:['requested','downloading','available']};
+const loadFilters=():Filters=>{try{const saved=localStorage.getItem(FILTERS_KEY);return saved===null?defaultFilters:cleanFilters(JSON.parse(saved));}catch{return defaultFilters;}};
 const saveFilters=(f:Filters)=>{try{localStorage.setItem(FILTERS_KEY,JSON.stringify(f));}catch{/* storage unavailable; applies until reload */}};
-function filterQuery(f:Filters) {
-  const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.genres.length)q.set('genre',f.genres.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);if(f.hide.length)q.set('hide',f.hide.join(','));
+function filterQuery(f:Filters,hide=true) {
+  const q=new URLSearchParams();if(f.languages.length)q.set('lang',f.languages.join(','));if(f.genres.length)q.set('genre',f.genres.join(','));if(f.from)q.set('from',f.from);if(f.to)q.set('to',f.to);if(f.min)q.set('min',f.min);if(hide&&f.hide.length)q.set('hide',f.hide.join(','));
   const text=q.toString();return text?`&${text}`:'';
 }
 const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f.to}`):f.from?`${f.from} or later`:`${f.to} or earlier`;
@@ -187,18 +189,20 @@ function FilterMenu({filters,labels,onChange}:{filters:Filters;labels:boolean;on
         <label>to<input aria-label="Released to year" type="number" min="1870" max="2100" placeholder="Any" value={draft.to} onChange={e=>setDraft(d=>({...d,to:e.target.value}))}/></label></div>
       <label>Rating<select aria-label="Minimum rating" value={draft.min} onChange={e=>setDraft(d=>({...d,min:e.target.value}))}><option value="">Any rating</option>{minScores.map(n=><option key={n} value={n}>{n}+ ★</option>)}</select></label>
       {labels&&<div className="explore-hide">{hideable.map(h=><label key={h}><input type="checkbox" checked={draft.hide.includes(h)} onChange={e=>toggleHide(h,e.target.checked)}/>Hide {statusNames[h].toLowerCase()}</label>)}</div>}
-      <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(noFilters);close(true);}}>Reset</button></div>
+      <div className="button-row"><button className="primary" type="submit">Apply</button><button type="button" onClick={()=>{onChange(defaultFilters);close(true);}}>Reset</button></div>
     </form>
   </details>;
 }
-function ActiveFilters({filters,onChange}:{filters:Filters;onChange:(next:Filters)=>void}) {
-  if(!filters.languages.length&&!filters.genres.length&&!filters.from&&!filters.to&&!filters.min&&!filters.hide.length)return null;
+// Search ignores the hidden labels, so their chips leave while searching.
+function ActiveFilters({filters,searching,onChange}:{filters:Filters;searching:boolean;onChange:(next:Filters)=>void}) {
+  const hidden=searching?[]:filters.hide;
+  if(!filters.languages.length&&!filters.genres.length&&!filters.from&&!filters.to&&!filters.min&&!hidden.length)return null;
   return <div className="active-filters">
     {filters.languages.length>0&&<button onClick={()=>onChange({...filters,languages:[]})}>{listed(filters.languages.map(languageName),'disjunction')} ×</button>}
     {filters.genres.length>0&&<button onClick={()=>onChange({...filters,genres:[]})}>{listed(filters.genres,'disjunction')} ×</button>}
     {(filters.from||filters.to)&&<button onClick={()=>onChange({...filters,from:'',to:''})}>{yearLabel(filters)} ×</button>}
     {filters.min&&<button onClick={()=>onChange({...filters,min:''})}>{filters.min}+ ★ ×</button>}
-    {filters.hide.map(h=><button key={h} onClick={()=>onChange({...filters,hide:filters.hide.filter(x=>x!==h)})}>No {statusNames[h].toLowerCase()} ×</button>)}
+    {hidden.map(h=><button key={h} onClick={()=>onChange({...filters,hide:filters.hide.filter(x=>x!==h)})}>No {statusNames[h].toLowerCase()} ×</button>)}
     <button onClick={()=>onChange(noFilters)}>Clear</button>
   </div>;
 }
@@ -210,7 +214,7 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
   const source=available.find(s=>s===params.get('source'));
   const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
   const [filters,setFilters]=useState(loadFilters),[contentType,setContentType]=useState(loadContentType);
-  const fq=filterQuery(filters)+(contentType==='all'?'':`&kind=${contentType}`);
+  const kindQuery=contentType==='all'?'':`&kind=${contentType}`,fq=filterQuery(filters)+kindQuery,searchFq=filterQuery(filters,false)+kindQuery;
   const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
   const changeContentType=(next:ContentType)=>{
     setContentType(next);
@@ -232,13 +236,13 @@ export function Explore({params,admin,onSelect}:{params:URLSearchParams;admin:bo
       <MyRequestsButton/>
       <button className="icon-button toolbar-icon" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
-    <ActiveFilters filters={filters} onChange={changeFilters}/>
+    <ActiveFilters filters={filters} searching={!!query} onChange={changeFilters}/>
     {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
       {admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
     </p>}
     {/* Plex Discover doesn't say a title's language; TMDB is where it is looked up. */}
     {filters.languages.length>0&&!data.tmdb.configured&&<p className="explore-note muted">Plex titles without a language are hidden while a language filter is on.</p>}
-    {query?<ExploreSearch key={`${query}${searchable.join()}${fq}`} q={query} sources={searchable} fq={fq} onSelect={onSelect}/>
+    {query?<ExploreSearch key={`${query}${searchable.join()}${searchFq}`} q={query} sources={searchable} fq={searchFq} onSelect={onSelect}/>
       :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={onSelect}/>
       :available.length?<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={onSelect}/>)}</div>
       :<Empty title="No browse sources"><a href="#settings?section=explore">Explore settings</a></Empty>}

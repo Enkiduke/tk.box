@@ -58,7 +58,7 @@ function isExcludedShelf(hub: DiscoverHub, title: string) {
   });
 }
 const LIMIT = 20, HUB_LIMIT = 50;
-// Discover shelves and search leave out a title's external ids, which Seerr's labels are matched on. One batched
+// Discover shelves and search leave out a title's external ids, which request labels are matched on. One batched
 // metadata read fills them in; ids are public catalog data, so they are kept for every viewer.
 const knownIds = new Map<string, ExploreItem['ids']>();
 const remember = (key: string, ids: ExploreItem['ids']) => { knownIds.delete(key); knownIds.set(key, ids); if (knownIds.size > 5000) knownIds.delete(knownIds.keys().next().value!); };

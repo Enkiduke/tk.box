@@ -6,5 +6,7 @@ export const exploreMigrations: Migration[] = [
       CREATE TABLE IF NOT EXISTS explore_layout(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);` },
   // Trakt was removed: its links and saved client keys go.
   { name: 'drop-trakt', up: `DROP TABLE IF EXISTS explore_trakt_links;
-      UPDATE explore_settings SET value=json_remove(value,'$.traktClientId','$.traktSecret') WHERE json_type(value,'$.traktClientId') IS NOT NULL OR json_type(value,'$.traktSecret') IS NOT NULL;` }
+      UPDATE explore_settings SET value=json_remove(value,'$.traktClientId','$.traktSecret') WHERE json_type(value,'$.traktClientId') IS NOT NULL OR json_type(value,'$.traktSecret') IS NOT NULL;` },
+  // Seerr was replaced by tk.box's requests: its address and sealed key, the table's only contents, go.
+  { name: 'drop-seerr', up: `DROP TABLE IF EXISTS explore_settings` }
 ];

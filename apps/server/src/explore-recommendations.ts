@@ -1,172 +1,253 @@
 import {createHash} from 'node:crypto';
 import {AppError} from './errors.js';
 import type {ExploreGenre, ExploreItem, TmdbExploreRow} from '../../../packages/contracts/src/index.js';
-import {exploreGenresOf, tmdbIdsForGenre} from './providers/explore-genres.js';
-import type {ExploreWatchedTitle, ExploreLocalWatch, PlexAdapter, PlexGrant} from './providers/plex.js';
+import {exploreGenresOf} from './providers/explore-genres.js';
+import type {PlexAdapter, PlexGrant} from './providers/plex.js';
 import {type Candidate, type TmdbExplore} from './providers/tmdb-explore.js';
 
+// Explore's suggestions: each viewer's Top Movie Picks, Top Show Picks and one Because You Watched row for each kind,
+// from everything they watched, wherever they watched it (tk.box's player, Plex's apps on this server, Plex elsewhere,
+// Tautulli's saved dates). Built once a day per viewer; the day, the viewer and their Refresh presses seed the shuffle,
+// so suggestions change daily and on Refresh but hold still while someone browses.
 const DAY = 86400000;
-const WATCH_REFRESH = 3600000;
+type Kind = ExploreItem['kind'];
 type Row = {title: string; items: Candidate[]};
-type Pool = Partial<Record<TmdbExploreRow, Row>>;
-type Entry = {until: number; pending: Promise<Pool>; last?: {value: Pool; at: number}};
+export type ExplorePool = Partial<Record<TmdbExploreRow, Row>>;
+type Entry = {until: number; pending: Promise<ExplorePool>; last?: {value: ExplorePool; at: number}};
+// One watched title. `at` (ms) is the latest watch when the source dates it; `plays` counts sessions (a show's episodes).
+// `year` is the title's release year (a show's first).
+export type WatchedTitle = {kind: Kind; tmdbId: number; title?: string; year?: number; genres?: string[]; at?: number; plays?: number};
 const idKey = (kind: string, id: number) => `${kind}:tmdb:${id}`;
 const normalized = (title: string) => title.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
-const titleKey = ({kind,title,year}:Pick<ExploreItem,'kind'|'title'|'year'>) => `${kind}:${year}:${normalized(title)}`;
-const unique = (items: Candidate[]) => [...new Map(items.map(c => [c.item.key,c])).values()];
+const unique = (items: Candidate[]) => [...new Map(items.map(c => [c.item.key, c])).values()];
+const SEEDS = 8, RECENT = 10, TOP_LIMIT = 60, BECAUSE_LIMIT = 40, ROW_SHOWN = 20, BECAUSE_MIN = 6;
+// One watched title may supply at most this many of a Top Picks row's first 20, and of the whole row.
+const CAP_SHOWN = 5, CAP_ROW = 15;
 
-function historyTitles(account:ExploreWatchedTitle[], local:ExploreWatchedTitle[]) {
-  const unique=new Map<string,ExploreWatchedTitle>();
-  for(let i=0;i<Math.max(account.length,local.length);i++)for(const title of [account[i],local[i]]){
-    if(!title)continue;
-    const key=idKey(title.kind,title.tmdbId);
-    if(!unique.has(key))unique.set(key,title);
+// One list from every source, each title once with its latest date, most plays, and whatever name and genres any
+// source gave. Dated titles go newest first; titles only an undated source knows (Plex's account history, which is in
+// its own newest-first order) take turns with them.
+export function mergeHistory(lists: WatchedTitle[][]): WatchedTitle[] {
+  const merged = new Map<string, WatchedTitle>(), undated: string[] = [];
+  for (const list of lists) for (const title of list) {
+    const key = idKey(title.kind, title.tmdbId), found = merged.get(key);
+    if (!found) { merged.set(key, {...title}); if (title.at === undefined) undated.push(key); continue; }
+    if (title.at !== undefined && (found.at === undefined || title.at > found.at)) found.at = title.at;
+    if (title.plays !== undefined) found.plays = Math.max(found.plays ?? 0, title.plays);
+    if (!found.title && title.title) found.title = title.title;
+    if (!found.year && title.year) found.year = title.year;
+    if (!found.genres?.length && title.genres?.length) found.genres = title.genres;
   }
-  return [...unique.values()];
+  const dated = [...merged.values()].filter(t => t.at !== undefined).sort((a, b) => b.at! - a.at! || a.tmdbId - b.tmdbId);
+  const rest = undated.map(key => merged.get(key)!).filter(t => t.at === undefined), result: WatchedTitle[] = [];
+  for (let i = 0; i < Math.max(dated.length, rest.length); i++) for (const t of [dated[i], rest[i]]) if (t) result.push(t);
+  return result;
 }
 
-function favoriteGenres(titles:readonly {genres:string[]}[]) {
-  const frequencies = new Map<ExploreGenre,number>();
-  for(const title of titles)for(const genre of exploreGenresOf(title.genres))frequencies.set(genre,(frequencies.get(genre)??0)+1);
-  return [...frequencies].sort(([a,x],[b,y])=>y-x||a.localeCompare(b)).map(([genre])=>genre).slice(0,2);
+// How much a watched title says about the viewer: later in the list counts less, older watches fade (but never below
+// a quarter), and a title watched often (a show's many episodes) counts up to twice.
+export function seedWeight(title: WatchedTitle, rank: number, now: number) {
+  const age = title.at === undefined ? 0 : Math.max(0, now - title.at) / DAY;
+  return 0.9 ** rank * Math.max(0.25, 0.5 ** (age / 180)) * (1 + Math.min(1, Math.log10(Math.max(1, title.plays ?? 1))));
 }
 
-export function selectSeeds(history:ExploreWatchedTitle[],genres:ExploreGenre[]) {
-  const remaining=history.slice(), seeds:ExploreWatchedTitle[]=[];
-  const take=(index:number)=>{if(index>=0)seeds.push(remaining.splice(index,1)[0]!);};
-  if(!remaining.length)return seeds;
-  take(0);
-  take(remaining.findIndex(title=>title.kind!==seeds[0]!.kind));
-  for(const genre of genres){
-    if(seeds.some(title=>exploreGenresOf(title.genres).includes(genre)))continue;
-    take(remaining.findIndex(title=>exploreGenresOf(title.genres).includes(genre)));
-  }
-  return [...seeds,...remaining].slice(0,4);
+// The viewer's genres, weighted like their watches, as shares that add up to 1.
+export function genreTaste(history: WatchedTitle[], now: number) {
+  const weights = new Map<ExploreGenre, number>();
+  history.forEach((title, rank) => {
+    const genres = exploreGenresOf(title.genres ?? []), weight = seedWeight(title, rank, now);
+    for (const genre of genres) weights.set(genre, (weights.get(genre) ?? 0) + weight / genres.length);
+  });
+  const total = [...weights.values()].reduce((a, b) => a + b, 0);
+  return new Map([...weights].map(([genre, weight]) => [genre, total ? weight / total : 0]));
+}
+
+// The viewer's eras: how much of their watching (weighted like their watches) is within 5 years of a release year,
+// as a multiplier from 0.6 (none) to 1.4 (half or more). Without any years known it changes nothing.
+export function eraTaste(history: WatchedTitle[], now: number) {
+  const years = history.flatMap((title, rank) => title.year ? [{year: title.year, weight: seedWeight(title, rank, now)}] : []);
+  const total = years.reduce((sum, y) => sum + y.weight, 0);
+  return (year?: number) => {
+    if (!total || !year) return 1;
+    const near = years.reduce((sum, y) => sum + (Math.abs(y.year - year) <= 5 ? y.weight : 0), 0);
+    return 0.6 + 0.8 * Math.min(1, 2 * near / total);
+  };
+}
+
+// How new a title is: 1 in its first 6 months, fading to 0 at 3 years; something not out yet counts a little.
+export function freshness(date: string | undefined, now: number) {
+  if (!date) return 0;
+  const age = (now - Date.parse(date)) / DAY;
+  if (!Number.isFinite(age)) return 0;
+  if (age < 0) return 0.3;
+  return age <= 182 ? 1 : age >= 1095 ? 0 : 1 - (age - 182) / 913;
+}
+
+// TMDB's score as a multiplier from 0.6 (5.5 or less) to 1.4 (8 or more), pulled toward 6.5 until about 200 votes.
+export function quality(c: Candidate) {
+  const rating = ((c.item.rating ?? 0) * c.votes + 6.5 * 200) / (c.votes + 200);
+  return 0.6 + 0.8 * Math.min(1, Math.max(0, (rating - 5.5) / 2.5));
+}
+export type Taste = {genres: Map<ExploreGenre, number>; era?: (year?: number) => number};
+
+// A small, repeatable random number generator, so a day's suggestions are the same on every read.
+export function seededRandom(seed: string) {
+  let state = createHash('sha256').update(seed).digest().readUInt32LE(0);
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 const familyOf = (item: ExploreItem) => normalized(item.title).split(/\s*[:–—]\s*/)[0]!
-  .replace(/(?:\s+(?:part|chapter|volume|vol\.?)\s*)?\s+(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)$/i,'');
-export function rankCandidates(lists: Candidate[][], preferred: ExploreGenre[]): Candidate[] {
-  const support = new Map<string, number>();
-  for (const list of lists) for (const c of unique(list)) support.set(c.item.key,(support.get(c.item.key) ?? 0)+1);
-  const overlap = (c: Candidate) => preferred.filter(g => c.item.genres?.includes(g)).length;
-  const confidence = (c: Candidate) => (c.item.rating ?? 0) * c.votes/(c.votes+50);
-  const ranked = unique(lists.flat()).sort((a,b) => support.get(b.item.key)!-support.get(a.item.key)!
-    || overlap(b)-overlap(a) || confidence(b)-confidence(a) || b.popularity-a.popularity
-    || (b.date ?? '').localeCompare(a.date ?? '') || a.item.kind.localeCompare(b.item.kind) || a.item.ids.tmdb!-b.item.ids.tmdb!);
-  const result: Candidate[] = [];
+  .replace(/(?:\s+(?:part|chapter|volume|vol\.?)\s*)?\s+(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)$/i, '');
+
+// Each candidate's score: how strongly the watched titles that suggest it point to it (TMDB lists the best match
+// first), times boosts for being new (up to 2x), from an era the viewer watches (0.6-1.4x), in their genres (up to
+// 1.4x) and well rated by many (0.6-1.4x), and a small random factor. The order then keeps one series' entries and one
+// genre from bunching up, and, with several watched titles, keeps any one of them from supplying most of the row:
+// a pick counts toward the watched title that adds most to its score, and one past that title's cap moves down.
+export function scoreCandidates(lists: {weight: number; items: Candidate[]}[], taste: Taste, now: number, random: () => number): Candidate[] {
+  const relevance = new Map<string, number>(), byKey = new Map<string, Candidate>(), source = new Map<string, {list: number; part: number}>();
+  lists.forEach(({weight, items}, list) => unique(items).forEach((c, position) => {
+    const part = weight / (1 + position / 8);
+    relevance.set(c.item.key, (relevance.get(c.item.key) ?? 0) + part);
+    if (!byKey.has(c.item.key)) byKey.set(c.item.key, c);
+    if ((source.get(c.item.key)?.part ?? -1) < part) source.set(c.item.key, {list, part});
+  }));
+  const score = new Map<string, number>();
+  for (const [key, c] of byKey) {
+    const affinity = Math.min(1, (c.item.genres ?? []).reduce((sum, g) => sum + (taste.genres.get(g) ?? 0), 0));
+    score.set(key, relevance.get(key)! * (1 + freshness(c.date, now)) * (taste.era?.(c.item.year) ?? 1) * (1 + 0.4 * affinity) * quality(c) * (0.85 + 0.3 * random()));
+  }
+  const ranked = [...byKey.values()].sort((a, b) => score.get(b.item.key)! - score.get(a.item.key)! || a.item.ids.tmdb! - b.item.ids.tmdb!);
+  const result: Candidate[] = [], supplied = new Map<number, number>(), capped = lists.length > 1;
   while (ranked.length) {
     const recent = result.slice(-4);
     const variety = (c: Candidate) => !recent.some(r => familyOf(r.item) === familyOf(c.item))
-      && recent.slice(-2).filter(r => r.item.kind === c.item.kind).length < 2
       && (!c.item.genres?.[0] || recent.filter(r => r.item.genres?.[0] === c.item.genres![0]).length < 3);
-    const index = ranked.findIndex(variety);
-    result.push(ranked.splice(index < 0 ? 0 : index, 1)[0]!);
+    const fits = (c: Candidate) => !capped || (supplied.get(source.get(c.item.key)!.list) ?? 0) < (result.length < ROW_SHOWN ? CAP_SHOWN : CAP_ROW);
+    let index = ranked.findIndex(c => fits(c) && variety(c));
+    if (index < 0) index = ranked.findIndex(fits);
+    const [next] = ranked.splice(index < 0 ? 0 : index, 1);
+    const list = source.get(next!.item.key)!.list;
+    supplied.set(list, (supplied.get(list) ?? 0) + 1);
+    result.push(next!);
   }
   return result;
 }
 
+// The last few different titles of a kind, in a random order: the Because You Watched row tries them in turn.
+export function becauseOrder(history: WatchedTitle[], random: () => number) {
+  const recent = history.slice(0, RECENT);
+  for (let i = recent.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [recent[i], recent[j]] = [recent[j]!, recent[i]!]; }
+  return recent;
+}
+
+type Sources = {
+  // tk.box's own watch history and Tautulli's saved dates for this account, as TMDB titles.
+  history?: (accountId: string) => WatchedTitle[];
+  // Titles not to suggest: on the server or with a request label (`movie:tmdb:603`).
+  excluded?: () => {has(key: string): boolean};
+};
 export class ExploreRecommendations {
   private pools = new Map<string, Entry>();
-  private snapshots = new Map<string,{until:number; pending:ReturnType<PlexAdapter['exploreLibrary']>}>();
-  constructor(private plex: Pick<PlexAdapter,'exploreLibrary'|'exploreRecentlyWatched'|'exploreAccountHistory'>, private tmdb: TmdbExplore, private now = Date.now) {}
+  private rolls = new Map<string, number>();
+  constructor(private plex: Pick<PlexAdapter, 'exploreRecentlyWatched' | 'exploreAccountHistory'>, private tmdb: TmdbExplore,
+    private sources: Sources = {}, private now = Date.now) {}
+  // Refresh: rebuild, and roll the day's random picks again.
   forget(account: string) {
     for (const key of this.pools.keys()) if (key.startsWith(`${account}\n`)) this.pools.delete(key);
-    for (const key of this.snapshots.keys()) if (key.startsWith(`${account}\n`)) this.snapshots.delete(key);
+    this.rolls.set(account, (this.rolls.get(account) ?? 0) + 1);
   }
-  get(grant: PlexGrant, generation: number, accountToken?:string): Promise<Pool> {
-    const scope = createHash('sha256').update(JSON.stringify([grant.serverToken,grant.libraries.map(l => [l.key,l.type]).sort()])).digest('hex');
-    const tokenScope=createHash('sha256').update(accountToken??'').digest('hex');
-    const viewer = `${grant.accountId}\n${scope}`, key = `${viewer}:${tokenScope}:${generation}`, now = this.now(), hit = this.pools.get(key);
+  get(grant: PlexGrant, generation: number, accountToken?: string): Promise<ExplorePool> {
+    const scope = createHash('sha256').update(JSON.stringify([grant.serverToken, grant.libraries.map(l => [l.key, l.type]).sort()])).digest('hex');
+    const tokenScope = createHash('sha256').update(accountToken ?? '').digest('hex');
+    const now = this.now(), today = new Date(now), day = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+    const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+    const roll = this.rolls.get(grant.accountId) ?? 0;
+    const key = `${grant.accountId}\n${scope}:${tokenScope}:${generation}:${roll}`, hit = this.pools.get(key);
     if (hit && hit.until > now) return hit.pending;
-    const snapshot = this.snapshot(viewer,grant);
-    const watched = this.plex.exploreRecentlyWatched(grant,now).catch(()=>[]);
-    const accountHistory=accountToken?this.plex.exploreAccountHistory(grant,accountToken).catch(()=>[]):Promise.resolve([]);
-    const entry: Entry = {until:Infinity, pending:Promise.all([snapshot.pending,watched,accountHistory])
-      .then(([value,local,account])=>this.build(value,local,account,now)).then(({pool,partial}) => {
-      entry.until = Math.min(snapshot.until,this.now() + (partial ? 5*60000 : WATCH_REFRESH));
-      if (!partial) entry.last = {value:pool, at:this.now()};
-      if (partial && hit?.last && this.now()-hit.last.at < 2*DAY) {
+    const local = this.plex.exploreRecentlyWatched(grant, now).catch(() => []);
+    const account = accountToken ? this.plex.exploreAccountHistory(grant, accountToken).catch(() => []) : Promise.resolve([]);
+    const entry: Entry = {until: Infinity, pending: Promise.all([local, account]).then(([local, account]) => {
+      const own = (() => { try { return this.sources.history?.(grant.accountId) ?? []; } catch { return []; } })();
+      return this.build(mergeHistory([own, local.map(t => ({...t, at: t.lastViewedAt * 1000})), account]), now, `${grant.accountId}:${day}:${roll}`);
+    }).then(({pool, partial}) => {
+      entry.until = partial ? Math.min(midnight, this.now() + 5 * 60000) : midnight;
+      if (!partial) entry.last = {value: pool, at: this.now()};
+      if (partial && hit?.last && this.now() - hit.last.at < 2 * DAY) {
         entry.last = hit.last;
-        return pool['top-picks']?.items.length ? pool : hit.last.value;
+        return Object.keys(pool).length ? pool : hit.last.value;
       }
       return pool;
     }).catch(error => {
-      if (error?.code === 'CATALOG_UNAVAILABLE' && hit?.last && this.now()-hit.last.at < 2*DAY) {
-        entry.until = this.now()+60000; entry.last = hit.last; return hit.last.value;
+      if (error?.code === 'CATALOG_UNAVAILABLE' && hit?.last && this.now() - hit.last.at < 2 * DAY) {
+        entry.until = this.now() + 60000; entry.last = hit.last; return hit.last.value;
       }
       if (this.pools.get(key) === entry) this.pools.delete(key);
       throw error;
     })};
-    this.pools.delete(key); this.pools.set(key,entry);
+    // An earlier day's or roll's pool for this viewer is replaced.
+    for (const old of this.pools.keys()) if (old.startsWith(`${grant.accountId}\n${scope}:`) && old !== key) this.pools.delete(old);
+    this.pools.delete(key); this.pools.set(key, entry);
     while (this.pools.size > 64) this.pools.delete(this.pools.keys().next().value!);
     return entry.pending;
   }
-  private snapshot(viewer:string,grant:PlexGrant) {
-    const hit=this.snapshots.get(viewer);
-    if(hit&&hit.until>this.now())return hit;
-    const entry={until:Infinity,pending:this.plex.exploreLibrary(grant).then(value=>{
-      entry.until=this.now()+(value.complete||value.capped?DAY:5*60000);
-      return value;
-    }).catch(error=>{
-      if(this.snapshots.get(viewer)===entry)this.snapshots.delete(viewer);
-      throw error;
-    })};
-    this.snapshots.delete(viewer);this.snapshots.set(viewer,entry);
-    while(this.snapshots.size>64)this.snapshots.delete(this.snapshots.keys().next().value!);
-    return entry;
-  }
-  private async build(snapshot:Awaited<ReturnType<PlexAdapter['exploreLibrary']>>, local:ExploreLocalWatch[],account:ExploreWatchedTitle[],now:number): Promise<{pool:Pool; partial:boolean}> {
-    const history=historyTitles(account,local), watched=local.filter(title=>title.lastViewedAt*1000>=now-90*DAY).slice(0,4);
-    const owned = new Set([...snapshot.titles,...history].filter(t => t.tmdbId).map(t => idKey(t.kind,t.tmdbId!)));
-    const unidentified = new Set(snapshot.titles.filter(t => !t.tmdbId && t.year).map(titleKey));
-    const unowned = (c: Candidate) => !owned.has(c.item.key) && !unidentified.has(titleKey(c.item));
-    const genres = favoriteGenres(snapshot.titles), watchedGenres=favoriteGenres(history);
-    const seeds = selectSeeds(history,watchedGenres);
-    const pool: Pool = {};
-    let partial = !snapshot.complete && !snapshot.capped;
-    const tryList = async (read:Promise<Candidate[]>) => {
+  private async build(history: WatchedTitle[], now: number, seed: string): Promise<{pool: ExplorePool; partial: boolean}> {
+    const watched = new Set(history.map(t => idKey(t.kind, t.tmdbId))), excluded = this.sources.excluded?.();
+    const fresh = (c: Candidate) => !watched.has(c.item.key) && !excluded?.has(c.item.key);
+    const genres = genreTaste(history, now);
+    let partial = false, reads = 0, failures = 0;
+    const tryList = async (read: Promise<Candidate[]>) => {
+      reads++;
       try { return await read; }
       catch (error) {
         if (error && typeof error === 'object' && 'code' in error && String(error.code).startsWith('TMDB_KEY_')) throw error;
-        partial = true; return [];
+        partial = true; failures++; return [];
       }
     };
-    const lists = new Map<string,Promise<Candidate[]>>();
-    const suggestions = (seed:ExploreWatchedTitle) => {
-      const key=idKey(seed.kind,seed.tmdbId), hit=lists.get(key);
-      if(hit)return hit;
-      const kind = seed.kind === 'movie' ? 'movie' : 'tv';
-      const pending = tryList(this.tmdb.suggestions(kind,seed.tmdbId)).then(async result=>{
-        const picks=result.filter(unowned);
-        if(picks.length<8)picks.push(...(await tryList(this.tmdb.suggestions(kind,seed.tmdbId,true))).filter(unowned));
+    const lists = new Map<string, Promise<Candidate[]>>();
+    const suggestions = (seed: WatchedTitle) => {
+      const key = idKey(seed.kind, seed.tmdbId), found = lists.get(key);
+      if (found) return found;
+      const type = seed.kind === 'movie' ? 'movie' : 'tv', sameKind = (c: Candidate) => c.item.kind === seed.kind && fresh(c);
+      const pending = tryList(this.tmdb.suggestions(type, seed.tmdbId)).then(async result => {
+        const picks = result.filter(sameKind);
+        if (picks.length < 8) picks.push(...(await tryList(this.tmdb.suggestions(type, seed.tmdbId, true))).filter(sameKind));
         return unique(picks);
       });
-      lists.set(key,pending);
+      lists.set(key, pending);
       return pending;
     };
-    const [seedLists,watchedLists] = await Promise.all([
-      Promise.all(seeds.map(suggestions)),
-      Promise.all(watched.map(async seed=>({seed,items:await suggestions(seed)})))
-    ]);
-    watchedLists.filter(r => r.items.length).slice(0,2).forEach(({seed,items},i) => {
-      pool[i ? 'because-2' : 'because-1'] = {title:`Because You Watched ${seed.title}`, items:rankCandidates([items],genres)};
-    });
-    let top = rankCandidates(seedLists,watchedGenres);
-    const title = top.length ? 'Top Picks for You' : 'Popular Picks';
-    const [genreLists,fallback] = await Promise.all([
-      Promise.all(genres.map(genre => tryList(this.tmdb.popular(kind => tmdbIdsForGenre(genre,kind))))),
-      top.length < 20 ? Promise.all([tryList(this.tmdb.trending()),tryList(this.tmdb.popular())]) : Promise.resolve([])
-    ]);
-    if (fallback.length) top = unique([...top,...fallback.flat().filter(unowned)]);
-    if (!top.length && partial && !seedLists.some(list => list.length)) {
-      // An outage should be retryable when there is nothing useful to display.
-      throw new AppError('CATALOG_UNAVAILABLE','Recommendations are temporarily unavailable.',502);
-    }
-    pool['top-picks'] = {title,items:top};
-    genres.map((genre,index) => ({genre,items:genreLists[index]!.filter(unowned)})).filter(r => r.items.length).forEach(({genre,items},i) => {
-      pool[i ? 'genre-2' : 'genre-1'] = {title:`More ${genre}`,items};
-    });
-    return {pool,partial};
+    const pool: ExplorePool = {};
+    await Promise.all((['movie', 'show'] as const).map(async kind => {
+      const mine = history.filter(t => t.kind === kind);
+      if (!mine.length) return;
+      // Each kind has its own random numbers, so the two kinds' reads finishing in either order give the same rows.
+      const random = seededRandom(`${seed}:${kind}`);
+      const seeds = mine.slice(0, SEEDS);
+      const seedLists = await Promise.all(seeds.map(async (seed, rank) => ({weight: seedWeight(seed, rank, now), items: await suggestions(seed)})));
+      // Eras are per kind: someone may watch old movies and new shows.
+      const taste: Taste = {genres, era: eraTaste(mine, now)};
+      const top = scoreCandidates(seedLists, taste, now, random).slice(0, TOP_LIMIT);
+      if (top.length) pool[kind === 'movie' ? 'top-movies' : 'top-shows'] = {title: kind === 'movie' ? 'Top Movie Picks for You' : 'Top Show Picks for You', items: top};
+      // What the Top Picks row shows isn't suggested again just below it.
+      const shown = new Set(top.slice(0, ROW_SHOWN).map(c => c.item.key));
+      for (const seed of becauseOrder(mine, random)) {
+        const items = (await suggestions(seed)).filter(c => !shown.has(c.item.key));
+        if (items.length < BECAUSE_MIN) continue;
+        const title = seed.title ?? await this.tmdb.title(kind === 'movie' ? 'movie' : 'tv', seed.tmdbId).catch(() => undefined);
+        if (!title) continue;
+        pool[kind === 'movie' ? 'because-movie' : 'because-show'] = {title: `Because You Watched ${title}`, items: scoreCandidates([{weight: 1, items}], taste, now, random).slice(0, BECAUSE_LIMIT)};
+        break;
+      }
+    }));
+    // An outage should be retryable when there is nothing useful to display.
+    if (!Object.keys(pool).length && reads > 0 && failures === reads) throw new AppError('CATALOG_UNAVAILABLE', 'Recommendations are temporarily unavailable.', 502);
+    return {pool, partial};
   }
 }

@@ -8,7 +8,6 @@ type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
 type ArtworkView={settings:{revision:number;keysSet:Record<KeyName,boolean>}&Record<string,unknown>};
 type ArrView=Record<'radarr'|'sonarr',{revision:number;url:string;keySet:boolean}>;
 type CleanupView={revision:number;tautulliUrl:string;tautulliKeySet:boolean};
-type SeerrView={revision:number;seerrUrl:string;seerrKeySet:boolean};
 type KeysView={plex:boolean;thesportsdb:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
 type FeedHealth={state:'idle'|'waiting'|'working'|'warning'|'backoff';lastSuccess:number|null;lastChecked:number|null;failedRequests:number;retryAt:number|null};
@@ -122,7 +121,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const plex=useApi<PlexHealth>('/admin/connections/plex');
   const sports=useApi<SportsHealth>('/admin/connections/sports');
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
-  const explore=useApi<SeerrView>('/admin/explore/settings');
   const artwork=useApi<ArtworkView>('/admin/artwork');
   const arr=useApi<ArrView>('/admin/arr');
   const cleanup=useApi<CleanupView>('/admin/cleanup/connections');
@@ -180,23 +178,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
         keyHint:'In Plex, open a title and choose Get Info › View XML. Copy the X-Plex-Token value from the address.',
         ...keySettings('plex'),
       },
-      {
-        name:'Seerr',description:'Movie and TV requests in Explore and request data in Clean Up.',
-        health:explore.data?.seerrUrl?serviceStatus('seerr'):undefined,
-        keyHint:'Seerr › Settings › General. Add a key for availability and request badges in Explore and request data in Clean Up.',
-        ...readSettings(explore,data=>({
-          keySaved:data.seerrKeySet,
-          address:{value:data.seerrUrl,placeholder:'https://requests.example.com',hint:'Clearing the address turns off requests and removes the saved key.'},
-          save:async ({address,key})=>{
-            await api('/admin/explore/settings','PUT',{
-              expectedRevision:data.revision,seerrUrl:address,...(key||!address?{seerrApiKey:address?key:''}:{}),
-            });
-            invalidate('/admin/explore/settings');
-            invalidate('/explore/');
-            invalidate('/admin/connections/services');
-          },
-        })),
-      },
     ]},
     {id:'downloads',title:'Downloads & Clean Up',icon:'download',connections:[
       ...arrApps,
@@ -237,7 +218,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   }));
   const refresh=()=>{
     plex.reload();sports.reload();services.reload();
-    for(const view of [serviceKeys,explore,artwork,arr,cleanup])if(view.error)view.reload();
+    for(const view of [serviceKeys,artwork,arr,cleanup])if(view.error)view.reload();
   };
   const refreshingStatus=plex.loading||sports.loading||services.loading;
   return <>
