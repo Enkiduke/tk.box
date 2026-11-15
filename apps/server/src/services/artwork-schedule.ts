@@ -7,7 +7,7 @@ import { AppError } from '../errors.js';
 import { dueAt, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
-// Artwork's and collections' schedules, run by tk.box instead of cron and a Tautulli hook. Each task runs on its
+// Artwork's and collections' schedules, run by tk.box instead of cron and a hook on new titles. Each task runs on its
 // schedule, server local time (a missed time within two hours after, if tk.box was down then). Newly added titles are
 // checked for as soon as Plex says it finished adding something to a watched library (its notification feed, once things
 // settle), and on their own schedule as well for anything a dropped feed missed. A check reads each library's recently added list back

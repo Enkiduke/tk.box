@@ -7,7 +7,6 @@ import {date,SectionHead,useMutation} from './settings-ui.js';
 type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
 type ArtworkView={settings:{revision:number;keysSet:Record<KeyName,boolean>}&Record<string,unknown>};
 type ArrView=Record<'radarr'|'sonarr',{revision:number;url:string;keySet:boolean}>;
-type CleanupView={revision:number;tautulliUrl:string;tautulliKeySet:boolean};
 type KeysView={plex:boolean;thesportsdb:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
 type FeedHealth={state:'idle'|'waiting'|'working'|'warning'|'backoff';lastSuccess:number|null;lastChecked:number|null;failedRequests:number;retryAt:number|null};
@@ -123,7 +122,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
   const artwork=useApi<ArtworkView>('/admin/artwork');
   const arr=useApi<ArrView>('/admin/arr');
-  const cleanup=useApi<CleanupView>('/admin/cleanup/connections');
 
   const serviceStatus=(id:string)=>readHealth(services,results=>{
     const result=results[id];
@@ -157,19 +155,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       },
     })),
   }));
-  const tautulli:Connection={
-    name:'Tautulli',description:'Plex watch history for Clean Up.',keyHint:'Tautulli › Settings › Web Interface',
-    health:cleanup.data?.tautulliUrl&&cleanup.data.tautulliKeySet?serviceStatus('tautulli'):undefined,
-    ...readSettings(cleanup,data=>({
-      keySaved:data.tautulliKeySet,
-      address:{value:data.tautulliUrl,placeholder:'http://tautulli:8181',hint:'Leave blank to disable this connection.'},
-      save:async ({address,key})=>{
-        await api('/admin/cleanup/connections','PUT',{expectedRevision:data.revision,tautulliUrl:address,...(key?{tautulliKey:key}:{})});
-        invalidate('/admin/cleanup');
-        invalidate('/admin/connections/services');
-      },
-    })),
-  };
   const groups:{id:string;title:string;icon:string;connections:Connection[]}[]=[
     {id:'media',title:'Media & requests',icon:'live',connections:[
       {
@@ -181,7 +166,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     ]},
     {id:'downloads',title:'Downloads & Clean Up',icon:'download',connections:[
       ...arrApps,
-      tautulli,
     ]},
     {id:'metadata',title:'Metadata & artwork',icon:'image',connections:artworkProviders.map(([id,name,description,keyHint])=>({
       name,description,keyHint,
@@ -218,7 +202,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   }));
   const refresh=()=>{
     plex.reload();sports.reload();services.reload();
-    for(const view of [serviceKeys,artwork,arr,cleanup])if(view.error)view.reload();
+    for(const view of [serviceKeys,artwork,arr])if(view.error)view.reload();
   };
   const refreshingStatus=plex.loading||sports.loading||services.loading;
   return <>

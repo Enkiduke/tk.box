@@ -76,7 +76,7 @@ python -m venv .venv
 
 On Windows the pip path is `.venv\Scripts\pip`. Then enter that environment's `python` in the setup screen's Python field, or set `PYTHON_PATH` in `.env`.
 
-Radarr, Sonarr, Tautulli and the artwork providers are set up later in **Admin › Connections**.
+Radarr, Sonarr and the artwork providers are set up later in **Admin › Connections**.
 
 ## Development
 

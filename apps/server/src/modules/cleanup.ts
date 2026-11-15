@@ -30,8 +30,7 @@ export const cleanupModule = defineModule({
   setup(routes, { config, db, vault, bus, background, jobs, log }, { artwork, requests, arr, watches }: Deps) {
     const store = new CleanupStore(db, vault);
     const services = (): CleanupServices => {
-      const own = store.connections();
-      return { radarr: arr.connection('radarr'), tautulli: { url: own.tautulliUrl, key: own.tautulliKey }, sonarr: arr.connection('sonarr') };
+      return { radarr: arr.connection('radarr'), sonarr: arr.connection('sonarr') };
     };
     const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
       dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, services, () => background.grant(), (message, detail) => log.info(message, detail));
@@ -46,7 +45,7 @@ export const cleanupModule = defineModule({
       status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },
       run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
-      // Tautulli's saved dates, for Explore's suggestions.
+      // The saved watch history, for Explore's suggestions.
       api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
       start() { engine.start(); },
       stop() { engine.close(); }

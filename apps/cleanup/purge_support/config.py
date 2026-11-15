@@ -77,6 +77,53 @@ def request_list(config):
     return tuple(value)
 
 
+WATCH_SCOPES = ("movie", "show", "season")
+
+
+@dataclass(frozen=True)
+class Watches:
+    """Each title's latest watch, from tk.box (see watch_list): by scope (movie, show, season) and Plex rating key, the
+    latest by anyone and by Plex account id."""
+    server_id: str
+    scopes: Mapping[str, Mapping[str, tuple[datetime, Mapping[int, datetime]]]]
+
+
+def _watch_date(value):
+    if not isinstance(value, str):
+        raise ValueError
+    date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (date if date.tzinfo else date.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+def watch_list(config):
+    """tk.box's watch history for this run: {server_id, movie, show, season}, each scope mapping a Plex rating key to
+    {any: ISO date, users: {Plex account id: ISO date}}. Required: without it every title would look unwatched."""
+    value = config.get("watches")
+    if not isinstance(value, Mapping):
+        raise ConfigError("watches is missing: tk.box needs PLEX_MACHINE_ID set to send watch history")
+    server_id = value.get("server_id")
+    if not isinstance(server_id, str) or not server_id.strip():
+        raise ConfigError("watches needs the Plex server_id")
+    scopes = {}
+    try:
+        for scope in WATCH_SCOPES:
+            rows = value.get(scope)
+            if not isinstance(rows, Mapping):
+                raise ValueError
+            parsed = {}
+            for key, row in rows.items():
+                if not isinstance(key, str) or not key.isdigit() or not isinstance(row, Mapping):
+                    raise ValueError
+                users = row.get("users", {})
+                if not isinstance(users, Mapping) or not all(isinstance(user, str) and user.isdigit() for user in users):
+                    raise ValueError
+                parsed[key] = (_watch_date(row.get("any")), {int(user): _watch_date(at) for user, at in users.items()})
+            scopes[scope] = parsed
+    except (ValueError, TypeError):
+        raise ConfigError("watches must map movie, show and season rating keys to ISO 8601 watch dates") from None
+    return Watches(server_id.strip(), scopes)
+
+
 COLLECTION_KINDS = ("franchise", "streaming", "custom", "seasonal", "other")
 
 
@@ -124,7 +171,6 @@ class Service:
 @dataclass(frozen=True)
 class Settings:
     plex: Service
-    tautulli: Service
     radarr: Service
     sonarr: Service
     # Plex library section IDs.
@@ -155,6 +201,8 @@ class Settings:
     holds: Mapping[str, datetime] = field(default_factory=dict)
     # tk.box's available requests (see request_list), the titles a run looks at.
     requests: tuple[Mapping, ...] = ()
+    # tk.box's watch history (see watch_list).
+    watches: Watches = Watches("", {scope: {} for scope in WATCH_SCOPES})
 
     @property
     def timeout(self):
@@ -182,7 +230,6 @@ class Settings:
         poster = text(config, "leaving_soon_poster")
         settings = cls(
             plex=service("plex", "PLEX_TOKEN"),
-            tautulli=service("tautulli", "TAUTULLI_API_KEY"),
             radarr=service("radarr", "RADARR_API_KEY"), sonarr=service("sonarr", "SONARR_API_KEY"),
             movie_libraries=text_list(config, "movie_libraries"), tv_libraries=text_list(config, "tv_libraries"),
             dry_run=dry_run or boolean(config, "dry_run", default=True),
@@ -207,13 +254,13 @@ class Settings:
             http_timeout_seconds=integer(config, "http_timeout_seconds", default=30, minimum=1),
             holds=holds(config),
             requests=request_list(config),
+            watches=watch_list(config),
         )
         settings.validate()
         return settings
 
     def validate(self):
-        for name, service in (("Plex", self.plex), ("Tautulli", self.tautulli)):
-            service.validate(name, required=True)
+        self.plex.validate("Plex", required=True)
         self.radarr.validate("Radarr", required=self.delete_from_radarr)
         self.sonarr.validate("Sonarr", required=self.delete_from_sonarr)
         if not self.movie_libraries and not self.tv_libraries:

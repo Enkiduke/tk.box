@@ -7,7 +7,10 @@ export const cleanupMigrations: Migration[] = [
         created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, exit_code INTEGER, output TEXT);` },
   // Remove from Seerr went with Seerr: tk.box marks a deleted title's requests removed itself.
   { name: 'drop-seerr', up: `UPDATE cleanup_config SET value=json_remove(value,'$.deleteFromSeerr') WHERE name='settings'` },
-  // The watch dates Tautulli held, saved once (Save watch history) so they outlast it. Account '' is anyone.
+  // Watch dates saved from Tautulli before it was removed; each run takes the later of these and tk.box's history.
+  // Account '' is anyone.
   { name: 'watch-snapshot', up: `CREATE TABLE cleanup_watch_snapshot(scope TEXT NOT NULL CHECK(scope IN ('movie','show','season')), rating_key TEXT NOT NULL,
-        account TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(scope, rating_key, account)) WITHOUT ROWID` }
+        account TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(scope, rating_key, account)) WITHOUT ROWID` },
+  // Tautulli was Clean Up's own connection; tk.box's history and the saved dates replace it.
+  { name: 'drop-tautulli', up: `DELETE FROM cleanup_config WHERE name='connections'` }
 ];

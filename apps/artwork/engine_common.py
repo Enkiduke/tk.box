@@ -781,7 +781,7 @@ def select_item(artwork, config, *, rating_key=None, title=None, media_type=None
 
 @contextlib.contextmanager
 def run_lock(config_path):
-    """One writing run at a time: the nightly run, Tautulli hooks (a season pack fires many at once) and the web page's
+    """One writing run at a time: the nightly run, new-title runs (a season pack fires many at once) and the web page's
     pushes would otherwise render, save and upload the same titles side by side. No-op without fcntl (Windows)."""
     try:
         import fcntl

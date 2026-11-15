@@ -65,7 +65,7 @@ class HttpClient:
             return response.json() if decode else None
         except requests.RequestException as exc:
             status = exc.response.status_code if exc.response is not None else "unavailable"
-            # RequestException URLs may include the Tautulli API key. Never log them.
+            # RequestException URLs may carry credentials in their query. Never log them.
             raise ApiError(f"{method} {url}: {type(exc).__name__} (HTTP {status})") from None
         except ValueError:
             raise ApiError(f"{method} {url}: invalid JSON") from None

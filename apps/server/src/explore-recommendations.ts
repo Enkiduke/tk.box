@@ -7,7 +7,7 @@ import {type Candidate, type TmdbExplore} from './providers/tmdb-explore.js';
 
 // Explore's suggestions: each viewer's Top Movie Picks, Top Show Picks and one Because You Watched row for each kind,
 // from everything they watched, wherever they watched it (tk.box's player, Plex's apps on this server, Plex elsewhere,
-// Tautulli's saved dates). Built once a day per viewer; the day, the viewer and their Refresh presses seed the shuffle,
+// the saved watch history). Built once a day per viewer; the day, the viewer and their Refresh presses seed the shuffle,
 // so suggestions change daily and on Refresh but hold still while someone browses.
 const DAY = 86400000;
 type Kind = ExploreItem['kind'];
@@ -148,7 +148,7 @@ export function becauseOrder(history: WatchedTitle[], random: () => number) {
 }
 
 type Sources = {
-  // tk.box's own watch history and Tautulli's saved dates for this account, as TMDB titles.
+  // tk.box's own watch history and the saved watch history for this account, as TMDB titles.
   history?: (accountId: string) => WatchedTitle[];
   // Titles not to suggest: on the server or with a request label (`movie:tmdb:603`).
   excluded?: () => {has(key: string): boolean};

@@ -27,8 +27,7 @@ export const artworkSettings = z.object({
   schedules: z.object({
     // On its schedule, server local time: --changed-only. Collections have their own schedules.
     scrub: daily,
-    // Titles newly added to the chosen libraries, checked when Plex says it added some and on a schedule besides
-    // (in place of a Tautulli hook).
+    // Titles newly added to the chosen libraries, checked when Plex says it added some and on a schedule besides.
     added: everyFew
   }).strict()
 }).strict();

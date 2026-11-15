@@ -8,7 +8,7 @@ from .config import Settings
 
 
 class MissingAddedAtError(ValueError):
-    """The request has no added-date anchor (and Tautulli could not supply one)."""
+    """The request has no added-date anchor (and Plex could not supply one)."""
 
 
 def plex_datetime(value):

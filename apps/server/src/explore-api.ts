@@ -86,7 +86,7 @@ export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)
 
 // Explore: rows, search and details from Plex Discover and TMDB, with tk.box's request labels, and the Plex watchlist.
 // Requests themselves are the requests module's routes.
-// One watch on this server (tk.box's history, Tautulli's saved dates), by its rating key.
+// One watch on this server (tk.box's history, the saved watch history), by its rating key.
 export type ServerWatch={kind:'movie'|'show';ratingKey:string;at:number;plays?:number;title?:string|null;year?:number|null};
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,
   requests:Pick<Requests,'labels'|'connected'|'titleState'|'plexKey'>&Partial<Pick<Requests,'tmdbForKey'>>,transports:{images?:typeof fetch}={},watches:(account:string)=>ServerWatch[]=()=>[]) {

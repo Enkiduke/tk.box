@@ -3,7 +3,7 @@ import type {ArtworkKeys} from '../persistence/artwork-store.js';
 import type {ArrService} from '../providers/arr-tags.js';
 import {remoteJson} from '../providers/remote-json.js';
 
-type Services = {radarr:ArrService;sonarr:ArrService;tautulli:ArrService};
+type Services = {radarr:ArrService;sonarr:ArrService};
 type Result = {state:'working'|'limited'|'failed';checkedAt:number;detail?:string};
 
 export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkKeys,
@@ -11,8 +11,8 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
   // Share checks if two admins open the page at the same time. A settings change gets a fresh check.
   let pending: {config:string;result:Promise<Record<string,Result>>} | undefined;
   return () => {
-    const {radarr,sonarr,tautulli} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
-    const config = JSON.stringify([radarr,sonarr,tautulli,tmdb,tvdb,fanart,mdblist]);
+    const {radarr,sonarr} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
+    const config = JSON.stringify([radarr,sonarr,tmdb,tvdb,fanart,mdblist]);
     if (pending?.config === config) return pending.result;
 
     const checks: Record<string,Promise<Result>> = {};
@@ -36,15 +36,6 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
       if (service.url&&service.key) run(id,()=>json(new URL(`${service.url}/api/v3/system/status`),name,
         data=>typeof object(data)?.version==='string',{headers:{'X-Api-Key':service.key!}}));
     }
-    if (tautulli.url&&tautulli.key) run('tautulli',async () => {
-      const url = new URL(`${tautulli.url}/api/v2`);
-      url.search = new URLSearchParams({cmd:'get_tautulli_info',apikey:tautulli.key!}).toString();
-      await json(url,'Tautulli',data=>{
-        const response = object(object(data)?.response);
-        if (response?.result==='error') throw new AppError('REMOTE_ERROR','Tautulli refused the request. Check the saved API key.');
-        return response?.result==='success'&&typeof object(response.data)?.tautulli_version==='string';
-      });
-    });
     if (tmdb) run('tmdb',()=>json(new URL(`https://api.themoviedb.org/3/movie/603?api_key=${encodeURIComponent(tmdb)}`),
       'TMDb',data=>object(data)?.id===603,{},transports.tmdb));
     if (tvdb) run('tvdb',()=>json(new URL('https://api4.thetvdb.com/v4/login'),'TVDB',

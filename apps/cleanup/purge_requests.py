@@ -1,9 +1,8 @@
 """Purge available requests according to watch history and retention policy.
 
 tk.box runs this as ``python purge_requests.py <config.json> [--dry-run]`` (Admin > Server > Clean Up). The config is
-written by tk.box from its settings and holds tk.box's available requests; the Plex token and the service keys arrive
-in the environment. ``--dry-run``
-previews a run whatever the config says. Output goes to stdout, which tk.box keeps with the job.
+written by tk.box from its settings and holds tk.box's available requests; its watch history; the Plex token and the service keys arrive in
+the environment. ``--dry-run`` previews a run whatever the config says. Output goes to stdout, which tk.box keeps with the job.
 """
 
 import argparse
@@ -21,13 +20,11 @@ from plexapi.server import PlexServer
 from purge_support.actions import delete_whole_item, process_seasons
 from purge_support.api import ApiError, ArrClient, HttpClient, positive_id
 from purge_support.config import ConfigError, Settings
-from purge_support.history import TautulliClient
-from purge_support.native_history import NativeHistoryPreview
 from purge_support.plex import find_plex_item, matching_arr_tags, protected_collections, update_plex_collection
 from purge_support.policy import (MissingAddedAtError, days_remaining, held_until, hold_key, leaving_soon, parse_added_at,
-                                  rule_for_requests)
+                                  plex_datetime, rule_for_requests)
 from purge_support.reporting import RunReport, add_entry, add_status, log_report, write_status
-from purge_support.watch_snapshot import WatchSnapshot
+from purge_support.watches import ConfigHistory
 
 logger = logging.getLogger(__name__)
 
@@ -61,16 +58,16 @@ def parse_requests(raw_requests):
     return parsed
 
 
-def resolve_added_dates(requests_group, item, history):
-    """Use one validated Tautulli date for requests missing their available date."""
+def resolve_added_dates(requests_group, item):
+    """Use Plex's added date for requests missing their available date."""
     missing = [request.request_id for request in requests_group if request.added_at is None]
     if not missing:
         return requests_group
     try:
-        added_at = history.added_at(item.ratingKey)
-    except ApiError as exc:
-        raise MissingAddedAtError(f"The available date is missing and Tautulli added_at is unavailable: {exc}") from None
-    logger.warning("Using Tautulli added_at=%s for '%s' (Plex ratingKey=%s, request IDs %s) "
+        added_at = plex_datetime(getattr(item, "addedAt", None))
+    except ValueError as exc:
+        raise MissingAddedAtError(f"The available date is missing and Plex has no added date: {exc}") from None
+    logger.warning("Using Plex addedAt=%s for '%s' (Plex ratingKey=%s, request IDs %s) "
                    "because the available date is missing", added_at.isoformat(), item.title, item.ratingKey, missing)
     return [replace(request, added_at=added_at) if request.added_at is None else request for request in requests_group]
 
@@ -93,7 +90,7 @@ def load_arr_data(client, needed, tags_needed):
 
 
 def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, history,
-                          arr_data, now, report, processed_keys, context, native_preview=None, snapshot=None):
+                          arr_data, now, report, processed_keys, context):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
     media_type, tmdb_id = key
@@ -122,9 +119,6 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
         raise ApiError("Different media IDs resolved to the same Plex item; refusing repeated processing")
     processed_keys.add(item_key)
     context["item"] = item
-    if snapshot:
-        # Before any protection, so a title protected now still has its dates once that changes.
-        snapshot.record(item, media_type, {request.requestor_id for request in requests_group if request.requestor_id is not None})
     kind = "movie" if media_type == "movie" else "show"
     logger.info("Processing '%s' for request IDs %s", item.title, [request.request_id for request in requests_group])
 
@@ -150,18 +144,16 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
             add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}", key=hold)
             return
     if media_type == "tv" and settings.enable_season_retention:
-        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id, native_preview):
+        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id):
             # Season by season, the show itself never belongs in the collection.
             report.settled.add(str(item.ratingKey))
             return
 
-    resolved_requests = resolve_added_dates(requests_group, item, history)
+    resolved_requests = resolve_added_dates(requests_group, item)
     watch = history.watch_status(item, media_type, {request.requestor_id for request in requests_group if request.requestor_id is not None})
     rule = rule_for_requests(resolved_requests, watch, settings)
     held = held_until(rule, settings, hold)
     due_at = held or rule.deletion_date
-    if native_preview:
-        native_preview.compare(item, media_type, requests_group, settings, hold, rule, now)
     if held:
         logger.info("Keeping '%s' until at least %s: held by an administrator", item.title, held.isoformat())
     if now >= due_at:
@@ -185,7 +177,7 @@ def process_request_group(key, raw_requests, *, settings, plex, radarr, sonarr, 
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None, snapshot=None):
+def run(settings, plex, radarr, sonarr, history, now=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -217,8 +209,7 @@ def run(settings, plex, radarr, sonarr, history, now=None, native_preview=None, 
         try:
             process_request_group(key, raw_requests, settings=settings, plex=plex,
                                   radarr=radarr, sonarr=sonarr, history=history, arr_data=arr_data,
-                                  now=now, report=report, processed_keys=processed_keys, context=context, native_preview=native_preview,
-                                  snapshot=snapshot)
+                                  now=now, report=report, processed_keys=processed_keys, context=context)
         except MissingAddedAtError as exc:
             logger.warning("Skipping %s TMDB=%s (request IDs %s): %s; retaining media",
                            *key, [request.get("id") for request in raw_requests], exc)
@@ -254,8 +245,6 @@ def main(argv=None):
     parser.add_argument("config", type=Path, help="tk.box's JSON config for this run")
     parser.add_argument("--dry-run", action="store_true", help="report what would be deleted; change nothing")
     parser.add_argument("--status", type=Path, help="write each title's status here as JSON when the run finishes")
-    parser.add_argument("--compare-native-history", type=Path, help="compare against the tk.box database during a dry run")
-    parser.add_argument("--watch-snapshot", type=Path, help="during a dry run, write Tautulli's watch dates for each title here")
     args = parser.parse_args(argv)
     configure_logging()
     try:
@@ -264,29 +253,20 @@ def main(argv=None):
     except (ConfigError, OSError, ValueError) as exc:
         logger.error("Cannot start purge: %s", exc)
         return 1
-    if args.watch_snapshot and not settings.dry_run:
-        logger.error("Cannot start purge: --watch-snapshot needs a dry run")
-        return 1
     logger.info("Starting purge (%s)", "DRY RUN: nothing is deleted" if settings.dry_run else "deleting for real")
     try:
         with requests.Session() as session:
             http = HttpClient(session, settings.timeout)
             plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
-            native_preview = (NativeHistoryPreview(args.compare_native_history, getattr(plex, "machineIdentifier", ""), args.status)
-                              if settings.dry_run and args.compare_native_history else None)
-            history = TautulliClient(http, settings.tautulli, settings.exempt_user_ids)
-            snapshot = WatchSnapshot(history) if args.watch_snapshot else None
+            try:
+                history = ConfigHistory(settings.watches, settings.exempt_user_ids, getattr(plex, "machineIdentifier", ""))
+            except ConfigError as exc:
+                logger.error("Cannot start purge: %s", exc)
+                return 1
             report = run(settings, plex,
-                         ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"),
-                         history, native_preview=native_preview, snapshot=snapshot)
+                         ArrClient(http, settings.radarr, "Radarr"), ArrClient(http, settings.sonarr, "Sonarr"), history)
         if args.status:
             write_status(report, args.status, settings.dry_run)
-        if snapshot:
-            # A title not found in Plex has nothing to keep; any other failure leaves the snapshot incomplete.
-            snapshot.write(args.watch_snapshot, getattr(plex, "machineIdentifier", ""), report.failed == 0)
-            logger.info("Watch history: %s titles and seasons checked, %s with watches%s", len(snapshot.entries),
-                        sum(1 for status in snapshot.entries.values() if status.last_watched_by_anyone is not None),
-                        "" if report.failed == 0 else f"; incomplete, {report.failed} titles failed")
         return 1 if report.failed or report.skipped_missing_added_at else 0
     except Exception:
         logger.exception("Purge aborted")

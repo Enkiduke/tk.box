@@ -5,15 +5,13 @@ import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { prepared } from './statements.js';
 
-// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its Tautulli connection
-// and its job history. The script reads none of this directly: before each run tk.box writes its JSON config
-// (cleanupConfig). Keys are sealed. Radarr and Sonarr are the arr module's; the titles
+// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its saved watch
+// history and its job history. The script reads none of this directly: before each run tk.box writes its JSON config
+// (cleanupConfig). Radarr and Sonarr are the arr module's; the titles
 // come from tk.box's requests.
 const libraryId = z.string().regex(/^\d{1,10}$/);
 const days = z.number().int().min(0).max(3650);
 const label = z.string().trim().max(60).refine(value => ![...value].some(c => c.charCodeAt(0) < 32), 'No control characters');
-const origin = z.string().trim().max(300).refine(value => { if (!value) return true; try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }, 'Use an http(s) address').transform(value => value.replace(/\/+$/, ''));
-const key = z.string().trim().max(200).regex(/^[\w-]*$/);
 export const cleanupSettings = z.object({
   movieLibraries: z.array(libraryId).max(50), tvLibraries: z.array(libraryId).max(50),
   // A preview reports what would be deleted and changes nothing, in Plex or anywhere else.
@@ -22,7 +20,7 @@ export const cleanupSettings = z.object({
   // Rule 1: the requester watched it; days after anyone last watched it. Rule 2: the requester hasn't; days after it
   // was added, or Rule 1's days after anyone else last watched it, whichever is later. Rules 3 and 4 are for requests by exempt users: days after anyone's watch, or after an exempt user's.
   daysAfterWatched: days, daysAfterUnwatched: days, daysAfterAnyWatchExempt: days, daysAfterExemptWatch: days,
-  // Plex account IDs, as Tautulli shows them.
+  // Plex account IDs (plex.tv), as Admin › Users shows them.
   exemptUserIds: z.array(z.number().int().positive().max(2 ** 53)).max(100),
   exemptArrTags: z.array(label.pipe(z.string().min(1))).max(50),
   exemptIfInCollection: z.boolean(),
@@ -34,8 +32,6 @@ export const cleanupSettings = z.object({
   schedule: scheduled(60)
 }).strict();
 export type CleanupSettings = z.infer<typeof cleanupSettings>;
-export const cleanupConnectionsInput = z.object({ tautulliUrl: origin, tautulliKey: key.optional() }).strict();
-type Connections = { tautulliUrl: string; tautulliKey?: string };
 // Nothing is deleted until an administrator turns previews off; the retention days are the script's own defaults.
 const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun: true, deleteFromRadarr: false, deleteFromSonarr: false,
   daysAfterWatched: 30, daysAfterUnwatched: 60, daysAfterAnyWatchExempt: 90, daysAfterExemptWatch: 180, exemptUserIds: [], exemptArrTags: [], exemptIfInCollection: false,
@@ -55,7 +51,7 @@ const job = (r: Record<string, unknown>) => ({ id: r.id as number, label: r.labe
 
 export class CleanupStore {
   constructor(private db: Db, private vault: Vault) {}
-  private row<T>(name: 'settings' | 'connections' | `state:${string}`) {
+  private row<T>(name: 'settings' | `state:${string}`) {
     const row = prepared(this.db, 'SELECT revision,value FROM cleanup_config WHERE name=?').get(name) as { revision: number; value: string } | undefined;
     return row && { revision: row.revision, value: JSON.parse(row.value) as T };
   }
@@ -78,27 +74,6 @@ export class CleanupStore {
       this.write('settings', revision + 1, value);
       prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_settings_changed', now, JSON.stringify({ dryRun: value.dryRun, schedule: value.schedule }));
       return this.settings();
-    })();
-  }
-  private storedConnections() { return this.row<Connections>('connections') ?? { revision: 0, value: { tautulliUrl: '' } }; }
-  // What the Connections page shows: never the keys themselves.
-  connectionsView() { const { revision, value: v } = this.storedConnections(); return { revision, tautulliUrl: v.tautulliUrl, tautulliKeySet: !!v.tautulliKey }; }
-  connections() {
-    const { value: v } = this.storedConnections(), open = (sealed: string | undefined, name: string) => sealed ? this.vault.open(sealed, `cleanup:${name}-key`) : undefined;
-    return { tautulliUrl: v.tautulliUrl, tautulliKey: open(v.tautulliKey, 'tautulli') };
-  }
-  // Omitted keeps a saved key; an empty string removes it.
-  updateConnections(actor: string, expectedRevision: number, input: z.input<typeof cleanupConnectionsInput>, now = Date.now()) {
-    const valid = cleanupConnectionsInput.parse(input);
-    return this.db.transaction(() => {
-      const { revision, value } = this.storedConnections();
-      if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Connections changed. Reload and retry.', 409);
-      const seal = (given: string | undefined, saved: string | undefined, name: string) => given === undefined ? saved : given ? this.vault.seal(given, `cleanup:${name}-key`) : undefined;
-      const tautulliKey = seal(valid.tautulliKey, value.tautulliKey, 'tautulli');
-      this.write('connections', revision + 1, { tautulliUrl: valid.tautulliUrl, ...(tautulliKey ? { tautulliKey } : {}) });
-      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_connections_changed', now,
-        JSON.stringify({ tautulliUrl: valid.tautulliUrl, tautulliKeySet: !!tautulliKey }));
-      return this.connectionsView();
     })();
   }
   // Clean Up › Status: titles an administrator chose to keep longer, by hold key (movie:<tmdb>, tv:<tmdb> or
@@ -126,7 +101,7 @@ export class CleanupStore {
       prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_title_kept', now, JSON.stringify({ key, tag }));
     })();
   }
-  // Save watch history: Tautulli's dates, kept once it is gone. Saving again keeps the later date of each.
+  // Watch dates saved from Tautulli before it was removed, for one Plex server. Saving again keeps the later date of each.
   watchSnapshot() { return this.state<CleanupWatchSnapshot>('watch-snapshot'); }
   watchSnapshotRows(serverId: string): CleanupWatch[] {
     if (this.watchSnapshot()?.serverId !== serverId) return [];

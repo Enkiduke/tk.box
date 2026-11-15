@@ -4,7 +4,7 @@ import type { PlexSession } from './providers/plex.js';
 export type Title = { title: string; type: string; year?: number; show?: string; album?: string; season?: number; episode?: number; durationMs?: number; posterId?: string };
 const upper = (c?: string) => c?.toUpperCase();
 const resolution = (height?: number, named?: string) => named ? (/^\d+$/.test(named) ? `${named}p` : named.toUpperCase()) : height ? `${height}p` : undefined;
-// One of Plex's own sessions (any Plex app, not tk.box) as an activity row, described the way Tautulli does.
+// One of Plex's own sessions (any Plex app, not tk.box) as an activity row: direct play, direct stream or transcode.
 export function plexRow(m: PlexSession, now = Date.now()) {
   const t = m.TranscodeSession, media = m.Media?.[0], local = m.Session?.location ? m.Session.location === 'lan' : !!m.Player?.local;
   const delivery = t?.videoDecision === 'transcode' ? 'transcode' as const : t ? 'remux' as const : 'direct' as const;

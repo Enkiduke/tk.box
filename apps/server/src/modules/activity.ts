@@ -22,7 +22,7 @@ export type ActivitySource = {
 export type ActivityApi = { activity: Activity; source: (kind: StreamKind, source: ActivitySource) => void };
 type Deps = { history: PlaybackHistory; plexSessions: (grant: PlexGrant) => Promise<PlexSession[]> };
 
-// Admin › Activity, like Tautulli's: who is watching what, how it is delivered, and a way to end a stream. Playback
+// Admin › Activity: who is watching what, how it is delivered, and a way to end a stream. Playback
 // modules report their sessions to `activity` and register a source for each kind they deliver.
 export const activityModule = defineModule({
   name: 'activity',

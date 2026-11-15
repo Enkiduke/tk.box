@@ -4,11 +4,11 @@ Deletes requested movies and shows once the people who asked for them have watch
 
 ## How it fits together
 
-- **Script:** `apps/cleanup/purge_requests.py` and `apps/cleanup/purge_support/`. It reads tk.box's available requests from its config (`requests`, written by tk.box from the requests module), finds each title in Plex, reads its watch history from Tautulli, and deletes what is due from Plex (with its files) and, if chosen, from Radarr and Sonarr. After a real run tk.box marks the requests of each whole title it deleted as removed. It runs as its own Python process, one job at a time (`services/cleanup-engine.ts`).
+- **Script:** `apps/cleanup/purge_requests.py` and `apps/cleanup/purge_support/`. It reads tk.box's available requests from its config (`requests`, written by tk.box from the requests module), finds each title in Plex, reads its watch history from the config (`watches`), and deletes what is due from Plex (with its files) and, if chosen, from Radarr and Sonarr. After a real run tk.box marks the requests of each whole title it deleted as removed. It runs as its own Python process, one job at a time (`services/cleanup-engine.ts`).
 - **Settings live in tk.box's database** (`cleanup_config`). There is no `.env`: before each run tk.box writes the script's JSON config to `DATA_DIR/cleanup/config.json` (`cleanupConfig`). Libraries are Plex library IDs.
-- **Connections:** Radarr and Sonarr are the arr module's, and Tautulli is Clean Up's own. All are set in Admin › Connections. Keys are sealed and passed to the script in its environment for that run only (`PLEX_TOKEN`, `TAUTULLI_API_KEY`, `RADARR_API_KEY`, `SONARR_API_KEY`), and are redacted from the job output. The Plex token is that of the administrator who started the job; the scheduled run uses the Plex admin token.
+- **Watch history:** each run's config carries `watches`: for every movie, show and season (by Plex rating key), the latest watch by anyone and by each requester and selected user (Plex account ids). tk.box builds it from its own history (its player and Plex's apps) and the dates saved from Tautulli before it was removed (`cleanup_watch_snapshot`), the later of each. It is kept per Plex server (`PLEX_MACHINE_ID`); the script refuses a config without it or for another server. A request with no available date uses Plex's added date.
+- **Connections:** Radarr and Sonarr are the arr module's, set in Admin › Connections. Keys are passed to the script in its environment for that run only (`PLEX_TOKEN`, `RADARR_API_KEY`, `SONARR_API_KEY`), and are redacted from the job output. The Plex token is that of the administrator who started the job; the scheduled run uses the Plex admin token.
 - **Preview only** is on until an administrator turns it off. **Preview** always runs with `--dry-run`.
-- **Native history comparison:** Preview logs the date the same policy would produce from tk.box's observed Plex watches. It uses a matching saved deletion date as a floor when available. While tk.box is offline, Plex watches are unobserved and coverage is unknown. Tautulli still provides the history used for deletion decisions.
 - **Schedule:** on its schedule in server local time, at most hourly (every N hours, set times on chosen weekdays, or a cron expression), a missed time run up to two hours late. Like Artwork's schedules, it reads Plex with the Plex admin token (Admin › Connections) and waits while there is no working one.
 - **Leaving Soon:** the collection's poster is `apps/cleanup/leaving-soon.png`.
 - **Status:** each run is given `--status DATA_DIR/cleanup/status.json`; when it finishes, the script writes every movie, show and season it looked at there (status, library, deletion date and the rule behind it). The Status tab shows that file as posters grouped by status (soonest gone first), so it is as current as the last preview or clean up. Each entry carries its Plex `rating_key` for the poster and a hold key (`movie:<tmdb>`, `tv:<tmdb>` or `tv:<tmdb>:<season>`).
@@ -29,5 +29,5 @@ Plex's **Allow media deletion** setting must be on.
 ## Running it by hand
 
 ```sh
-PLEX_TOKEN=… TAUTULLI_API_KEY=… python apps/cleanup/purge_requests.py data/cleanup/config.json --dry-run
+PLEX_TOKEN=… python apps/cleanup/purge_requests.py data/cleanup/config.json --dry-run
 ```

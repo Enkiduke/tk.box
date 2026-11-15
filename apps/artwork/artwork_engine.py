@@ -4329,7 +4329,7 @@ def main():
                         help="With --item/--title: only download the N best (or all) extra logos allowed by the layout as logo2, logo3... in the title's folder")
     parser.add_argument("--season", type=int, help="With --with-episodes: only this season's episodes (no show/season posters)")
     parser.add_argument("--episode", type=int, help="With --with-episodes: only this episode number (no show/season posters)")
-    parser.add_argument("--added", action="store_true", help="For a newly added title (Tautulli/Plex hook): with --item/--title, build and send only what Plex doesn't have yet. --item takes a movie's, show's, season's or episode's own key. A show Plex has no poster for gets everything; a known show gets just --season/--season --episode. Waits if another run is active")
+    parser.add_argument("--added", action="store_true", help="For a newly added title (tk.box runs it when Plex adds one): with --item/--title, build and send only what Plex doesn't have yet. --item takes a movie's, show's, season's or episode's own key. A show Plex has no poster for gets everything; a known show gets just --season/--season --episode. Waits if another run is active")
     parser.add_argument("--limit", type=int, help="Process only the first N items")
     parser.add_argument("--check", action="store_true", help="Only validate the config and its layouts, then exit (tk.box runs this before saving)")
     parser.add_argument("--worker", action="store_true", help="Answer tk.box's Admin › Artwork requests on stdin until it closes (see serve_worker)")

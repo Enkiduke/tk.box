@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-// Plex Media Server's notification feed: a websocket Plex pushes library changes down as they happen. It's how Tautulli
-// spots newly added titles, and tk.box opens it itself, so Plex needs no way to reach tk.box. After a drop it reconnects,
+// Plex Media Server's notification feed: a websocket Plex pushes library changes down as they happen. tk.box
+// opens it itself to spot newly added titles, so Plex needs no way to reach tk.box. After a drop it reconnects,
 // quickly at first and then every few minutes. While there is no Plex admin token it asks again each minute.
 // Each connection reports 'any' once open, for what a drop may have missed.
 const RETRY_MS = 5000, MAX_RETRY_MS = 5 * 60000, WAIT_MS = 60000, CONNECT_MS = 15000;

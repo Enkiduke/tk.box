@@ -9,15 +9,14 @@ import {openConsole,type Job} from './admin-console.js';
 import {CleanupStatus} from './cleanup-status.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
-// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Tautulli, Radarr
-// and Sonarr are connected in Admin › Connections.
+// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Radarr and
+// Sonarr are connected in Admin › Connections.
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
 type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromRadarr:boolean;deleteFromSonarr:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
-type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'tautulli'|'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean;
-  watchSnapshot:{at:number;checked:number;watches:number}|null};
+type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'radarr'|'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
 const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
@@ -51,14 +50,10 @@ function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
 function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
   const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
   const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
-  // Goes with Tautulli: keeps its watch dates in tk.box.
-  const saveWatches=()=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/watch-snapshot','POST',{})));
-  const saved=data.watchSnapshot;
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
   const also=([['Radarr',data.settings.deleteFromRadarr],['Sonarr',data.settings.deleteFromSonarr]] as const).filter(([,on])=>on).map(([name])=>name);
   return <>
     <SectionHead title="Clean Up">
-      <button disabled={off} title={saved?`Saved ${new Date(saved.at).toLocaleString()}: ${saved.watches} titles and seasons with watches. Saving again keeps the later dates.`:'Copies Tautulli’s watch dates into tk.box. Changes nothing in Plex.'} onClick={saveWatches}>{saved?'Watch history saved':'Save watch history'}</button>
       <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
       <button disabled={off||!real} title={real?'Deletes everything that is due.':'Preview only is on in Settings, so runs only report.'} onClick={()=>setConfirm(true)}><Icon name="trash" size={16}/>Clean up now</button>
     </SectionHead>
@@ -129,11 +124,11 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       </div>
       <div className="cleanup-rule-group">
         <div className="cleanup-group-head"><h4>Longer retention for selected users <span className="badge">Optional</span></h4><p>Replaces the standard rules for their requests. These titles can still be deleted when their time is up.</p></div>
-        <label className="cleanup-user-ids">Plex user IDs<input value={ids} placeholder="e.g. 1234567, 7654321" onChange={e=>{setIds(e.target.value);setDone(false);}} aria-describedby="cleanup-users-hint"/><small id="cleanup-users-hint">Find IDs in Tautulli › Users. Separate them with commas. Leave blank to use standard retention for everyone.</small></label>
+        <label className="cleanup-user-ids">Plex user IDs<input value={ids} placeholder="e.g. 1234567, 7654321" onChange={e=>{setIds(e.target.value);setDone(false);}} aria-describedby="cleanup-users-hint"/><small id="cleanup-users-hint">Plex account IDs. Separate them with commas. Leave blank to use standard retention for everyone.</small></label>
         {rule('daysAfterExemptWatch','Selected-user retention','Any selected user has watched','Count from the most recent watch by any user listed above. Watches by other users do not restart this timer.')}
         {rule('daysAfterAnyWatchExempt','Selected-user retention','No selected user has watched','Count from the most recent watch by anyone, or from when the title was added if nobody has watched.')}
       </div>
-      <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play recorded in Tautulli counts, including a partial play. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
+      <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play tk.box saw counts, in its own player or Plex’s apps, as does the saved watch history. A partial play counts. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
     </Card>
     <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
       <label>Protected Radarr and Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);setDone(false);}}/><small>Any matching tag prevents deletion. Separate tags with commas. Leave blank for no tag protection.</small></label>

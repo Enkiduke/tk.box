@@ -170,7 +170,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
   const {requests} = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site});
   const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches});
-  // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and Tautulli's saved dates.
+  // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
   const watches = (account: string) => {
     const server = config.PLEX_MACHINE_ID;
     return server ? [...accountWatches(server, account),
