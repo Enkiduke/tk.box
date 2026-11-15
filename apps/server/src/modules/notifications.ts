@@ -40,6 +40,11 @@ export const notificationsModule = defineModule({
       if (count) changed(account);
       return { read: count };
     });
+    routes.delete('/api/v1/notifications', { config: { access: 'viewer' } }, async request => {
+      const { account, admin } = who(request), count = store.dismissAll(account, admin);
+      if (count) changed(account);
+      return { dismissed: count };
+    });
     routes.delete('/api/v1/notifications/:id', { config: { access: 'viewer' } }, async request => {
       const { account, admin } = who(request);
       requireThat(store.dismiss(account, admin, id.parse(request.params).id), 'NOT_FOUND', 'That notification is gone.', 404);

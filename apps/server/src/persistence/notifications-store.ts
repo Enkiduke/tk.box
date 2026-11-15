@@ -91,6 +91,10 @@ export class NotificationStore {
   dismiss(account: string, admin: boolean, id: number): boolean {
     return this.upsert(account, admin, [id], true, 'dismissed=1, read_at=COALESCE(notification_reads.read_at, excluded.read_at)', '') > 0;
   }
+  // Clear all: hides every row this account sees. An open condition comes back if what it says changes. Returns how many.
+  dismissAll(account: string, admin: boolean): number {
+    return this.upsert(account, admin, 'all', true, 'dismissed=1, read_at=COALESCE(notification_reads.read_at, excluded.read_at)', '');
+  }
   private upsert(account: string, admin: boolean, ids: number[] | 'all', dismissed: boolean, set: string, only: string) {
     const now = this.now(), args = { account, admin: admin ? 1 : 0, now, dismissed: dismissed ? 1 : 0 };
     return this.db.transaction(() => {

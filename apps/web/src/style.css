@@ -146,6 +146,7 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .bell-dot.success{background:var(--ok)}.bell-dot.warning{background:var(--warn)}.bell-dot.error{background:var(--danger)}
 .bell-pop{width:400px}
 .bell-pop header{align-items:center}
+.bell-actions{display:flex;align-items:center;gap:14px}
 .bell-pop header .text-button{font-size:12px}
 .bell-list{margin:0;padding:4px 0;list-style:none}
 .bell-pop .bell-item{--tone:var(--info);position:relative;display:block;padding:0}

@@ -39,7 +39,10 @@ export function NotificationBell({admin}:{admin:boolean}) {
       onToggle={e=>setOpen((e.nativeEvent as ToggleEvent).newState==='open')}>
       <header>
         <strong>Notifications</strong>
-        {unread>0&&<button type="button" className="text-button" onClick={()=>void notifications.markRead('all')}>Mark all read</button>}
+        {shown.length>0&&<div className="bell-actions">
+          {unread>0&&<button type="button" className="text-button" onClick={()=>void notifications.markRead('all')}>Mark all read</button>}
+          <button type="button" className="text-button" onClick={()=>void notifications.dismissAll()}>Clear all</button>
+        </div>}
       </header>
       {!shown.length?<p className="streams-pop-note">Nothing here yet.</p>:<ul className="bell-list">{shown.map(item=>
         <li key={item.id} className={`bell-item ${item.tone}${item.read?'':' unread'}${item.open?' open':''}`}>

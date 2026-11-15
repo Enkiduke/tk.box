@@ -66,6 +66,12 @@ export class NotificationFeed {
     try {await this.fetcher('/notifications/read','POST',ids==='all'?{all:true}:{ids});}
     catch(e) {toast.error((e as Error).message);void this.reload();}
   }
+  async dismissAll() {
+    if(!this.state.items.length)return;
+    this.set({items:[],unread:0});
+    try {await this.fetcher('/notifications','DELETE');}
+    catch(e) {toast.error((e as Error).message);void this.reload();}
+  }
   async dismiss(item:NotificationItem) {
     this.set({items:this.state.items.filter(i=>i.id!==item.id),unread:Math.max(0,this.state.unread-(item.read?0:1))});
     try {await this.fetcher(`/notifications/${item.id}`,'DELETE');}
