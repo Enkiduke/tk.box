@@ -96,7 +96,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const tmdbId=requests.tmdbForKey?.(kind,ratingKey);
     return tmdbId?[{kind,tmdbId,at,...(plays?{plays}:{}),...(title?{title}:{}),...(year?{year}:{})}]:[];
   });
-  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb),people=new TmdbPeople(tmdbClient,titleDiscovery);
+  const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb),people=new TmdbPeople(tmdbClient);
   const viewer=async(request:FastifyRequest)=>{const {hash,grant}=caller(request);return {grant,account:grant.accountId,token:accountToken(hash)};};
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     await viewer(request);
@@ -211,12 +211,6 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const person=id?await people.details(id,labelItems):undefined;
     requireThat(person,'PERSON_MISSING','TMDB has no page for this person.',404);
     return person;
-  });
-  app.get('/api/v1/explore/people/co-stars',{config:{access:'viewer',rateLimit:{max:120,timeWindow:60000}}},async request=>{
-    const {id}=z.object({id:z.coerce.number().int().positive()}).strict().parse(request.query);
-    await viewer(request);
-    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
-    return people.coStars(id);
   });
   // Resolve IMDb person IDs through TMDB, with an IMDb name-search fallback.
   app.get('/api/v1/explore/person',{config:{access:'viewer',rateLimit:{max:60,timeWindow:60000}}},async(request,reply)=>{

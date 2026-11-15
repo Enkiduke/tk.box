@@ -173,8 +173,6 @@ export type PersonDetails = {
   birthday?: string; deathday?: string; birthplace?: string; imdb?: string; movies: number; shows: number;
   knownFor: PersonCredit[]; upcoming: PersonCredit[]; library: PersonCredit[]; credits: PersonCredit[];
 };
-export type PersonCoStar = { id: number; name: string; portraitUrl?: string; shared: number };
-export type PersonCoStars = { people: PersonCoStar[] };
 export type RelatedRowKind = 'similar' | 'maker' | 'actor';
 export type TitleRelated = {
   rows: {kind: RelatedRowKind; person?: TitleCredit; items: ExploreItem[]}[];

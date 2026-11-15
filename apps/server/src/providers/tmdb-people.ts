@@ -1,11 +1,10 @@
-import type {ExploreItem,PersonCoStars,PersonCredit,PersonDetails} from '../../../../packages/contracts/src/index.js';
+import type {ExploreItem,PersonCredit,PersonDetails} from '../../../../packages/contracts/src/index.js';
 import {tmdbImage} from './explore-images.js';
 import {tmdbCandidate} from './tmdb-explore.js';
 import type {TmdbTitles} from './tmdb-titles.js';
-import type {TmdbTitleDiscovery} from './tmdb-title-discovery.js';
 
 // A person's page from TMDB: one cached read of /person/{id} with combined credits and external IDs, shaped into
-// Known for, Coming soon, In your Library and the full filmography. Co-stars are a second, lazier read.
+// Known for, Coming soon, In your Library and the full filmography.
 type RawCredit=NonNullable<Parameters<typeof tmdbCandidate>[0]>&{media_type?:unknown;character?:unknown;job?:unknown};
 export type RawPerson={
   id?:unknown;name?:unknown;profile_path?:unknown;known_for_department?:unknown;biography?:unknown;
@@ -66,37 +65,12 @@ export function personDetails(raw:RawPerson,today:string,label:Label=items=>item
   };
 }
 
-// Co-stars: people in at least two of the casts of the person's best-known titles, most shared first.
-export function coStars(id:number,casts:{personId?:number;name:string;portraitUrl?:string;role:string}[][],limit=8):PersonCoStars {
-  const seen=new Map<number,{id:number;name:string;portraitUrl?:string;shared:number;first:number}>();
-  casts.forEach((cast,index)=>{
-    const once=new Set<number>();
-    for(const person of cast){
-      if(person.role!=='actor'||!person.personId||person.personId===id||once.has(person.personId))continue;
-      once.add(person.personId);
-      const found=seen.get(person.personId);
-      if(found)found.shared++;
-      else seen.set(person.personId,{id:person.personId,name:person.name,...(person.portraitUrl?{portraitUrl:person.portraitUrl}:{}),shared:1,first:index});
-    }
-  });
-  return {people:[...seen.values()].filter(p=>p.shared>=2).sort((a,b)=>b.shared-a.shared||a.first-b.first).slice(0,limit)
-    .map(({first:_,...person})=>person)};
-}
-
 export class TmdbPeople {
-  constructor(private client:TmdbTitles,private titles:TmdbTitleDiscovery,private now=Date.now) {}
+  constructor(private client:TmdbTitles,private now=Date.now) {}
   raw(id:number) {return this.client.get(`/person/${id}`,{append_to_response:'combined_credits,external_ids'}) as Promise<RawPerson|undefined>;}
   private today() {return new Date(this.now()).toISOString().slice(0,10);}
   async details(id:number,label:Label):Promise<PersonDetails|undefined> {
     const raw=await this.raw(id);
     return raw?personDetails(raw,this.today(),label):undefined;
-  }
-  async coStars(id:number):Promise<PersonCoStars> {
-    const raw=await this.raw(id);
-    const person=raw&&personDetails(raw,this.today());
-    if(!person)return {people:[]};
-    const top=person.knownFor.filter(c=>c.roles.includes('actor')).slice(0,8);
-    const casts=await Promise.all(top.map(c=>this.titles.credits(c.item.kind==='show'?'tv':'movie',{tmdb:c.item.ids.tmdb}).then(r=>r.credits,()=>[])));
-    return coStars(id,casts);
   }
 }

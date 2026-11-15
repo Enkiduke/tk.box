@@ -1,17 +1,17 @@
 import {useContext,useId,useMemo,useState} from 'react';
 import {createPortal} from 'react-dom';
-import type {PersonCoStars,PersonCredit,PersonDetails} from '../../../packages/contracts/src/index.js';
+import type {PersonCredit,PersonDetails} from '../../../packages/contracts/src/index.js';
 import {Artwork,ErrorNotice,FadeImage,Icon,Loading,MediaModalEdge,Modal,Row} from './components.js';
 import {useApi} from './hooks.js';
 import {statusNames} from './request-dialog.js';
-import {DialogNavBar,useDialogNav,type PersonRef} from './dialog-history.js';
+import {DialogNavBar,type PersonRef} from './dialog-history.js';
 import {initials,useOpenTitle,type OpenRelatedTitle} from './title-discovery.js';
 import './title-discovery.css';
 import './explore.css';
 import './person.css';
 
 // A person's view, opened from a title's cast: who they are, what they're known for, what's coming, what this server
-// has, every credit by decade, and who they often work with. Titles open in the same dialog history.
+// has, and every credit by decade. Titles open in the same dialog history.
 const personPath=(p:PersonRef)=>p.id?`/explore/people?id=${p.id}`
   :`/explore/people?${new URLSearchParams({name:p.name,...(p.kind&&p.tmdb?{kind:p.kind,tmdb:String(p.tmdb)}:{})})}`;
 const plural=(n:number,word:string)=>`${n.toLocaleString()} ${word}${n===1?'':'s'}`;
@@ -89,19 +89,6 @@ function FilmographyList({credits,opening,onOpen}:{credits:PersonCredit[];openin
   </section>;
 }
 
-function CoStars({id}:{id:number}) {
-  const nav=useDialogNav();
-  const {data}=useApi<PersonCoStars>(`/explore/people/co-stars?id=${id}`);
-  if(!data?.people.length)return null;
-  return <Row title="Often works with" className="title-cast-row person-costars">
-    {data.people.map(p=><button key={p.id} type="button" className="title-credit" onClick={()=>nav?.openPerson({id:p.id,name:p.name,portraitUrl:p.portraitUrl})}>
-      <span className="title-credit-portrait" aria-hidden="true"><Artwork src={p.portraitUrl} fallback={<strong>{initials(p.name)}</strong>}/></span>
-      <strong className="title-credit-name" title={p.name}>{p.name}</strong>
-      <span className="title-credit-role">{plural(p.shared,'title')}</span>
-    </button>)}
-  </Row>;
-}
-
 function TitleRow({title,credits,ranked,opening,onOpen}:{title:string;credits:PersonCredit[];ranked?:boolean;opening?:string;onOpen:(c:PersonCredit)=>void}) {
   if(!credits.length)return null;
   return <Row title={title} className="person-row">
@@ -137,7 +124,6 @@ export function PersonDialog({person,onClose,onOpenRelated}:{person:PersonRef;on
         <TitleRow title="Known for" credits={info.knownFor} ranked opening={opening} onOpen={openCredit}/>
         <TitleRow title="Coming soon" credits={info.upcoming} opening={opening} onOpen={openCredit}/>
         <TitleRow title="In your library" credits={info.library} opening={opening} onOpen={openCredit}/>
-        <CoStars id={info.id}/>
         {info.credits.length>0&&<Filmography credits={info.credits} opening={opening} onOpen={openCredit}/>}
       </>}
     </div>
