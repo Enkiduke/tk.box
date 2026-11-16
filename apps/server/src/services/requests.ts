@@ -40,9 +40,11 @@ export class Requests {
     private sonarr: () => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
     availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
-  // Movies are tk.box's own library's; shows need Sonarr connected.
+  // Whether tk.box's library takes shows (`fulfil.show`); the module sets it.
+  showsHere: () => boolean = () => false;
+  // Movies are tk.box's own library's; shows are too once switched, else they need Sonarr connected.
   connected(kind: RequestKind) {
-    if (kind === 'movie') return true;
+    if (kind === 'movie' || this.showsHere()) return true;
     const c = this.sonarr(); return !!(c.url && c.key);
   }
   private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus, made = false) {

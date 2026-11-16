@@ -21,8 +21,9 @@ type Deps = {
   // TMDB names the title and gives a show's seasons and TVDB id.
   titles: Pick<TmdbTitles, 'get'>;
   arrTransport?: typeof fetch;
-  // tk.box's own library (docs/ARR-REPLACEMENT.md): movies go to it; shows to Sonarr until phase 2.
-  library: { fulfiller: Fulfiller };
+  // tk.box's own library (docs/ARR-REPLACEMENT.md): movies go to it; shows too once `fulfil.show` is tkbox
+  // (`showsHere`), else to Sonarr.
+  library: { fulfiller: Fulfiller; showsHere(): boolean };
   // The Requests site's listener (app.ts), started from its saved settings and moved when they change.
   site?: RequestsSite;
 };
@@ -39,13 +40,14 @@ export const requestsModule = defineModule({
   migrations: requestsMigrations,
   setup(routes, { config, db, plex, bus, background, jobs, log }, { arr, titles, arrTransport, site, library }: Deps) {
     const store = new RequestStore(db), arrFulfiller = new ArrFulfiller(() => arr.connection('sonarr'), arrTransport);
-    const fulfiller = fulfillerByKind(kind => kind === 'movie' ? library.fulfiller : arrFulfiller);
+    const fulfiller = fulfillerByKind(kind => kind === 'movie' || library.showsHere() ? library.fulfiller : arrFulfiller);
     const availability = new RequestAvailability(async () => {
       const grant = await background.grant();
       if (!grant) throw new Error('No Plex admin token in Admin › Connections');
       return plex.availability(grant);
     }, (message, detail) => log.warn(message, detail));
     const requests = new Requests(store, fulfiller, availability, titles, () => arr.connection('sonarr'), (message, detail) => log.info(message, detail));
+    requests.showsHere = () => library.showsHere();
     // Each change also tells the bell: the requester how it went, the admins of new and failed requests.
     requests.changed = change => {
       bus.emit('requests.changed', change);
@@ -64,7 +66,7 @@ export const requestsModule = defineModule({
       grabSweep.unref();
     });
     bus.on('library.file.imported', () => availability.soon(10000));
-    bus.on('library.title.removed', ({ kind, tmdbId, by }) => { if (by === 'cleanup' && kind === 'movie') requests.removedByCleanup([{ kind, tmdb: tmdbId }]); });
+    bus.on('library.title.removed', ({ kind, tmdbId, by }) => { if (by === 'cleanup') requests.removedByCleanup([{ kind, tmdb: tmdbId }]); });
     bus.on('library.edited', ({ by }) => { if (by === 'cleanup') availability.soon(5000); });
     registerRequests(routes, store, requests, fulfiller);
     // Admin › Requests › Requests site. A change applies at once; a port that's taken is refused and nothing is saved.

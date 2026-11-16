@@ -205,8 +205,8 @@ export type CalendarEntry = {
 };
 export type CalendarPage = {
   dates: CalendarEntry[];
-  // Library: tk.box's own movies; Sonarr: the shows.
-  sources: Record<'Library' | 'Sonarr', 'ready' | 'disconnected' | 'unavailable'>;
+  // Library: tk.box's own movies (and shows, once they're tk.box's: then there's no Sonarr); Sonarr: the shows.
+  sources: Partial<Record<'Library' | 'Sonarr', 'ready' | 'disconnected' | 'unavailable'>>;
   plexUnavailable: boolean;
 };
 // Search across every catalog source; `failed` names sources that could not be searched.

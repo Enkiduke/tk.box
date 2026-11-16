@@ -178,8 +178,11 @@ class Settings:
     tv_libraries: tuple[str, ...]
     dry_run: bool = True
     # Movies are tk.box's own: a movie is kept by tk.box's Keep (a request's `keep`) and deleted from Plex only, and
-    # tk.box forgets it after the run. Only shows go through Sonarr.
+    # tk.box forgets it after the run. Only shows go through Sonarr, until they're tk.box's too (`tkbox_shows`): then a
+    # show is handled as a movie is, kept by its requests' `keep` and deleted (whole or by season) from Plex only, and
+    # Sonarr is never asked.
     delete_from_sonarr: bool = False
+    tkbox_shows: bool = False
     days_after_watched: int = 30
     days_after_unwatched: int = 60
     days_after_any_watch_exempt: int = 90
@@ -235,6 +238,7 @@ class Settings:
             movie_libraries=text_list(config, "movie_libraries"), tv_libraries=text_list(config, "tv_libraries"),
             dry_run=dry_run or boolean(config, "dry_run", default=True),
             delete_from_sonarr=boolean(config, "delete_from_sonarr"),
+            tkbox_shows=boolean(config, "tkbox_shows"),
             days_after_watched=integer(config, "days_after_watched", default=30),
             days_after_unwatched=integer(config, "days_after_unwatched", default=60),
             days_after_any_watch_exempt=integer(config, "days_after_any_watch_exempt", default=90),
@@ -261,6 +265,8 @@ class Settings:
 
     def validate(self):
         self.plex.validate("Plex", required=True)
+        if self.tkbox_shows and (self.delete_from_sonarr or self.exempt_arr_tags):
+            raise ConfigError("Shows are tk.box's: Delete from Sonarr and Sonarr tags don't apply")
         self.sonarr.validate("Sonarr", required=self.delete_from_sonarr)
         if not self.movie_libraries and not self.tv_libraries:
             raise ConfigError("Choose at least one movie or TV library")

@@ -122,10 +122,11 @@ def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
     kind = "movie" if media_type == "movie" else "show"
     logger.info("Processing '%s' for request IDs %s", item.title, [request.request_id for request in requests_group])
 
-    # Movies are tk.box's own (kept by its Keep, deleted from Plex only); shows are Sonarr's.
+    # Movies are tk.box's own (kept by its Keep, deleted from Plex only); shows are Sonarr's, or tk.box's too
+    # (tkbox_shows), then handled as movies are.
     library, tags = arr_data.get(media_type, ({}, {}))
     arr_item = library.get(tvdb_id) if library is not None and media_type == "tv" else None
-    if media_type == "movie" and any(request.media.get("keep") for request in requests_group):
+    if (media_type == "movie" or settings.tkbox_shows) and any(request.media.get("keep") for request in requests_group):
         logger.info("Keeping '%s': kept in tk.box", item.title)
         report.protected += 1
         report.settled.add(str(item.ratingKey))
@@ -198,7 +199,7 @@ def run(settings, plex, sonarr, history, now=None):
     groups = group_requests(requests_data)
     logger.info("Processing %s requests across %s media items", len(requests_data), len(groups))
     arr_data = {
-        "tv": load_arr_data(sonarr, any(key[0] == "tv" for key in groups) and bool(settings.tv_libraries) and
+        "tv": load_arr_data(sonarr, not settings.tkbox_shows and any(key[0] == "tv" for key in groups) and bool(settings.tv_libraries) and
                             (settings.delete_from_sonarr or bool(settings.exempt_arr_tags) or settings.enable_season_retention),
                             bool(settings.exempt_arr_tags)),
     }

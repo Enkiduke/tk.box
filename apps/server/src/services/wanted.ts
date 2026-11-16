@@ -86,13 +86,15 @@ export type EpisodeFact = Omit<EpisodeRow, 'monitored'>;
 // The monitored flags after a TMDB refresh. Seasons and episodes already stored keep theirs (an admin may have
 // switched them); the first time, every season follows the mode. Later, a new season is followed only under All (or
 // Future, when it airs after `monitorFrom`): First, Last and Manual stay on the seasons they were given. A new episode
-// follows its season, and under Future only when it airs after `monitorFrom` (or has no date yet).
+// follows its season, and under Future only when it airs after `monitorFrom` (or has no date yet). Seasons `chosen` (a
+// request's) decide the first time under any mode, in full: their episodes are all followed, aired or not.
 export function followEpisodes(follow: ShowFollow, tmdb: { seasons: readonly number[]; episodes: readonly EpisodeFact[] },
   stored: { seasons: readonly SeasonRow[]; episodes: readonly Pick<EpisodeRow, 'season' | 'episode' | 'monitored'>[] }) {
   const numbers = [...new Set([...tmdb.seasons, ...tmdb.episodes.map(e => e.season)])].filter(n => n > 0).sort((a, b) => a - b);
   const first = stored.seasons.length === 0;
   const after = (e: Pick<EpisodeFact, 'airAt'>) => e.airAt === undefined || follow.monitorFrom === undefined || e.airAt > follow.monitorFrom;
   const newSeason = (season: number) => {
+    if (first && follow.chosen) return follow.chosen.includes(season);
     switch (follow.monitor) {
       case 'all': return true;
       case 'future': return tmdb.episodes.every(e => e.season !== season) || tmdb.episodes.some(e => e.season === season && after(e));
@@ -107,7 +109,8 @@ export function followEpisodes(follow: ShowFollow, tmdb: { seasons: readonly num
   const seasonOn = new Map(seasons.map(s => [s.season, s.monitored]));
   const oldEpisodes = new Map(stored.episodes.map(e => [`${e.season}:${e.episode}`, e.monitored]));
   const episodes: EpisodeRow[] = tmdb.episodes.filter(e => e.season > 0).map(e => ({ ...e,
-    monitored: oldEpisodes.get(`${e.season}:${e.episode}`) ?? (!!seasonOn.get(e.season) && (follow.monitor !== 'future' || after(e))) }));
+    monitored: oldEpisodes.get(`${e.season}:${e.episode}`) ?? (!!seasonOn.get(e.season)
+      && (follow.monitor !== 'future' || after(e) || (first && !!follow.chosen?.includes(e.season)))) }));
   return { seasons, episodes };
 }
 

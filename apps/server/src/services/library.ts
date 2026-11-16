@@ -48,6 +48,8 @@ export const defaultUnpacker: Unpacker = {
 // What Plex holds, by TMDB id (the owner's grant). `ready` reads it when it hasn't been yet; false when it can't.
 export type PlexHolds = { has(tmdbId: number): boolean; ready(): Promise<boolean> };
 export type AddMovie = { tmdbId: number; by: string; profileId?: number; keep?: boolean; search: boolean };
+// A show as a request asks for it: its seasons, and whether new ones are followed too ("watch new seasons").
+export type AddShow = AddMovie & { seasons: readonly number[]; monitorFuture: boolean };
 type Emit = <K extends keyof BusEvents>(event: K, payload: BusEvents[K]) => void;
 type TmdbMovie = { title?: string; original_title?: string; release_date?: string; runtime?: number | null; imdb_id?: string | null;
   external_ids?: { imdb_id?: string | null };
@@ -220,6 +222,72 @@ export class Library {
     return title;
   }
 
+  // Adds a show (or follows more of it), with its seasons and episodes from TMDB. The request's seasons are followed in
+  // full; with "watch new seasons" new ones are too: All when every season is asked for, else Future from now.
+  // Without it, Manual. Asked again, its seasons are switched on, and a show not taking new seasons does from now
+  // when asked. With `search`, the asked seasons' searches are queued at once.
+  async addShow(input: AddShow) {
+    const settings = this.store.settings(), { facts, ...tmdb } = await this.tmdbShow(input.tmdbId);
+    if (!facts.tvdbId) throw new AppError('NO_TVDB_ID', `TMDB has no TVDB id for ${facts.title}, which its file names need.`, 422);
+    const profileId = input.profileId && this.store.profile(input.profileId) ? input.profileId : settings.defaultProfile;
+    const chosen = [...new Set(input.seasons.filter(n => n > 0))], now = this.now();
+    let title = this.store.titleByTmdb('show', input.tmdbId);
+    if (!title) {
+      const every = tmdb.seasons.length > 0 && tmdb.seasons.every(n => chosen.includes(n));
+      const monitor = input.monitorFuture ? every ? 'all' as const : 'future' as const : 'manual' as const;
+      const monitorFrom = monitor === 'future' ? now : undefined;
+      const added = this.store.insertTitle({ kind: 'show', tmdbId: input.tmdbId, tvdbId: facts.tvdbId, ...(facts.imdbId ? { imdbId: facts.imdbId } : {}), title: facts.title,
+        ...(facts.year ? { year: facts.year } : {}), aliases: facts.aliases, monitor, ...(monitorFrom !== undefined ? { monitorFrom } : {}), profileId,
+        root: settings.roots.show, keep: !!input.keep, released: facts.released, addedBy: input.by, ...(facts.runtime ? { runtime: facts.runtime } : {}) });
+      const next = followEpisodes({ monitor, ...(monitorFrom !== undefined ? { monitorFrom } : {}), chosen }, tmdb, { seasons: [], episodes: [] });
+      this.inTransaction(() => this.store.saveEpisodes(added.id, next.seasons, next.episodes));
+      this.deps.log('library: show added', { id: added.id, tmdb: input.tmdbId, by: input.by, monitor, seasons: chosen });
+      title = added;
+    } else {
+      if (input.monitorFuture && title.monitor !== 'all' && title.monitor !== 'future') this.store.setFollow(title.id, 'future', now);
+      else if (title.monitor === 'none') this.store.setMonitor(title.id, 'manual');
+      if (title.addedBy === 'collections' && input.by !== 'collections') this.store.setAddedBy(title.id, input.by);
+      if (input.keep) this.store.setKeep(title.id, true);
+      if (input.profileId && profileId !== title.profileId) this.store.setProfile(title.id, profileId);
+      await this.refreshShow(title.id);
+      this.store.followSeasons(title.id, chosen, true);
+    }
+    title = this.store.title(title.id)!;
+    if (input.search) for (const scope of this.scopesOf(title).filter(s => chosen.includes(s.season))) this.queueSearch(title.id, undefined, undefined, scope.scope);
+    return title;
+  }
+  // Stops following these seasons of a show (their requests were cancelled), and their queued searches.
+  unmonitorSeasons(titleId: number, seasons: readonly number[]) {
+    const title = this.store.title(titleId);
+    if (title?.kind !== 'show' || !seasons.length) return;
+    this.store.followSeasons(titleId, seasons, false);
+    this.cancelSearches(titleId, seasons);
+  }
+  private cancelSearches(titleId: number, seasons: readonly number[]) {
+    for (const season of seasons) {
+      this.deps.queue.cancel('search', `show:${titleId}:${scopeName(season)}`);
+      for (const e of this.store.episodes(titleId).filter(e => e.season === season)) this.deps.queue.cancel('search', `show:${titleId}:${scopeName(season, e.episode)}`);
+    }
+  }
+  // Clean Up deleted a season through Plex: its file records go, it's switched off (so it isn't wanted again), and its
+  // searches and downloads under way are cancelled.
+  async forgetSeason(titleId: number, season: number) {
+    const title = this.store.title(titleId);
+    if (title?.kind !== 'show') return;
+    for (const grab of this.store.activeGrabs().filter(g => g.titleId === titleId && g.episodes.some(([s]) => s === season))) await this.cancelGrab(grab, 'Clean Up deleted its season.');
+    const paths = this.store.forgetSeason(titleId, season);
+    this.cancelSearches(titleId, [season]);
+    this.deps.log('library: forgot a season Clean Up deleted', { title: titleId, season, files: paths.length });
+  }
+  private async cancelGrab(grab: Grab, reason: string) {
+    this.store.updateGrab(grab.id, { state: 'cancelled', error: reason, finishedAt: this.now() });
+    this.deps.queue.cancel('send', `grab:${grab.id}`);
+    this.deps.queue.cancel('import', `grab:${grab.id}`);
+    if (grab.downloadId && !readOnly()) await this.deps.downloaders.remove({ downloader: grab.downloader, downloadId: grab.downloadId })
+      .catch(e => this.deps.log('library: could not remove the cancelled download', { grab: grab.id, error: errorText(e) }));
+    this.grabChanged(grab);
+  }
+
   // Stops watching it (a request was cancelled).
   unmonitor(titleId: number) { this.store.setMonitor(titleId, 'none'); this.deps.queue.cancel('search', `movie:${titleId}`); }
   keep(titleId: number, keep: boolean) { this.store.setKeep(titleId, keep); }
@@ -227,7 +295,8 @@ export class Library {
   forget(titleId: number, by: 'cleanup' | 'admin' | 'collections') {
     const title = this.store.title(titleId);
     if (!title) return;
-    this.deps.queue.cancel('search', `movie:${titleId}`);
+    if (title.kind === 'show') this.cancelSearches(titleId, this.store.seasons(titleId).map(s => s.season));
+    else this.deps.queue.cancel('search', `movie:${titleId}`);
     this.store.deleteTitle(titleId);
     this.deps.emit('library.title.removed', { titleId, kind: title.kind, tmdbId: title.tmdbId, by });
   }
@@ -241,14 +310,7 @@ export class Library {
       return false;
     }
     const grab = this.store.openGrabFor(title.id);
-    if (grab) {
-      this.store.updateGrab(grab.id, { state: 'cancelled', error: 'Its collection let it go.', finishedAt: this.now() });
-      this.deps.queue.cancel('send', `grab:${grab.id}`);
-      this.deps.queue.cancel('import', `grab:${grab.id}`);
-      if (grab.downloadId) await this.deps.downloaders.remove({ downloader: grab.downloader, downloadId: grab.downloadId })
-        .catch(e => this.deps.log('library: could not remove the cancelled download', { grab: grab.id, error: errorText(e) }));
-      this.grabChanged(grab);
-    }
+    if (grab) await this.cancelGrab(grab, 'Its collection let it go.');
     const { folder, removed } = await this.deps.importer.deleteFiles(title);
     this.forget(title.id, 'collections');
     this.deps.log('library: removed a movie its collection let go', { title: title.id, tmdb: title.tmdbId, files: removed });

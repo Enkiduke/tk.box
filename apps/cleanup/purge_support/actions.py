@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 def delete_whole_item(item, media_type, arr_item, settings, arr, report):
     """Validate targets first. tk.box marks the title's requests removed after the run, from the status file."""
-    # Movies are tk.box's own: only shows are deleted from Sonarr too.
-    delete_from_arr = media_type == "tv" and settings.delete_from_sonarr
+    # Movies are tk.box's own: only shows are deleted from Sonarr too, and only while they're Sonarr's.
+    delete_from_arr = media_type == "tv" and settings.delete_from_sonarr and not settings.tkbox_shows
     if delete_from_arr:
         if arr_item is None:
             raise ApiError(f"Required {arr.name} item was not found")
@@ -55,9 +55,12 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
             eligible.append(season)
     if not eligible:
         return True
-    if not settings.delete_from_sonarr or series is None:
+    # tk.box's shows: a season goes from Plex only, and tk.box forgets it (and stops following it) after the run, from
+    # the status file. Until then its records stand, so tk.box doesn't take it as missing and fetch it again.
+    tkbox = settings.tkbox_shows
+    if not tkbox and (not settings.delete_from_sonarr or series is None):
         raise ApiError("Multi-season deletion needs Delete from Sonarr turned on and a matching Sonarr series")
-    episodes = sonarr.episodes(series["id"])
+    episodes = None if tkbox else sonarr.episodes(series["id"])
     requestor_ids = {request.requestor_id for request in requests if request.requestor_id is not None}
     rescan_needed = False
     for season in eligible:
@@ -70,18 +73,21 @@ def process_seasons(show, requests, series, settings, sonarr, history, now, repo
             held = held_until(rule, settings, hold)
             due_at = held or rule.deletion_date
             if now >= due_at:
-                season_targets(season.index, episodes)
+                if not tkbox:
+                    season_targets(season.index, episodes)
                 logger.warning("DELETE Candidate: '%s'. %s: %s", label, rule.name, rule.reason)
                 add_entry(report.delete_summary, season, f"{label} [{rule.name}]")
+                where = "Plex" if tkbox else "Sonarr and Plex"
                 if settings.dry_run:
-                    logger.warning("DRY RUN: Would delete season '%s' from Sonarr and Plex", label)
+                    logger.warning("DRY RUN: Would delete season '%s' from %s", label, where)
                     report.planned += 1
                 else:
-                    rescan_needed = True
-                    sonarr.delete_season(series, season.index, episodes)
+                    if not tkbox:
+                        rescan_needed = True
+                        sonarr.delete_season(series, season.index, episodes)
                     season.delete()
                     report.deleted += 1
-                    logger.warning("Deleted season '%s' from Sonarr and Plex", label)
+                    logger.warning("Deleted season '%s' from %s", label, where)
                 add_status(report, season, "season", "due" if settings.dry_run else "deleted", title=label, rule=rule,
                            library=library_name(show), key=hold)
             else:

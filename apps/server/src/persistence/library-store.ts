@@ -105,6 +105,8 @@ const grab = (r: GrabRaw): Grab => ({
 const OPEN = `state IN ('sending','downloading','unpacking','importing','seeding')`;
 // Under way: open but not yet imported. A seeding torrent's title is in the library, so it may be searched and upgraded.
 const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
+// A season's search scope, as searches.scope keeps it (services/wanted.ts, scopeName).
+const scopeOf = (season: number) => `S${String(season).padStart(2, '0')}`;
 
 export type NewTitle = { kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; monitorFrom?: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
   root: string; keep: boolean; released: Released; addedBy: string; runtime?: number };
@@ -206,6 +208,30 @@ export class LibraryStore {
       .run(facts.tvdbId ?? null, facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), facts.runtime ?? null, this.now(), id);
   }
   setMonitor(id: number, monitor: Monitor) { prepared(this.db, 'UPDATE library_titles SET monitor = ? WHERE id = ?').run(monitor, id); }
+  // A show's mode with Future's start (null keeps none).
+  setFollow(id: number, monitor: Monitor, monitorFrom: number | null) {
+    prepared(this.db, 'UPDATE library_titles SET monitor = ?, monitor_from = ? WHERE id = ?').run(monitor, monitorFrom, id);
+  }
+  // Switches these seasons of a show on or off, with all their episodes.
+  followSeasons(titleId: number, seasons: readonly number[], on: boolean) {
+    const list = JSON.stringify([...seasons]);
+    this.db.transaction(() => {
+      prepared(this.db, 'UPDATE library_seasons SET monitored = ? WHERE title_id = ? AND season IN (SELECT value FROM json_each(?))').run(on ? 1 : 0, titleId, list);
+      prepared(this.db, 'UPDATE library_episodes SET monitored = ? WHERE title_id = ? AND season IN (SELECT value FROM json_each(?))').run(on ? 1 : 0, titleId, list);
+    })();
+  }
+  // Clean Up deleted a season (its files already gone through Plex): its file records go, and it and its episodes are
+  // switched off with their search rows, so nothing searches for it again. Returns the paths it had.
+  forgetSeason(titleId: number, season: number) {
+    return this.db.transaction(() => {
+      const files = prepared(this.db, `SELECT DISTINCT f.id, f.path FROM library_files f JOIN library_file_episodes fe ON fe.file_id = f.id
+        WHERE fe.title_id = ? AND fe.season = ?`).all(titleId, season) as { id: number; path: string }[];
+      for (const f of files) this.deleteFile(f.id);
+      this.followSeasons(titleId, [season], false);
+      prepared(this.db, `DELETE FROM searches WHERE title_id = ? AND (scope = ? OR scope LIKE ?)`).run(titleId, scopeOf(season), `${scopeOf(season)}E%`);
+      return files.map(f => f.path);
+    })();
+  }
   // Monitored, unpaused shows (their TMDB refresh).
   activeShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' AND monitor != 'none' AND paused = 0 ORDER BY id`).all() as TitleRaw[]).map(title); }
 
@@ -300,6 +326,17 @@ export class LibraryStore {
     return (prepared(this.db, `SELECT episodes FROM grabs WHERE title_id = ? AND ${ACTIVE}`).all(titleId) as { episodes: string }[]).flatMap(r => json<EpisodeRef[]>(r.episodes, []));
   }
   // Titles with a grab under way (LibraryFulfiller.queue).
+  // Shows' seasons with a grab under way, by title (requests' "downloading").
+  grabbingSeasons() {
+    const bySeason = new Map<number, Set<number>>();
+    for (const r of prepared(this.db, `SELECT g.title_id, g.episodes FROM grabs g JOIN library_titles t ON t.id = g.title_id WHERE t.kind = 'show' AND g.${ACTIVE}`)
+      .all() as { title_id: number; episodes: string }[]) {
+      const seasons = bySeason.get(r.title_id) ?? new Set<number>();
+      for (const [season] of json<EpisodeRef[]>(r.episodes, [])) seasons.add(season);
+      bySeason.set(r.title_id, seasons);
+    }
+    return bySeason;
+  }
   grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${ACTIVE}`).all() as { title_id: number }[]).map(r => r.title_id)); }
   // A step in a grab's history (grab_events): a GrabState it moved to, `grabbed` or `retried`.
   grabEvent(grabId: number, kind: GrabEventKind, note?: string) {
@@ -382,6 +419,17 @@ export class LibraryStore {
     return (prepared(this.db, `SELECT t.*, EXISTS(SELECT 1 FROM library_files f WHERE f.title_id = t.id) AS has_file FROM library_titles t WHERE t.kind = 'movie'`).all() as
       (TitleRaw & { has_file: number })[]).map(r => ({ ...title(r), hasFile: !!r.has_file }));
   }
+  // Shows' episodes airing from `from` to `to` (YYYY-MM-DD), for the calendar: the show, the episode and whether
+  // tk.box has a file for it.
+  calendarEpisodes(from: string, to: string) {
+    return (prepared(this.db, `SELECT t.*, e.season AS e_season, e.episode AS e_episode, e.name AS e_name, e.air_date AS e_air_date,
+        EXISTS(SELECT 1 FROM library_file_episodes fe WHERE fe.title_id = t.id AND fe.season = e.season AND fe.episode = e.episode) AS has_file
+      FROM library_episodes e JOIN library_titles t ON t.id = e.title_id WHERE t.kind = 'show' AND e.air_date >= ? AND e.air_date <= ? ORDER BY e.air_date, t.id, e.season, e.episode`)
+      .all(from, to) as (TitleRaw & { e_season: number; e_episode: number; e_name: string | null; e_air_date: string; has_file: number })[])
+      .map(r => ({ show: title(r), season: r.e_season, episode: r.e_episode, ...opt('name', r.e_name), airDate: r.e_air_date, hasFile: !!r.has_file }));
+  }
+  // Shows Clean Up must keep (library_titles.keep), by TMDB id.
+  keptShows() { return new Set((prepared(this.db, `SELECT tmdb_id FROM library_titles WHERE kind = 'show' AND keep = 1`).all() as { tmdb_id: number }[]).map(r => r.tmdb_id)); }
   // Movies Clean Up must keep (library_titles.keep), by TMDB id.
   keptMovies() { return new Set((prepared(this.db, `SELECT tmdb_id FROM library_titles WHERE kind = 'movie' AND keep = 1`).all() as { tmdb_id: number }[]).map(r => r.tmdb_id)); }
 

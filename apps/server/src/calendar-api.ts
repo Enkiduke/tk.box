@@ -62,8 +62,21 @@ function episodeEntry(raw: unknown): Scheduled[] {
 }
 
 // The calendar's movies are the library's, on the day its TMDB dates give (digital, else physical, else theatrical).
-// The picture and summary are TMDB's, from the details the library already reads (cached). Shows are Sonarr's.
-export type CalendarLibrary = { store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[] } };
+// The picture and summary are TMDB's, from the details the library already reads (cached). Shows are Sonarr's until
+// `fulfil.show` is tkbox (`showsHere`); then they're the library's too, on TMDB's air date (TMDB has no air time).
+export type CalendarEpisode = { show: LibraryTitle; season: number; episode: number; name?: string; airDate: string; hasFile: boolean };
+export type CalendarLibrary = {
+  store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[]; calendarEpisodes?(from: string, to: string): CalendarEpisode[] };
+  showsHere?(): boolean;
+};
+// The same keys and labels as Sonarr's entries, so a viewer's Plex match and the season finales work alike.
+export function libraryEpisodeEntries(episodes: CalendarEpisode[]): Scheduled[] {
+  return episodes.map(({show, season, episode, name, airDate, hasFile}) => ({
+    key: `episode:${show.tvdbId ? `tvdb:${show.tvdbId}` : `tmdb:${show.tmdbId}`}:${season}:${episode}`, kind: 'episode' as const,
+    title: show.title, ...(show.year ? {year: show.year} : {}), ids: {tmdb: show.tmdbId, ...(show.tvdbId ? {tvdb: show.tvdbId} : {}), ...(show.imdbId ? {imdb: show.imdbId} : {})},
+    day: airDate, season, episode, episodeLabel: episode === 1 ? season === 1 ? 'series-premiere' as const : 'season-premiere' as const : undefined,
+    episodeTitle: name && !/^tba$/i.test(name) ? name : undefined, hasFile}));
+}
 export function libraryMovieEntries(movies: (LibraryTitle & { hasFile: boolean })[], from: string, to: string): Scheduled[] {
   return movies.flatMap(m => {
     const release = movieReleaseDate({inCinemas: m.released.theatrical, digitalRelease: m.released.digital, physicalRelease: m.released.physical});
@@ -80,7 +93,9 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     const pending = entries.values();
     await Promise.all(Array.from({length: Math.min(6, entries.length)}, async () => {
       for (const entry of pending) {
-        const movie = await tmdb.get(`/movie/${entry.ids.tmdb}`, {append_to_response: 'alternative_titles,release_dates,external_ids'}).catch(() => undefined) as
+        // A movie's details as the library reads them; a show's as its refresh does (both cached).
+        const movie = await (entry.kind === 'episode' ? tmdb.get(`/tv/${entry.ids.tmdb}`, {append_to_response: 'external_ids,alternative_titles'})
+          : tmdb.get(`/movie/${entry.ids.tmdb}`, {append_to_response: 'alternative_titles,release_dates,external_ids'})).catch(() => undefined) as
           {poster_path?: string | null; backdrop_path?: string | null; overview?: string} | undefined;
         entry.posterUrl = tmdbImage(movie?.poster_path, 'w500');
         entry.backdropUrl = tmdbImage(movie?.backdrop_path, 'w1280');
@@ -114,7 +129,9 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     catch { requireThat(false, 'INVALID_CALENDAR_ZONE', 'Invalid calendar time zone.'); }
     // Sonarr returns UTC timestamps. Pad the upstream window for viewers on either side of UTC and apply exact local bounds below.
     const upstreamStart = new Date(start - dayMs).toISOString(), upstreamEnd = new Date(end + dayMs).toISOString();
-    const sources: CalendarPage['sources'] = {Library: library ? 'ready' : 'disconnected', Sonarr: 'disconnected'};
+    // Sonarr is left out once the library has the shows.
+    const libraryShows = !!library?.showsHere?.() && !!library.store.calendarEpisodes;
+    const sources: CalendarPage['sources'] = {Library: library ? 'ready' : 'disconnected', ...(libraryShows ? {} : {Sonarr: 'disconnected' as const})};
     const movies = async () => {
       if (!library) return [];
       const rows = libraryMovieEntries(library.store.calendarMovies(), upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10));
@@ -122,6 +139,11 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
       return rows;
     };
     const shows = async () => {
+      if (library && libraryShows) {
+        const rows = libraryEpisodeEntries(library.store.calendarEpisodes!(upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10)));
+        await pictures(rows);
+        return rows;
+      }
       const connection = sonarr();
       if (!connection.url || !connection.key) return [];
       try {

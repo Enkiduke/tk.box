@@ -25,10 +25,12 @@ type Deps = {
   watches: (serverId: string) => CleanupWatch[];
   identity: Pick<IdentityService, 'accountToken'>;
   // tk.box's library: a movie a run deleted is forgotten there (library.title.removed, which requests hear), instead of
-  // being marked removed here. Movies are kept by library_titles.keep.
+  // being marked removed here. Movies are kept by library_titles.keep. Once shows are tk.box's (`showsHere`), the same
+  // for shows, and a deleted season is forgotten (`forgetSeason`, which also stops following it).
   library: {
-    store: { titleByTmdb(kind: 'movie' | 'show', tmdbId: number): { id: number } | undefined; keptMovies(): Set<number> };
-    forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void };
+    store: { titleByTmdb(kind: 'movie' | 'show', tmdbId: number): { id: number } | undefined; keptMovies(): Set<number>; keptShows(): Set<number> };
+    forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void;
+    showsHere(): boolean; forgetSeason(titleId: number, season: number): Promise<void> };
 };
 
 // Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
@@ -70,14 +72,19 @@ export const cleanupModule = defineModule({
     engine.requests = () => requests.forCleanup();
     engine.serverId = () => config.PLEX_MACHINE_ID;
     engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
-    engine.deleted = titles => {
-      const ours = titles.filter(t => t.kind === 'movie' && library.store.titleByTmdb(t.kind, t.tmdb));
+    engine.deleted = (titles, seasons) => {
+      const shows = library.showsHere();
+      const ours = titles.filter(t => (t.kind === 'movie' || shows) && library.store.titleByTmdb(t.kind, t.tmdb));
       for (const t of ours) library.forget(library.store.titleByTmdb(t.kind, t.tmdb)!.id, 'cleanup');
       requests.removedByCleanup(titles.filter(t => !ours.includes(t)));
+      if (shows) for (const { tmdb, season } of seasons) {
+        const show = library.store.titleByTmdb('show', tmdb);
+        if (show) void library.forgetSeason(show.id, season).catch(e => log.warn('clean up: the library could not forget a season', { tmdb, season, error: (e as Error).message }));
+      }
     };
     requests.keepTag = () => store.settings().exemptArrTags[0];
-    engine.movies = () => ({ kept: library.store.keptMovies(),
-      keep: tmdbId => { const t = library.store.titleByTmdb('movie', tmdbId); if (t) library.keep(t.id, true); return !!t; } });
+    engine.movies = () => ({ kept: library.store.keptMovies(), ...(library.showsHere() ? { shows: { kept: library.store.keptShows() } } : {}),
+      keep: (tmdbId, kind = 'movie') => { const t = library.store.titleByTmdb(kind, tmdbId); if (t) library.keep(t.id, true); return !!t; } });
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
       status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },
