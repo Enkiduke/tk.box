@@ -45,8 +45,9 @@ export type PlannedShow = { sonarrId: number; tmdbId: number; tvdbId: number; im
   monitor: Monitor; keep: boolean; folder: string; profileId: number; seasons: SeasonRow[]; episodes: EpisodeRow[]; files: PlannedFile[];
   tmdb: { seasons: number[]; episodes: EpisodeFact[] } };
 
-// Sonarr's profiles onto the built-ins (the user, 2026-11-15). Any other gets the default profile.
-const PROFILE_MAP: Record<string, string> = { '1080p balanced': 'standard', '720p/1080p high efficiency': 'lite', any: 'any' };
+// Sonarr's profiles onto the built-ins (the user, 2026-11-15; 1080p Quality → Quality added 2026-11-16). Any other gets
+// the default profile.
+const PROFILE_MAP: Record<string, string> = { '1080p balanced': 'standard', '1080p quality': 'quality', '720p/1080p high efficiency': 'lite', any: 'any' };
 // Sonarr's qualities that aren't rungs of the ladder by that name.
 const QUALITY_ALIASES: Record<string, Quality> = { 'Bluray-1080p Remux': 'Remux-1080p', 'Bluray-2160p Remux': 'Remux-2160p', 'Raw-HD': 'HDTV-1080p', 'DVD-R': 'DVD' };
 export function ladderQuality(name: string | undefined): Quality | undefined {
@@ -131,7 +132,8 @@ export function planShows(data: SonarrData, tmdb: ReadonlyMap<number, TmdbLookup
   const root = slash(settings.roots.show), seen = new Set<number>();
   let specials = 0;
   for (const s of data.series) {
-    const name = `${s.title ?? 'Untitled'}${s.year ? ` (${s.year})` : ''}`;
+    // Sonarr's title, with the year unless the title already ends with it ("Invasion (2021)").
+    const title = s.title ?? 'Untitled', name = s.year && !title.endsWith(`(${s.year})`) ? `${title} (${s.year})` : title;
     if (typeof s.id !== 'number') continue;
     specials += s.files.filter(f => f.seasonNumber === 0).length;
     if (typeof s.tvdbId !== 'number' || s.tvdbId <= 0) { problems.push({ kind: 'no-tmdb', blocking: false, title: name, detail: 'No TVDB id in Sonarr' }); continue; }
@@ -184,10 +186,11 @@ export function planShows(data: SonarrData, tmdb: ReadonlyMap<number, TmdbLookup
       if (!quality) { qualities.add(f.quality?.quality?.name ?? '?'); continue; }
       if (!known.length) continue;
       const refs = known.map(e => [e.seasonNumber!, e.episodeNumber!] as EpisodeRef);
-      // The name tk.box would give it, before the media tokens (the tail is shared with movies and checked there).
+      // The name tk.box would give it, before the media tokens (the tail is shared with movies and checked there). Both
+      // carry the extension, so `head` drops only that and not a title's last dot (Mrs. Diaz, I.F.T).
       const ext = rest.match(/\.[^./]+$/)?.[0] ?? '.mkv';
       const mine = `${seasonFolder(refs[0]![0])}/${episodeFileName({ title: facts.title, ...(facts.year ? { year: facts.year } : {}) },
-        refs.map(([season, episode]) => ({ season, episode, ...(names.get(key(season, episode)) ? { title: names.get(key(season, episode))! } : {}) })), { quality: 'Unknown' }, ext)}`;
+        refs.map(([season, episode]) => ({ season, episode, ...(names.get(key(season, episode)) ? { title: names.get(key(season, episode))! } : {}) })), { quality: 'Unknown' }, ext)}${ext}`;
       const head = (p: string) => p.replace(/\.[^./]+$/, '').replace(/ ?\[Unknown\]$/, '').split(' [')[0]!.trim();
       if (head(rest) !== head(mine)) renamed.push(`${head(rest)} · tk.box: ${head(mine)}`);
       const mi = f.mediaInfo ?? {}, ch = channels(mi.audioChannels);
