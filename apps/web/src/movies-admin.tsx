@@ -23,7 +23,7 @@ function status(m:MovieRow):{tone:Tone;label:string} {
   if(m.grab&&['sending','downloading','unpacking','importing'].includes(m.grab))return {tone:'active',label:'Downloading'};
   if(!m.quality)return {tone:'wait',label:'Missing'};
   if(m.belowCutoff)return {tone:'wait',label:'Below cutoff'};
-  return {tone:'ok',label:'Have'};
+  return {tone:'ok',label:'Available'};
 }
 
 export function MoviesPage() {

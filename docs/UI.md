@@ -36,7 +36,7 @@ One coloured pill (dot + word) per state, the same everywhere:
 
 | Tone | Colour | States |
 | --- | --- | --- |
-| `ok` | green | Imported, Have, Done, Accepted |
+| `ok` | green | Imported, Available, Done, Accepted |
 | `active` | blue | Downloading, Sending, Unpacking, Importing, Seeding, Running |
 | `wait` | amber | Waiting, Queued, Missing, Below cutoff |
 | `bad` | red | Failed, Rejected, Banned |

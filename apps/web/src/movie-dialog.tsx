@@ -29,7 +29,7 @@ export function MovieDialog({id,pane,setPane,onClose}:{id:number;pane:MoviePane;
 type Mutation=ReturnType<typeof useMutation>;
 function statusOf(t:LibraryTitleView):{tone:Tone;label:string} {
   return t.paused?{tone:'off',label:'Paused'}:!t.monitored?{tone:'off',label:'Not monitored'}
-    :t.wanted.wanted?{tone:'wait',label:t.wanted.why==='missing'?'Missing':'Below cutoff'}:{tone:'ok',label:'Have'};
+    :t.wanted.wanted?{tone:'wait',label:t.wanted.why==='missing'?'Missing':'Below cutoff'}:{tone:'ok',label:'Available'};
 }
 
 // Poster, title, status, the facts that matter, and the two actions that don't need the tabs.
