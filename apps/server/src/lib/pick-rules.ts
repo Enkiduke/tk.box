@@ -1,4 +1,4 @@
-import { matchMovie, parseRelease, type MovieTitle, type ParsedRelease, type ReleaseIds } from './release-name.js';
+import { matchMovie, matchShow, parseRelease, type MovieTitle, type ParsedRelease, type ReleaseIds, type ShowTitle } from './release-name.js';
 import { EARLY_COPIES, qualityOf, rank, type Quality } from './quality.js';
 import { scoreFormats, type Format, type Score } from './formats.js';
 import { DEFAULT_RUNTIME, meetsCutoff, sizeLimits, tierOf, type QualityProfile } from './profiles.js';
@@ -23,6 +23,29 @@ export const defaultPickSettings = (): PickSettings => ({ earlyCopies: false, pr
 
 // `runtime`: TMDB's, in minutes, for the size limits (DEFAULT_RUNTIME when unknown).
 export type MovieWant = { kind: 'movie'; title: MovieTitle; have?: LibraryFile; runtime?: number };
+// Episodes of one season. `pack`: a season search, which takes a season pack covering the season; otherwise single and
+// multi-episode releases covering at least one of `episodes` (the ones wanted). `have`: the library's file for each
+// episode that has one. `runtime`: an episode's, in minutes; `seasonEpisodes`: how many the season has, for a pack's size.
+export type EpisodeWant = { kind: 'episode'; title: ShowTitle; season: number; episodes: readonly number[]; pack: boolean;
+  have?: ReadonlyMap<number, LibraryFile>; runtime?: number; seasonEpisodes?: number };
+export type Want = MovieWant | EpisodeWant;
+const code = (season: number, episode?: number) => `S${String(season).padStart(2, '0')}${episode === undefined ? '' : `E${String(episode).padStart(2, '0')}`}`;
+
+// What the release covers for a show want, or why it doesn't fit: the season, a pack only for a season search, an
+// episode release only for an episode search and covering one that's wanted.
+function episodeFit(parsed: ParsedRelease, want: EpisodeWant): { covers: number[]; count: number } | { reject: string } {
+  if (parsed.multiSeason) return { reject: 'a multi-season pack' };
+  if (parsed.season === undefined) return { reject: 'not an episode or season' };
+  if (parsed.season !== want.season) return { reject: `season ${parsed.season} isn't ${want.season}` };
+  if (parsed.seasonPack) {
+    if (!want.pack) return { reject: 'a season pack; an episode is wanted' };
+    const covers = [...new Set([...want.episodes, ...want.have?.keys() ?? []])].sort((a, b) => a - b);
+    return { covers, count: Math.max(want.seasonEpisodes ?? 0, covers.length, 1) };
+  }
+  if (want.pack) return { reject: 'an episode; a season pack is wanted' };
+  if (!parsed.episodes.some(e => want.episodes.includes(e))) return { reject: `${code(parsed.season, parsed.episodes[0])} isn't wanted` };
+  return { covers: [...parsed.episodes], count: parsed.episodes.length };
+}
 export type PickContext = { profile: QualityProfile; formats: readonly Format[]; settings: PickSettings; blocklist?: readonly BlockedRelease[]; now: number };
 
 export type Decision = {
@@ -74,7 +97,7 @@ function againstLibrary({ quality, tier, score, parsed }: Against, have: Library
   return { ok: false, upgrade: false, reason: `no better than the library's ${have.quality}${scoring ? ` (score ${score}, an upgrade needs ${have.score! + profile.upgradeStep})` : ''}` };
 }
 
-export function decide(release: Candidate, want: MovieWant, ctx: PickContext): Decision {
+export function decide(release: Candidate, want: Want, ctx: PickContext): Decision {
   const parsed = parseRelease(release.name, new Date(ctx.now).getUTCFullYear());
   const { profile } = ctx;
   let quality = qualityOf(parsed);
@@ -89,21 +112,37 @@ export function decide(release: Candidate, want: MovieWant, ctx: PickContext): D
   else if (EARLY_COPIES.has(quality) && !ctx.settings.earlyCopies) rejects.push(`${quality} is an early copy, and Early copies is off`);
   else if (tier < 0) rejects.push(`quality ${quality} isn't allowed`);
   if (profile.minScore !== undefined && score < profile.minScore) rejects.push(`score ${score} under the minimum ${profile.minScore}`);
-  if (parsed.multiSeason) rejects.push('a multi-season pack');
-  else if (parsed.season !== undefined) rejects.push(`an episode or season, not a movie`);
-  const match = matchMovie(parsed, want.title, release.ids);
+  // What it is: a movie, or episodes of the wanted season (and how many, for the size limits).
+  let fit: { covers: number[]; count: number } | undefined;
+  if (want.kind === 'movie') {
+    if (parsed.multiSeason) rejects.push('a multi-season pack');
+    else if (parsed.season !== undefined) rejects.push(`an episode or season, not a movie`);
+  } else {
+    const f = episodeFit(parsed, want);
+    if ('reject' in f) rejects.push(f.reject); else fit = f;
+  }
+  const match = want.kind === 'movie' ? matchMovie(parsed, want.title, release.ids) : matchShow(parsed, want.title, release.ids);
   if (!match.ok) rejects.push(match.reason);
-  const limits = quality && tier >= 0 && !EARLY_COPIES.has(quality) ? sizeLimits(profile.tiers[tier]!, want.runtime || DEFAULT_RUNTIME.movie) : undefined;
+  const runtime = want.kind === 'movie' ? want.runtime || DEFAULT_RUNTIME.movie : (want.runtime || DEFAULT_RUNTIME.show) * (fit?.count ?? 1);
+  const limits = quality && tier >= 0 && !EARLY_COPIES.has(quality) ? sizeLimits(profile.tiers[tier]!, runtime) : undefined;
   if (release.size !== undefined && limits) {
     if (release.size > limits.max) rejects.push(`size ${gb(release.size)} over ${gb(limits.max)}`);
     else if (release.size < limits.min) rejects.push(`size ${gb(release.size)} under ${gb(limits.min)}`);
   }
   if (release.protocol === 'torrent' && release.seeders === 0) rejects.push('no seeders');
   let upgrade = false, upgradeReason: string | undefined;
-  if (quality && tier >= 0) {
+  if (quality && tier >= 0 && want.kind === 'movie') {
     const library = againstLibrary({ quality, tier, score, parsed }, want.have, ctx);
     if (!library.ok) rejects.push(library.reason!);
     else { upgrade = library.upgrade; upgradeReason = library.reason; }
+  } else if (quality && tier >= 0 && want.kind === 'episode' && fit) {
+    // Each episode it covers that the library has must be bettered: a pack or multi-episode release never replaces an
+    // episode with one no better.
+    for (const episode of fit.covers) {
+      const library = againstLibrary({ quality, tier, score, parsed }, want.have?.get(episode), ctx);
+      if (!library.ok) { rejects.push(`${code(want.season, episode)}: ${library.reason!}`); break; }
+      if (library.upgrade && !upgrade) { upgrade = true; upgradeReason = fit.covers.length > 1 ? `${code(want.season, episode)}: ${library.reason}` : library.reason; }
+    }
   }
   const scoreText = `score ${score > 0 ? '+' : ''}${score}${matched.length ? ` (${matched.join(', ')})` : ''}`;
   const reasons = rejects.length ? rejects.map(r => `rejected: ${r}`)
@@ -130,7 +169,7 @@ export function compareDecisions(a: RankedRelease, b: RankedRelease, ctx: PickCo
 }
 
 // Every candidate's decision, the accepted ones ranked first, then the rejected in the order found; and the best.
-export function pick(candidates: readonly Candidate[], want: MovieWant, ctx: PickContext): { decisions: Decision[]; best?: Decision } {
+export function pick(candidates: readonly Candidate[], want: Want, ctx: PickContext): { decisions: Decision[]; best?: Decision } {
   const decisions = candidates.map(c => decide(c, want, ctx));
   const accepted = decisions.filter(d => d.accepted).sort((a, b) => compareDecisions(a, b, ctx));
   const best = accepted[0];

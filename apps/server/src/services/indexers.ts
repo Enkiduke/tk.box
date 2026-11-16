@@ -52,6 +52,10 @@ export const COOKIE_ALERT = 'indexer.iptorrents.cookie';
 // passkey) and its categories.
 export type Release = Candidate & { indexer: IndexerName; link: string; categories: number[] };
 export type MovieQuery = { kind: 'movie'; title: string; year?: number; imdbId?: string; uhd?: boolean };
+// A season (its pack and episodes), or one episode of it.
+export type ShowQuery = { kind: 'show'; title: string; tvdbId?: number; season: number; episode?: number };
+export type TitleQuery = MovieQuery | ShowQuery;
+const episodeCode = (q: ShowQuery) => `S${String(q.season).padStart(2, '0')}${q.episode === undefined ? '' : `E${String(q.episode).padStart(2, '0')}`}`;
 // Which protocols' indexers a search asks (the library asks Usenet first, then torrents); all when omitted.
 // `manual`: an admin asked (Interactive search), which the preview allows; automatic searches it doesn't.
 export type SearchOptions = { protocols?: readonly ('usenet' | 'torrent')[]; manual?: boolean };
@@ -281,12 +285,18 @@ export class Indexers {
 
   // A movie: t=movie by IMDb id, and t=search by "Title Year" when that finds nothing (or there is no id). IPTorrents
   // the same way on its search page: q=+(tt…)&qf=all, then q=+(Title Year).
-  async search(query: MovieQuery, signal?: AbortSignal, options: SearchOptions = {}): Promise<SearchResult> {
+  // A show: t=tvsearch by TVDB id with season (and ep), and by title when that finds nothing (or there is no id); the
+  // TV categories. IPTorrents' search page: q=+(Title S02E05), or q=+(Title S02) for a season.
+  async search(query: TitleQuery, signal?: AbortSignal, options: SearchOptions = {}): Promise<SearchResult> {
     if (!options.manual) requireLive('Searching indexers');
     const releases: Release[] = [], indexers: IndexerReport[] = [];
     for (const row of this.enabledRows(options.protocols)) {
       const settings = this.settingsOf(row), report: IndexerReport = { indexer: row.name, searched: [] };
       indexers.push(report);
+      if (query.kind === 'show') {
+        for (const item of await this.searchShow(row, settings, query, report, signal)) releases.push(item);
+        continue;
+      }
       if (row.name === 'iptorrents') {
         const client = this.ipt(row), cats = settings.categories.movies.filter(c => c !== 2045 || query.uhd);
         const imdb = imdbNumber(query.imdbId), imdbId = imdb !== undefined ? `tt${String(imdb).padStart(7, '0')}` : undefined;
@@ -308,6 +318,21 @@ export class Indexers {
       for (const item of items ?? []) releases.push(this.release(row.name, item));
     }
     return { releases, indexers };
+  }
+
+  private async searchShow(row: Row, settings: IndexerSettings, query: ShowQuery, report: IndexerReport, signal?: AbortSignal): Promise<Release[]> {
+    const term = `${query.title} ${episodeCode(query)}`;
+    if (row.name === 'iptorrents') {
+      const client = this.ipt(row);
+      const items = await this.counted(row, `q=+(${term})`, report,
+        () => client.search({ categories: settings.categories.tv, term, freeleechOnly: settings.freeleechOnly }, signal, this.now()), signal);
+      return (items ?? []).map(item => this.torrentRelease(item));
+    }
+    const cat = settings.categories.tv.join(','), numbers = { season: String(query.season), ...(query.episode !== undefined ? { ep: String(query.episode) } : {}) };
+    let items: NewznabItem[] | undefined;
+    if (query.tvdbId) items = await this.call(row, { t: 'tvsearch', tvdbid: String(query.tvdbId), ...numbers, cat, limit: '100' }, report, signal);
+    if (items?.length === 0 || (!query.tvdbId && !report.error)) items = await this.call(row, { t: 'tvsearch', q: query.title, ...numbers, cat, limit: '100' }, report, signal);
+    return (items ?? []).map(item => this.release(row.name, item));
   }
 
   // Listens to the new-release feed: each poll hands every listener the releases not seen before.

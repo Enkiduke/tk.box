@@ -1,24 +1,25 @@
 import { dirname, win32 } from 'node:path';
-import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, MovieSource } from '../../../../packages/contracts/src/downloads.js';
+import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, MovieSource } from '../../../../packages/contracts/src/downloads.js';
 import * as fs from 'node:fs/promises';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import { scoreFormats } from '../lib/formats.js';
 import { DEFAULT_RUNTIME, allows2160p, isPreferred, preferredText, sizeLimits, tierOf, type QualityProfile } from '../lib/profiles.js';
 import { builtInProfile } from '../lib/builtin-profiles.js';
 import { seedingDecision, seedingRule } from '../lib/seeding.js';
-import { compareDecisions, pick, type Decision, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
+import { compareDecisions, decide, pick, type Decision, type EpisodeWant, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
-import { airedAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextSearchAt, showEnded, type EpisodeFact, type Wanted } from './wanted.js';
+import { airedAt, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
+  showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
 import { findVideos, type MovieImporter } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
-import type { FeedListener, MovieQuery, NzbFile, Release, SearchOptions, SearchResult } from './indexers.js';
+import type { FeedListener, MovieQuery, NzbFile, Release, SearchOptions, SearchResult, ShowQuery, TitleQuery } from './indexers.js';
 import type { Download, DownloaderName, GrabRef, RemoveOptions, Sent } from './downloaders.js';
 import type { DownloadStatus } from '../providers/download-status.js';
 import { stallClock } from '../providers/qbittorrent.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
-import type { Grab, LibraryFileRow, LibraryStore, LibraryTitle, Released } from '../persistence/library-store.js';
+import type { EpisodeRef, Grab, LibraryFileRow, LibraryStore, LibraryTitle, Released } from '../persistence/library-store.js';
 import type { BusEvents } from '../modules/bus.js';
 
 // The library for movies (docs/ARR-REPLACEMENT.md, phases 1 and 3): adding a title, wanted, searching (on add, the
@@ -28,7 +29,7 @@ import type { BusEvents } from '../modules/bus.js';
 // and plex-scan.
 
 export type IndexersApi = {
-  search(query: MovieQuery, signal?: AbortSignal, options?: SearchOptions): Promise<SearchResult>;
+  search(query: TitleQuery, signal?: AbortSignal, options?: SearchOptions): Promise<SearchResult>;
   feeds(listener: FeedListener): () => void;
   download(release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal): Promise<NzbFile>;
 };
@@ -60,8 +61,11 @@ type TmdbSeason = { episodes?: { season_number?: number; episode_number?: number
 // TMDB's other names for a title (its original one and alternative titles), for matching release names.
 const aliasesOf = (main: string, others: (string | undefined)[]) => [...new Set(others.filter((t): t is string => !!t && t !== main))].slice(0, 50);
 const yearOf = (day: string | undefined) => day && /^\d{4}/.test(day) ? Number(day.slice(0, 4)) : undefined;
-// `extra`: torrents an RSS feed found, weighed with what the Usenet search finds (Usenet first).
-type SearchPayload = { titleId: number; extra?: Release[] };
+// `extra`: torrents an RSS feed found, weighed with what the Usenet search finds (Usenet first). `scope`: a show's
+// season (S02) or episode (S02E05).
+type SearchPayload = { titleId: number; extra?: Release[]; scope?: string };
+// A release chosen for a show, with the episodes it covers.
+type ShowPick = { decision: Decision; episodes: EpisodeRef[] };
 type SendPayload = { grabId: number; link: string };
 // `from`: the unpack folder to import from, instead of the download's.
 type GrabPayload = { grabId: number; from?: string };
@@ -277,8 +281,106 @@ export class Library {
       ...(have ? { have } : {}), ...(title.runtime ? { runtime: title.runtime } : {}) };
   }
 
-  private queueSearch(titleId: number, runAt?: number, extra?: Release[]) {
-    return this.deps.queue.enqueue('search', `movie:${titleId}`, { titleId, ...(extra?.length ? { extra } : {}) }, runAt === undefined ? {} : { runAt });
+  private queueSearch(titleId: number, runAt?: number, extra?: Release[], scope?: string) {
+    return this.deps.queue.enqueue('search', scope ? `show:${titleId}:${scope}` : `movie:${titleId}`, { titleId, ...(extra?.length ? { extra } : {}), ...(scope ? { scope } : {}) },
+      runAt === undefined ? {} : { runAt });
+  }
+
+  // ---- Shows ----
+
+  // A show's episodes with their files (tk.box's records), and what to search now.
+  private showState(title: LibraryTitle) {
+    const files = this.store.episodeFiles(title.id);
+    const episodes = this.store.episodes(title.id).map(e => { const file = files.get(`${e.season}:${e.episode}`); return { ...e, ...(file ? { file } : {}) }; });
+    return { seasons: this.store.seasons(title.id), episodes, files };
+  }
+  private scopesOf(title: LibraryTitle, state = this.showState(title)) {
+    return showScopes(title, state.seasons, state.episodes, this.profile(title), this.now(), this.store.grabbingEpisodes(title.id));
+  }
+  private showQuery(title: LibraryTitle, season: number, episode?: number): ShowQuery {
+    return { kind: 'show', title: title.title, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), season, ...(episode !== undefined ? { episode } : {}) };
+  }
+  // What the pick rules weigh for a season: the wanted episodes, the library's file for each episode that has one, an
+  // episode's runtime and how many the season has.
+  private episodeWant(title: LibraryTitle, season: number, episodes: readonly number[], pack: boolean, state = this.showState(title)): EpisodeWant {
+    const have = new Map<number, LibraryFile>();
+    for (const [key, file] of state.files) {
+      const [s, e] = key.split(':').map(Number);
+      const h = s === season ? this.have(title, file) : undefined;
+      if (h) have.set(e!, h);
+    }
+    const inSeason = state.episodes.filter(e => e.season === season);
+    const runtime = inSeason.find(e => episodes.includes(e.episode) && e.runtime)?.runtime ?? title.runtime;
+    return { kind: 'episode', title: { title: title.title, ...(title.year ? { year: title.year } : {}), aliases: title.aliases, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}) },
+      season, episodes, pack, ...(have.size ? { have } : {}), ...(runtime ? { runtime } : {}), seasonEpisodes: inSeason.length };
+  }
+  // The releases to grab for a season's wanted episodes: a pack first when the scope is a season; otherwise (or with no
+  // acceptable pack) the best single or multi-episode release for each wanted episode left, until none are left or
+  // nothing more is acceptable.
+  private showPicks(title: LibraryTitle, season: number, wanted: readonly number[], pack: boolean, releases: readonly Release[], state = this.showState(title)): ShowPick[] {
+    const ctx = this.context(title);
+    if (pack) {
+      const want = this.episodeWant(title, season, wanted, true, state), best = pick(releases, want, ctx).best;
+      if (best) {
+        const covered = [...new Set([...state.episodes.filter(e => e.season === season).map(e => e.episode), ...wanted])].sort((a, b) => a - b);
+        return [{ decision: best, episodes: covered.map(e => [season, e] as EpisodeRef) }];
+      }
+    }
+    const picks: ShowPick[] = [];
+    let left = [...wanted].sort((a, b) => a - b);
+    while (left.length) {
+      const best = pick(releases.filter(r => !picks.some(p => p.decision.release.guid === r.guid)), this.episodeWant(title, season, left, false, state), ctx).best;
+      if (!best) break;
+      const covers = best.parsed.episodes;
+      picks.push({ decision: best, episodes: covers.map(e => [season, e] as EpisodeRef) });
+      left = left.filter(e => !covers.includes(e));
+    }
+    return picks;
+  }
+  // Whether a search's picks settle it at the first protocol: every wanted episode covered at a preferred tier.
+  private settled(picks: ShowPick[], wanted: readonly number[], profile: QualityProfile, first: 'usenet' | 'torrent') {
+    const covered = new Set(picks.flatMap(p => p.episodes.map(([, e]) => e)));
+    return wanted.every(e => covered.has(e)) && picks.every(p => isPreferred(profile, p.decision.quality!) && p.decision.release.protocol === first);
+  }
+  // The wanted episodes in a scope now (none with a grab under way).
+  private scopeWanted(title: LibraryTitle, scope: { season: number; episode?: number }, state = this.showState(title)) {
+    const busy = new Set(this.store.grabbingEpisodes(title.id).map(([s, e]) => `${s}:${e}`)), profile = this.profile(title), now = this.now();
+    const on = state.seasons.find(s => s.season === scope.season)?.monitored ?? false;
+    return state.episodes.filter(e => e.season === scope.season && (scope.episode === undefined || e.episode === scope.episode)
+      && !busy.has(`${e.season}:${e.episode}`) && episodeWanted(title, on, e, profile, now).wanted).map(e => e.episode);
+  }
+
+  private async searchShow(title: LibraryTitle, item: QueueItem<SearchPayload>, signal?: AbortSignal): Promise<Outcome> {
+    const scope = parseScope(item.payload.scope ?? '');
+    if (!scope) return done();
+    const state = this.showState(title), wanted = this.scopeWanted(title, scope, state);
+    if (!wanted.length) return done();
+    const pack = scope.episode === undefined, query = this.showQuery(title, scope.season, scope.episode);
+    const result = await this.searchInOrder(title, query, signal, item.payload.extra ?? [],
+      (releases, first) => this.settled(this.showPicks(title, scope.season, wanted, pack, releases, state), wanted, this.profile(title), first));
+    const waits = result.indexers.map(r => r.waitUntil);
+    if (!result.releases.length && waits.length && waits.every(w => w !== undefined)) return retry(Math.min(...waits as number[]));
+    let grabbed = 0;
+    for (const p of this.showPicks(title, scope.season, wanted, pack, result.releases, state)) if (this.grab(title, p.decision, undefined, p.episodes)) grabbed++;
+    const now = this.now(), name = scopeName(scope.season, scope.episode), last = this.store.search(title.id, name);
+    const airAt = scope.episode === undefined ? undefined : state.episodes.find(e => e.season === scope.season && e.episode === scope.episode)?.airAt;
+    if (grabbed) this.store.setSearch({ titleId: title.id, scope: name, lastAt: now, misses: 0, nextAt: now + DAY });
+    else {
+      const misses = (last?.misses ?? 0) + 1;
+      this.store.setSearch({ titleId: title.id, scope: name, lastAt: now, misses, nextAt: nextEpisodeSearchAt({ now, misses, ...(airAt !== undefined ? { airAt } : {}) }) });
+    }
+    return done();
+  }
+
+  // The show's searches that are due: a scope with no search yet is due at once (a new episode an hour after it airs).
+  private dueScopes(title: LibraryTitle, now: number): ShowScope[] {
+    const state = this.showState(title);
+    return this.scopesOf(title, state).filter(scope => {
+      const row = this.store.search(title.id, scope.scope);
+      if (row) return row.nextAt <= now;
+      const airAt = scope.episode === undefined ? undefined : state.episodes.find(e => e.season === scope.season && e.episode === scope.episode)?.airAt;
+      return firstEpisodeSearchAt(now, airAt) <= now;
+    });
   }
 
   // ---- The wanted sweep (every 30 minutes) ----
@@ -293,6 +395,9 @@ export class Library {
       if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) continue;
       if (this.queueSearch(title.id).added) searched++;
     }
+    for (const title of this.store.activeShows()) {
+      for (const scope of this.dueScopes(title, now)) if (this.queueSearch(title.id, undefined, undefined, scope.scope).added) searched++;
+    }
     // TMDB again: daily for a movie that isn't out or a show still airing, weekly once it's out or ended.
     for (const title of [...this.store.activeMovies(), ...this.store.activeShows()]) {
       const settled = title.kind === 'movie' ? isOut(title.released, now) : showEnded(title.released), age = now - (title.refreshedAt ?? 0);
@@ -306,10 +411,14 @@ export class Library {
   private async search(item: QueueItem<SearchPayload>, { signal }: HandlerContext): Promise<Outcome> {
     if (readOnly()) return retry(this.now() + HOUR);
     const title = this.store.title(item.payload.titleId);
-    if (!title || title.kind !== 'movie') return done();
+    if (!title) return done();
+    if (title.kind === 'show') return this.searchShow(title, item, signal);
     await this.deps.plex.ready();
     if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) return done();
-    const result = await this.searchInOrder(title, signal, item.payload.extra ?? []);
+    const result = await this.searchInOrder(title, this.movieQuery(title), signal, item.payload.extra ?? [], (releases, first) => {
+      const context = this.context(title), { best } = pick(releases, this.want(title), context);
+      return !!best && isPreferred(context.profile, best.quality!) && best.release.protocol === first;
+    });
     // Every indexer over its cap or paused: wait for it, without counting a miss.
     const waits = result.indexers.map(r => r.waitUntil);
     if (!result.releases.length && waits.length && waits.every(w => w !== undefined)) return retry(Math.min(...waits as number[]));
@@ -328,22 +437,27 @@ export class Library {
   // The preferred protocol's indexers first (Usenet, by default); the other's only when the first found nothing
   // acceptable, or nothing at the profile's cutoff, so a torrent is grabbed only when Usenet has nothing or only a worse
   // quality. The pick then ranks quality before protocol, so at the same quality the preferred one still wins.
-  private async searchInOrder(title: LibraryTitle, signal: AbortSignal | undefined, extra: Release[]): Promise<SearchResult> {
-    const profile = this.profile(title), settings = this.store.settings();
-    const query: MovieQuery = { kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}), ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(profile) };
+  // `settled`: whether what the first protocol found is enough (a movie's best, a show's every wanted episode).
+  private async searchInOrder(title: LibraryTitle, query: TitleQuery, signal: AbortSignal | undefined, extra: Release[],
+    settled: (releases: Release[], first: 'usenet' | 'torrent') => boolean): Promise<SearchResult> {
+    const settings = this.store.settings();
     const first = settings.protocol === 'torrent-first' ? 'torrent' as const : 'usenet' as const, second = first === 'usenet' ? 'torrent' as const : 'usenet' as const;
     const one = await this.deps.indexers.search(query, signal, { protocols: [first] });
     const releases = [...one.releases, ...extra.filter(r => !one.releases.some(o => o.guid === r.guid))];
-    const context = this.context(title), { best } = pick(releases, this.want(title), context);
-    if (best && isPreferred(context.profile, best.quality!) && best.release.protocol === first) return { releases, indexers: one.indexers };
+    if (settled(releases, first)) return { releases, indexers: one.indexers };
     const two = await this.deps.indexers.search(query, signal, { protocols: [second] });
     return { releases: [...releases, ...two.releases.filter(r => !releases.some(o => o.guid === r.guid))], indexers: [...one.indexers, ...two.indexers] };
   }
 
-  // A grab for the decision's release, sent by the queue. Undefined when the title already has one under way.
-  private grab(title: LibraryTitle, decision: Decision, note?: string) {
+  private movieQuery(title: LibraryTitle): MovieQuery {
+    return { kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}), ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(this.profile(title)) };
+  }
+
+  // A grab for the decision's release, sent by the queue. Undefined when one under way already covers it (the movie,
+  // or any of a show's `episodes`).
+  private grab(title: LibraryTitle, decision: Decision, note?: string, episodes?: EpisodeRef[]) {
     const release = decision.release as Release;
-    const grab = this.store.insertGrab({ titleId: title.id, releaseName: release.name, indexer: release.indexer, guid: release.guid, protocol: release.protocol,
+    const grab = this.store.insertGrab({ titleId: title.id, ...(episodes?.length ? { episodes } : {}), releaseName: release.name, indexer: release.indexer, guid: release.guid, protocol: release.protocol,
       ...(release.size !== undefined ? { size: release.size } : {}), quality: decision.quality!, score: decision.score, upgrade: decision.upgrade,
       downloader: release.protocol === 'torrent' ? 'qbittorrent' : 'sabnzbd' }, note);
     if (!grab) return undefined;
@@ -360,8 +474,9 @@ export class Library {
   // away: a search asks Usenet first, with the feed's torrents weighed in.
   async onFeed(releases: Release[]) {
     if (readOnly() || !releases.length) return 0;
+    const shows = await this.onShowFeed(releases);
     const movies = this.store.activeMovies();
-    if (!movies.length) return 0;
+    if (!movies.length) return shows;
     await this.deps.plex.ready();
     const byName = new Map<string, LibraryTitle[]>(), byImdb = new Map<number, LibraryTitle>();
     for (const m of movies) {
@@ -386,6 +501,40 @@ export class Library {
       const first = this.store.settings().protocol === 'torrent-first' ? 'torrent' : 'usenet';
       if (best.release.protocol !== first) { this.queueSearch(title.id, undefined, candidates.filter(c => c.protocol !== first)); continue; }
       if (this.grab(title, best)) grabbed++;
+    }
+    return grabbed + shows;
+  }
+
+  // The feed's episodes and season packs, matched to active shows by TVDB id or title (and alias), then picked as a
+  // search of that season or episode would. A torrent that would win while Usenet comes first is carried into a search.
+  private async onShowFeed(releases: Release[]) {
+    const shows = this.store.activeShows();
+    if (!shows.length) return 0;
+    const byName = new Map<string, LibraryTitle[]>(), byTvdb = new Map<number, LibraryTitle>();
+    for (const s of shows) {
+      for (const name of [s.title, ...s.aliases]) { const key = normaliseTitle(name), list = byName.get(key) ?? []; if (!list.includes(s)) list.push(s); byName.set(key, list); }
+      if (s.tvdbId) byTvdb.set(s.tvdbId, s);
+    }
+    const found = new Map<string, { title: LibraryTitle; season: number; releases: Release[] }>();
+    for (const release of releases) {
+      const parsed = parseRelease(release.name, new Date(this.now()).getUTCFullYear());
+      if (parsed.season === undefined || parsed.multiSeason) continue;
+      const tvdb = Number(release.ids?.tvdbid);
+      const titles = Number.isInteger(tvdb) && byTvdb.has(tvdb) ? [byTvdb.get(tvdb)!] : byName.get(normaliseTitle(parsed.title)) ?? [];
+      for (const t of titles) {
+        const key = `${t.id}:${parsed.season}`, entry = found.get(key) ?? { title: t, season: parsed.season, releases: [] };
+        entry.releases.push(release); found.set(key, entry);
+      }
+    }
+    const first = this.store.settings().protocol === 'torrent-first' ? 'torrent' : 'usenet';
+    let grabbed = 0;
+    for (const { title, season, releases: candidates } of found.values()) {
+      const state = this.showState(title);
+      for (const scope of this.scopesOf(title, state).filter(s => s.season === season)) {
+        const picks = this.showPicks(title, season, scope.episodes, scope.episode === undefined, candidates, state);
+        if (picks.some(p => p.decision.release.protocol !== first)) { this.queueSearch(title.id, undefined, candidates.filter(c => c.protocol !== first), scope.scope); continue; }
+        for (const p of picks) if (this.grab(title, p.decision, undefined, p.episodes)) grabbed++;
+      }
     }
     return grabbed;
   }
@@ -414,7 +563,8 @@ export class Library {
     const key = downloaderKey(grab.downloader), label = downloaderLabel(grab.downloader);
     try {
       const seedingMinutes = seedingRule(this.store.settings().seeding).maxDays * 24 * 60;
-      const sent = await this.deps.downloaders.send({ kind: 'movie', protocol: grab.protocol, name: grab.releaseName.slice(0, 200), file: nzb.bytes,
+      const kind = this.store.title(grab.titleId)?.kind ?? 'movie';
+      const sent = await this.deps.downloaders.send({ kind, protocol: grab.protocol, name: grab.releaseName.slice(0, 200), file: nzb.bytes,
         ...(nzb.infoHash ? { infoHash: nzb.infoHash, seedingMinutes } : {}) });
       const now = this.now();
       this.store.updateGrab(grab.id, { state: 'downloading', downloadId: sent.downloadId, sentAt: now, progress: 0, progressAt: now, error: null }, `Sent to ${label}`);
@@ -506,7 +656,13 @@ export class Library {
       this.alert(`library.paused.${title.id}`, `${title.title} is paused`, `${failures} downloads failed in a row; the last: ${reason}`);
       return;
     }
-    this.queueSearch(title.id);
+    if (title.kind === 'show') this.searchAgain(title, grab.episodes);
+    else this.queueSearch(title.id);
+  }
+  // A show's searches covering these episodes, queued now (the failed release is blocklisted, so the next best wins).
+  private searchAgain(title: LibraryTitle, episodes: readonly EpisodeRef[]) {
+    const failed = new Set(episodes.map(([s, e]) => `${s}:${e}`));
+    for (const scope of this.scopesOf(title).filter(s => s.episodes.some(e => failed.has(`${s.season}:${e}`)))) this.queueSearch(title.id, undefined, undefined, scope.scope);
   }
 
   // ---- import ----
@@ -675,7 +831,9 @@ export class Library {
   }
 
   // Search now: queued at once, ahead of its backoff.
-  searchNow(titleId: number) {
+  searchNow(titleId: number, scope?: string) {
+    const any = this.store.title(titleId);
+    if (any?.kind === 'show') return this.searchShowNow(any, scope);
     const title = this.movie(titleId);
     requireThat(!title.paused, 'TITLE_PAUSED', `${title.title} is paused. Unpause it first.`, 409);
     requireThat(title.monitor !== 'none', 'TITLE_UNMONITORED', `${title.title} isn’t monitored.`, 409);
@@ -685,16 +843,89 @@ export class Library {
     this.deps.queue.enqueue('search', `movie:${title.id}`, { titleId: title.id });
   }
 
+  // A show's Search now: the scope given (S02 or S02E05), or every search the show needs now.
+  private searchShowNow(title: LibraryTitle, scopeText?: string) {
+    requireThat(!title.paused, 'TITLE_PAUSED', `${title.title} is paused. Unpause it first.`, 409);
+    requireThat(title.monitor !== 'none', 'TITLE_UNMONITORED', `${title.title} isn’t monitored.`, 409);
+    const scopes = scopeText ? [scopeName(this.scopeOf(scopeText).season, this.scopeOf(scopeText).episode)] : this.scopesOf(title).map(s => s.scope);
+    requireThat(scopes.length, 'NOTHING_WANTED', `${title.title} has nothing wanted to search for.`, 409);
+    for (const scope of scopes) {
+      const search = this.store.search(title.id, scope);
+      this.store.setSearch({ titleId: title.id, scope, lastAt: search?.lastAt ?? 0, misses: search?.misses ?? 0, nextAt: this.now() });
+      this.queueSearch(title.id, undefined, undefined, scope);
+    }
+  }
+
   // Unpausing counts its failures afresh: only blocklist entries from now on pause it again.
   setPaused(titleId: number, paused: boolean) {
-    const title = this.movie(titleId);
+    const title = this.store.title(titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
     if (!paused && title.paused) this.store.audit('library_resumed', { title: title.id });
     this.pause(title.id, paused ? 'Paused by an admin' : null);
   }
 
   // Interactive search: every release found, with its decision. The releases are kept 30 minutes for Grab, so a grab
   // only ever sends what an indexer itself returned.
-  private found = new Map<number, { at: number; releases: Release[] }>();
+  private found = new Map<string, { at: number; releases: Release[] }>();
+  private hold(key: string, releases: Release[]) {
+    const now = this.now();
+    for (const [id, entry] of this.found) if (now - entry.at > 30 * MINUTE) this.found.delete(id);
+    if (this.found.size >= 20) this.found.delete(this.found.keys().next().value!);
+    this.found.delete(key);
+    this.found.set(key, { at: now, releases });
+  }
+  private show(titleId: number) {
+    const title = this.store.title(titleId);
+    requireThat(title && title.kind === 'show', 'NOT_FOUND', 'No such show in the library.', 404);
+    return title;
+  }
+  private scopeOf(scope: string | undefined) {
+    const parsed = parseScope(scope ?? '');
+    requireThat(parsed, 'SCOPE_REQUIRED', 'Say which season or episode (S02 or S02E05).', 400);
+    return parsed;
+  }
+  // A release's decision in a show's interactive search: a pack against the season, an episode release against the
+  // episode searched (or any episode of the season searched). Nothing is rejected only for not being wanted.
+  private showDecision(title: LibraryTitle, release: Release, scope: { season: number; episode?: number }, state: ReturnType<Library['showState']>, ctx: PickContext) {
+    const all = state.episodes.filter(e => e.season === scope.season).map(e => e.episode);
+    const episodes = scope.episode !== undefined ? [scope.episode] : all.length ? all : [1];
+    return decide(release, this.episodeWant(title, scope.season, episodes, parseRelease(release.name).seasonPack, state), ctx);
+  }
+  private releaseView(d: Decision, best: Decision | undefined) {
+    return { guid: d.release.guid, name: d.release.name, indexer: d.release.indexer, protocol: d.release.protocol,
+      ...(d.release.size !== undefined ? { size: d.release.size } : {}), ...(d.release.publishedAt !== undefined ? { publishedAt: d.release.publishedAt } : {}),
+      ...(d.release.grabs !== undefined ? { grabs: d.release.grabs } : {}), ...(d.release.seeders !== undefined ? { seeders: d.release.seeders } : {}),
+      ...(d.release.freeleech ? { freeleech: true } : {}), ...(d.quality ? { quality: d.quality } : {}),
+      score: d.score, accepted: d.accepted, upgrade: d.upgrade, reasons: d.reasons, scoreParts: d.scoreParts, rejections: d.rejections,
+      ...(d.upgradeReason ? { upgradeReason: d.upgradeReason } : {}), ...(d === best ? { best: true } : {}), parsed: parsedFacts(d.parsed) };
+  }
+  private async interactiveShow(title: LibraryTitle, scopeText: string | undefined, signal?: AbortSignal): Promise<InteractiveSearch> {
+    const scope = this.scopeOf(scopeText), result = await this.deps.indexers.search(this.showQuery(title, scope.season, scope.episode), signal, { manual: true });
+    this.hold(`${title.id}:${scopeName(scope.season, scope.episode)}`, result.releases);
+    const state = this.showState(title), ctx = this.context(title);
+    const decisions = result.releases.map(r => this.showDecision(title, r, scope, state, ctx));
+    const accepted = decisions.filter(d => d.accepted).sort((a, b) => compareDecisions(a, b, ctx)), best = accepted[0];
+    const profileRow = this.store.profiles().find(p => p.id === title.profileId);
+    return {
+      profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) },
+      releases: [...accepted, ...decisions.filter(d => !d.accepted)].map(d => this.releaseView(d, best)),
+      indexers: result.indexers.map(r => ({ indexer: r.indexer, searched: r.searched, ...(r.error ? { error: r.error } : {}) })),
+    };
+  }
+  private grabShowRelease(title: LibraryTitle, guid: string, scopeText: string | undefined) {
+    const scope = this.scopeOf(scopeText), key = `${title.id}:${scopeName(scope.season, scope.episode)}`;
+    const release = this.found.get(key)?.releases.find(r => r.guid === guid);
+    requireThat(release, 'SEARCH_EXPIRED', 'Search again: that result is no longer held.', 409);
+    const state = this.showState(title), decision = this.showDecision(title, release, scope, state, this.context(title));
+    requireThat(decision.quality, 'QUALITY_UNKNOWN', 'Its quality can’t be read from the name, so it can’t be grabbed.', 409);
+    const season = decision.parsed.season ?? scope.season;
+    const covers = decision.parsed.seasonPack ? state.episodes.filter(e => e.season === season).map(e => e.episode) : decision.parsed.episodes;
+    requireThat(covers.length, 'EPISODES_UNKNOWN', 'It doesn’t say which episodes it holds, so it can’t be grabbed.', 409);
+    const grab = this.grab(title, decision, 'By hand', covers.map(e => [season, e] as EpisodeRef));
+    requireThat(grab, 'GRAB_OPEN', `Some of those episodes already have a download under way.`, 409);
+    this.store.audit('library_manual_grab', { title: title.id, grab: grab.id, release: release.name, accepted: decision.accepted });
+    return grab;
+  }
   private currentRelease(file: LibraryFileRow, protocol: Grab['protocol'] | undefined, want: ReturnType<Library['want']>,
     ctx: PickContext, decisions: Decision[]): InteractiveCurrentRelease {
     const name = file.releaseName || win32.basename(file.path);
@@ -713,38 +944,33 @@ export class Library {
       position: position < 0 ? decisions.length : position };
   }
 
-  async interactive(titleId: number, signal?: AbortSignal) {
+  async interactive(titleId: number, signal?: AbortSignal, scope?: string): Promise<InteractiveSearch> {
+    const any = this.store.title(titleId);
+    if (any?.kind === 'show') return this.interactiveShow(any, scope, signal);
     const title = this.movie(titleId);
     // Every enabled indexer, Usenet and torrents.
     const result = await this.deps.indexers.search({ kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}),
       ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(this.profile(title)) }, signal, { manual: true });
     const file = this.store.files(title.id)[0], fileGrab = file?.grabId === undefined ? undefined : this.store.grab(file.grabId);
     const releases = file ? result.releases.filter(r => !matchesLibraryFile(r, file, fileGrab)) : result.releases;
-    const now = this.now();
-    for (const [id, entry] of this.found) if (now - entry.at > 30 * MINUTE) this.found.delete(id);
-    if (this.found.size >= 20) this.found.delete(this.found.keys().next().value!);
-    this.found.delete(title.id);
-    this.found.set(title.id, { at: now, releases });
+    this.hold(String(title.id), releases);
     const want = this.want(title, file), ctx = this.context(title), { decisions, best } = pick(releases, want, ctx);
     const have = file ? this.currentRelease(file, fileGrab?.protocol, want, ctx, decisions) : undefined;
     const profileRow = this.store.profiles().find(p => p.id === title.profileId);
     return {
       profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) }, ...(have ? { have } : {}),
-      releases: decisions.map(d => ({ guid: d.release.guid, name: d.release.name, indexer: d.release.indexer, protocol: d.release.protocol,
-        ...(d.release.size !== undefined ? { size: d.release.size } : {}), ...(d.release.publishedAt !== undefined ? { publishedAt: d.release.publishedAt } : {}),
-        ...(d.release.grabs !== undefined ? { grabs: d.release.grabs } : {}), ...(d.release.seeders !== undefined ? { seeders: d.release.seeders } : {}),
-        ...(d.release.freeleech ? { freeleech: true } : {}), ...(d.quality ? { quality: d.quality } : {}),
-        score: d.score, accepted: d.accepted, upgrade: d.upgrade, reasons: d.reasons, scoreParts: d.scoreParts, rejections: d.rejections,
-        ...(d.upgradeReason ? { upgradeReason: d.upgradeReason } : {}), ...(d === best ? { best: true } : {}), parsed: parsedFacts(d.parsed) })),
+      releases: decisions.map(d => this.releaseView(d, best)),
       indexers: result.indexers.map(r => ({ indexer: r.indexer, searched: r.searched, ...(r.error ? { error: r.error } : {}) })),
     };
   }
 
   // Grab from the last interactive search. A rejected release may be grabbed by hand, but only one whose quality is known.
-  grabRelease(titleId: number, guid: string) {
+  grabRelease(titleId: number, guid: string, scope?: string) {
     requireWritable();
+    const any = this.store.title(titleId);
+    if (any?.kind === 'show') return this.grabShowRelease(any, guid, scope);
     const title = this.movie(titleId);
-    const release = this.found.get(title.id)?.releases.find(r => r.guid === guid);
+    const release = this.found.get(String(title.id))?.releases.find(r => r.guid === guid);
     requireThat(release, 'SEARCH_EXPIRED', 'Search again: that result is no longer held.', 409);
     const file = this.store.files(title.id)[0], fileGrab = file?.grabId === undefined ? undefined : this.store.grab(file.grabId);
     requireThat(!file || !matchesLibraryFile(release, file, fileGrab), 'ALREADY_HAVE', 'This release is already in the library.', 409);
@@ -761,11 +987,13 @@ export class Library {
   retryGrab(grabId: number) {
     const grab = this.store.grab(grabId);
     requireThat(grab && grab.state === 'failed', 'NOT_FOUND', 'No such failed download.', 404);
-    const title = this.movie(grab.titleId);
+    const title = this.store.title(grab.titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
     if (title.paused) this.setPaused(title.id, false);
     if (title.monitor === 'none') this.store.setMonitor(title.id, 'all');
     this.store.grabEvent(grab.id, 'retried');
-    this.searchNow(title.id);
+    if (title.kind === 'show') this.searchAgain(this.store.title(title.id)!, grab.episodes);
+    else this.searchNow(title.id);
   }
 
   // ---- refresh-title ----

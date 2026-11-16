@@ -55,8 +55,10 @@ export type LibraryFileRow = { id: number; titleId: number; path: string; size: 
   releaseName?: string; releaseGroup?: string; media: FileMedia; grabId?: number; importedAt: number };
 export type GrabState = 'sending' | 'downloading' | 'unpacking' | 'importing' | 'imported' | 'seeding' | 'done' | 'failed' | 'cancelled';
 export const OPEN_GRAB_STATES: readonly GrabState[] = ['sending', 'downloading', 'unpacking', 'importing', 'seeding'];
+// A show's grab covers [season, episode] pairs (a season pack lists every episode it covers); a movie's covers none.
+export type EpisodeRef = [season: number, episode: number];
 export type Grab = {
-  id: number; titleId: number; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
+  id: number; titleId: number; episodes: EpisodeRef[]; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
   upgrade: boolean; downloader: string; downloadId?: string; state: GrabState; progress?: number; error?: string; contentPath?: string;
   sentAt?: number; finishedAt?: number; importedAt?: number; removedAt?: number;
   // Torrents: when progress last moved, and the seeding figures qBittorrent last gave (and when).
@@ -74,7 +76,7 @@ type TitleRaw = { id: number; kind: 'movie' | 'show'; tmdb_id: number; tvdb_id: 
   paused_reason: string | null; added_at: number; added_by: string; refreshed_at: number | null; runtime: number | null };
 type FileRaw = { id: number; title_id: number; path: string; size: number; quality: string; proper: number; score: number; release_name: string | null;
   release_group: string | null; media: string; grab_id: number | null; imported_at: number };
-type GrabRaw = { id: number; title_id: number; release_name: string; indexer: string; guid: string; protocol: Protocol; size: number | null; quality: string; score: number;
+type GrabRaw = { id: number; title_id: number; episodes: string; release_name: string; indexer: string; guid: string; protocol: Protocol; size: number | null; quality: string; score: number;
   upgrade: number; downloader: string; download_id: string | null; state: GrabState; progress: number | null; error: string | null; content_path: string | null;
   sent_at: number | null; finished_at: number | null; imported_at: number | null; removed_at: number | null;
   progress_at: number | null; ratio: number | null; seeding_seconds: number | null; seeding_checked_at: number | null };
@@ -94,7 +96,7 @@ const file = (r: FileRaw): LibraryFileRow => ({
   ...opt('releaseGroup', r.release_group), media: json<FileMedia>(r.media, {}), ...opt('grabId', r.grab_id), importedAt: r.imported_at,
 });
 const grab = (r: GrabRaw): Grab => ({
-  id: r.id, titleId: r.title_id, releaseName: r.release_name, indexer: r.indexer, guid: r.guid, protocol: r.protocol, ...opt('size', r.size), quality: quality(r.quality),
+  id: r.id, titleId: r.title_id, episodes: json<EpisodeRef[]>(r.episodes, []), releaseName: r.release_name, indexer: r.indexer, guid: r.guid, protocol: r.protocol, ...opt('size', r.size), quality: quality(r.quality),
   score: r.score, upgrade: !!r.upgrade, downloader: r.downloader, ...opt('downloadId', r.download_id), state: r.state, ...opt('progress', r.progress),
   ...opt('error', r.error), ...opt('contentPath', r.content_path), ...opt('sentAt', r.sent_at), ...opt('finishedAt', r.finished_at),
   ...opt('importedAt', r.imported_at), ...opt('removedAt', r.removed_at), ...opt('progressAt', r.progress_at), ...opt('ratio', r.ratio),
@@ -106,7 +108,7 @@ const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
 
 export type NewTitle = { kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; monitorFrom?: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
   root: string; keep: boolean; released: Released; addedBy: string; runtime?: number };
-export type NewGrab = { titleId: number; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
+export type NewGrab = { titleId: number; episodes?: EpisodeRef[]; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
   upgrade: boolean; downloader: string };
 export type NewFile = { titleId: number; path: string; size: number; quality: Quality; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;
   media: FileMedia; grabId?: number };
@@ -281,6 +283,10 @@ export class LibraryStore {
   }
   // The title's grab under way (a seeding torrent doesn't count).
   openGrabFor(titleId: number) { const r = prepared(this.db, `SELECT * FROM grabs WHERE title_id = ? AND ${ACTIVE} ORDER BY id DESC LIMIT 1`).get(titleId) as GrabRaw | undefined; return r ? grab(r) : undefined; }
+  // A show's episodes with a grab under way.
+  grabbingEpisodes(titleId: number): EpisodeRef[] {
+    return (prepared(this.db, `SELECT episodes FROM grabs WHERE title_id = ? AND ${ACTIVE}`).all(titleId) as { episodes: string }[]).flatMap(r => json<EpisodeRef[]>(r.episodes, []));
+  }
   // Titles with a grab under way (LibraryFulfiller.queue).
   grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${ACTIVE}`).all() as { title_id: number }[]).map(r => r.title_id)); }
   // A step in a grab's history (grab_events): a GrabState it moved to, `grabbed` or `retried`.
@@ -293,13 +299,14 @@ export class LibraryStore {
       JOIN grabs g ON g.id = e.grab_id ORDER BY e.at DESC, e.id DESC LIMIT ?`).all(limit) as (GrabRaw & { event_id: number; event_at: number; event_kind: GrabEventKind; event_note: string | null })[])
       .map(r => ({ id: r.event_id, at: r.event_at, kind: r.event_kind, ...opt('note', r.event_note), grab: grab(r) }));
   }
-  // A new grab, unless the title already has an open one (then undefined). `note`: how it was grabbed ("By hand").
+  // A new grab, unless one under way already covers it (then undefined): for a movie any open grab of the title, for a
+  // show one covering any of the same episodes. `note`: how it was grabbed ("By hand").
   insertGrab(g: NewGrab, note?: string) {
     return this.db.transaction(() => {
-      if (this.openGrabFor(g.titleId)) return undefined;
-      const id = Number(prepared(this.db, `INSERT INTO grabs(title_id, release_name, indexer, guid, protocol, size, quality, score, upgrade, downloader, state)
-        VALUES(@titleId, @releaseName, @indexer, @guid, @protocol, @size, @quality, @score, @upgrade, @downloader, 'sending')`)
-        .run({ ...g, size: g.size ?? null, upgrade: g.upgrade ? 1 : 0 }).lastInsertRowid);
+      if (g.episodes?.length ? this.grabbingEpisodes(g.titleId).some(([s, e]) => g.episodes!.some(([s2, e2]) => s === s2 && e === e2)) : this.openGrabFor(g.titleId)) return undefined;
+      const id = Number(prepared(this.db, `INSERT INTO grabs(title_id, episodes, release_name, indexer, guid, protocol, size, quality, score, upgrade, downloader, state)
+        VALUES(@titleId, @episodes, @releaseName, @indexer, @guid, @protocol, @size, @quality, @score, @upgrade, @downloader, 'sending')`)
+        .run({ ...g, episodes: JSON.stringify(g.episodes ?? []), size: g.size ?? null, upgrade: g.upgrade ? 1 : 0 }).lastInsertRowid);
       this.grabEvent(id, 'grabbed', note);
       return this.grab(id)!;
     })();
@@ -349,6 +356,14 @@ export class LibraryStore {
     prepared(this.db, `INSERT INTO searches(title_id, scope, last_at, misses, next_at) VALUES(?, ?, ?, ?, ?)
       ON CONFLICT(title_id, scope) DO UPDATE SET last_at = excluded.last_at, misses = excluded.misses, next_at = excluded.next_at`)
       .run(row.titleId, row.scope, row.lastAt, row.misses, row.nextAt);
+  }
+  // A show's files by episode ("season:episode"), newest first when an upgrade left two.
+  episodeFiles(titleId: number) {
+    const rows = prepared(this.db, `SELECT fe.season, fe.episode, f.* FROM library_file_episodes fe JOIN library_files f ON f.id = fe.file_id
+      WHERE fe.title_id = ? ORDER BY f.imported_at DESC, f.id DESC`).all(titleId) as (FileRaw & { season: number; episode: number })[];
+    const byEpisode = new Map<string, LibraryFileRow>();
+    for (const r of rows) if (!byEpisode.has(`${r.season}:${r.episode}`)) byEpisode.set(`${r.season}:${r.episode}`, file(r));
+    return byEpisode;
   }
   // Every movie, for the calendar: its TMDB dates and whether tk.box has a file for it.
   calendarMovies() {

@@ -113,3 +113,55 @@ export function followEpisodes(follow: ShowFollow, tmdb: { seasons: readonly num
 
 // TMDB's statuses for a show that won't air again: refreshed weekly instead of daily.
 export const showEnded = (released: Released) => released.status === 'Ended' || released.status === 'Canceled';
+
+// ---- Shows: wanted episodes and what to search ----
+
+export type ShowEpisodeState = Pick<EpisodeRow, 'season' | 'episode' | 'airAt' | 'monitored'> & { file?: { quality: Quality } };
+
+// An episode is wanted on the movie rules once it has aired: monitored (and its season), the show not paused, and no
+// file or one below the cutoff. A show's files are tk.box's own records (library_file_episodes).
+export function episodeWanted(show: { monitor: Monitor; paused: boolean }, seasonMonitored: boolean, episode: ShowEpisodeState, profile: QualityProfile, now: number): Wanted {
+  if (show.monitor === 'none' || !seasonMonitored || !episode.monitored) return { wanted: false, why: 'unmonitored' };
+  if (show.paused) return { wanted: false, why: 'paused' };
+  if (episode.airAt === undefined || episode.airAt > now) return { wanted: false, why: 'unmonitored' };
+  if (episode.file) return meetsCutoff(profile, episode.file.quality) ? { wanted: false, why: 'have' } : { wanted: true, why: 'cutoff' };
+  return { wanted: true, why: 'missing' };
+}
+
+// A search scope, as `searches.scope` keeps it: S02 (a season, pack first) or S02E05.
+export type ShowScope = { scope: string; season: number; episode?: number; episodes: number[] };
+export const scopeName = (season: number, episode?: number) => `S${String(season).padStart(2, '0')}${episode === undefined ? '' : `E${String(episode).padStart(2, '0')}`}`;
+export function parseScope(scope: string): { season: number; episode?: number } | undefined {
+  const m = /^S(\d{2,})(?:E(\d{2,}))?$/.exec(scope);
+  return m ? { season: Number(m[1]), ...(m[2] ? { episode: Number(m[2]) } : {}) } : undefined;
+}
+
+// What to search for a show. A season that has finished airing, with every monitored episode wanted and at least two
+// of them, is searched as one (a pack first: the season search also returns its episodes). Otherwise each wanted
+// episode on its own. Episodes with a grab under way are left out.
+export function showScopes(show: { monitor: Monitor; paused: boolean }, seasons: readonly SeasonRow[], episodes: readonly ShowEpisodeState[],
+  profile: QualityProfile, now: number, grabbing: readonly (readonly [number, number])[] = []): ShowScope[] {
+  const busy = new Set(grabbing.map(([s, e]) => `${s}:${e}`)), on = new Map(seasons.map(s => [s.season, s.monitored]));
+  const scopes: ShowScope[] = [];
+  for (const season of seasons) {
+    const all = episodes.filter(e => e.season === season.season);
+    const wanted = all.filter(e => !busy.has(`${e.season}:${e.episode}`) && episodeWanted(show, !!on.get(e.season), e, profile, now).wanted).map(e => e.episode);
+    if (!wanted.length) continue;
+    const monitored = all.filter(e => e.monitored);
+    const finished = all.length > 0 && all.every(e => e.airAt !== undefined && e.airAt <= now);
+    if (finished && wanted.length >= 2 && wanted.length === monitored.length) { scopes.push({ scope: scopeName(season.season), season: season.season, episodes: wanted }); continue; }
+    for (const episode of wanted) scopes.push({ scope: scopeName(season.season, episode), season: season.season, episode, episodes: [episode] });
+  }
+  return scopes;
+}
+
+// New episodes: searched 1 hour after they air, again at 6 hours, then on the backoff. A season, or an episode that
+// aired long ago, is searched at once.
+export const AIRED_SEARCHES = [1 * HOUR, 6 * HOUR] as const;
+export function firstEpisodeSearchAt(now: number, airAt?: number) {
+  return airAt === undefined ? now : Math.max(now, airAt + AIRED_SEARCHES[0]);
+}
+export function nextEpisodeSearchAt(input: { now: number; misses: number; airAt?: number }) {
+  const { now, misses, airAt } = input, second = airAt === undefined ? undefined : airAt + AIRED_SEARCHES[1];
+  return second !== undefined && second > now ? second : now + missBackoff(misses);
+}

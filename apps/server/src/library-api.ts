@@ -256,18 +256,22 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}) });
     return titleView(titleId);
   });
-  app.post('/api/v1/admin/library/titles/:id/search', admin, async request => { library.searchNow(id.parse(request.params).id); return { ok: true }; });
+  // A show's season (S02) or episode (S02E05); movies take none.
+  const scopeBody = z.object({ scope: z.string().regex(/^S\d{2,}(E\d{2,})?$/).optional() }).strict();
+  app.post('/api/v1/admin/library/titles/:id/search', admin, async request => {
+    library.searchNow(id.parse(request.params).id, scopeBody.parse(request.body ?? {}).scope); return { ok: true };
+  });
   app.post('/api/v1/admin/library/titles/:id/pause', admin, async request => {
     const { id: titleId } = id.parse(request.params), { paused } = z.object({ paused: z.boolean() }).strict().parse(request.body);
     library.setPaused(titleId, paused);
     return titleView(titleId);
   });
   app.post('/api/v1/admin/library/titles/:id/interactive', { config: { access: 'admin', rateLimit: { max: 20, timeWindow: 60000 } } },
-    async request => await library.interactive(id.parse(request.params).id) satisfies InteractiveSearch);
+    async request => await library.interactive(id.parse(request.params).id, undefined, scopeBody.parse(request.body ?? {}).scope) satisfies InteractiveSearch);
   app.post('/api/v1/admin/library/titles/:id/grab', admin, async request => {
-    const { guid } = z.object({ guid: z.string().min(1).max(500) }).strict().parse(request.body);
+    const { guid, scope } = z.object({ guid: z.string().min(1).max(500) }).merge(scopeBody).strict().parse(request.body);
     titleName.clear();
-    return grabView(library.grabRelease(id.parse(request.params).id, guid));
+    return grabView(library.grabRelease(id.parse(request.params).id, guid, scope));
   });
 
   app.get('/api/v1/admin/library/rules', admin, async () => pickRules());
