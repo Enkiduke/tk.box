@@ -6,13 +6,13 @@ import { scoreFormats } from '../lib/formats.js';
 import { DEFAULT_RUNTIME, allows2160p, isPreferred, preferredText, sizeLimits, tierOf, type QualityProfile } from '../lib/profiles.js';
 import { builtInProfile } from '../lib/builtin-profiles.js';
 import { seedingDecision, seedingRule } from '../lib/seeding.js';
-import { compareDecisions, decide, pick, type Decision, type EpisodeWant, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
+import { bettersLibrary, compareDecisions, decide, pick, type Decision, type EpisodeWant, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
 import { airedAt, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
   showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
-import { findVideos, type MovieImporter } from './library-import.js';
+import { findVideos, type LibraryImporter, type ShowImport } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
 import type { FeedListener, MovieQuery, NzbFile, Release, SearchOptions, SearchResult, ShowQuery, TitleQuery } from './indexers.js';
 import type { Download, DownloaderName, GrabRef, RemoveOptions, Sent } from './downloaders.js';
@@ -69,7 +69,8 @@ type ShowPick = { decision: Decision; episodes: EpisodeRef[] };
 type SendPayload = { grabId: number; link: string };
 // `from`: the unpack folder to import from, instead of the download's.
 type GrabPayload = { grabId: number; from?: string };
-type FilePayload = { fileId: number };
+// One Plex scan for a folder's new files (`fileIds`, a pack's season folder), each then announced as imported.
+type FilePayload = { fileId: number; fileIds?: number[] };
 
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // SABnzbd's history holds 500 jobs; a grab it no longer lists for this many checks (30 s apart) is taken as gone.
@@ -111,7 +112,7 @@ export class Library {
   private stopFeed?: () => void;
   constructor(private deps: {
     store: LibraryStore; queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>;
-    plex: PlexHolds; importer: MovieImporter; scan: (folder: string) => Promise<boolean>; emit: Emit;
+    plex: PlexHolds; importer: LibraryImporter; scan: (folder: string) => Promise<boolean>; emit: Emit;
     log: (message: string, detail?: Record<string, unknown>) => void; now?: () => number; unpacker?: Unpacker;
   }) {}
   private get unpacker() { return this.deps.unpacker ?? defaultUnpacker; }
@@ -685,23 +686,34 @@ export class Library {
         return done();
       }
     }
-    const runtime = await this.tmdb(title.tmdbId).then(f => f.runtime, () => undefined);
+    const how = torrent ? (from ? { from, state: 'seeding' as const } : { link: true, state: 'seeding' as const }) : {};
     try {
-      const result = await this.deps.importer.import(grab, title, runtime, signal,
-        torrent ? (from ? { from, state: 'seeding' } : { link: true, state: 'seeding' }) : {});
+      // A movie: its one file, against TMDB's runtime. A show: its files mapped to episodes, each against its episodes'.
+      const result = title.kind === 'show'
+        ? await this.deps.importer.importEpisodes(grab, title, this.showImport(title), signal, how)
+        : await this.deps.importer.import(grab, title, await this.tmdb(title.tmdbId).then(f => f.runtime, () => undefined), signal, how);
       if (from) await this.unpacker.clear(from).catch(e => this.deps.log('library: the unpack folder stayed', { grab: grab.id, folder: from, error: errorText(e) }));
       if (!result.ok) { await this.failGrab(grab, result.reason, true); return done(); }
+      const files = 'files' in result ? result.files : [{ fileId: result.fileId, path: result.path, copied: result.copied, episodes: [] as EpisodeRef[] }];
       this.resolve(`library.import.${grab.id}`);
-      this.deps.log('library: imported', { grab: grab.id, title: title.id, path: result.path, ...(result.copied ? { copied: true } : {}),
-        ...(result.replaced.length ? { replaced: result.replaced } : {}) });
-      if (result.copied) this.deps.log(`library: the download was on another mount, so it was copied instead of ${torrent && !from ? 'linked' : 'moved'}`, { grab: grab.id, path: result.path });
+      this.deps.log('library: imported', { grab: grab.id, title: title.id, ...(files.length === 1 ? { path: files[0]!.path } : { paths: files.map(f => f.path) }),
+        ...(files.some(f => f.copied) ? { copied: true } : {}), ...(result.replaced.length ? { replaced: result.replaced } : {}),
+        ...(result.skipped.length && title.kind === 'show' ? { skipped: result.skipped.map(s => `${s.path}: ${s.reason}`) } : {}) });
+      if (files.some(f => f.copied)) this.deps.log(`library: the download was on another mount, so it was copied instead of ${torrent && !from ? 'linked' : 'moved'}`, { grab: grab.id, paths: files.filter(f => f.copied).map(f => f.path) });
       // SABnzbd's job and folder go; a torrent keeps seeding until the seeding check removes it.
       if (!torrent) await this.deps.downloaders.remove({ downloader: 'sabnzbd', downloadId: grab.downloadId ?? '' })
         .catch(e => this.deps.log('library: SABnzbd kept the imported job', { grab: grab.id, error: errorText(e) }));
-      const now = this.now(), settings = this.store.settings(), file = this.store.file(result.fileId)!;
-      this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: this.store.search(title.id, 'movie')?.lastAt ?? now, misses: 0,
-        nextAt: nextSearchAt({ now, misses: 1, released: title.released, earlyCopies: settings.earlyCopies, file }) });
-      this.deps.queue.enqueue('plex-scan', `file:${result.fileId}`, { fileId: result.fileId });
+      const now = this.now();
+      if (title.kind === 'show') this.importedEpisodes(title, grab, files.flatMap(f => f.episodes));
+      else {
+        const settings = this.store.settings(), file = this.store.file(files[0]!.fileId)!;
+        this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: this.store.search(title.id, 'movie')?.lastAt ?? now, misses: 0,
+          nextAt: nextSearchAt({ now, misses: 1, released: title.released, earlyCopies: settings.earlyCopies, file }) });
+      }
+      // One Plex scan per folder (a pack's season folder once), then each file is announced.
+      const byFolder = new Map<string, number[]>();
+      for (const f of files) byFolder.set(dirname(f.path), [...byFolder.get(dirname(f.path)) ?? [], f.fileId]);
+      for (const ids of byFolder.values()) this.deps.queue.enqueue('plex-scan', `file:${ids[0]}`, { fileId: ids[0]!, ...(ids.length > 1 ? { fileIds: ids } : {}) });
       this.grabChanged(grab);
       return done();
     } catch (e) {
@@ -709,6 +721,25 @@ export class Library {
       this.alert(`library.import.${grab.id}`, `${title.title} couldn’t be imported`, errorText(e));
       return fail(errorText(e));
     }
+  }
+
+  // What a show's import weighs: its episodes (names, runtimes) and, per episode, whether a file betters the library's
+  // by the pick rules.
+  private showImport(title: LibraryTitle): ShowImport {
+    const files = this.store.episodeFiles(title.id), ctx = this.context(title);
+    return { episodes: this.store.episodes(title.id), runtime: title.runtime || DEFAULT_RUNTIME.show,
+      noBetter: (season, episode, file) => {
+        const verdict = bettersLibrary(file, this.have(title, files.get(`${season}:${episode}`)), ctx);
+        return verdict.ok ? undefined : verdict.reason ?? 'no better than the library’s file';
+      } };
+  }
+  // After a show's import its grab's scope starts over: the season (`S02`) for a pack, else each episode (`S02E05`),
+  // next looked at on the first backoff step (for an upgrade below the cutoff). Episodes still wanted keep their own.
+  private importedEpisodes(title: LibraryTitle, grab: Grab, episodes: readonly EpisodeRef[]) {
+    const now = this.now(), pack = parseRelease(grab.releaseName).seasonPack;
+    const scopes = new Set(episodes.map(([s, e]) => pack ? scopeName(s) : scopeName(s, e)));
+    for (const scope of scopes) this.store.setSearch({ titleId: title.id, scope, lastAt: this.store.search(title.id, scope)?.lastAt ?? now, misses: 0,
+      nextAt: nextEpisodeSearchAt({ now, misses: 1 }) });
   }
 
   // ---- unpack ----
@@ -783,7 +814,8 @@ export class Library {
   // ---- plex-scan ----
 
   private async scan(item: QueueItem<FilePayload>): Promise<Outcome> {
-    const file = this.store.file(item.payload.fileId);
+    const files = (item.payload.fileIds ?? [item.payload.fileId]).map(id => this.store.file(id)).filter(f => f !== undefined);
+    const file = files[0];
     if (!file) return done();
     const title = this.store.title(file.titleId);
     try {
@@ -793,7 +825,7 @@ export class Library {
       if (!(e instanceof AppError && e.code === 'NO_PLEX_TOKEN')) return fail(errorText(e));
       this.deps.log('library: no Plex admin token, so Plex wasn’t told', { path: file.path });
     }
-    this.deps.emit('library.file.imported', { titleId: file.titleId, fileId: file.id, path: file.path, kind: title?.kind ?? 'movie', tmdbId: title?.tmdbId ?? 0 });
+    for (const f of files) this.deps.emit('library.file.imported', { titleId: f.titleId, fileId: f.id, path: f.path, kind: title?.kind ?? 'movie', tmdbId: title?.tmdbId ?? 0 });
     return done();
   }
 

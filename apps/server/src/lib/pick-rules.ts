@@ -97,6 +97,16 @@ function againstLibrary({ quality, tier, score, parsed }: Against, have: Library
   return { ok: false, upgrade: false, reason: `no better than the library's ${have.quality}${scoring ? ` (score ${score}, an upgrade needs ${have.score! + profile.upgradeStep})` : ''}` };
 }
 
+// Whether a downloaded file betters the library's file for one episode, by the same rules a pick uses (the import of a
+// pack skips an episode it doesn't better). A quality the profile doesn't take betters nothing the library has.
+export function bettersLibrary(file: { quality: Quality; score: number; parsed: ParsedRelease }, have: LibraryFile | undefined, ctx: PickContext): { ok: boolean; reason?: string } {
+  if (!have) return { ok: true };
+  const tier = tierOf(ctx.profile, file.quality);
+  if (tier < 0) return { ok: false, reason: `quality ${file.quality} isn't allowed` };
+  const { ok, reason } = againstLibrary({ ...file, tier }, have, ctx);
+  return { ok, ...(reason ? { reason } : {}) };
+}
+
 export function decide(release: Candidate, want: Want, ctx: PickContext): Decision {
   const parsed = parseRelease(release.name, new Date(ctx.now).getUTCFullYear());
   const { profile } = ctx;

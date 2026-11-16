@@ -4,15 +4,15 @@ import { existsSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { runProcess } from '../streaming/ffmpeg.js';
 import { parseRelease, type ParsedRelease } from '../lib/release-name.js';
-import { qualityOf } from '../lib/quality.js';
+import { qualityOf, type Quality } from '../lib/quality.js';
 import { scoreFormats } from '../lib/formats.js';
-import { audioChannelsName, audioCodecName, dynamicRangeName, movieFileName, movieFolder, videoCodecName } from '../lib/naming.js';
-import type { FileMedia, Grab, LibraryStore, LibraryTitle } from '../persistence/library-store.js';
+import { audioChannelsName, audioCodecName, dynamicRangeName, episodeFileName, movieFileName, movieFolder, seasonFolder, seriesFolder, videoCodecName } from '../lib/naming.js';
+import type { EpisodeRef, FileMedia, Grab, LibraryFileRow, LibraryStore, LibraryTitle } from '../persistence/library-store.js';
 
-// Importing a finished movie download (docs/ARR-REPLACEMENT.md, "Import and seeding", steps 1 and 3–5): find the video,
-// check it, name it, bring it into the library and record it. Usenet downloads and unpacked RARs are renamed; torrents
-// are hardlinked so they keep seeding (services/unpack.ts unpacks RARs first). Either is copied when the download is on
-// another mount.
+// Importing a finished download (docs/ARR-REPLACEMENT.md, "Import and seeding", steps 1 and 3–5): a movie's biggest
+// video, or a show's videos mapped to episodes (docs/PHASE-2.md, step 3); check each, name it, bring it into the library
+// and record it. Usenet downloads and unpacked RARs are renamed; torrents are hardlinked so they keep seeding
+// (services/unpack.ts unpacks RARs first). Either is copied when the download is on another mount.
 
 export const VIDEO_EXTENSIONS = new Set(['.mkv', '.mp4', '.m4v', '.avi']);
 export const SAMPLE_BYTES = 150 * 1024 * 1024;
@@ -92,15 +92,39 @@ export type ImportOk = { ok: true; fileId: number; path: string; copied: boolean
 export type ImportRefused = { ok: false; failure: 'no-file' | 'fake'; reason: string; skipped: Skipped[] };
 export type ImportResult = ImportOk | ImportRefused;
 
+// A show's import: each file brought in, with the episodes it was recorded for.
+export type EpisodeFileImported = { fileId: number; path: string; episodes: EpisodeRef[]; copied: boolean };
+export type EpisodesOk = { ok: true; files: EpisodeFileImported[]; replaced: string[]; skipped: Skipped[] };
+export type EpisodesResult = EpisodesOk | ImportRefused;
+
+// What the importer needs to know about a show (Library builds it): its episodes, with names for the file names and
+// runtimes for the length check; the runtime of one with none (the show's, else 45); and why a file doesn't better the
+// library's file for an episode (the pick rules', so import and pick agree), undefined when it does or there's none.
+export type ShowEpisode = { season: number; episode: number; name?: string; runtime?: number };
+export type ShowImport = {
+  episodes: readonly ShowEpisode[];
+  runtime: number;
+  noBetter: (season: number, episode: number, file: { quality: Quality; score: number; parsed: ParsedRelease }) => string | undefined;
+};
+
 const errno = (e: unknown) => (e as NodeJS.ErrnoException | undefined)?.code;
 const unlinkQuietly = async (ops: FileOps, path: string) => { try { await ops.unlink(path); } catch (e) { if (errno(e) !== 'ENOENT') throw e; } };
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const code = ([season, episode]: EpisodeRef) => `S${pad2(season)}E${pad2(episode)}`;
+const key = ([season, episode]: EpisodeRef) => `${season}:${episode}`;
+const noVideo = (skipped: readonly Skipped[]) =>
+  skipped.length ? `No usable video: ${skipped.map(s => `${basename(s.path)} is ${s.reason}`).join('; ')}.` : 'No video file in the download.';
 
-export class MovieImporter {
+// What a video's names say: its own, its folder's (when it's in one) and, for the quality, the grab's release name.
+type Described = { fileParse: ParsedRelease; folderParse?: ParsedRelease; parsed: ParsedRelease; quality: Quality; score: number; labels: string[]; group?: string };
+
+export class LibraryImporter {
   constructor(private store: LibraryStore, private probe: ProbeFn, private ops: FileOps = fs,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private minBytes = SAMPLE_BYTES) {}
 
-  // An upgrade that stopped after the new file was recorded but before the old one went leaves two rows for the
-  // movie. The newest is the one to keep; the others are deleted from disk, then forgotten.
+  // An upgrade that stopped after the new file was recorded but before the old one went leaves the old one behind:
+  // for a movie a second row (the newest is kept), for a show a file no episode is mapped to any more. Those are
+  // deleted from disk, then forgotten. (So a show's file must be mapped to its episodes when it's recorded.)
   async cleanLeftovers() {
     const removed: string[] = [], kept = new Map<number, string>();
     if (readOnly()) return removed;
@@ -108,6 +132,11 @@ export class MovieImporter {
       const keep = kept.get(file.titleId);
       if (keep === undefined) { kept.set(file.titleId, file.path); continue; }
       if (file.path !== keep) await unlinkQuietly(this.ops, file.path);
+      this.store.deleteFile(file.id);
+      removed.push(file.path);
+    }
+    for (const file of this.store.unmappedShowFiles()) {
+      await unlinkQuietly(this.ops, file.path);
       this.store.deleteFile(file.id);
       removed.push(file.path);
     }
@@ -136,47 +165,26 @@ export class MovieImporter {
   // disk) are thrown, for the queue to retry.
   async import(grab: Grab, title: LibraryTitle, runtimeMin: number | undefined, signal?: AbortSignal, options: ImportOptions = {}): Promise<ImportResult> {
     await this.cleanLeftovers();
-    const contentPath = options.from ?? grab.contentPath;
-    if (!contentPath) return { ok: false, failure: 'no-file', reason: 'The downloader gave no folder.', skipped: [] };
-    let found: Awaited<ReturnType<typeof findVideos>>;
-    try { found = await findVideos(contentPath, this.ops, this.minBytes); }
-    catch (e) { if (errno(e) === 'ENOENT') return { ok: false, failure: 'no-file', reason: `${contentPath} doesn't exist.`, skipped: [] }; throw e; }
-    const { videos, skipped } = found;
-    const main = videos[0];
-    if (!main) return { ok: false, failure: 'no-file', reason: skipped.length ? `No usable video: ${skipped.map(s => `${basename(s.path)} is ${s.reason}`).join('; ')}.` : 'No video file in the download.', skipped };
-
-    // The file's own name, the folder's when the file's is obfuscated, else the release name the grab was for.
-    const fileParse = parseRelease(basename(main.path, extname(main.path)));
-    const folderName = main.path !== contentPath ? basename(dirname(main.path)) : undefined;
-    const candidates = [fileParse, ...(folderName ? [parseRelease(folderName)] : []), parseRelease(grab.releaseName)];
-    const parsed: ParsedRelease = candidates.find(p => !p.obfuscated && qualityOf(p)) ?? parseRelease(grab.releaseName);
-    const quality = qualityOf(parsed) ?? grab.quality;
+    const found = await this.videos(grab, options);
+    if (!found.ok) return found;
+    const { contentPath, videos, skipped } = found;
+    const main = videos[0]!;
+    const { parsed, quality, score, labels, group } = this.describe(main.path, contentPath, grab, title);
 
     const probe = await this.probe(main.path, signal);
     if (runtimeMin && runtimeMin > 0) {
-      const need = runtimeMin * 60 / 2;
-      if (probe.durationSec === undefined) return { ok: false, failure: 'fake', reason: 'ffprobe found no length.', skipped };
-      if (probe.durationSec < need) return { ok: false, failure: 'fake',
-        reason: `It runs ${Math.round(probe.durationSec / 60)} min, under half of the ${runtimeMin} min runtime.`, skipped };
+      const tooShort = this.tooShort(probe, runtimeMin);
+      if (tooShort) return { ok: false, failure: 'fake', reason: tooShort, skipped };
     }
 
-    // The score under the title's profile when imported (shown on the file; picks work it out again from the name).
-    const { score, labels } = scoreFormats({ parsed, ...(quality ? { quality } : {}) }, this.store.formats(), this.store.profile(title.profileId)?.scores ?? {});
-    const media: FileMedia = {
-      ...(probe.durationSec !== undefined ? { durationSec: Math.round(probe.durationSec) } : {}),
-      ...optional('videoCodec', videoCodecName(parsed, probe.videoCodec)),
-      ...optional('dynamicRange', dynamicRangeName(probe)),
-      ...optional('audioCodec', audioCodecName(probe.audioCodec, probe.audioProfile)),
-      ...optional('audioChannels', audioChannelsName(probe.channels)),
-    };
+    const media = mediaOf(parsed, probe);
     const naming = { title: title.title, ...(title.year ? { year: title.year } : {}), tmdbId: title.tmdbId };
-    const group = parsed.group ?? parseRelease(grab.releaseName).group;
     const folder = title.folder ?? movieFolder(naming);
     const name = movieFileName(naming, { quality, proper: parsed.proper, repack: parsed.repack, editions: parsed.editions, customFormats: labels,
       ...media, ...(group ? { group } : {}) });
     const dest = join(title.root, folder, `${name}${extname(main.path).toLowerCase()}`);
 
-    const copied = options.link ? await this.linkInto(main.path, dest) : await this.place(main.path, dest);
+    const copied = await this.bringIn(main.path, dest, options);
     if (copied) media.copied = true;
     // Recorded first: the new file, the title's folder and the grab. Only then does the old file go.
     const fileId = this.store.db.transaction(() => {
@@ -188,18 +196,137 @@ export class MovieImporter {
       if (copied) this.store.audit('library_import_copied', { grab: grab.id, title: title.id, from: main.path, to: dest });
       return id;
     })();
+    const replaced = await this.removeOld(this.store.files(title.id).filter(f => f.id !== fileId), [dest]);
+    return { ok: true, fileId, path: dest, copied, replaced, skipped };
+  }
+
+  // A show's download: every video in it, each mapped to episodes by its SxxEyy (its folder's when its own name is
+  // obfuscated; a grab of one episode with one video takes it). Only episodes the grab covers count; the biggest file
+  // for an episode wins; a file that doesn't better the library's for each of its episodes is skipped, as is one under
+  // half their runtimes. Each file is recorded with its episodes, which move off the file they had; a file left with no
+  // episodes is then deleted. Fewer files than the grab said is fine: the rest stay wanted. None at all is a failure.
+  async importEpisodes(grab: Grab, title: LibraryTitle, show: ShowImport, signal?: AbortSignal, options: ImportOptions = {}): Promise<EpisodesResult> {
+    await this.cleanLeftovers();
+    if (title.tvdbId === undefined) throw new Error(`${title.title} has no TVDB id to name its files by.`);
+    const found = await this.videos(grab, options);
+    if (!found.ok) return found;
+    const { contentPath, videos } = found, skipped = [...found.skipped];
+    const known = new Map(show.episodes.map(e => [key([e.season, e.episode]), e]));
+    const covered = new Set(grab.episodes.length ? grab.episodes.map(key) : known.keys());
+    const claimed = new Set<string>();
+
+    type Plan = { video: Found; described: Described; refs: EpisodeRef[]; probe?: Probe };
+    const plans: Plan[] = [];
+    for (const video of videos) {
+      const described = this.describe(video.path, contentPath, grab, title);
+      const named = [described.fileParse, described.folderParse].find(p => p && !p.obfuscated && !p.multiSeason && p.season !== undefined && p.episodes.length);
+      let refs: EpisodeRef[] = named ? named.episodes.map(e => [named.season!, e] as EpisodeRef) : [];
+      if (!named && videos.length === 1 && covered.size === 1) refs = [...covered].map(k => k.split(':').map(Number) as EpisodeRef);
+      if (!refs.length) { skipped.push({ path: video.path, reason: 'not named for an episode' }); continue; }
+      const inGrab = refs.filter(r => covered.has(key(r)) && known.has(key(r)));
+      if (!inGrab.length) { skipped.push({ path: video.path, reason: `${refs.map(code).join(', ')} not in the grab` }); continue; }
+      const free = inGrab.filter(r => !claimed.has(key(r)));
+      if (!free.length) { skipped.push({ path: video.path, reason: `a bigger file has ${inGrab.map(code).join(', ')}` }); continue; }
+      // Every episode it holds must be bettered, as a pick requires: a file never replaces an episode with one no better.
+      const worse = free.flatMap(r => { const why = show.noBetter(r[0], r[1], described); return why ? [`${code(r)}: ${why}`] : []; });
+      if (worse.length) { skipped.push({ path: video.path, reason: worse.join('; ') }); continue; }
+      for (const r of free) claimed.add(key(r));
+      plans.push({ video, described, refs: free });
+    }
+
+    // The length check for every file first, so the grab can be recorded with the last file brought in.
+    let fakes = 0;
+    for (const plan of plans) {
+      const probe = await this.probe(plan.video.path, signal);
+      const minutes = plan.refs.reduce((sum, r) => sum + (known.get(key(r))?.runtime || show.runtime), 0);
+      const tooShort = this.tooShort(probe, minutes);
+      if (tooShort) { fakes++; skipped.push({ path: plan.video.path, reason: `a fake: ${tooShort}` }); continue; }
+      plan.probe = probe;
+    }
+    const keep = plans.filter((p): p is Plan & { probe: Probe } => !!p.probe);
+    if (!keep.length) {
+      const reason = `No usable episode: ${skipped.map(s => `${basename(s.path)}, ${s.reason}`).join('; ')}.`;
+      return { ok: false, failure: fakes && fakes === plans.length ? 'fake' : 'no-file', reason, skipped };
+    }
+
+    const naming = { title: title.title, ...(title.year ? { year: title.year } : {}), tvdbId: title.tvdbId };
+    const folder = title.folder ?? seriesFolder(naming);
+    const files: EpisodeFileImported[] = [];
+    for (const [index, { video, described: { parsed, quality, score, labels, group }, refs, probe }] of keep.entries()) {
+      const media = mediaOf(parsed, probe), ext = extname(video.path).toLowerCase();
+      const sorted = [...refs].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const episodes = sorted.map(r => { const name = known.get(key(r))?.name; return { season: r[0], episode: r[1], ...(name ? { title: name } : {}) }; });
+      const name = episodeFileName(naming, episodes, { quality, proper: parsed.proper, repack: parsed.repack, customFormats: labels, ...media, ...(group ? { group } : {}) }, ext);
+      const dest = join(title.root, folder, seasonFolder(sorted[0]![0]), `${name}${ext}`);
+      const copied = await this.bringIn(video.path, dest, options);
+      if (copied) media.copied = true;
+      const last = index === keep.length - 1;
+      // Recorded with its episodes in one step (so a show's file is never recorded unmapped), the grab with the last.
+      const fileId = this.store.db.transaction(() => {
+        this.store.setFolder(title.id, folder);
+        const id = this.store.insertFile({ titleId: title.id, path: dest, size: video.size, quality, proper: parsed.proper || parsed.repack, score,
+          releaseName: grab.releaseName, ...(group ? { releaseGroup: group } : {}), media, grabId: grab.id });
+        this.store.mapEpisodes(id, title.id, sorted);
+        if (last) this.store.updateGrab(grab.id, { state: options.state ?? 'imported', importedAt: Date.now(), progress: 1, error: null },
+          keep.length > 1 ? `${keep.length} files into ${dirname(dest)}` : dest);
+        if (copied) this.store.audit('library_import_copied', { grab: grab.id, title: title.id, from: video.path, to: dest });
+        return id;
+      })();
+      files.push({ fileId, path: dest, episodes: sorted, copied });
+    }
+    const replaced = await this.removeOld(this.store.unmappedShowFiles(title.id), files.map(f => f.path));
+    return { ok: true, files, replaced, skipped };
+  }
+
+  // The download's videos (from the unpack folder when there is one), or why there are none to look at.
+  private async videos(grab: Grab, options: ImportOptions): Promise<{ ok: true; contentPath: string; videos: Found[]; skipped: Skipped[] } | ImportRefused> {
+    const contentPath = options.from ?? grab.contentPath;
+    if (!contentPath) return { ok: false, failure: 'no-file', reason: 'The downloader gave no folder.', skipped: [] };
+    let found: Awaited<ReturnType<typeof findVideos>>;
+    try { found = await findVideos(contentPath, this.ops, this.minBytes); }
+    catch (e) { if (errno(e) === 'ENOENT') return { ok: false, failure: 'no-file', reason: `${contentPath} doesn't exist.`, skipped: [] }; throw e; }
+    if (!found.videos.length) return { ok: false, failure: 'no-file', reason: noVideo(found.skipped), skipped: found.skipped };
+    return { ok: true, contentPath, ...found };
+  }
+
+  // The file's own name, the folder's when the file's is obfuscated, else the release name the grab was for; and its
+  // score under the title's profile when imported (shown on the file; picks work it out again from the name).
+  private describe(path: string, contentPath: string, grab: Grab, title: LibraryTitle): Described {
+    const fileParse = parseRelease(basename(path, extname(path)));
+    const folderParse = path !== contentPath ? parseRelease(basename(dirname(path))) : undefined;
+    const release = parseRelease(grab.releaseName);
+    const parsed = [fileParse, ...(folderParse ? [folderParse] : []), release].find(p => !p.obfuscated && qualityOf(p)) ?? release;
+    const quality = qualityOf(parsed) ?? grab.quality;
+    const { score, labels } = scoreFormats({ parsed, quality }, this.store.formats(), this.store.profile(title.profileId)?.scores ?? {});
+    const group = parsed.group ?? release.group;
+    return { fileParse, ...(folderParse ? { folderParse } : {}), parsed, quality, score, labels, ...(group ? { group } : {}) };
+  }
+
+  // Why the file fails the length check (at least half of `minutes`), or undefined when it passes.
+  private tooShort(probe: Probe, minutes: number) {
+    if (probe.durationSec === undefined) return 'ffprobe found no length.';
+    if (probe.durationSec < minutes * 60 / 2) return `It runs ${Math.round(probe.durationSec / 60)} min, under half of the ${minutes} min runtime.`;
+    return undefined;
+  }
+
+  private bringIn(source: string, dest: string, options: ImportOptions) {
+    return options.link ? this.linkInto(source, dest) : this.place(source, dest);
+  }
+
+  // Files an import replaced: deleted from disk (unless a new file took the same path), then forgotten. One that can't
+  // be removed yet is left for the next pass (cleanLeftovers).
+  private async removeOld(old: readonly LibraryFileRow[], kept: readonly string[]) {
     const replaced: string[] = [];
-    for (const old of this.store.files(title.id).filter(f => f.id !== fileId)) {
+    for (const file of old) {
       try {
-        if (old.path !== dest) await unlinkQuietly(this.ops, old.path);
-        this.store.deleteFile(old.id);
-        replaced.push(old.path);
+        if (!kept.includes(file.path)) await unlinkQuietly(this.ops, file.path);
+        this.store.deleteFile(file.id);
+        replaced.push(file.path);
       } catch (e) {
-        // Left for the next pass (cleanLeftovers), which removes it.
-        this.log('library: the old file could not be removed yet', { path: old.path, error: (e as Error).message });
+        this.log('library: the old file could not be removed yet', { path: file.path, error: (e as Error).message });
       }
     }
-    return { ok: true, fileId, path: dest, copied, replaced, skipped };
+    return replaced;
   }
 
   // Hardlinks into the library (to a partial name, renamed into place, so a file already there is replaced whole). On
@@ -235,6 +362,16 @@ export class MovieImporter {
     await unlinkQuietly(this.ops, source);
     return true;
   }
+}
+
+function mediaOf(parsed: ParsedRelease, probe: Probe): FileMedia {
+  return {
+    ...(probe.durationSec !== undefined ? { durationSec: Math.round(probe.durationSec) } : {}),
+    ...optional('videoCodec', videoCodecName(parsed, probe.videoCodec)),
+    ...optional('dynamicRange', dynamicRangeName(probe)),
+    ...optional('audioCodec', audioCodecName(probe.audioCodec, probe.audioProfile)),
+    ...optional('audioChannels', audioChannelsName(probe.channels)),
+  };
 }
 
 function optional<K extends keyof FileMedia>(key: K, value: FileMedia[K] | undefined): Partial<FileMedia> {

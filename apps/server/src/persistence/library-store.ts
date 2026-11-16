@@ -261,6 +261,18 @@ export class LibraryStore {
       RETURNING id`).get({ ...f, proper: f.proper ? 1 : 0, releaseName: f.releaseName ?? null, releaseGroup: f.releaseGroup ?? null, media: JSON.stringify(f.media),
         grabId: f.grabId ?? null, now: this.now() }) as { id: number }).id;
   }
+  // A show's file's episodes. Each episode has one file: mapping it here moves it off the file it had.
+  mapEpisodes(fileId: number, titleId: number, episodes: readonly EpisodeRef[]) {
+    const map = prepared(this.db, `INSERT INTO library_file_episodes(file_id, title_id, season, episode) VALUES(?, ?, ?, ?)
+      ON CONFLICT(title_id, season, episode) DO UPDATE SET file_id = excluded.file_id`);
+    for (const [season, episode] of episodes) map.run(fileId, titleId, season, episode);
+  }
+  // Show files no episode is mapped to: an upgrade took all their episodes and stopped before deleting them.
+  unmappedShowFiles(titleId?: number) {
+    return (prepared(this.db, `SELECT f.* FROM library_files f JOIN library_titles t ON t.id = f.title_id WHERE t.kind = 'show'
+      AND (? IS NULL OR f.title_id = ?) AND NOT EXISTS (SELECT 1 FROM library_file_episodes fe WHERE fe.file_id = f.id) ORDER BY f.id`)
+      .all(titleId ?? null, titleId ?? null) as FileRaw[]).map(file);
+  }
   file(id: number) { const r = prepared(this.db, 'SELECT * FROM library_files WHERE id = ?').get(id) as FileRaw | undefined; return r ? file(r) : undefined; }
   deleteFile(id: number) { prepared(this.db, 'DELETE FROM library_files WHERE id = ?').run(id); }
 
@@ -357,7 +369,7 @@ export class LibraryStore {
       ON CONFLICT(title_id, scope) DO UPDATE SET last_at = excluded.last_at, misses = excluded.misses, next_at = excluded.next_at`)
       .run(row.titleId, row.scope, row.lastAt, row.misses, row.nextAt);
   }
-  // A show's files by episode ("season:episode"), newest first when an upgrade left two.
+  // A show's files by episode ("season:episode"); an episode has one.
   episodeFiles(titleId: number) {
     const rows = prepared(this.db, `SELECT fe.season, fe.episode, f.* FROM library_file_episodes fe JOIN library_files f ON f.id = fe.file_id
       WHERE fe.title_id = ? ORDER BY f.imported_at DESC, f.id DESC`).all(titleId) as (FileRaw & { season: number; episode: number })[];

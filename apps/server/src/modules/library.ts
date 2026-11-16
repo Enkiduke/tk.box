@@ -4,7 +4,7 @@ import { AppError, preview } from '../errors.js';
 import { every, errorDetail } from '../lib/every.js';
 import { LibraryStore } from '../persistence/library-store.js';
 import { Library, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
-import { MovieImporter, ffprobe } from '../services/library-import.js';
+import { LibraryImporter, ffprobe } from '../services/library-import.js';
 import { RequestAvailability } from '../services/request-availability.js';
 import { LibraryFulfiller } from '../providers/library-fulfiller.js';
 import { registerLibraryAdmin, type LibrarySources } from '../library-api.js';
@@ -37,7 +37,7 @@ export const libraryModule = defineModule({
       ready: async () => { if (!availability.ready()) await availability.rebuild(); return availability.ready(); },
     };
     const warn = (message: string, detail?: Record<string, unknown>) => log.warn(message, detail);
-    const importer = new MovieImporter(store, ffprobe(config.FFPROBE_PATH), undefined, warn);
+    const importer = new LibraryImporter(store, ffprobe(config.FFPROBE_PATH), undefined, warn);
     const library = new Library({
       store, queue, indexers, downloaders, titles, plex: holds, importer,
       scan: async folder => {
