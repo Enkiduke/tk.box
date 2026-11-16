@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
-  PickProfile, PickRules, ShowList, ShowTitleView, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
+  LibraryBulkResult, PickProfile, PickRules, ShowList, ShowTitleView, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import { EARLY_COPIES, LADDER, isQuality, qualityOf, type Quality } from './lib/quality.js';
@@ -278,13 +278,22 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   app.get('/api/v1/admin/library/titles/:id', admin, async request => titleView(id.parse(request.params).id));
   app.put('/api/v1/admin/library/titles/:id', admin, async request => {
     const { id: titleId } = id.parse(request.params);
-    const { profileId, keep } = z.object({ profileId: z.number().int().positive().optional(), keep: z.boolean().optional() }).strict().parse(request.body);
+    const { profileId, keep, monitored } = z.object({ profileId: z.number().int().positive().optional(), keep: z.boolean().optional(), monitored: z.boolean().optional() })
+      .strict().parse(request.body);
     const title = store.title(titleId);
     requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
     if (profileId !== undefined) { requireThat(store.profile(profileId), 'PROFILE_NOT_FOUND', 'No such profile.', 404); store.setProfile(titleId, profileId); }
     if (keep !== undefined) library.keep(titleId, keep);
-    store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}) });
+    if (monitored !== undefined) library.setMonitored(titleId, monitored);
+    if (profileId !== undefined || keep !== undefined)
+      store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}) });
     return titleView(titleId);
+  });
+  // Quick edit: the same changes to many movies or shows at once.
+  app.post('/api/v1/admin/library/titles/bulk', admin, async request => {
+    const { ids, ...changes } = z.object({ ids: z.array(z.number().int().positive()).min(1).max(10000), monitored: z.boolean().optional(), resume: z.literal(true).optional(),
+      profileId: z.number().int().positive().optional(), keep: z.boolean().optional(), search: z.literal(true).optional() }).strict().parse(request.body);
+    return await library.bulkEdit(ids, changes, actor(request)) satisfies LibraryBulkResult;
   });
   // A show's season switched on or off, with its episodes.
   app.put('/api/v1/admin/library/titles/:id/seasons/:season', admin, async request => {

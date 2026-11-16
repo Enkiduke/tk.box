@@ -138,8 +138,8 @@ function TitleDetail({item,rules,busy,dryRun,now,onClose}:{item:Title;rules:Rule
             <button disabled={mutation.busy} onClick={()=>hold({action:'clear'})}><Icon name="close" size={16}/>Remove</button>
           </div>}
           <div className="cleanup-hold-row">
-            <div><strong>{item.kind==='movie'?'Keep':'Keep the show'}</strong><small>{item.kind==='movie'?'Sets Keep on it in tk.box’s library.':'Tags the whole series in Sonarr with your first protected tag.'}</small></div>
-            <button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await keepTitle({key:item.key!,title:item.title});onClose();})}><Icon name="check" size={16}/>Keep</button>
+            <div><strong>{item.kind==='movie'?'Favorite':'Favorite the show'}</strong><small>{item.kind==='movie'?'Marks it a favorite in tk.box’s library.':'Tags the whole series in Sonarr with your first protected tag.'}</small></div>
+            <button disabled={mutation.busy} onClick={()=>void mutation.run(async()=>{await keepTitle({key:item.key!,title:item.title});onClose();})}><Icon name="check" size={16}/>Favorite</button>
           </div>
           {mutation.error&&<div className="notice error" role="alert"><span>{mutation.error}</span></div>}
           <p className="cleanup-note">The next {dryRun?'preview or ':''}clean up uses the new date{busy?'; the run going now keeps the dates it started with':''}. A hold only ever keeps a title longer than its rule would.</p>

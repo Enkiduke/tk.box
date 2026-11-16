@@ -7,7 +7,7 @@ import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {SourceLine,SourcePanel} from './movie-source.js';
 import {ShowDialogBody} from './show-dialog.js';
-import {Dash,Field,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
+import {Dash,FavoriteStar,Field,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
 
 // A movie or show in the library (docs/UI.md), as a dialog over whichever Admin page opened it (`&title=<id>`, and
 // `&pane=search` for its Interactive search tab): what it has and needs, its settings, files and grabs, and the search.
@@ -31,7 +31,7 @@ export function MovieDialog({id,pane,scope,setPane,onClose}:{id:number;pane:Titl
 
 export type Mutation=ReturnType<typeof useMutation>;
 function statusOf(t:LibraryTitleView):{tone:Tone;label:string} {
-  return t.paused?{tone:'off',label:'Paused'}:!t.monitored?{tone:'off',label:'Not monitored'}
+  return !t.monitored?{tone:'off',label:'Not monitored'}:t.paused?{tone:'bad',label:'Failing'}
     :t.wanted.wanted?{tone:'wait',label:t.wanted.why==='missing'?'Missing':'Below cutoff'}:{tone:'ok',label:'Available'};
 }
 
@@ -39,13 +39,13 @@ function statusOf(t:LibraryTitleView):{tone:Tone;label:string} {
 function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutation}) {
   const now=Date.now(),s=statusOf(t),have=t.files[0];
   const search=()=>void mutation.run(async()=>{await api(`${path}/search`,'POST');toast.info(`Searching for ${t.title}`);});
-  const pause=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:!t.paused}));
+  const resume=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:false}));
   return <header className="ui-movie">
     <Poster id={t.id} className="ui-movie-poster"/>
     <div className="ui-movie-main">
       <div>
         <h2 className="ui-movie-title">{t.title}{t.year?<span> {t.year}</span>:null}</h2>
-        <div className="ui-movie-line"><Pill tone={s.tone}>{s.label}</Pill>{have&&<span>{have.quality} · {gb(have.size)}</span>}{t.keep&&<span className="ui-tag">Kept</span>}
+        <div className="ui-movie-line"><Pill tone={s.tone}>{s.label}</Pill>{have&&<span>{have.quality} · {gb(have.size)}</span>}{t.keep&&<FavoriteStar/>}
           {t.pausedReason&&<span className="danger-text">{t.pausedReason}</span>}</div>
         <div className="ui-movie-source"><SourceLine source={t.source} addedAt={t.addedAt}/></div>
       </div>
@@ -58,7 +58,7 @@ function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutatio
       </dl>
       <div className="button-row">
         <button disabled={mutation.busy||t.paused||!t.monitored} title="Search now and grab the best match" onClick={search}><Icon name="search" size={16}/>Automatic search</button>
-        <button disabled={mutation.busy} onClick={pause}><Icon name={t.paused?'play':'pause'} size={16}/>{t.paused?'Unpause':'Pause'}</button>
+        {t.paused&&<button disabled={mutation.busy} title="Clear the failures and start searching again" onClick={resume}><Icon name="play" size={16}/>Resume</button>}
       </div>
     </div>
   </header>;
@@ -66,11 +66,12 @@ function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutatio
 
 function Overview({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutation}) {
   const now=Date.now();
-  const update=(body:{profileId?:number;keep?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
+  const update=(body:{profileId?:number;keep?:boolean;monitored?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
   return <>
     <Panel flush title="Settings">
+      <Field label="Monitored" hint="Off: no searches or upgrades"><Switch label="" ariaLabel="Monitored" checked={t.monitored} disabled={mutation.busy} onChange={monitored=>update({monitored})}/></Field>
       <Field label="Profile"><select value={t.profileId} disabled={mutation.busy} onChange={e=>update({profileId:Number(e.target.value)})}>{t.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
-      <Field label="Keep" hint="Clean Up never removes it"><Switch label="" ariaLabel="Keep" checked={t.keep} disabled={mutation.busy} onChange={keep=>update({keep})}/></Field>
+      <Field label="Favorite" hint="Clean Up never removes it"><Switch label="" ariaLabel="Favorite" checked={t.keep} disabled={mutation.busy} onChange={keep=>update({keep})}/></Field>
     </Panel>
     <SourcePanel source={t.source}/>
     <Panel flush title="Files"><FilesTable files={t.files} now={now}/></Panel>

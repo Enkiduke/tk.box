@@ -7,7 +7,7 @@ import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {SourceLine,SourcePanel} from './movie-source.js';
 import {FilesTable,GrabsTable,type Mutation} from './movie-dialog.js';
-import {ACTIONS,Dash,Field,GrabPill,IconAction,Panel,Pill,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
+import {ACTIONS,Dash,FavoriteStar,Field,GrabPill,IconAction,Panel,Pill,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
 
 // A show in the library (docs/UI.md), in the same dialog as a movie (movie-dialog.tsx): its seasons with their
 // switches, each season's episodes with what tk.box has, its files and grabs, and Interactive search for a season
@@ -36,8 +36,8 @@ function seasonStatus(s:ShowSeasonView):{tone:Tone;label:string} {
   return {tone:'ok',label:'Available'};
 }
 function showStatus(t:ShowTitleView):{tone:Tone;label:string} {
-  if(t.paused)return {tone:'off',label:'Paused'};
   if(!t.monitored)return {tone:'off',label:'Not monitored'};
+  if(t.paused)return {tone:'bad',label:'Failing'};
   if(t.seasons.some(s=>s.episodes.some(downloading)))return {tone:'active',label:'Downloading'};
   if(t.wanted.missing)return {tone:'wait',label:'Missing'};
   if(t.wanted.cutoff)return {tone:'wait',label:'Below cutoff'};
@@ -68,14 +68,14 @@ export function ShowDialogBody({t,path,pane,scope,setPane,mutation}:{t:ShowTitle
 function Head({t,path,mutation,search}:{t:ShowTitleView;path:string;mutation:Mutation;search:()=>void}) {
   const now=Date.now(),s=showStatus(t),all=t.seasons.flatMap(x=>x.episodes),{have,total,size}=counts(all);
   const today=new Date(now).toISOString().slice(0,10),next=all.filter(e=>!e.aired&&e.airDate&&e.airDate>=today).map(e=>e.airDate!).sort()[0];
-  const pause=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:!t.paused}));
+  const resume=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:false}));
   return <header className="ui-movie">
     <Poster id={t.id} className="ui-movie-poster"/>
     <div className="ui-movie-main">
       <div>
         <h2 className="ui-movie-title">{t.title}{t.year?<span> {t.year}</span>:null}</h2>
         <div className="ui-movie-line"><Pill tone={s.tone}>{s.label}</Pill><span>{have} of {total} episodes{size?` · ${gb(size)}`:''}</span>{t.status&&<span>{t.status}</span>}
-          {t.keep&&<span className="ui-tag">Kept</span>}{t.pausedReason&&<span className="danger-text">{t.pausedReason}</span>}</div>
+          {t.keep&&<FavoriteStar/>}{t.pausedReason&&<span className="danger-text">{t.pausedReason}</span>}</div>
         <div className="ui-movie-source"><SourceLine source={t.source} addedAt={t.addedAt}/></div>
       </div>
       <dl className="ui-facts">
@@ -88,18 +88,19 @@ function Head({t,path,mutation,search}:{t:ShowTitleView;path:string;mutation:Mut
       <div className="button-row">
         <button disabled={mutation.busy||t.paused||!t.monitored||!t.wanted.missing&&!t.wanted.cutoff} title="Search now for every wanted episode and grab the best matches" onClick={search}>
           <Icon name="search" size={16}/>Automatic search</button>
-        <button disabled={mutation.busy} onClick={pause}><Icon name={t.paused?'play':'pause'} size={16}/>{t.paused?'Unpause':'Pause'}</button>
+        {t.paused&&<button disabled={mutation.busy} title="Clear the failures and start searching again" onClick={resume}><Icon name="play" size={16}/>Resume</button>}
       </div>
     </div>
   </header>;
 }
 
 function Overview({t,path,mutation,search,interactive}:{t:ShowTitleView;path:string;mutation:Mutation;search:(scope:string)=>void;interactive:(scope:string)=>void}) {
-  const update=(body:{profileId?:number;keep?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
+  const update=(body:{profileId?:number;keep?:boolean;monitored?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
   return <>
     <Panel flush title="Settings">
+      <Field label="Monitored" hint="Off: no searches or upgrades"><Switch label="" ariaLabel="Monitored" checked={t.monitored} disabled={mutation.busy} onChange={monitored=>update({monitored})}/></Field>
       <Field label="Profile"><select value={t.profileId} disabled={mutation.busy} onChange={e=>update({profileId:Number(e.target.value)})}>{t.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
-      <Field label="Keep" hint="Clean Up never removes it"><Switch label="" ariaLabel="Keep" checked={t.keep} disabled={mutation.busy} onChange={keep=>update({keep})}/></Field>
+      <Field label="Favorite" hint="Clean Up never removes it"><Switch label="" ariaLabel="Favorite" checked={t.keep} disabled={mutation.busy} onChange={keep=>update({keep})}/></Field>
     </Panel>
     <SourcePanel source={t.source}/>
     <Panel flush title="Seasons"><SeasonsTable t={t} path={path} mutation={mutation} search={search} interactive={interactive}/></Panel>

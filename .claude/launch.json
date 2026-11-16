@@ -19,7 +19,8 @@
         "preview:plex"
       ],
       "port": 3012,
-      "url": "http://localhost:3012"
+      "url": "http://localhost:3012",
+      "autoPort": false
     },
     {
       "name": "plex-preview-keep",
@@ -31,7 +32,8 @@
         "--keep"
       ],
       "port": 3012,
-      "url": "http://localhost:3012"
+      "url": "http://localhost:3012",
+      "autoPort": false
     },
     {
       "name": "plex-preview-side2",

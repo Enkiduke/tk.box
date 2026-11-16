@@ -97,7 +97,7 @@ export function fulfillerByKind(choose: (kind: FulfilKind) => Fulfiller): Fulfil
     options: kind => choose(kind).options(kind),
     tagId: async (kind, label) => {
       const f = choose(kind);
-      if (!f.tagId) throw new AppError('REQUESTS_UNAVAILABLE', 'Keep isn’t available here.', 409);
+      if (!f.tagId) throw new AppError('REQUESTS_UNAVAILABLE', 'Favorite isn’t available here.', 409);
       return f.tagId(kind, label);
     },
   };

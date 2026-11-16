@@ -31,7 +31,7 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
 - Every list table sorts by clicking a header (`useSorted`): once by that column, again reversed, a third time back
   to the table's own order. Sizes, qualities, scores and times start biggest or newest first; quality sorts by the
   ladder, and empty values always go last.
-- Lists over 100 rows show 100, then "Show 100 more".
+- Lists over 100 rows show 100, then "Show 100 more". Movies and Shows load the next 100 on their own as you scroll near the end (`usePaged(…, {auto:true})`).
 
 ## Status (`Pill`)
 One coloured pill (dot + word) per state, the same everywhere:
@@ -41,8 +41,8 @@ One coloured pill (dot + word) per state, the same everywhere:
 | `ok` | green | Imported, Available, Done, Accepted |
 | `active` | blue | Downloading, Sending, Unpacking, Importing, Seeding, Running |
 | `wait` | amber | Waiting, Queued, Missing, Below cutoff |
-| `bad` | red | Failed, Rejected, Banned |
-| `off` | grey | Paused, Not monitored, Not aired, Cancelled |
+| `bad` | red | Failed, Rejected, Banned, Failing (a title stopped after repeated failed downloads; Resume clears it) |
+| `off` | grey | Paused (a download client), Not monitored, Not aired, Cancelled |
 
 Error text goes on the row's second line in red, not as a whole red column.
 

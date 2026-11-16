@@ -34,7 +34,7 @@ export async function keepTitle(item:{key:string;title:string}) {
   const show=item.key.startsWith('tv:'),name=show?item.title.split(' - ')[0]!:item.title;
   try {
     const {tag}=await api<{tag:string}>('/admin/cleanup/keep','POST',{key:item.key});
-    toast.success(show?`${name}: kept, tagged “${tag}” in Sonarr`:`${name}: kept`);
+    toast.success(show?`${name}: favorited, tagged “${tag}” in Sonarr`:`${name}: favorited`);
   } catch(error) {toast.error(`${name}: ${(error as Error).message}`);}
   invalidate(PATH);void loadLeaving();
 }
@@ -42,7 +42,7 @@ export async function keepTitle(item:{key:string;title:string}) {
 export const holdEntries=(item:{key:string;title:string},prefix=''):MenuEntry[]=>
   [{label:prefix?`${prefix}: start the clock over`:'Start the clock over',icon:'restart',run:()=>void holdTitle(item,{action:'reset'})}];
 export const keepEntry=(item:{key:string;title:string}):MenuEntry=>
-  ({label:item.key.startsWith('tv:')?'Keep the show':'Keep',icon:'check',run:()=>void keepTitle(item)});
+  ({label:item.key.startsWith('tv:')?'Favorite the show':'Favorite',icon:'check',run:()=>void keepTitle(item)});
 const seasonName=(held:Held)=>held.title.split(' - ').at(-1)??held.title;
 // For a catalog title's menu: entries only while the last run found it (or, for a show or episode, its season)
 // leaving soon or held.

@@ -253,6 +253,13 @@ export class LibraryStore {
       .run(facts.tvdbId ?? null, facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), facts.runtime ?? null, this.now(), id);
   }
   setMonitor(id: number, monitor: Monitor) { prepared(this.db, 'UPDATE library_titles SET monitor = ? WHERE id = ?').run(monitor, id); }
+  // The Monitored switch. Off keeps the follow mode it had; on gives it back (`fallback` when it never had one).
+  unfollow(id: number) {
+    prepared(this.db, `UPDATE library_titles SET monitor_was = CASE WHEN monitor != 'none' THEN monitor ELSE monitor_was END, monitor = 'none' WHERE id = ?`).run(id);
+  }
+  refollow(id: number, fallback: Monitor) {
+    prepared(this.db, `UPDATE library_titles SET monitor = COALESCE(monitor_was, ?), monitor_was = NULL WHERE id = ? AND monitor = 'none'`).run(fallback, id);
+  }
   // A show's mode with Future's start (null keeps none).
   setFollow(id: number, monitor: Monitor, monitorFrom: number | null) {
     prepared(this.db, 'UPDATE library_titles SET monitor = ?, monitor_from = ? WHERE id = ?').run(monitor, monitorFrom, id);

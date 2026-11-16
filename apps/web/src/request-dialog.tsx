@@ -23,7 +23,7 @@ export function RequestOptionsPanel({kind,extras,setExtras}:{kind:ExploreItem['k
     {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality profile</span>
       <select value={extras.profileId} onChange={e=>setExtras(x=>({...x,profileId:Number(e.target.value)}))}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}
     <label className="request-keep" title={o.tkbox?'Clean Up never removes it':o.keepTag?`Tags it “${o.keepTag}” so Clean Up never removes it`:'Add a protected tag in Clean Up › Settings first'}>
-      <strong>Keep</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>setExtras(x=>({...x,keep:e.target.checked}))}/></label>
+      <strong>Favorite</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>setExtras(x=>({...x,keep:e.target.checked}))}/></label>
   </div>;
 }
 export const extrasBody=(extras?:RequestExtras)=>extras?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{})}:{};

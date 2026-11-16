@@ -1,4 +1,4 @@
-import {useEffect,useState,type ReactNode} from 'react';
+import {useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import type {GrabState} from '../../../packages/contracts/src/downloads.js';
 import {ApiClientError} from './api.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
@@ -53,7 +53,12 @@ export function WhenDay({day,now}:{day?:string;now?:number}) {
 // ---- Status ----
 
 export type Tone='ok'|'active'|'wait'|'bad'|'off';
-export const Pill=({tone='off',children,title}:{tone?:Tone;children:ReactNode;title?:string})=><span className={`ui-pill ${tone}`} title={title}>{children}</span>;
+// `icon` stands in for the dot (a show's own status: Returning, Ended…).
+export const Pill=({tone='off',children,title,icon}:{tone?:Tone;children:ReactNode;title?:string;icon?:string})=>
+  <span className={`ui-pill ${tone}${icon?' has-icon':''}`} title={title}>{icon&&<Icon name={icon} size={12}/>}{children}</span>;
+// A count as a bar (Shows' Episodes): the share filled in the tone, the count over it.
+export const CountBar=({have,total,tone,title}:{have:number;total:number;tone:Tone;title?:string})=>
+  <span className={`ui-countbar ${tone}`} title={title}><span style={{width:`${total?Math.min(100,have/total*100):0}%`}}/><b>{have} / {total}</b></span>;
 export const Tag=({children}:{children:ReactNode})=><span className="ui-tag">{children}</span>;
 export const grabNames:Record<GrabState,string>={sending:'Sending',downloading:'Downloading',unpacking:'Unpacking',importing:'Importing',imported:'Imported',seeding:'Seeding',done:'Done',failed:'Failed',cancelled:'Cancelled'};
 export const grabTones:Record<GrabState,Tone>={sending:'active',downloading:'active',unpacking:'active',importing:'active',seeding:'active',imported:'ok',done:'ok',failed:'bad',cancelled:'off'};
@@ -67,6 +72,9 @@ export function Poster({id,className='ui-poster'}:{id:number;className?:string})
   return <span className={className} aria-hidden="true">{!failed&&<img src={`/api/v1/admin/library/titles/${id}/poster`} alt="" loading="lazy" decoding="async" onError={()=>setFailed(true)}/>}</span>;
 }
 // A movie in a table: poster, title (opening its page), year and tags, and a line under it.
+// A favorite (the title's `keep`): Clean Up never removes it.
+export const FavoriteStar=()=><span className="ui-favorite" title="Favorite: Clean Up never removes it" role="img" aria-label="Favorite"><Icon name="star" size={14}/></span>;
+
 export function TitleCell({id,title,year,sub,tags,poster=true}:{id:number;title:string;year?:number;sub?:ReactNode;tags?:ReactNode;poster?:boolean}) {
   return <div className="ui-title">{poster&&<Poster id={id}/>}<div>
     <a className="ui-title-name" href={titleHref(id)} title={title}>{title}</a>{year?<span className="ui-title-year">{year}</span>:null}{tags&&<span className="ui-title-tags">{tags}</span>}
@@ -141,14 +149,64 @@ export const ACTIONS:Column={label:<span className="sr-only">Actions</span>,widt
 export const RowActions=({children}:{children:ReactNode})=><div className="ui-row-actions">{children}</div>;
 export const IconAction=({icon,label,onClick,disabled}:{icon:string;label:string;onClick:()=>void;disabled?:boolean})=>
   <button type="button" className="icon-button" title={label} aria-label={label} disabled={disabled} onClick={onClick}><Icon name={icon} size={16}/></button>;
-// Long lists: 100 rows, then 100 more at a time.
-export function usePaged<T>(items:T[],key:string,size=100) {
+// Long lists: 100 rows, then 100 more at a time. `auto` loads the next 100 as you scroll near the end (the button
+// stays, for keyboards and screens tall enough that nothing scrolls).
+export function usePaged<T>(items:T[],key:string,{size=100,auto=false}:{size?:number;auto?:boolean}={}) {
   const [shown,setShown]=useState(size);
   useEffect(()=>setShown(size),[key]);
-  const more=items.length>shown?<div className="ui-more"><button type="button" onClick={()=>setShown(s=>s+size)}>Show {Math.min(size,items.length-shown)} more</button></div>:undefined;
+  const next=()=>setShown(s=>s+size);
+  const more=items.length>shown?<div className="ui-more">{auto&&<AutoMore onNear={next} at={shown}/>}<button type="button" onClick={next}>Show {Math.min(size,items.length-shown)} more</button></div>:undefined;
   return {rows:items.slice(0,shown),more};
 }
+// Calls onNear once the end of the list comes within a screen of view; again after each load (`at`) if still near.
+function AutoMore({onNear,at}:{onNear:()=>void;at:number}) {
+  const ref=useRef<HTMLSpanElement>(null),call=useRef(onNear);call.current=onNear;
+  useEffect(()=>{
+    const el=ref.current;if(!el||typeof IntersectionObserver==='undefined')return;
+    const seen=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))call.current();},{rootMargin:'0px 0px 100% 0px'});
+    seen.observe(el);return ()=>seen.disconnect();
+  },[at]);
+  return <span ref={ref} aria-hidden="true"/>;
+}
 export const matches=(query:string,...fields:(string|number|undefined)[])=>{const q=query.trim().toLocaleLowerCase();return !q||fields.some(f=>f!==undefined&&String(f).toLocaleLowerCase().includes(q));};
+
+// ---- Selection ----
+
+// Picking rows to change together. `order` is every row the table shows now (filtered and sorted, not just the page
+// in view): the header box picks or drops all of them, and shift-click picks the run from the last box clicked.
+// `present` is every row there is, so a pick survives a filter but not the row leaving the list.
+export function useSelection(order:number[],present:readonly number[]) {
+  const [stored,setStored]=useState<ReadonlySet<number>>(()=>new Set()),[anchor,setAnchor]=useState<number>();
+  const picked=useMemo(()=>{const there=new Set(present);return new Set([...stored].filter(id=>there.has(id)));},[stored,present]);
+  const shown=order.filter(id=>picked.has(id)).length,all=order.length>0&&shown===order.length;
+  const toggle=(id:number,range:boolean)=>{
+    const on=!picked.has(id),from=anchor===undefined?-1:order.indexOf(anchor),to=order.indexOf(id);
+    const ids=range&&from>=0&&to>=0?order.slice(Math.min(from,to),Math.max(from,to)+1):[id];
+    setStored(()=>{const next=new Set(picked);for(const x of ids)if(on)next.add(x);else next.delete(x);return next;});
+    setAnchor(id);
+  };
+  const toggleAll=()=>setStored(()=>{const next=new Set(picked);for(const id of order)if(all)next.delete(id);else next.add(id);return next;});
+  return {ids:[...picked],count:picked.size,has:(id:number)=>picked.has(id),toggle,toggleAll,all,some:shown>0&&!all,clear:()=>{setStored(new Set());setAnchor(undefined);}};
+}
+export type Selection=ReturnType<typeof useSelection>;
+function Check({checked,mixed,label,onPick}:{checked:boolean;mixed?:boolean;label:string;onPick:(shift:boolean)=>void}) {
+  const ref=useRef<HTMLInputElement>(null);
+  useEffect(()=>{if(ref.current)ref.current.indeterminate=!!mixed;},[mixed]);
+  return <input ref={ref} type="checkbox" className="ui-check" aria-label={label} title={label} checked={checked} onChange={()=>{}} onClick={e=>onPick(e.shiftKey)}/>;
+}
+// The first column of a table whose rows can be picked: the box that picks every row shown.
+export const selectColumn=(sel:Selection):Column=>({label:<Check checked={sel.all} mixed={sel.some} label={sel.all?'Clear the rows shown':'Select every row shown'} onPick={sel.toggleAll}/>,width:44});
+export const SelectCell=({sel,id,label}:{sel:Selection;id:number;label:string})=>
+  <td className="ui-select"><Check checked={sel.has(id)} label={`Select ${label}`} onPick={shift=>sel.toggle(id,shift)}/></td>;
+// What to do with the rows picked: a bar along the bottom of the page while any are.
+export function SelectionBar({count,onClear,children}:{count:number;onClear:()=>void;children:ReactNode}) {
+  if(!count)return null;
+  return <><div className="ui-selbar-space"/><div className="ui-selbar" role="toolbar" aria-label="Selected rows">
+    <span className="ui-selbar-count">{count} selected</span>{children}
+    <button type="button" className="icon-button" title="Clear selection" aria-label="Clear selection" onClick={onClear}><Icon name="close" size={16}/></button>
+  </div></>;
+}
+export const BarGroup=({children}:{children:ReactNode})=><div className="ui-selbar-group">{children}</div>;
 
 // ---- Loading ----
 

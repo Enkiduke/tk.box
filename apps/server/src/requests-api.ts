@@ -26,7 +26,7 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
       // tk.box's own library keeps a movie by its own flag; Sonarr a show by Clean Up's protected tag.
       const label = media === 'movie' ? 'Keep' : requests.keepTag();
       requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Sonarr tag in Clean Up › Settings first.', 409);
-      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Keep isn’t available here.', 409);
+      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Favorite isn’t available here.', 409);
       const keepId = await fulfiller.tagId(media, label);
       tags = [...new Set([...(tags ?? store.settings()[media].tags), keepId])];
     }

@@ -70,7 +70,7 @@ function RunPanel({run}:{run:CutoverRun}) {
       <Field label="Monitored">{s.monitored}</Field>
       <Field label="Episodes">{s.episodes}</Field>
       <Field label="Files">{s.files}{s.specials>0&&<span className="muted"> · {plural(s.specials,'special')} left out</span>}</Field>
-      <Field label="Keep">{s.keep}</Field>
+      <Field label="Favorites">{s.keep}</Field>
       <Field label="Profiles">{Object.entries(s.profiles).map(([name,n])=>`${name} ${n}`).join(' · ')||<Dash/>}</Field>
       {s.sameRoots.length>0&&<Field label="Same folder as root"><code className="ui-code">{s.sameRoots.join(', ')}</code></Field>}
     </>}

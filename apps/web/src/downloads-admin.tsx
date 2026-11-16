@@ -218,21 +218,21 @@ export function DownloadHistoryPage() {
 
 // ---- Wanted ----
 
-const wantedFilters=[['all','All'],['missing','Missing'],['cutoff','Below cutoff'],['paused','Paused']] as const;
+const wantedFilters=[['all','All'],['missing','Missing'],['cutoff','Below cutoff'],['paused','Failing']] as const;
 type WantedFilter=typeof wantedFilters[number][0];
 const wantedKinds=[['all','All'],['movie','Movies'],['show','Shows']] as const;
 type WantedKind=typeof wantedKinds[number][0];
 // A show's row is one search: a season pack (S02, its wanted episodes) or one episode (S02E05 and its name).
 const wantedKey=(w:WantedItem)=>`${w.id}:${w.scope??'movie'}`;
 const scopeWords=(w:WantedItem)=>!w.scope?'':/E\d+$/.test(w.scope)?(w.episodeName??''):`Season pack · ${w.episodes} episode${w.episodes===1?'':'s'}`;
-const wantedStatus=(w:WantedItem)=>w.paused?'Paused':w.grab?grabNames[w.grab]:w.why==='missing'?'Missing':'Below cutoff';
+const wantedStatus=(w:WantedItem)=>w.paused?'Failing':w.grab?grabNames[w.grab]:w.why==='missing'?'Missing':'Below cutoff';
 const wantedSorts={title:(w:WantedItem)=>`${w.title} ${w.scope??''}`,next:(w:WantedItem)=>w.paused||w.grab?undefined:w.nextAt??0,misses:(w:WantedItem)=>w.misses,status:wantedStatus};
 
 export function WantedPage() {
   const view=useApi<WantedList>('/admin/library/wanted'),mutation=useMutation(changed);useRefresh(view.reload);
   const [query,setQuery]=useState(''),[filter,setFilter]=useState<WantedFilter>('all'),[kind,setKind]=useState<WantedKind>('all');
   const search=(w:WantedItem)=>void mutation.run(async()=>{await api(`/admin/library/titles/${w.id}/search`,'POST',w.scope?{scope:w.scope}:{});toast.info(`Searching for ${w.title}${w.scope?` ${w.scope}`:''}`);});
-  const pause=(w:WantedItem)=>void mutation.run(()=>api(`/admin/library/titles/${w.id}/pause`,'POST',{paused:!w.paused}));
+  const resume=(w:WantedItem)=>void mutation.run(()=>api(`/admin/library/titles/${w.id}/pause`,'POST',{paused:false}));
   const items=(view.data?.items??[]).filter(w=>matches(query,w.title,w.year,w.scope,w.episodeName)&&(kind==='all'||w.kind===kind)
     &&(filter==='all'?true:filter==='paused'?w.paused:!w.paused&&w.why===filter))
     .sort((a,b)=>a.title.localeCompare(b.title)||(a.scope??'').localeCompare(b.scope??''));
@@ -247,16 +247,16 @@ export function WantedPage() {
     <Loaded view={view}>{({items:all})=>{const now=Date.now();return <Panel flush>
       <Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing wanted':!items.length?'Nothing wanted matches':undefined}
         columns={[{label:'Title',sort:'title'},{label:'Next search',width:130,sort:'next'},{label:'Misses',width:80,num:true,sort:'misses',desc:true},{label:'Status',width:140,sort:'status'},{...ACTIONS,width:124}]}>
-        {rows.map(w=><tr key={wantedKey(w)} className={w.paused?'is-off':undefined}>
+        {rows.map(w=><tr key={wantedKey(w)}>
           <td><TitleCell id={w.id} title={w.title} year={w.year} tags={w.scope&&<Tag>{w.scope}</Tag>} sub={w.paused&&w.pausedReason?<>{scopeWords(w)?`${scopeWords(w)} · `:''}<span className="danger-text">{w.pausedReason}</span></>
             :<>{scopeWords(w)?`${scopeWords(w)} · `:''}{w.quality?`Have ${w.quality} · `:''}{w.lastAt?<>Searched <When at={w.lastAt} now={now}/></>:'Not searched yet'}</>}/></td>
           <td>{w.paused||w.grab?<Dash/>:<When at={w.nextAt} now={now} due="Due" empty="Not yet"/>}</td>
           <td className="num">{w.misses}</td>
-          <td>{w.paused?<Pill tone="off">Paused</Pill>:w.grab?<GrabPill state={w.grab}/>:<Pill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</Pill>}</td>
+          <td>{w.paused?<Pill tone="bad">Failing</Pill>:w.grab?<GrabPill state={w.grab}/>:<Pill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</Pill>}</td>
           <td><RowActions>
             {!w.paused&&<IconAction icon="search" label={`Automatic search for ${w.title}${w.scope?` ${w.scope}`:''}`} disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}/>}
             <IconAction icon="list" label={`Interactive search for ${w.title}${w.scope?` ${w.scope}`:''}`} onClick={()=>openMovie(w.id,'search',w.scope)}/>
-            <IconAction icon={w.paused?'play':'pause'} label={w.paused?`Unpause ${w.title}`:`Pause ${w.title}`} disabled={mutation.busy} onClick={()=>pause(w)}/>
+            {w.paused&&<IconAction icon="play" label={`Resume ${w.title}: clear the failures and search again`} disabled={mutation.busy} onClick={()=>resume(w)}/>}
           </RowActions></td>
         </tr>)}
       </Table></Panel>;}}</Loaded>

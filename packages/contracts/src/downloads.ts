@@ -54,7 +54,9 @@ export type WantedList = { items: WantedItem[] };
 // Admin › Manage › Movies: every movie in the library. `quality`/`size` are its file's; `belowCutoff` only with a file;
 // `grab` is the last grab's state.
 export type MovieRow = { id: number; tmdbId: number; title: string; year?: number; quality?: string; size?: number; profileId: number; profile: string;
-  keep: boolean; paused: boolean; monitored: boolean; belowCutoff: boolean; grab?: GrabState; addedAt: number; source: MovieSource };
+  keep: boolean; paused: boolean; monitored: boolean; belowCutoff: boolean; grab?: GrabState; addedAt: number; source: MovieSource;
+  // The movie's next release still to come (in cinemas, digital, physical), so unreleased ones show when they land.
+  release?: { kind: 'theatrical' | 'digital' | 'physical'; day: string } };
 // Why a movie is in the library. A request wins (requesting a movie hands it to the requester); then the collections
 // that downloaded it; then Radarr, for movies the cutover imported with no request or collection behind them.
 export type MovieSource =
@@ -66,11 +68,15 @@ export type MovieSource =
 export type MovieList = { items: MovieRow[] };
 // Admin › Manage › Shows: every show in the library. `have` episodes with a file of `total` (aired and monitored, or
 // with a file); `missing` and `cutoff` count wanted episodes as if unpaused; `size` the files'; `status` TMDB's;
-// `nextAir` the next episode's air day; `grabbing` a download under way. Its source is a request or Sonarr.
+// `nextAir` the next episode to air: its day and which it is; `grabbing` a download under way. Its source is a request or Sonarr.
 export type ShowRow = { id: number; tmdbId: number; tvdbId?: number; title: string; year?: number; status?: string; seasons: number; have: number; total: number;
   missing: number; cutoff: number; size: number; profileId: number; profile: string; keep: boolean; paused: boolean; monitored: boolean; grabbing: boolean;
-  nextAir?: string; addedAt: number; source: MovieSource };
+  nextAir?: { day: string; season: number; episode: number }; addedAt: number; source: MovieSource };
 export type ShowList = { items: ShowRow[] };
+// Quick edit on Manage's Movies and Shows tables: the changes given, to every title in `ids`, then a search for each
+// when `search`. `resume` clears the titles stopped after failed downloads (Failing). `skipped` names what was left out and why (gone, or a search it can't take).
+export type LibraryBulkEdit = { ids: number[]; monitored?: boolean; resume?: true; profileId?: number; keep?: boolean; search?: boolean };
+export type LibraryBulkResult = { changed: number; searched: number; skipped: { id: number; title: string; reason: string }[] };
 
 // `episodes`: a show's file in a word (S02E05, S02E05–E06).
 export type LibraryFileView = { id: number; episodes?: string; path: string; size: number; quality: string; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;

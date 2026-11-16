@@ -1,5 +1,5 @@
 import { dirname, win32 } from 'node:path';
-import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, MovieSource, ShowRow, ShowSeasonView, WantedItem } from '../../../../packages/contracts/src/downloads.js';
+import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, LibraryBulkEdit, LibraryBulkResult, MovieSource, ShowRow, ShowSeasonView, WantedItem } from '../../../../packages/contracts/src/downloads.js';
 import * as fs from 'node:fs/promises';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import { scoreFormats } from '../lib/formats.js';
@@ -50,6 +50,9 @@ export type PlexHolds = { has(tmdbId: number): boolean; ready(): Promise<boolean
 export type AddMovie = { tmdbId: number; by: string; profileId?: number; keep?: boolean; search: boolean };
 // A show as a request asks for it: its seasons, and whether new ones are followed too ("watch new seasons").
 export type AddShow = AddMovie & { seasons: readonly number[]; monitorFuture: boolean };
+export type BulkChanges = Omit<LibraryBulkEdit, 'ids'>;
+// A quick-edit search that couldn't run, in a word.
+const BULK_REASONS: Record<string, string> = { TITLE_PAUSED: 'Failing', TITLE_UNMONITORED: 'Not monitored', GRAB_OPEN: 'Already downloading', NOTHING_WANTED: 'Nothing wanted' };
 type Emit = <K extends keyof BusEvents>(event: K, payload: BusEvents[K]) => void;
 type TmdbMovie = { title?: string; original_title?: string; release_date?: string; runtime?: number | null; imdb_id?: string | null;
   external_ids?: { imdb_id?: string | null };
@@ -305,8 +308,53 @@ export class Library {
   }
 
   // Stops watching it (a request was cancelled).
-  unmonitor(titleId: number) { this.store.setMonitor(titleId, 'none'); this.deps.queue.cancel('search', `movie:${titleId}`); }
+  unmonitor(titleId: number) { this.store.unfollow(titleId); this.deps.queue.cancel('search', `movie:${titleId}`); }
+  // The Monitored switch. Off: nothing is searched for, grabbed from RSS or upgraded, and searches queued are
+  // cancelled; it keeps its files. On: the follow mode it had comes back (a movie All, a show Manual if it had none),
+  // with its seasons' and episodes' own switches as they were.
+  setMonitored(titleId: number, on: boolean) {
+    const title = this.store.title(titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
+    if (on === (title.monitor !== 'none')) return;
+    if (on) this.store.refollow(titleId, title.kind === 'movie' ? 'all' : 'manual');
+    else {
+      this.store.unfollow(titleId);
+      if (title.kind === 'show') this.cancelSearches(titleId, this.store.seasons(titleId).map(s => s.season));
+      else this.deps.queue.cancel('search', `movie:${titleId}`);
+    }
+    this.store.audit('library_monitored', { title: titleId, on });
+  }
   keep(titleId: number, keep: boolean) { this.store.setKeep(titleId, keep); }
+  // Quick edit on Manage's tables: the same changes to many titles at once, then a search for each that wants one.
+  // Titles gone since the page loaded are skipped, and so are searches a title can't take (paused, unmonitored, a
+  // download under way, nothing wanted), each with its reason. Resume clears a title stopped after failed downloads.
+  async bulkEdit(ids: readonly number[], changes: BulkChanges, by: string): Promise<LibraryBulkResult> {
+    if (changes.profileId !== undefined) requireThat(this.store.profile(changes.profileId), 'PROFILE_NOT_FOUND', 'No such profile.', 404);
+    const skipped: LibraryBulkResult['skipped'] = [];
+    let changed = 0, searched = 0;
+    if (changes.search) await this.deps.plex.ready();
+    for (const id of new Set(ids)) {
+      const title = this.store.title(id);
+      if (!title) { skipped.push({ id, title: `#${id}`, reason: 'No longer in the library' }); continue; }
+      if (changes.monitored !== undefined) this.setMonitored(id, changes.monitored);
+      if (changes.resume && title.paused) this.setPaused(id, false);
+      if (changes.profileId !== undefined) this.store.setProfile(id, changes.profileId);
+      if (changes.keep !== undefined) this.keep(id, changes.keep);
+      changed++;
+      if (!changes.search) continue;
+      try {
+        const now = this.store.title(id)!;
+        if (now.kind === 'movie' && !now.paused && now.monitor !== 'none') requireThat(this.wanted(now).wanted, 'NOTHING_WANTED', 'Nothing wanted', 409);
+        this.searchNow(id); searched++;
+      } catch (e) {
+        const code = e instanceof AppError ? e.code : '';
+        skipped.push({ id, title: title.title, reason: BULK_REASONS[code] ?? (e instanceof AppError ? e.message : errorText(e)) });
+      }
+    }
+    const { search, ...rest } = changes;
+    if (Object.keys(rest).length) this.store.audit('library_bulk_changed', { titles: [...new Set(ids)], ...rest, by });
+    return { changed, searched, skipped };
+  }
   // Clean Up or an admin removed it: the title, its files' records and its grabs go (the files are already gone).
   forget(titleId: number, by: 'cleanup' | 'admin' | 'collections') {
     const title = this.store.title(titleId);
@@ -946,12 +994,14 @@ export class Library {
   }
   // Every movie, for Admin › Manage › Movies. Below cutoff is the profile's rule on its file (paused or not).
   movieList(sourceOf: (title: LibraryTitle) => MovieSource) {
-    const names = new Map(this.store.profiles().map(p => [p.id, p.name]));
+    const names = new Map(this.store.profiles().map(p => [p.id, p.name])), today = new Date(this.now()).toISOString().slice(0, 10);
     return this.store.allMovies().map(t => {
+      const release = (['theatrical', 'digital', 'physical'] as const).map(kind => ({ kind, day: t.released[kind] })).filter((r): r is { kind: typeof r.kind; day: string } => !!r.day && r.day >= today)
+        .sort((a, b) => a.day.localeCompare(b.day))[0];
       const belowCutoff = !!t.fileQuality && movieWanted({ monitor: 'all', paused: false, inPlex: true, file: { quality: t.fileQuality } }, this.profile(t)).wanted;
       return { id: t.id, tmdbId: t.tmdbId, title: t.title, ...(t.year ? { year: t.year } : {}), ...(t.fileQuality ? { quality: t.fileQuality } : {}),
         ...(t.fileSize !== undefined ? { size: t.fileSize } : {}), profileId: t.profileId, profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused,
-        monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt, source: sourceOf(t) };
+        monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt, source: sourceOf(t), ...(release ? { release } : {}) };
     });
   }
   // Every show, for Admin › Manage › Shows.
@@ -966,7 +1016,8 @@ export class Library {
         if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
       }
       const today = new Date(this.now()).toISOString().slice(0, 10);
-      const nextAir = seasons.flatMap(s => s.episodes).filter(e => !e.aired && e.airDate && e.airDate >= today).map(e => e.airDate!).sort()[0];
+      const nextAir = seasons.flatMap(s => s.episodes.filter(e => !e.aired && e.airDate && e.airDate >= today).map(e => ({ day: e.airDate!, season: s.season, episode: e.episode })))
+        .sort((a, b) => a.day.localeCompare(b.day) || a.season - b.season || a.episode - b.episode)[0];
       return { id: t.id, tmdbId: t.tmdbId, ...(t.tvdbId ? { tvdbId: t.tvdbId } : {}), title: t.title, ...(t.year ? { year: t.year } : {}),
         ...(t.released.status ? { status: t.released.status } : {}), seasons: seasons.length, have, total, missing, cutoff, size, profileId: t.profileId,
         profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused, monitored: t.monitor !== 'none', grabbing: grabbing.has(t.id),

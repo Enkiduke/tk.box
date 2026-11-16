@@ -170,4 +170,6 @@ export const libraryMigrations: Migration[] = [
     CREATE TABLE show_cutover(sonarr_id INTEGER PRIMARY KEY, title_id INTEGER NOT NULL REFERENCES library_titles(id) ON DELETE CASCADE);
     CREATE INDEX show_cutover_title ON show_cutover(title_id);
     CREATE TABLE show_cutover_state(id INTEGER PRIMARY KEY CHECK(id = 1), imported_at INTEGER, summary TEXT, switched_at INTEGER, switched_back_at INTEGER);` },
+  // The Monitored switch: the follow mode a title had before it was switched off, given back when it's switched on.
+  { name: 'monitor-was', up: `ALTER TABLE library_titles ADD COLUMN monitor_was TEXT;` },
 ];
