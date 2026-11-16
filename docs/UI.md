@@ -24,8 +24,10 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
 - Numbers right-aligned in tabular figures. An empty value is a dim "—"; a column that would be mostly empty is
   left out, or folded into the title's second line.
 - Row actions are icon buttons on the right, shown on hover or focus (`RowActions`). Each has a tooltip.
-- A row opens its thing when its title is clicked. A movie opens as a dialog over the page you're on (`MovieDialog`,
-  `&title=<id>`, `&pane=search` for its Interactive search tab), never a page of its own, so the list stays as you left it.
+- A row opens its thing when its title is clicked. A movie or show opens as a dialog over the page you're on
+  (`MovieDialog`, `&title=<id>`, `&pane=search` for its Interactive search tab, `&scope=S02` or `S02E05` for a show's),
+  never a page of its own, so the list stays as you left it. A show's seasons are rows that open to their episodes.
+- A show's grab or file names its episodes in a tag: `S02` for a whole season, `S02E05`, `S02E05–E07`.
 - Every list table sorts by clicking a header (`useSorted`): once by that column, again reversed, a third time back
   to the table's own order. Sizes, qualities, scores and times start biggest or newest first; quality sorts by the
   ladder, and empty values always go last.
@@ -40,7 +42,7 @@ One coloured pill (dot + word) per state, the same everywhere:
 | `active` | blue | Downloading, Sending, Unpacking, Importing, Seeding, Running |
 | `wait` | amber | Waiting, Queued, Missing, Below cutoff |
 | `bad` | red | Failed, Rejected, Banned |
-| `off` | grey | Paused, Not monitored, Cancelled |
+| `off` | grey | Paused, Not monitored, Not aired, Cancelled |
 
 Error text goes on the row's second line in red, not as a whole red column.
 

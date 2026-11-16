@@ -134,6 +134,25 @@ export function episodeWanted(show: { monitor: Monitor; paused: boolean }, seaso
 // A search scope, as `searches.scope` keeps it: S02 (a season, pack first) or S02E05.
 export type ShowScope = { scope: string; season: number; episode?: number; episodes: number[] };
 export const scopeName = (season: number, episode?: number) => `S${String(season).padStart(2, '0')}${episode === undefined ? '' : `E${String(episode).padStart(2, '0')}`}`;
+// Episodes in a word, as Admin shows a grab or a file: S02 for a whole season (more than one episode), else runs
+// such as S02E05, S02E05–E07 or S02E01+E03; seasons joined by commas. `seasonSize`: how many episodes a season has.
+export function episodesLabel(refs: readonly (readonly [number, number])[], seasonSize?: (season: number) => number) {
+  const bySeason = new Map<number, Set<number>>();
+  for (const [s, e] of refs) bySeason.set(s, (bySeason.get(s) ?? new Set()).add(e));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return [...bySeason].sort((a, b) => a[0] - b[0]).map(([season, set]) => {
+    const episodes = [...set].sort((a, b) => a - b), size = seasonSize?.(season);
+    if (size && episodes.length > 1 && episodes.length >= size) return scopeName(season);
+    const runs: string[] = [];
+    let start = episodes[0]!, last = start;
+    for (const e of [...episodes.slice(1), undefined]) {
+      if (e === last + 1) { last = e; continue; }
+      runs.push(start === last ? `E${pad(start)}` : `E${pad(start)}–E${pad(last)}`);
+      if (e !== undefined) start = last = e;
+    }
+    return `${scopeName(season)}${runs.join('+')}`;
+  }).join(', ');
+}
 export function parseScope(scope: string): { season: number; episode?: number } | undefined {
   const m = /^S(\d{2,})(?:E(\d{2,}))?$/.exec(scope);
   return m ? { season: Number(m[1]), ...(m[2] ? { episode: Number(m[2]) } : {}) } : undefined;

@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
-  PickProfile, PickRules, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
+import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
+  PickProfile, PickRules, ShowList, ShowTitleView, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import { EARLY_COPIES, LADDER, isQuality, qualityOf, type Quality } from './lib/quality.js';
@@ -17,7 +17,8 @@ import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
 import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
 import { tmdbImage } from './providers/explore-images.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
-import type { Grab, LibraryStore } from './persistence/library-store.js';
+import type { Grab, LibraryStore, LibraryTitle } from './persistence/library-store.js';
+import { episodesLabel } from './services/wanted.js';
 import type { DownloadersApi, Library } from './services/library.js';
 import type { QueueApi } from './services/queue.js';
 
@@ -119,14 +120,17 @@ export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>,
 // collections downloaded it (the artwork engine's journals). Filled in as those modules mount; empty until then.
 export type LibrarySources = {
   requesters?: () => Map<number, { name: string; at: number; status: string }[]>;
+  showRequesters?: () => Map<number, { name: string; at: number; status: string }[]>;
   collections?: () => Map<number, string[]>;
 };
 type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'> };
-// A movie's source: a request first, then collections, then the cutover from Radarr.
-export function movieSource(title: { tmdbId: number; addedBy: string }, requests: Map<number, { name: string; at: number; status: string }[]>,
+// A movie's source: a request first, then collections, then the cutover from Radarr. A show's: a request, else the
+// Sonarr import (step 6).
+export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'movie' | 'show' }, requests: Map<number, { name: string; at: number; status: string }[]>,
   collections: Map<number, string[]>): MovieSource {
   const asked = requests.get(title.tmdbId);
   if (asked?.length) return { kind: 'request', requests: asked };
+  if (title.kind === 'show') return title.addedBy === 'cutover' || title.addedBy === 'sonarr' ? { kind: 'sonarr' } : { kind: 'other', by: title.addedBy };
   const owners = collections.get(title.tmdbId);
   if (owners?.length || title.addedBy === 'collections') return { kind: 'collection', collections: owners ?? [] };
   if (title.addedBy === 'cutover') return { kind: 'radarr' };
@@ -136,6 +140,8 @@ export function movieSource(title: { tmdbId: number; addedBy: string }, requests
 export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders }: Deps) {
   const sourcesNow = () => { const requests = sources.requesters?.() ?? new Map(), collections = sources.collections?.() ?? new Map();
     return (t: { tmdbId: number; addedBy: string }) => movieSource(t, requests, collections); };
+  const showSourcesNow = () => { const requests = sources.showRequesters?.() ?? new Map();
+    return (t: { tmdbId: number; addedBy: string }) => movieSource({ ...t, kind: 'show' }, requests, new Map()); };
   const admin = { config: { access: 'admin' as const } };
   const actor = (request: Parameters<typeof viewer>[0]) => viewer(request).grant.accountId;
   const titleName = new Map<number, { title: string; year?: number }>();
@@ -144,7 +150,17 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     if (!name) { const t = store.title(titleId); name = t ? { title: t.title, ...(t.year ? { year: t.year } : {}) } : { title: `Title ${titleId}` }; titleName.set(titleId, name); }
     return name;
   };
-  const grabView = (g: Grab): DownloadsGrab => ({ id: g.id, titleId: g.titleId, ...nameOf(g.titleId), releaseName: g.releaseName, indexer: g.indexer, protocol: g.protocol,
+  // A show's episodes in a word (S02, S02E05), knowing each season's size; cached with the names.
+  const seasonSizes = new Map<number, Map<number, number>>();
+  const episodesOf = (titleId: number, refs: readonly (readonly [number, number])[]) => {
+    if (!refs.length) return {};
+    let sizes = seasonSizes.get(titleId);
+    if (!sizes) { sizes = new Map(); for (const e of store.episodes(titleId)) sizes.set(e.season, (sizes.get(e.season) ?? 0) + 1); seasonSizes.set(titleId, sizes); }
+    const known = sizes;
+    return { episodes: episodesLabel(refs, s => known.get(s) ?? 0) };
+  };
+  const clearNames = () => { titleName.clear(); seasonSizes.clear(); };
+  const grabView = (g: Grab): DownloadsGrab => ({ id: g.id, titleId: g.titleId, ...nameOf(g.titleId), ...episodesOf(g.titleId, g.episodes), releaseName: g.releaseName, indexer: g.indexer, protocol: g.protocol,
     ...(g.size !== undefined ? { size: g.size } : {}), quality: g.quality, score: g.score, upgrade: g.upgrade, state: g.state,
     ...(g.progress !== undefined ? { progress: g.progress } : {}), ...(g.error ? { error: g.error } : {}), ...(g.sentAt ? { sentAt: g.sentAt } : {}),
     ...(g.finishedAt ? { finishedAt: g.finishedAt } : {}), ...(g.importedAt ? { importedAt: g.importedAt } : {}) });
@@ -152,7 +168,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   const subjectOf = (key: string): number | undefined => {
     const [kind, raw] = key.split(':'), n = Number(raw);
     if (!Number.isInteger(n)) return undefined;
-    return kind === 'movie' ? n : kind === 'grab' ? store.grab(n)?.titleId : kind === 'file' ? store.file(n)?.titleId : undefined;
+    return kind === 'movie' || kind === 'show' ? n : kind === 'grab' ? store.grab(n)?.titleId : kind === 'file' ? store.file(n)?.titleId : undefined;
   };
   const pickRules = (): PickRules => {
     const formats = store.formats();
@@ -160,15 +176,26 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       ladder: [...LADDER], earlyCopies: LADDER.filter(q => EARLY_COPIES.has(q)), fields: [...FORMAT_FIELDS], flags: [...FLAGS], categories: [...FORMAT_CATEGORIES] };
   };
   const settingsView = (): LibrarySettingsView => ({ ...store.settings(), seedingFloor: { ...IPT_FLOOR } });
-  const titleView = async (titleId: number): Promise<LibraryTitleView> => {
+  const showView = (title: LibraryTitle): ShowTitleView => {
+    const seasons = library.showDetail(title), byFile = store.fileEpisodes(title.id);
+    let missing = 0, cutoff = 0;
+    for (const e of seasons.flatMap(s => s.episodes)) if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
+    const files: LibraryFileView[] = store.files(title.id).map(f => ({ ...f, ...episodesOf(title.id, byFile.get(f.id) ?? []) }));
+    return { kind: 'show', id: title.id, tmdbId: title.tmdbId, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
+      ...(title.released.status ? { status: title.released.status } : {}), profileId: title.profileId, keep: title.keep, monitor: title.monitor, monitored: title.monitor !== 'none',
+      paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}), wanted: { missing, cutoff }, seasons, files,
+      grabs: store.grabsFor(title.id, 50).map(grabView), profiles: store.profiles(), source: showSourcesNow()(title), addedAt: title.addedAt };
+  };
+  const titleView = async (titleId: number): Promise<TitleView> => {
     const title = store.title(titleId);
-    requireThat(title && title.kind === 'movie', 'NOT_FOUND', 'No such movie in the library.', 404);
-    titleName.delete(titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
+    titleName.delete(titleId); seasonSizes.delete(titleId);
+    if (title.kind === 'show') return showView(title);
     const search = store.search(title.id, 'movie'), wanted = await library.titleWanted(title);
-    return { id: title.id, tmdbId: title.tmdbId, ...(title.imdbId ? { imdbId: title.imdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
+    return { kind: 'movie', id: title.id, tmdbId: title.tmdbId, ...(title.imdbId ? { imdbId: title.imdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
       profileId: title.profileId, keep: title.keep, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
       wanted, released: title.released, ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}) } : {}), misses: search?.misses ?? 0,
-      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt };
+      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt } satisfies LibraryTitleView;
   };
 
   const seedingView = (g: Grab): DownloadsSeeding => {
@@ -179,7 +206,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   };
 
   app.get('/api/v1/admin/library/activity', admin, async () => {
-    titleName.clear();
+    clearNames();
     const view = queue.view(), labels = new Map(view.kinds.map(k => [k.kind, k.label]));
     return {
       open: store.activeGrabs().map(grabView), seeding: store.seedingGrabs().map(seedingView), failed: store.finishedGrabs(true, 30).map(grabView), history: store.finishedGrabs(false, 30).map(grabView),
@@ -193,22 +220,22 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   });
   // Downloads › History: the newest grab steps (the page filters and pages them).
   app.get('/api/v1/admin/library/history', admin, async () => {
-    titleName.clear();
+    clearNames();
     return { events: store.grabEvents(2000).map(e => ({ id: e.id, at: e.at, kind: e.kind, ...(e.note ? { note: e.note } : {}), grab: grabView(e.grab) })) } satisfies DownloadsHistory;
   });
   // Everything the downloaders hold, live, each matched to its tk.box grab and who asked for it; then the grabs under
   // way that no downloader lists (sending, or importing after SABnzbd let go).
   const sourceWord = (s: MovieSource): string | undefined => s.kind === 'request' ? `${s.requests[0]!.name}${s.requests.length > 1 ? ` +${s.requests.length - 1}` : ''}`
-    : s.kind === 'collection' ? 'Collections' : s.kind === 'radarr' ? 'Radarr' : s.by || undefined;
+    : s.kind === 'collection' ? 'Collections' : s.kind === 'radarr' ? 'Radarr' : s.kind === 'sonarr' ? 'Sonarr' : s.by || undefined;
   const grabStates: Partial<Record<DownloadsGrab['state'], [ClientState, string?]>> = { sending: ['queued', 'Sending'], downloading: ['downloading'], unpacking: ['unpacking'], importing: ['importing'] };
   app.get('/api/v1/admin/library/downloads', admin, async () => {
-    titleName.clear();
+    clearNames();
     const live = downloaders?.live ? await downloaders.live() : { clients: [], items: [] };
-    const grabs = store.grabsByDownload(live.items.map(i => i.id)), source = sourcesNow();
+    const grabs = store.grabsByDownload(live.items.map(i => i.id)), movies = sourcesNow(), shows = showSourcesNow();
     const about = (g: Grab) => {
       const t = store.title(g.titleId), seeding = g.state === 'seeding' ? seedingView(g).removeAt : undefined;
-      return { grab: { id: g.id, titleId: g.titleId, ...nameOf(g.titleId), quality: g.quality, state: g.state, upgrade: g.upgrade, indexer: g.indexer,
-        ...(seeding !== undefined ? { removeAt: seeding } : {}) }, ...(t && sourceWord(source(t)) ? { requestedBy: sourceWord(source(t))! } : {}) };
+      return { grab: { id: g.id, titleId: g.titleId, ...nameOf(g.titleId), ...episodesOf(g.titleId, g.episodes), quality: g.quality, state: g.state, upgrade: g.upgrade, indexer: g.indexer,
+        ...(seeding !== undefined ? { removeAt: seeding } : {}) }, ...(t && sourceWord((t.kind === 'show' ? shows : movies)(t)) ? { requestedBy: sourceWord((t.kind === 'show' ? shows : movies)(t))! } : {}) };
     };
     const items: DownloadItem[] = live.items.map(i => {
       const g = grabs.get(i.id), mine = g && g.downloader === i.downloader ? g : undefined;
@@ -235,11 +262,14 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
 
   app.get('/api/v1/admin/library/wanted', admin, async () => ({ items: await library.wantedList() }) satisfies WantedList);
   app.get('/api/v1/admin/library/movies', admin, async () => ({ items: library.movieList(sourcesNow()) }) satisfies MovieList);
-  // A movie's poster: a redirect to TMDB's, through the image proxy, from the cached details. 404 without one.
+  app.get('/api/v1/admin/library/shows', admin, async () => ({ items: library.showList(showSourcesNow()) }) satisfies ShowList);
+  // A title's poster: a redirect to TMDB's, through the image proxy, from the cached details (for a show, the ones the
+  // library reads). 404 without one.
   app.get('/api/v1/admin/library/titles/:id/poster', { config: { access: 'admin', rateLimit: { max: 1200, timeWindow: 60000 } } }, async (request, reply) => {
     const title = store.title(id.parse(request.params).id);
     requireThat(title && titles, 'NOT_FOUND', 'No poster.', 404);
-    const details = await titles.get(`/movie/${title.tmdbId}`, { append_to_response: 'alternative_titles,release_dates,external_ids' }).catch(() => undefined) as
+    const details = await (title.kind === 'show' ? titles.get(`/tv/${title.tmdbId}`, { append_to_response: 'external_ids,alternative_titles' })
+      : titles.get(`/movie/${title.tmdbId}`, { append_to_response: 'alternative_titles,release_dates,external_ids' })).catch(() => undefined) as
       { poster_path?: string | null } | undefined;
     const url = tmdbImage(details?.poster_path, 'w154');
     requireThat(url, 'NOT_FOUND', 'No poster.', 404);
@@ -250,10 +280,17 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     const { id: titleId } = id.parse(request.params);
     const { profileId, keep } = z.object({ profileId: z.number().int().positive().optional(), keep: z.boolean().optional() }).strict().parse(request.body);
     const title = store.title(titleId);
-    requireThat(title && title.kind === 'movie', 'NOT_FOUND', 'No such movie in the library.', 404);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
     if (profileId !== undefined) { requireThat(store.profile(profileId), 'PROFILE_NOT_FOUND', 'No such profile.', 404); store.setProfile(titleId, profileId); }
     if (keep !== undefined) library.keep(titleId, keep);
     store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}) });
+    return titleView(titleId);
+  });
+  // A show's season switched on or off, with its episodes.
+  app.put('/api/v1/admin/library/titles/:id/seasons/:season', admin, async request => {
+    const { id: titleId, season } = z.object({ id: z.coerce.number().int().positive(), season: z.coerce.number().int().positive().max(999) }).strict().parse(request.params);
+    const { monitored } = z.object({ monitored: z.boolean() }).strict().parse(request.body);
+    library.monitorSeason(titleId, season, monitored);
     return titleView(titleId);
   });
   // A show's season (S02) or episode (S02E05); movies take none.
@@ -270,7 +307,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     async request => await library.interactive(id.parse(request.params).id, undefined, scopeBody.parse(request.body ?? {}).scope) satisfies InteractiveSearch);
   app.post('/api/v1/admin/library/titles/:id/grab', admin, async request => {
     const { guid, scope } = z.object({ guid: z.string().min(1).max(500) }).merge(scopeBody).strict().parse(request.body);
-    titleName.clear();
+    clearNames();
     return grabView(library.grabRelease(id.parse(request.params).id, guid, scope));
   });
 

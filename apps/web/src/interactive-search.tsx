@@ -1,4 +1,4 @@
-import {Fragment,useEffect,useState} from 'react';
+import {Fragment,useEffect,useState,type ReactNode} from 'react';
 import type {InteractiveRelease,InteractiveSearch} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {ErrorNotice,Icon} from './components.js';
@@ -35,20 +35,22 @@ function age(at:number,now:number) {
 }
 
 // The search itself, shown as a movie's Interactive search tab (movie-dialog.tsx). It searches when first shown.
-export function InteractiveSearchPanel({titleId}:{titleId:number}) {
+// A show's search is for one season (S02, packs and its episodes) or one episode (S02E05); `controls` (its season and
+// episode pickers) sit first in the bar.
+export function InteractiveSearchPanel({titleId,scope,controls}:{titleId:number;scope?:string;controls?:ReactNode}) {
   const path=`/admin/library/titles/${titleId}`;
   const [result,setResult]=useState<InteractiveSearch>(),[view,setView]=useState<'accepted'|'all'>('accepted'),[protocol,setProtocol]=useState<'any'|'usenet'|'torrent'>('any');
   const [open,setOpen]=useState<string>(),[grabbed,setGrabbed]=useState('');
   const search=useMutation(()=>{}),grab=useMutation(changed);
   const run=()=>void search.run(async()=>{
     setGrabbed('');setOpen(undefined);
-    const found=await api<InteractiveSearch>(`${path}/interactive`,'POST');
+    const found=await api<InteractiveSearch>(`${path}/interactive`,'POST',scope?{scope}:undefined);
     setResult(found);
     // Nothing accepted: show everything, so the reasons are in view.
     setView(found.releases.some(r=>r.accepted)?'accepted':'all');
   });
-  useEffect(run,[titleId]);
-  const take=(r:InteractiveRelease)=>void grab.run(async()=>{await api(`${path}/grab`,'POST',{guid:r.guid});setGrabbed(r.guid);toast.success(`Grabbed ${r.name}`);});
+  useEffect(()=>{setResult(undefined);run();},[titleId,scope]);
+  const take=(r:InteractiveRelease)=>void grab.run(async()=>{await api(`${path}/grab`,'POST',{guid:r.guid,...(scope?{scope}:{})});setGrabbed(r.guid);toast.success(`Grabbed ${r.name}`);});
   const all=result?.releases??[],accepted=all.filter(r=>r.accepted).length;
   const visible=(r:InteractiveRelease)=>(view==='all'||r.accepted)&&(protocol==='any'||r.protocol===protocol);
   const rows:SearchRow[]=all.filter(visible);
@@ -61,6 +63,7 @@ export function InteractiveSearchPanel({titleId}:{titleId:number}) {
   const now=Date.now();
   return <div className="ui-search-dialog">
       <div className="ui-bar">
+        {controls}
         <Segmented label="Releases" value={view} onChange={setView} options={views.map(([v,l])=>[v,`${l} (${v==='all'?all.length:accepted})`] as const)}/>
         <Segmented label="Protocol" value={protocol} options={protocols} onChange={setProtocol}/>
         <span className="ui-count">{result?<>Profile <strong>{result.profile.name}</strong> · cutoff <strong>{result.profile.cutoff}</strong> · {rows.length} shown</>:''}</span>

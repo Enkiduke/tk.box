@@ -8,7 +8,8 @@ import {toast} from './toasts.js';
 import {ACTIONS,Dash,GrabPill,IconAction,Loaded,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
   useSorted,type Tone} from './manage-ui.js';
 
-// Admin › Downloads › Queue and Wanted (docs/PHASE-3.5.md, docs/UI.md).
+// Admin › Downloads › Queue and Wanted (docs/PHASE-3.5.md, docs/UI.md). A show's grab names its episodes (S02,
+// S02E05); Wanted lists a show's searches, a season pack or an episode each.
 
 // ---- Queue: everything SABnzbd and qBittorrent hold, any category, in one table ----
 
@@ -58,7 +59,7 @@ function ItemTitle({item}:{item:DownloadItem}) {
   const where=[clientNames[item.downloader],item.category,item.tracker].filter(Boolean).join(' · ');
   const error=item.error?<span className="danger-text" title={item.error}>{item.error}</span>:undefined;
   if(item.grab)return <TitleCell id={item.grab.titleId} title={item.grab.title} year={item.grab.year} tags={item.grab.upgrade&&<Tag>Upgrade</Tag>}
-    sub={error??`${item.name} · ${item.grab.quality} · ${item.grab.indexer}`}/>;
+    sub={error??`${item.grab.episodes?`${item.grab.episodes} · `:''}${item.name} · ${item.grab.quality} · ${item.grab.indexer}`}/>;
   return <div className="ui-title"><span className="ui-poster dl-initials" aria-hidden="true">{protocol(item.protocol)[0]}</span><div>
     <span className="ui-title-name" title={item.name}>{item.name}</span><small title={where}>{error??where}</small></div></div>;
 }
@@ -204,7 +205,7 @@ export function DownloadHistoryPage() {
         columns={[{label:'Title',sort:'title'},{label:'Step',width:260,sort:'event'},{label:'Quality',width:130,sort:'quality',desc:true},
           {label:'Size',width:90,num:true,sort:'size',desc:true},{label:'When',width:110,sort:'when',desc:true},{...ACTIONS,width:52}]}>
         {rows.map(e=>{const [word,tone]=eventWords[e.kind],later=settled(e);return <tr key={e.id}>
-          <td><TitleCell id={e.grab.titleId} title={e.grab.title} year={e.grab.year} tags={e.grab.upgrade&&<Tag>Upgrade</Tag>}
+          <td><TitleCell id={e.grab.titleId} title={e.grab.title} year={e.grab.year} tags={<>{e.grab.episodes&&<Tag>{e.grab.episodes}</Tag>}{e.grab.upgrade&&<Tag>Upgrade</Tag>}</>}
             sub={`${e.grab.releaseName} · ${protocol(e.grab.protocol)} · ${e.grab.indexer}`}/></td>
           <td><Pill tone={later?'off':tone}>{word}</Pill><EventNote e={e} later={later}/></td>
           <td>{e.grab.quality}</td><td className="num">{bytes(e.grab.size)??<Dash/>}</td><td><When at={e.at} now={now}/></td>
@@ -219,34 +220,42 @@ export function DownloadHistoryPage() {
 
 const wantedFilters=[['all','All'],['missing','Missing'],['cutoff','Below cutoff'],['paused','Paused']] as const;
 type WantedFilter=typeof wantedFilters[number][0];
+const wantedKinds=[['all','All'],['movie','Movies'],['show','Shows']] as const;
+type WantedKind=typeof wantedKinds[number][0];
+// A show's row is one search: a season pack (S02, its wanted episodes) or one episode (S02E05 and its name).
+const wantedKey=(w:WantedItem)=>`${w.id}:${w.scope??'movie'}`;
+const scopeWords=(w:WantedItem)=>!w.scope?'':/E\d+$/.test(w.scope)?(w.episodeName??''):`Season pack · ${w.episodes} episode${w.episodes===1?'':'s'}`;
 const wantedStatus=(w:WantedItem)=>w.paused?'Paused':w.grab?grabNames[w.grab]:w.why==='missing'?'Missing':'Below cutoff';
-const wantedSorts={title:(w:WantedItem)=>w.title,next:(w:WantedItem)=>w.paused||w.grab?undefined:w.nextAt??0,misses:(w:WantedItem)=>w.misses,status:wantedStatus};
+const wantedSorts={title:(w:WantedItem)=>`${w.title} ${w.scope??''}`,next:(w:WantedItem)=>w.paused||w.grab?undefined:w.nextAt??0,misses:(w:WantedItem)=>w.misses,status:wantedStatus};
 
 export function WantedPage() {
   const view=useApi<WantedList>('/admin/library/wanted'),mutation=useMutation(changed);useRefresh(view.reload);
-  const [query,setQuery]=useState(''),[filter,setFilter]=useState<WantedFilter>('all');
-  const search=(w:WantedItem)=>void mutation.run(async()=>{await api(`/admin/library/titles/${w.id}/search`,'POST');toast.info(`Searching for ${w.title}`);});
+  const [query,setQuery]=useState(''),[filter,setFilter]=useState<WantedFilter>('all'),[kind,setKind]=useState<WantedKind>('all');
+  const search=(w:WantedItem)=>void mutation.run(async()=>{await api(`/admin/library/titles/${w.id}/search`,'POST',w.scope?{scope:w.scope}:{});toast.info(`Searching for ${w.title}${w.scope?` ${w.scope}`:''}`);});
   const pause=(w:WantedItem)=>void mutation.run(()=>api(`/admin/library/titles/${w.id}/pause`,'POST',{paused:!w.paused}));
-  const items=(view.data?.items??[]).filter(w=>matches(query,w.title,w.year)&&(filter==='all'?true:filter==='paused'?w.paused:!w.paused&&w.why===filter))
-    .sort((a,b)=>a.title.localeCompare(b.title));
+  const items=(view.data?.items??[]).filter(w=>matches(query,w.title,w.year,w.scope,w.episodeName)&&(kind==='all'||w.kind===kind)
+    &&(filter==='all'?true:filter==='paused'?w.paused:!w.paused&&w.why===filter))
+    .sort((a,b)=>a.title.localeCompare(b.title)||(a.scope??'').localeCompare(b.scope??''));
   const {rows:sorted,sort,onSort}=useSorted(items,wantedSorts,{key:'next',dir:1});
-  const {rows,more}=usePaged(sorted,`${query}|${filter}|${sort?.key}|${sort?.dir}`);
+  const {rows,more}=usePaged(sorted,`${query}|${filter}|${kind}|${sort?.key}|${sort?.dir}`);
   return <><SectionHead title="Wanted"/>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Toolbar query={query} setQuery={setQuery} placeholder="Search wanted movies" count={view.data?`${items.length} of ${view.data.items.length}`:undefined}>
+    <Toolbar query={query} setQuery={setQuery} placeholder="Search wanted titles" count={view.data?`${items.length} of ${view.data.items.length}`:undefined}>
       <Segmented label="Show" value={filter} options={wantedFilters} onChange={setFilter}/>
+      <Segmented label="Kind" value={kind} options={wantedKinds} onChange={setKind}/>
     </Toolbar>
     <Loaded view={view}>{({items:all})=>{const now=Date.now();return <Panel flush>
-      <Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing wanted':!items.length?'No wanted movie matches':undefined}
+      <Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing wanted':!items.length?'Nothing wanted matches':undefined}
         columns={[{label:'Title',sort:'title'},{label:'Next search',width:130,sort:'next'},{label:'Misses',width:80,num:true,sort:'misses',desc:true},{label:'Status',width:140,sort:'status'},{...ACTIONS,width:124}]}>
-        {rows.map(w=><tr key={w.id} className={w.paused?'is-off':undefined}>
-          <td><TitleCell id={w.id} title={w.title} year={w.year} sub={w.paused&&w.pausedReason?<span className="danger-text">{w.pausedReason}</span>:<>{w.quality?`Have ${w.quality} · `:''}{w.lastAt?<>Searched <When at={w.lastAt} now={now}/></>:'Not searched yet'}</>}/></td>
+        {rows.map(w=><tr key={wantedKey(w)} className={w.paused?'is-off':undefined}>
+          <td><TitleCell id={w.id} title={w.title} year={w.year} tags={w.scope&&<Tag>{w.scope}</Tag>} sub={w.paused&&w.pausedReason?<>{scopeWords(w)?`${scopeWords(w)} · `:''}<span className="danger-text">{w.pausedReason}</span></>
+            :<>{scopeWords(w)?`${scopeWords(w)} · `:''}{w.quality?`Have ${w.quality} · `:''}{w.lastAt?<>Searched <When at={w.lastAt} now={now}/></>:'Not searched yet'}</>}/></td>
           <td>{w.paused||w.grab?<Dash/>:<When at={w.nextAt} now={now} due="Due" empty="Not yet"/>}</td>
           <td className="num">{w.misses}</td>
           <td>{w.paused?<Pill tone="off">Paused</Pill>:w.grab?<GrabPill state={w.grab}/>:<Pill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</Pill>}</td>
           <td><RowActions>
-            {!w.paused&&<IconAction icon="search" label={`Automatic search for ${w.title}`} disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}/>}
-            <IconAction icon="list" label={`Interactive search for ${w.title}`} onClick={()=>openMovie(w.id,'search')}/>
+            {!w.paused&&<IconAction icon="search" label={`Automatic search for ${w.title}${w.scope?` ${w.scope}`:''}`} disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}/>}
+            <IconAction icon="list" label={`Interactive search for ${w.title}${w.scope?` ${w.scope}`:''}`} onClick={()=>openMovie(w.id,'search',w.scope)}/>
             <IconAction icon={w.paused?'play':'pause'} label={w.paused?`Unpause ${w.title}`:`Pause ${w.title}`} disabled={mutation.busy} onClick={()=>pause(w)}/>
           </RowActions></td>
         </tr>)}

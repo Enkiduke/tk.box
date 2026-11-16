@@ -140,6 +140,41 @@ export class LibraryStore {
     prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run('library', event, this.now(), JSON.stringify(detail));
   }
 
+  // Who fulfils shows: the Sonarr import's Switch and Switch back (the settings PUT doesn't take it).
+  setFulfil(actor: string, to: 'sonarr' | 'tkbox') {
+    this.db.transaction(() => {
+      const { revision, ...current } = this.settings();
+      const next = librarySettings.parse({ ...current, fulfil: { ...current.fulfil, show: to } });
+      prepared(this.db, 'UPDATE library_settings SET revision = revision + 1, value = ? WHERE id = 1').run(JSON.stringify(next));
+      prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run(actor, 'library_fulfil_changed', this.now(), JSON.stringify({ kind: 'show', to, revision }));
+    })();
+  }
+
+  // ---- The Sonarr import (phase 2 step 6) ----
+
+  // Sonarr's series id of each imported show, by that id.
+  cutoverIds() {
+    return new Map((prepared(this.db, 'SELECT sonarr_id, title_id FROM show_cutover').all() as { sonarr_id: number; title_id: number }[]).map(r => [r.sonarr_id, r.title_id]));
+  }
+  setCutoverId(sonarrId: number, titleId: number) {
+    prepared(this.db, 'INSERT INTO show_cutover(sonarr_id, title_id) VALUES(?, ?) ON CONFLICT(sonarr_id) DO UPDATE SET title_id = excluded.title_id').run(sonarrId, titleId);
+  }
+  cutoverState() {
+    const r = prepared(this.db, 'SELECT * FROM show_cutover_state WHERE id = 1').get() as
+      { imported_at: number | null; summary: string | null; switched_at: number | null; switched_back_at: number | null } | undefined;
+    return { ...opt('importedAt', r?.imported_at), ...opt('summary', r?.summary ? JSON.parse(r.summary) as Record<string, number> : undefined),
+      ...opt('switchedAt', r?.switched_at), ...opt('switchedBackAt', r?.switched_back_at) };
+  }
+  setCutoverState(fields: { importedAt?: number; summary?: Record<string, number>; switchedAt?: number; switchedBackAt?: number }) {
+    prepared(this.db, `INSERT INTO show_cutover_state(id, imported_at, summary, switched_at, switched_back_at) VALUES(1, @importedAt, @summary, @switchedAt, @switchedBackAt)
+      ON CONFLICT(id) DO UPDATE SET imported_at = COALESCE(excluded.imported_at, imported_at), summary = COALESCE(excluded.summary, summary),
+        switched_at = COALESCE(excluded.switched_at, switched_at), switched_back_at = COALESCE(excluded.switched_back_at, switched_back_at)`)
+      .run({ importedAt: fields.importedAt ?? null, summary: fields.summary ? JSON.stringify(fields.summary) : null, switchedAt: fields.switchedAt ?? null,
+        switchedBackAt: fields.switchedBackAt ?? null });
+  }
+  // A built-in profile's id by its key (standard, lite, any…).
+  builtInProfile(key: string) { return (prepared(this.db, 'SELECT id FROM pick_profiles WHERE built_in = ?').get(key) as { id: number } | undefined)?.id; }
+
   // ---- Profiles and formats (docs/PROFILES.md) ----
 
   profile(id: number): QualityProfile | undefined {
@@ -179,6 +214,16 @@ export class LibraryStore {
       FROM library_titles t LEFT JOIN library_files f ON f.id = (SELECT id FROM library_files WHERE title_id = t.id ORDER BY imported_at DESC, id DESC LIMIT 1)
       WHERE t.kind = 'movie' ORDER BY t.title COLLATE NOCASE, t.id`).all() as (TitleRaw & { file_quality: string | null; file_size: number | null; grab_state: GrabState | null })[])
       .map(r => ({ ...title(r), ...opt('fileQuality', r.file_quality === null ? null : quality(r.file_quality)), ...opt('fileSize', r.file_size), ...opt('grab', r.grab_state) }));
+  }
+  // Every show in the library (Admin › Manage › Shows), and the ones tk.box watches (Wanted).
+  allShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }
+  monitoredShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' AND monitor != 'none' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }
+  // A show's files' episodes, by file id.
+  fileEpisodes(titleId: number) {
+    const byFile = new Map<number, EpisodeRef[]>();
+    for (const r of prepared(this.db, 'SELECT file_id, season, episode FROM library_file_episodes WHERE title_id = ? ORDER BY season, episode').all(titleId) as
+      { file_id: number; season: number; episode: number }[]) byFile.set(r.file_id, [...byFile.get(r.file_id) ?? [], [r.season, r.episode]]);
+    return byFile;
   }
   // Every movie tk.box watches (Admin › Downloads › Wanted).
   monitoredMovies() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'movie' AND monitor != 'none' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }

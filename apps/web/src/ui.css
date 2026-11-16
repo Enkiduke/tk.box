@@ -142,6 +142,9 @@ a.ui-title-name:hover{text-decoration:underline}
 .ui-search-dialog{display:flex;flex-direction:column;gap:4px}
 .ui-search-dialog .ui-panel{max-height:calc(100vh - 300px);overflow:auto;margin:0}
 .ui-search-dialog .ui-table th{background:var(--surface)}
+.ui-search-dialog .ui-bar select.ui-scope-season{flex:none;width:120px}
+.ui-search-dialog .ui-bar select.ui-scope-episode{flex:none;width:200px}
+.ui-search-dialog .ui-bar .ui-count{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tr.ui-release{cursor:pointer}
 tr.ui-release.is-open td{background:var(--surface-2)}
 .ui-table tbody tr.ui-release.is-current td{background:color-mix(in srgb,var(--ui-active) 12%,var(--surface))}
@@ -157,6 +160,12 @@ tr.ui-release.is-open td{background:var(--surface-2)}
 .ui-decision .ui-pill{overflow:hidden;text-overflow:ellipsis;display:inline-block;line-height:22px}
 .ui-decision .ui-pill:before{display:inline-block;margin-right:6px;vertical-align:1px}
 .ui-more-count{flex:none;color:var(--ui-bad);font-size:12px;font-weight:650}
+/* A show's seasons, each opening to its episodes */
+tr.ui-episode td{background:color-mix(in srgb,var(--surface-2) 55%,transparent)}
+.ui-episode-name{display:flex;align-items:center;gap:10px;min-width:0;padding-left:22px}
+.ui-episode-name>.ui-mono{flex:none;color:var(--dim);font-size:12px}
+.ui-episode-name>div{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ui-table td .switch-row{display:inline-flex;padding:0;min-height:0;border:0}
 tr.ui-release-detail td{height:auto;padding:0;background:var(--surface-2);white-space:normal}
 .ui-detail{display:grid;grid-template-columns:1.2fr 1fr 1.2fr;gap:28px;padding:16px 20px 20px 42px}
 .ui-detail h4{margin:0 0 10px;color:var(--dim);font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase}

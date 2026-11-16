@@ -1,5 +1,5 @@
 import { dirname, win32 } from 'node:path';
-import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, MovieSource } from '../../../../packages/contracts/src/downloads.js';
+import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, MovieSource, ShowRow, ShowSeasonView, WantedItem } from '../../../../packages/contracts/src/downloads.js';
 import * as fs from 'node:fs/promises';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import { scoreFormats } from '../lib/formats.js';
@@ -160,7 +160,7 @@ export class Library {
 
   // A show's facts and its episodes (no specials), one TMDB call per season. Episodes' runtimes are their own; the
   // title's is the show's usual one, for an episode TMDB gives none.
-  private async tmdbShow(tmdbId: number) {
+  async tmdbShow(tmdbId: number) {
     const show = await this.deps.titles.get(`/tv/${tmdbId}`, { append_to_response: 'external_ids,alternative_titles' }, HOUR) as TmdbShow | undefined;
     requireThat(show?.name, 'NOT_FOUND', `TMDB doesn't know show ${tmdbId}.`, 404);
     const seasons = [...new Set((show.seasons ?? []).map(s => s.season_number).filter((n): n is number => typeof n === 'number' && n > 0))].sort((a, b) => a - b);
@@ -179,6 +179,22 @@ export class Library {
         released: show.status ? { status: show.status } : {}, ...(runtime ? { runtime } : {}) },
       seasons, episodes,
     };
+  }
+
+  // TMDB's show for a TVDB id (the Sonarr import, for a series Sonarr has no TMDB id for).
+  async tmdbByTvdb(tvdbId: number) {
+    const found = await this.deps.titles.get(`/find/${tvdbId}`, { external_source: 'tvdb_id' }, HOUR) as { tv_results?: { id?: number }[] } | undefined;
+    return found?.tv_results?.find(r => typeof r.id === 'number')?.id;
+  }
+  // Whether shows are tk.box's (`fulfil.show`): until then its shows aren't searched on their own.
+  showsHere() { return this.store.settings().fulfil.show === 'tkbox'; }
+  // The Switch: each show's searches that aren't set yet, spread evenly over `over` from `from`, so the first sweep
+  // after the Sonarr import doesn't search every show at once. Returns how many it set.
+  spreadSearches(titleIds: readonly number[], from: number, over: number) {
+    const due = titleIds.flatMap(id => { const title = this.store.title(id); return title?.kind === 'show' && title.monitor !== 'none'
+      ? this.scopesOf(title).filter(s => !this.store.search(id, s.scope)).map(s => ({ id, scope: s.scope })) : []; });
+    due.forEach(({ id, scope }, i) => this.store.setSearch({ titleId: id, scope, lastAt: 0, misses: 0, nextAt: from + Math.floor(i * over / due.length) }));
+    return due.length;
   }
 
   // Reads a show from TMDB again: its facts, seasons and episodes, with the monitored flags its mode gives new ones
@@ -458,7 +474,8 @@ export class Library {
       if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) continue;
       if (this.queueSearch(title.id).added) searched++;
     }
-    for (const title of this.store.activeShows()) {
+    // Shows are searched once they're tk.box's: the Sonarr import brings them in while Sonarr still fulfils them.
+    for (const title of this.showsHere() ? this.store.activeShows() : []) {
       for (const scope of this.dueScopes(title, now)) if (this.queueSearch(title.id, undefined, undefined, scope.scope).added) searched++;
     }
     // TMDB again: daily for a movie that isn't out or a show still airing, weekly once it's out or ended.
@@ -571,7 +588,7 @@ export class Library {
   // The feed's episodes and season packs, matched to active shows by TVDB id or title (and alias), then picked as a
   // search of that season or episode would. A torrent that would win while Usenet comes first is carried into a search.
   private async onShowFeed(releases: Release[]) {
-    const shows = this.store.activeShows();
+    const shows = this.showsHere() ? this.store.activeShows() : [];
     if (!shows.length) return 0;
     const byName = new Map<string, LibraryTitle[]>(), byTvdb = new Map<number, LibraryTitle>();
     for (const s of shows) {
@@ -893,14 +910,35 @@ export class Library {
 
   // ---- Admin › Downloads ----
 
-  // Wanted movies (missing or below the cutoff), and paused ones that would be, with their search backoff.
-  async wantedList() {
+  // Wanted movies (missing or below the cutoff), and paused ones that would be, with their search backoff; then each
+  // show's searches as the sweep would make them (a season pack or an episode), paused shows too.
+  async wantedList(): Promise<WantedItem[]> {
     await this.deps.plex.ready();
+    return [...this.wantedMovies(), ...this.wantedShows()];
+  }
+  private wantedShows(): WantedItem[] {
+    const now = this.now(), open = this.store.activeGrabs();
+    return this.store.monitoredShows().flatMap(title => {
+      const state = this.showState(title), grabs = open.filter(g => g.titleId === title.id);
+      return showScopes({ monitor: title.monitor, paused: false }, state.seasons, state.episodes, this.profile(title), now).map(scope => {
+        const episodes = state.episodes.filter(e => e.season === scope.season && scope.episodes.includes(e.episode));
+        const one = scope.episode !== undefined ? episodes[0] : undefined, search = this.store.search(title.id, scope.scope);
+        const grab = grabs.find(g => g.episodes.some(([s, e]) => s === scope.season && scope.episodes.includes(e)));
+        return { kind: 'show' as const, id: title.id, tmdbId: title.tmdbId, title: title.title, ...(title.year ? { year: title.year } : {}), addedAt: title.addedAt,
+          scope: scope.scope, episodes: scope.episodes.length, ...(one?.name ? { episodeName: one.name } : {}), ...(one?.airAt !== undefined ? { airedAt: one.airAt } : {}),
+          why: episodes.some(e => !e.file) ? 'missing' as const : 'cutoff' as const, ...(one?.file ? { quality: one.file.quality } : {}),
+          paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
+          ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}), misses: search.misses } : { misses: 0 }),
+          ...(grab ? { grab: grab.state } : {}) };
+      });
+    });
+  }
+  private wantedMovies(): WantedItem[] {
     return this.store.monitoredMovies().flatMap(title => {
       const file = this.store.files(title.id)[0], search = this.store.search(title.id, 'movie'), grab = this.store.openGrabFor(title.id);
       const wanted = movieWanted({ monitor: title.monitor, paused: false, inPlex: this.deps.plex.has(title.tmdbId), ...(file ? { file } : {}) }, this.profile(title));
       if (!wanted.wanted) return [];
-      return [{ id: title.id, tmdbId: title.tmdbId, title: title.title, ...(title.year ? { year: title.year } : {}), addedAt: title.addedAt, why: wanted.why, ...(file ? { quality: file.quality } : {}),
+      return [{ kind: 'movie' as const, id: title.id, tmdbId: title.tmdbId, title: title.title, ...(title.year ? { year: title.year } : {}), addedAt: title.addedAt, why: wanted.why, ...(file ? { quality: file.quality } : {}),
         paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
         ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}), misses: search.misses } : { misses: 0 }),
         ...(grab ? { grab: grab.state } : {}) }];
@@ -915,6 +953,48 @@ export class Library {
         ...(t.fileSize !== undefined ? { size: t.fileSize } : {}), profileId: t.profileId, profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused,
         monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt, source: sourceOf(t) };
     });
+  }
+  // Every show, for Admin › Manage › Shows.
+  showList(sourceOf: (title: LibraryTitle) => MovieSource): ShowRow[] {
+    const names = new Map(this.store.profiles().map(p => [p.id, p.name])), grabbing = this.store.grabbingTitles();
+    return this.store.allShows().map(t => {
+      let have = 0, total = 0, missing = 0, cutoff = 0, size = 0;
+      const sizes = new Set<number>(), seasons = this.showDetail(t);
+      for (const s of seasons) for (const e of s.episodes) {
+        if (e.file) { have++; if (!sizes.has(e.file.id)) { sizes.add(e.file.id); size += e.file.size; } }
+        if (e.file || (e.aired && e.monitored)) total++;
+        if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
+      }
+      const today = new Date(this.now()).toISOString().slice(0, 10);
+      const nextAir = seasons.flatMap(s => s.episodes).filter(e => !e.aired && e.airDate && e.airDate >= today).map(e => e.airDate!).sort()[0];
+      return { id: t.id, tmdbId: t.tmdbId, ...(t.tvdbId ? { tvdbId: t.tvdbId } : {}), title: t.title, ...(t.year ? { year: t.year } : {}),
+        ...(t.released.status ? { status: t.released.status } : {}), seasons: seasons.length, have, total, missing, cutoff, size, profileId: t.profileId,
+        profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused, monitored: t.monitor !== 'none', grabbing: grabbing.has(t.id),
+        ...(nextAir ? { nextAir } : {}), addedAt: t.addedAt, source: sourceOf(t) };
+    });
+  }
+  // A show's seasons and episodes for its dialog: each episode's file, whether it is wanted (as if unpaused), a grab
+  // under way, and its own search's times; each season's pack search times.
+  showDetail(title: LibraryTitle): ShowSeasonView[] {
+    const state = this.showState(title), profile = this.profile(title), now = this.now(), busy = new Map<string, Grab['state']>();
+    for (const g of this.store.activeGrabs()) if (g.titleId === title.id) for (const [s, e] of g.episodes) busy.set(`${s}:${e}`, g.state);
+    const times = (scope: string) => { const r = this.store.search(title.id, scope); return r ? { nextAt: r.nextAt, ...(r.lastAt ? { lastAt: r.lastAt } : {}) } : {}; };
+    return state.seasons.map(season => ({ season: season.season, monitored: season.monitored, ...times(scopeName(season.season)),
+      episodes: state.episodes.filter(e => e.season === season.season).map(e => {
+        const w = episodeWanted({ monitor: title.monitor, paused: false }, season.monitored, e, profile, now), grab = busy.get(`${e.season}:${e.episode}`);
+        return { episode: e.episode, ...(e.name ? { name: e.name } : {}), ...(e.airDate ? { airDate: e.airDate } : {}), aired: e.airAt !== undefined && e.airAt <= now,
+          monitored: title.monitor !== 'none' && season.monitored && e.monitored, ...(e.file ? { file: { id: e.file.id, quality: e.file.quality, size: e.file.size } } : {}),
+          ...(w.wanted ? { wanted: w.why } : {}), ...(grab ? { grab } : {}), ...times(scopeName(e.season, e.episode)) };
+      }) }));
+  }
+  // A season's switch in Admin: it and its episodes on or off. Switching one on in a show followed by nothing makes it
+  // Manual, so the switch means something; the sweep searches what turns wanted.
+  monitorSeason(titleId: number, season: number, on: boolean) {
+    const title = this.show(titleId);
+    requireThat(this.store.seasons(titleId).some(s => s.season === season), 'NOT_FOUND', 'No such season.', 404);
+    this.store.followSeasons(titleId, [season], on);
+    if (on && title.monitor === 'none') this.store.setFollow(titleId, 'manual', null);
+    this.store.audit('library_season_monitored', { title: titleId, season, on });
   }
   async titleWanted(title: LibraryTitle) { await this.deps.plex.ready(); return this.wanted(title); }
 

@@ -84,7 +84,9 @@ export const libraryModule = defineModule({
       api: {
         fulfiller, store,
         // Shows are tk.box's (fulfil.show), for requests, the calendar and Clean Up.
-        showsHere: () => store.settings().fulfil.show === 'tkbox',
+        showsHere: () => library.showsHere(),
+        // The Sonarr import (modules/cutover.ts).
+        cutover: { tmdbShow: library.tmdbShow.bind(library), tmdbByTvdb: library.tmdbByTvdb.bind(library), spreadSearches: library.spreadSearches.bind(library) },
         forgetSeason: library.forgetSeason.bind(library),
         // Collections' seasonal downloads add through here, as requests do.
         add: library.add.bind(library),

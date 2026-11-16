@@ -15,7 +15,7 @@ const WATCH_MS = 60000, CHECK_MS = 15 * 60000, PLEX_GRACE_MS = 5 * 60000, ENCODE
 // A failed connection check is tried again CONFIRM_MS later, and only a second failure in a row is an alert (a busy
 // moment or a blip never reaches the bell). The first background check waits STARTUP_MS, past the startup rush.
 export const CONFIRM_MS = 60000, STARTUP_MS = 2 * 60000;
-const names: Record<string, string> = { sonarr: 'Sonarr', tmdb: 'TMDb', tvdb: 'TVDB', fanart: 'Fanart.tv', mdblist: 'MDBList' };
+const names: Record<string, string> = { sonarr: 'Sonarr', sabnzbd: 'SABnzbd', qbittorrent: 'qBittorrent', tmdb: 'TMDb', tvdb: 'TVDB', fanart: 'Fanart.tv', mdblist: 'MDBList' };
 
 // The admins' system alerts (docs/NOTIFICATIONS.md): failing and held-back jobs, Run now finishing, connections that
 // stop working (two failed checks in a row; checked every 15 minutes, and whenever Admin › Connections checks), the Plex live connection down

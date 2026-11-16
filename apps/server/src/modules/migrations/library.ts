@@ -164,4 +164,10 @@ export const libraryMigrations: Migration[] = [
   } },
   // Phase 2: an episode's own TMDB runtime, for its size limits (runtimes vary within a show).
   { name: 'show-episodes', up: `ALTER TABLE library_episodes ADD COLUMN runtime INTEGER;` },
+  // Phase 2 step 6, the Sonarr import: each imported show's Sonarr id, so requests' arr_id can move between the two ids
+  // on Switch and Switch back, and when it was imported, switched and switched back. Step 7 drops them.
+  { name: 'show-cutover', up: `
+    CREATE TABLE show_cutover(sonarr_id INTEGER PRIMARY KEY, title_id INTEGER NOT NULL REFERENCES library_titles(id) ON DELETE CASCADE);
+    CREATE INDEX show_cutover_title ON show_cutover(title_id);
+    CREATE TABLE show_cutover_state(id INTEGER PRIMARY KEY CHECK(id = 1), imported_at INTEGER, summary TEXT, switched_at INTEGER, switched_back_at INTEGER);` },
 ];

@@ -10,14 +10,17 @@ import './ui.css';
 
 const MINUTE=60000,HOUR=3600000,DAY=86400000,GB=1024**3;
 export const changed=()=>invalidate('/admin/library');
-// A movie opens as a dialog over the page you're on: the same address with `title` (and `pane`) added.
-export function movieHref(id:number,pane?:'search') {
+// A movie or show opens as a dialog over the page you're on: the same address with `title` (and `pane`, and for a
+// show's Interactive search the `scope`, S02 or S02E05) added.
+export type TitlePane='overview'|'files'|'grabs'|'search';
+export function movieHref(id:number,pane?:Exclude<TitlePane,'overview'>,scope?:string) {
   const query=new URLSearchParams(window.location.hash.split('?')[1]??'');
   query.set('title',String(id));
   if(pane)query.set('pane',pane);else query.delete('pane');
+  if(scope)query.set('scope',scope);else query.delete('scope');
   return `#admin?${query}`;
 }
-export const openMovie=(id:number,pane?:'search')=>{window.location.hash=movieHref(id,pane).slice(1);};
+export const openMovie=(id:number,pane?:Exclude<TitlePane,'overview'>,scope?:string)=>{window.location.hash=movieHref(id,pane,scope).slice(1);};
 export const titleHref=(id:number)=>movieHref(id);
 export const gb=(bytes?:number)=>bytes===undefined?undefined:bytes>=GB?`${(bytes/GB).toFixed(1)} GB`:`${Math.round(bytes/1024**2)} MB`;
 export const Dash=()=><span className="ui-dash">—</span>;
@@ -40,7 +43,12 @@ export function When({at,now,due,empty}:{at?:number;now?:number;due?:string;empt
   const n=now??Date.now();
   return <time dateTime={new Date(at).toISOString()} title={exact.format(at)}>{due&&at<=n?due:relative(at,n)}</time>;
 }
-export const WhenDay=({day,now}:{day?:string;now?:number})=><When at={day?Date.parse(`${day}T00:00:00Z`)||undefined:undefined} now={now}/>;
+// A day with no time (a release or air date): "Today" on the day itself, else as When.
+const localDay=(at:number)=>{const d=new Date(at);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+export function WhenDay({day,now}:{day?:string;now?:number}) {
+  if(day&&day===localDay(now??Date.now()))return <time dateTime={day} title={farDate.format(Date.parse(`${day}T12:00:00`))}>Today</time>;
+  return <When at={day?Date.parse(`${day}T00:00:00Z`)||undefined:undefined} now={now}/>;
+}
 
 // ---- Status ----
 

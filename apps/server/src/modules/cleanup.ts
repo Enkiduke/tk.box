@@ -91,7 +91,7 @@ export const cleanupModule = defineModule({
       run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
       // The saved watch history, for Explore's suggestions.
-      api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
+      api: { services, keepTags: () => store.settings().exemptArrTags, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
       start() { if (!preview()) engine.start(); },
       stop() { engine.close(); }
     };

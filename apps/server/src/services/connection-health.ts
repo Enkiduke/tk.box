@@ -4,15 +4,20 @@ import type {ArrService} from '../providers/arr-tags.js';
 import {remoteJson} from '../providers/remote-json.js';
 
 type Services = {sonarr:ArrService};
+// The library's side (docs/PHASE-2.md, step 5): once shows are tk.box's (fulfil.show), SABnzbd and qBittorrent are
+// checked with their own Test and Sonarr no longer is. The indexers report their own state (last error, paused).
+type DownloaderName = 'sabnzbd'|'qbittorrent';
+export type LibraryHealth = {showsHere:()=>boolean;downloaders:{view():{name:DownloaderName;url:string;secretSet:boolean}[];test(name:DownloaderName):Promise<unknown>}};
 type Result = {state:'working'|'limited'|'failed';checkedAt:number;detail?:string};
 
 export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkKeys,
-  transports:{tmdb?:typeof fetch;other?:typeof fetch} = {}) {
+  transports:{tmdb?:typeof fetch;other?:typeof fetch} = {}, library?:LibraryHealth) {
   // Share checks if two admins open the page at the same time. A settings change gets a fresh check.
   let pending: {config:string;result:Promise<Record<string,Result>>} | undefined;
   return () => {
     const {sonarr} = services(), {tmdb,tvdb,fanart,mdblist} = artworkKeys();
-    const config = JSON.stringify([sonarr,tmdb,tvdb,fanart,mdblist]);
+    const tkbox = !!library?.showsHere(), downloaders = tkbox ? library!.downloaders.view().filter(d=>d.url) : [];
+    const config = JSON.stringify([sonarr,tmdb,tvdb,fanart,mdblist,tkbox,downloaders]);
     if (pending?.config === config) return pending.result;
 
     const checks: Record<string,Promise<Result>> = {};
@@ -32,7 +37,8 @@ export function connectionHealth(services:()=>Services, artworkKeys:()=>ArtworkK
     };
     const object = (data:unknown) => data !== null && typeof data === 'object' ? data as Record<string,unknown> : undefined;
 
-    if (sonarr.url&&sonarr.key) run('sonarr',()=>json(new URL(`${sonarr.url}/api/v3/system/status`),'Sonarr',
+    for (const d of downloaders) run(d.name,async()=>{await library!.downloaders.test(d.name);});
+    if (!tkbox&&sonarr.url&&sonarr.key) run('sonarr',()=>json(new URL(`${sonarr.url}/api/v3/system/status`),'Sonarr',
       data=>typeof object(data)?.version==='string',{headers:{'X-Api-Key':sonarr.key!}}));
     if (tmdb) run('tmdb',()=>json(new URL(`https://api.themoviedb.org/3/movie/603?api_key=${encodeURIComponent(tmdb)}`),
       'TMDb',data=>object(data)?.id===603,{},transports.tmdb));

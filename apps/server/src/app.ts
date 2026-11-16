@@ -39,6 +39,7 @@ import { queueModule } from './modules/queue.js';
 import { indexersModule } from './modules/indexers.js';
 import { downloadersModule } from './modules/downloaders.js';
 import { libraryModule } from './modules/library.js';
+import { cutoverModule } from './modules/cutover.js';
 import type { LibrarySources } from './library-api.js';
 import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
@@ -200,7 +201,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles, sources: librarySources});
   const requestsApi = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site, library}), {requests} = requestsApi;
   librarySources.requesters = () => requestsApi.store.requesters('movie');
+  librarySources.showRequesters = () => requestsApi.store.requesters('show');
   const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches, identity, library});
+  // The Sonarr import and Switch (phase 2 step 6), after requests and Clean Up, whose requests and tags it reads.
+  await mountModule(app, ctx, cutoverModule, {library, requests: requestsApi, arr, cleanup});
   // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
   const watches = (account: string) => {
     const server = config.PLEX_MACHINE_ID;
@@ -212,7 +216,8 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   await mountModule(app, ctx, calendarModule, {sonarr: () => arr.connection('sonarr'), titles: tmdbTitles, library});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   // Admins' system alerts. Admin › Connections checks through it, so its result updates the alerts too.
-  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports)});
+  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports,
+    {showsHere: library.showsHere, downloaders})});
   await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(), checkConnections: alerts.checkConnections});
   await mountModule(app, ctx, jobsModule, undefined);
   await mountModule(app, ctx, webModule, undefined);

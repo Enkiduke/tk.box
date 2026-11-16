@@ -23,6 +23,9 @@ export const downloadersModule = defineModule({
         send: (download: Download) => downloaders.send(download),
         status: (name?: DownloaderName) => downloaders.status(name),
         live: () => downloaders.live(),
+        // Connection health, once shows are tk.box's (services/connection-health.ts).
+        view: () => downloaders.view(),
+        test: (name: DownloaderName) => downloaders.test(name),
         remove: (grab: GrabRef, options?: RemoveOptions) => downloaders.remove(grab, options),
       }
     };
