@@ -5,6 +5,7 @@ import {clock,invalidate,useApi} from './hooks.js';
 import {Empty,ErrorNotice,Loading} from './components.js';
 import {Card,SectionHead,plural,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
+import {DownloadJobs} from './downloads-admin.js';
 
 // Admin › Schedule: every background job tk.box runs, when each ran and runs next, and running one now.
 const stateNames:Record<JobState,string>={running:'Running',ok:'OK',failed:'Failed',waiting:'Waiting',off:'Off',never:'Not run yet'};
@@ -50,6 +51,7 @@ export function ScheduleAdmin() {
           </tr>)}</tbody></table></div>
       </Card>
     </>}
+    <DownloadJobs/>
   </>;
 }
 

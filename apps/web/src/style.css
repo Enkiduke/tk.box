@@ -91,7 +91,7 @@ label small{font-size:12px;color:var(--dim);line-height:1.6}
 .empty a,.empty button{color:var(--text);font-weight:600}
 
 /* Shell: transparent navigation that turns solid on scroll */
-.nav{position:fixed;inset:0 0 auto;z-index:50;height:var(--nav-h);display:flex;align-items:center;gap:36px;padding:0 var(--gutter);background:linear-gradient(180deg,rgba(0,0,0,.75),transparent);transition:background .3s}
+.nav{position:fixed;inset:0 0 auto;z-index:50;height:var(--nav-h);display:flex;align-items:center;gap:36px;padding:0 var(--gutter);background:linear-gradient(to bottom,rgba(0,0,0,.9),transparent);transition:background .3s}
 .nav.solid{background:rgba(12,12,16,.94);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--line)}
 .brand{font-size:26px;font-weight:800;letter-spacing:-.04em;color:var(--accent);line-height:1}
 .brand.large{font-size:44px;display:block;margin-bottom:28px}

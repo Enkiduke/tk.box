@@ -1,108 +1,255 @@
 import {useState} from 'react';
-import type {DownloadsActivity,DownloadsGrab,DownloadsJob,DownloadsSeeding,WantedItem,WantedList} from '../../../packages/contracts/src/downloads.js';
+import type {ClientState,DownloadItem,DownloadsActivity,DownloadsEvent,DownloadsHistory,DownloadsJob,GrabEventKind,DownloadsLive,WantedItem,WantedList} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
-import {useApi} from './hooks.js';
+import {replaceRoute,link,useApi} from './hooks.js';
 import {ErrorNotice} from './components.js';
 import {SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
-import {Badge,EmptyLine,GrabBadge,ListSection,Loaded,Segmented,Table,TitleCell,Toolbar,When,changed,gb,matches,useRefresh} from './manage-ui.js';
+import {ACTIONS,Dash,GrabPill,IconAction,Loaded,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
+  useSorted,type Tone} from './manage-ui.js';
 
-// Admin › Manage › Downloads and Wanted (docs/PHASE-3.5.md): what is moving, then what is still wanted.
+// Admin › Downloads › Queue and Wanted (docs/PHASE-3.5.md, docs/UI.md).
 
-// ---- Downloads ----
+// ---- Queue: everything SABnzbd and qBittorrent hold, any category, in one table ----
 
-export function DownloadsPage() {
-  const view=useApi<DownloadsActivity>('/admin/library/activity'),mutation=useMutation(changed);useRefresh(view.reload);
-  const retry=(path:string,what:string)=>void mutation.run(async()=>{await api(path,'POST');toast.info(`Retrying ${what}`);});
-  return <><SectionHead title="Downloads"/>
+const protocol=(p:'usenet'|'torrent')=>p==='usenet'?'Usenet':'Torrent';
+const clientNames={sabnzbd:'SABnzbd',qbittorrent:'qBittorrent'} as const;
+const stateWords:Record<ClientState,[string,Tone]>={queued:['Queued','wait'],paused:['Paused','off'],downloading:['Downloading','active'],stalled:['Stalled','wait'],
+  checking:['Checking','active'],moving:['Moving','active'],unpacking:['Unpacking','active'],importing:['Importing','active'],seeding:['Seeding','active'],
+  completed:['Done','ok'],failed:['Failed','bad']};
+// The status filter: each client state falls in exactly one group.
+type Status='all'|'waiting'|'progress'|'problems'|'done';
+const statusOf:Record<ClientState,Exclude<Status,'all'>>={queued:'waiting',paused:'waiting',downloading:'progress',stalled:'progress',checking:'progress',moving:'progress',
+  unpacking:'progress',importing:'progress',failed:'problems',seeding:'done',completed:'done'};
+const statusNames:Record<Status,string>={all:'All',waiting:'Waiting',progress:'In progress',problems:'Problems',done:'Done'};
+// Old Queue tabs still in links and bookmarks.
+const oldViews:Record<string,Status>={active:'progress',finished:'done',recent:'done'};
+type Kind='all'|'usenet'|'torrent';
+const kinds=[['all','All'],['usenet','Usenet'],['torrent','Torrent']] as const;
+type From='all'|'tkbox'|'outside';
+const froms=[['all','Anyone'],['tkbox','tk.box'],['outside','Outside']] as const;
+const fromTkbox=(i:DownloadItem)=>!!i.grab||i.mine;
+
+// The table starts with what is moving, then what waits by its place in line, then what is finished.
+const stateRank:Record<ClientState,number>={failed:0,downloading:1,importing:2,unpacking:3,checking:4,moving:5,stalled:6,queued:7,paused:8,seeding:9,completed:10};
+const itemSorts={title:(i:DownloadItem)=>i.grab?.title??i.name,size:(i:DownloadItem)=>i.size,progress:(i:DownloadItem)=>i.progress,eta:(i:DownloadItem)=>i.eta,
+  speed:(i:DownloadItem)=>(i.down??0)+(i.up??0)||undefined,peers:(i:DownloadItem)=>i.seeds,
+  state:(i:DownloadItem)=>stateRank[i.state],by:(i:DownloadItem)=>i.requestedBy??(fromTkbox(i)?'tk.box':undefined)};
+const byRank=(a:DownloadItem,b:DownloadItem)=>stateRank[a.state]-stateRank[b.state]||(a.position??1e9)-(b.position??1e9)||(b.finishedAt??b.addedAt??0)-(a.finishedAt??a.addedAt??0);
+
+const UNITS=['B','KB','MB','GB','TB'];
+function bytes(n?:number) {
+  if(n===undefined)return undefined;
+  let v=n,u=0;while(v>=1024&&u<UNITS.length-1){v/=1024;u++;}
+  return `${v>=100||u===0?Math.round(v):v.toFixed(1)} ${UNITS[u]}`;
+}
+const rate=(n?:number)=>n?`${bytes(n)}/s`:undefined;
+// "45 s", "12 min", "3 h 20 min", "2 d 4 h".
+function duration(sec?:number) {
+  if(!sec||sec<=0)return undefined;
+  if(sec<60)return `${Math.round(sec)} s`;
+  const m=Math.round(sec/60);if(m<60)return `${m} min`;
+  const h=Math.floor(m/60);if(h<48)return m%60?`${h} h ${m%60} min`:`${h} h`;
+  const d=Math.floor(h/24);return h%24?`${d} d ${h%24} h`:`${d} d`;
+}
+
+// A matched item opens its movie; anything else shows its own name, with where it came from under it.
+function ItemTitle({item}:{item:DownloadItem}) {
+  const where=[clientNames[item.downloader],item.category,item.tracker].filter(Boolean).join(' · ');
+  const error=item.error?<span className="danger-text" title={item.error}>{item.error}</span>:undefined;
+  if(item.grab)return <TitleCell id={item.grab.titleId} title={item.grab.title} year={item.grab.year} tags={item.grab.upgrade&&<Tag>Upgrade</Tag>}
+    sub={error??`${item.name} · ${item.grab.quality} · ${item.grab.indexer}`}/>;
+  return <div className="ui-title"><span className="ui-poster dl-initials" aria-hidden="true">{protocol(item.protocol)[0]}</span><div>
+    <span className="ui-title-name" title={item.name}>{item.name}</span><small title={where}>{error??where}</small></div></div>;
+}
+// The state, and under it: for a finished torrent its ratio, how long it seeded and when the seeding rule removes it;
+// otherwise the client's own word or the place in line.
+function ItemStatus({item,now}:{item:DownloadItem;now:number}) {
+  const [word,tone]=stateWords[item.state];
+  const seeded=statusOf[item.state]==='done'&&item.protocol==='torrent'
+    ?[item.ratio!==undefined&&`Ratio ${item.ratio.toFixed(2)}`,duration(item.seedingSeconds)].filter(Boolean).join(' · '):'';
+  const line=seeded?<span title={item.grab?.removeAt?`Removed ${relative(item.grab.removeAt,now)}`:undefined}>{seeded}</span>
+    :item.detail??(item.position?`#${item.position} in line`:undefined);
+  return <><Pill tone={tone}>{word}</Pill>{line&&<small>{line}</small>}</>;
+}
+const Requested=({item}:{item:DownloadItem})=>item.requestedBy?<span title={item.requestedBy}>{item.requestedBy}</span>:fromTkbox(item)?<span>tk.box</span>:<span className="ui-dash">Outside</span>;
+const Swarm=({item}:{item:DownloadItem})=>item.protocol!=='torrent'||item.seeds===undefined?<Dash/>
+  :<span title={`${item.seeds} of ${item.seedsTotal??'?'} seeds, ${item.peers??0} of ${item.peersTotal??'?'} peers`}>{item.seeds}<span className="ui-dash"> ({item.seedsTotal??0})</span> / {item.peers??0}</span>;
+function Progress({item}:{item:DownloadItem}) {
+  const pct=Math.floor(item.progress*1000)/10;
+  return <><div className="ui-progress"><div className="ui-progress-bar"><span style={{width:`${pct}%`}}/></div><span>{pct<10?pct.toFixed(1):Math.floor(pct)}%</span></div>
+    {item.left?<small>{bytes((item.size??0)-item.left)} of {bytes(item.size)}</small>:null}</>;
+}
+
+// Speeds and free space for each downloader, beside the page name; one that didn't answer says so.
+function ClientStats({clients}:{clients:DownloadsLive['clients']}) {
+  if(!clients.length)return null;
+  const down=clients.reduce((n,c)=>n+c.down,0),up=clients.reduce((n,c)=>n+c.up,0);
+  return <div className="dl-stats">
+    {clients.filter(c=>c.error||c.paused).map(c=><Pill key={c.name} tone={c.error?'bad':'off'} title={c.error}>{clientNames[c.name]} {c.error?'not answering':'paused'}</Pill>)}
+    <span title="Download speed"><span className="dl-stats-label">Down</span> ↓ {rate(down)??'0 B/s'}</span>
+    <span title="Upload speed"><span className="dl-stats-label">Up</span> ↑ {rate(up)??'0 B/s'}</span>
+    {clients.filter(c=>c.free!==undefined).map(c=><span key={c.name} title={`Free where ${clientNames[c.name]} saves`}>{bytes(c.free)} <span className="dl-stats-label">free{clients.length>1?` · ${clientNames[c.name]}`:''}</span></span>)}
+  </div>;
+}
+
+export function DownloadsPage({params}:{params:URLSearchParams}) {
+  const live=useApi<DownloadsLive>('/admin/library/downloads'),mutation=useMutation(changed);
+  useRefresh(live.reload,5000);
+  const [query,setQuery]=useState(''),[kind,setKind]=useState<Kind>('all'),[from,setFrom]=useState<From>('all');
+  const asked=params.get('view')??'all',status:Status=asked in statusNames?asked as Status:oldViews[asked]??'all';
+  const retry=(id:number,title:string)=>void mutation.run(async()=>{await api(`/admin/library/grabs/${id}/retry`,'POST');toast.info(`Retrying ${title}`);live.reload();});
+  // Only what a downloader holds (or a tk.box grab on its way in or out of one). Failed grabs tk.box already removed
+  // from their downloader belong to History, not here.
+  const all=live.data?.items??[];
+  // Search and the protocol and source filters narrow every status; the status counts follow them.
+  const narrowed=all.filter(i=>(kind==='all'||i.protocol===kind)&&(from==='all'||(from==='tkbox')===fromTkbox(i))
+    &&matches(query,i.name,i.grab?.title,i.grab?.year,i.category,i.tracker,i.requestedBy,clientNames[i.downloader]));
+  const counts={all:narrowed.length,waiting:0,progress:0,problems:0,done:0} as Record<Status,number>;
+  for(const i of narrowed)counts[statusOf[i.state]]++;
+  const shown=status==='all'?narrowed:narrowed.filter(i=>statusOf[i.state]===status);
+  const {rows:sorted,sort,onSort}=useSorted([...shown].sort(byRank),itemSorts);
+  const {rows,more}=usePaged(sorted,`${query}|${kind}|${from}|${status}|${sort?.key}|${sort?.dir}`);
+  const setStatus=(v:Status)=>replaceRoute(link('admin',{section:'queue',...(v==='all'?{}:{view:v})}));
+  const statuses=(Object.keys(statusNames) as Status[]).map(s=>[s,`${statusNames[s]} ${counts[s]}`] as const);
+  const now=Date.now();
+  return <><SectionHead title="Queue">{live.data&&<ClientStats clients={live.data.clients}/>}</SectionHead>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Loaded view={view}>{({open,seeding=[],failed,history,jobs})=>{const now=Date.now();return <>
-      <ListSection title="Downloading" count={open.length} empty="Nothing downloading"><Downloading grabs={open}/></ListSection>
-      <ListSection title="Seeding" count={seeding.length} empty="Nothing seeding"><Seeding torrents={seeding} now={now}/></ListSection>
-      <ListSection title="Failed" count={failed.length} empty="No failures"><Failed grabs={failed} now={now} busy={mutation.busy} retry={g=>retry(`/admin/library/grabs/${g.id}/retry`,g.title)}/></ListSection>
-      <ListSection title="Queue" count={jobs.length} empty="Nothing queued"><Queue jobs={jobs} now={now} busy={mutation.busy} retry={j=>retry(`/admin/library/jobs/${j.id}/retry`,j.label.toLowerCase())}/></ListSection>
-      <ListSection title="Recent" count={history.length} empty="Nothing finished yet"><Recent grabs={history} now={now}/></ListSection>
-    </>;}}</Loaded>
+    {live.error&&live.data&&<ErrorNotice message={live.error.message} retry={live.reload}/>}
+    <Toolbar query={query} setQuery={setQuery} placeholder="Search downloads" count={live.data?`${shown.length} of ${all.length}`:undefined}>
+      <Segmented label="Status" value={status} options={statuses} onChange={setStatus}/>
+      <Segmented label="Protocol" value={kind} options={kinds} onChange={setKind}/>
+      <Segmented label="Requested by" value={from} options={froms} onChange={setFrom}/>
+    </Toolbar>
+    <Loaded view={live}>{()=><Panel flush>
+      <Table posters more={more} sort={sort} onSort={onSort}
+        empty={!all.length?'Nothing in the downloaders':!shown.length?(status==='problems'&&!query?'No problems':'Nothing matches'):undefined}
+        columns={[{label:'Title',sort:'title'},{label:'Progress',width:150,sort:'progress',desc:true},{label:'Size',width:90,num:true,sort:'size',desc:true},
+          {label:'Speed',width:100,num:true,sort:'speed',desc:true},{label:'Time left',width:90,num:true,sort:'eta'},{label:'Peers',width:110,num:true,sort:'peers',desc:true},
+          {label:'Status',width:150,sort:'state'},{label:'Requested by',width:110,sort:'by'},{...ACTIONS,width:52}]}>
+        {rows.map(i=><tr key={i.key} className={i.state==='paused'?'is-off':undefined}>
+          <td><ItemTitle item={i}/></td>
+          <td><Progress item={i}/></td>
+          <td className="num">{bytes(i.size)??<Dash/>}</td>
+          <td className="num">{rate(i.down)??(i.up?null:<Dash/>)}{i.up?<small>↑ {rate(i.up)}</small>:null}</td>
+          <td className="num">{statusOf[i.state]==='done'?<Dash/>:duration(i.eta)??<Dash/>}</td>
+          <td className="num"><Swarm item={i}/></td>
+          <td><ItemStatus item={i} now={now}/></td>
+          <td><Requested item={i}/></td>
+          <td>{i.state==='failed'&&i.grab?.state==='failed'&&<RowActions>
+            <IconAction icon="restart" label={`Retry ${i.grab.title}`} disabled={mutation.busy} onClick={()=>retry(i.grab!.id,i.grab!.title)}/></RowActions>}</td>
+        </tr>)}
+      </Table></Panel>}</Loaded>
   </>;
 }
 
-const protocol=(g:{protocol:'usenet'|'torrent'})=>g.protocol==='usenet'?'Usenet':'Torrent';
-function Downloading({grabs}:{grabs:DownloadsGrab[]}) {
-  return <Table columns={[{label:'Title'},{label:'Quality'},{label:'Protocol'},{label:'Size',num:true},{label:'Progress',num:true},{label:'State'}]}>
-    {grabs.map(g=>{const pct=Math.round((g.progress??0)*100);return <tr key={g.id}>
-      <td><TitleCell id={g.titleId} title={g.title} year={g.year} sub={g.releaseName}/></td>
-      <td>{g.quality}{g.upgrade&&<small>Upgrade</small>}</td><td>{protocol(g)}<small>{g.indexer}</small></td><td className="num">{gb(g.size)}</td>
-      <td className="num"><div className="manage-progress"><div className="downloads-progress"><span style={{width:`${pct}%`}}/></div><span>{g.progress!==undefined?`${pct}%`:'—'}</span></div></td>
-      <td><GrabBadge state={g.state}/>{g.error&&<small>{g.error}</small>}</td></tr>;})}
-  </Table>;
+// tk.box's own download work (sending, checking, importing), waiting or failed; Admin › Schedule shows it.
+export function DownloadJobs() {
+  const view=useApi<DownloadsActivity>('/admin/library/activity'),mutation=useMutation(changed);useRefresh(view.reload);
+  const retry=(j:DownloadsJob)=>void mutation.run(async()=>{await api(`/admin/library/jobs/${j.id}/retry`,'POST');toast.info(`Retrying ${j.label.toLowerCase()}`);view.reload();});
+  const jobs=view.data?.jobs??[],now=Date.now();
+  const {rows,sort,onSort}=useSorted(jobs,{job:j=>j.label,title:j=>j.subject,tries:j=>j.attempts,runs:j=>j.state==='queued'?j.runAt:undefined,state:j=>j.state});
+  return <>
+    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
+    <Panel flush title="Download work"><Table sort={sort} onSort={onSort} empty={view.data&&!jobs.length?'Nothing queued':undefined}
+      columns={[{label:'Job',sort:'job'},{label:'Title',width:320,sort:'title'},{label:'Tries',width:80,num:true,sort:'tries',desc:true},{label:'Runs',width:110,sort:'runs'},
+        {label:'Status',width:130,sort:'state'},ACTIONS]}>
+      {rows.map(j=><tr key={j.id}><td>{j.label}{j.lastError&&<small className={j.state==='failed'?'bad':undefined} title={j.lastError}>{j.lastError}</small>}</td>
+        <td>{j.titleId?<TitleCell id={j.titleId} title={j.subject??''} poster={false}/>:<Dash/>}</td>
+        <td className="num">{j.attempts}/{j.maxAttempts}</td><td>{j.state==='queued'?<When at={j.runAt} now={now} due="Now"/>:<Dash/>}</td>
+        <td><Pill tone={j.state==='failed'?'bad':j.state==='running'?'active':'wait'}>{j.state==='failed'?'Failed':j.state==='running'?'Running':'Queued'}</Pill></td>
+        <td>{j.state==='failed'&&<RowActions><IconAction icon="restart" label={`Retry ${j.label}`} disabled={mutation.busy} onClick={()=>retry(j)}/></RowActions>}</td></tr>)}
+    </Table></Panel>
+  </>;
 }
-// Seeding torrents: ratio and days as qBittorrent last gave them, and when the seeding rule removes each.
-function Seeding({torrents,now}:{torrents:DownloadsSeeding[];now:number}) {
-  return <Table columns={[{label:'Title'},{label:'Size',num:true},{label:'Ratio',num:true},{label:'Days',num:true},{label:'Removed'}]}>
-    {torrents.map(t=><tr key={t.id}><td><TitleCell id={t.titleId} title={t.title} year={t.year} sub={t.releaseName}/></td><td className="num">{gb(t.size)}</td>
-      <td className="num">{t.ratio!==undefined?t.ratio.toFixed(2):'—'}</td><td className="num">{t.seedingDays!==undefined?t.seedingDays.toFixed(1):'—'}</td>
-      <td><When at={t.removeAt} now={now} due="Next check"/></td></tr>)}
-  </Table>;
+
+// ---- History: every step of every tk.box grab ----
+
+const eventWords:Record<GrabEventKind,[string,Tone]>={grabbed:['Grabbed','active'],retried:['Retried','wait'],sending:['Sending','active'],downloading:['Sent','active'],
+  unpacking:['Unpacking','active'],importing:['Importing','active'],imported:['Imported','ok'],seeding:['Imported','ok'],done:['Removed','off'],failed:['Failed','bad'],
+  cancelled:['Cancelled','off']};
+const steps=[['all','All'],['grabbed','Grabbed'],['imported','Imported'],['failed','Failed'],['removed','Removed']] as const;
+type Step=typeof steps[number][0];
+const stepOf:Partial<Record<GrabEventKind,Step>>={grabbed:'grabbed',retried:'grabbed',imported:'imported',seeding:'imported',failed:'failed',done:'removed',cancelled:'removed'};
+const fileName=(path:string)=>path.split(/[\/]/).pop()||path;
+
+function EventNote({e,later}:{e:DownloadsEvent;later:boolean}) {
+  if(!e.note&&!later)return null;
+  const text=e.kind==='imported'||e.kind==='seeding'?e.note&&fileName(e.note):e.note;
+  return <small className={e.kind==='failed'?'danger-text':undefined} title={e.note}>{later?<>Re-downloaded{text?' · ':''}</>:null}{text}</small>;
 }
-function Failed({grabs,now,busy,retry}:{grabs:DownloadsGrab[];now:number;busy:boolean;retry:(g:DownloadsGrab)=>void}) {
-  return <Table columns={[{label:'Title'},{label:'Reason'},{label:'When'},{label:<span className="sr-only">Actions</span>}]}>
-    {grabs.map(g=><tr key={g.id}><td><TitleCell id={g.titleId} title={g.title} year={g.year} sub={g.releaseName}/></td>
-      <td className="danger-text">{g.error??'Failed'}</td><td><When at={g.finishedAt} now={now}/></td>
-      <td><button className="link-button" disabled={busy} onClick={()=>retry(g)}>Retry</button></td></tr>)}
-  </Table>;
-}
-function Queue({jobs,now,busy,retry}:{jobs:DownloadsJob[];now:number;busy:boolean;retry:(j:DownloadsJob)=>void}) {
-  return <Table columns={[{label:'Job'},{label:'Title'},{label:'State'},{label:'Tries',num:true},{label:'Runs'},{label:<span className="sr-only">Actions</span>}]}>
-    {jobs.map(j=><tr key={j.id}><td>{j.label}{j.lastError&&<small className={j.state==='failed'?'danger-text':undefined}>{j.lastError}</small>}</td>
-      <td>{j.titleId?<TitleCell id={j.titleId} title={j.subject??''} poster={false}/>:<span className="muted">—</span>}</td>
-      <td><Badge tone={j.state==='failed'?'danger':j.state==='running'?'warning':undefined}>{j.state==='failed'?'Failed':j.state==='running'?'Running':'Queued'}</Badge></td>
-      <td className="num">{j.attempts}/{j.maxAttempts}</td><td>{j.state==='queued'?<When at={j.runAt} now={now} due="Now"/>:<span className="muted">—</span>}</td>
-      <td>{j.state==='failed'&&<button className="link-button" disabled={busy} onClick={()=>retry(j)}>Retry</button>}</td></tr>)}
-  </Table>;
-}
-function Recent({grabs,now}:{grabs:DownloadsGrab[];now:number}) {
-  return <Table columns={[{label:'Title'},{label:'Quality'},{label:'Size',num:true},{label:'State'},{label:'When'}]}>
-    {grabs.map(g=><tr key={g.id}><td><TitleCell id={g.titleId} title={g.title} year={g.year} sub={g.releaseName}/></td>
-      <td>{g.quality}{g.upgrade&&<small>Upgrade</small>}</td><td className="num">{gb(g.size)}</td><td><GrabBadge state={g.state}/></td>
-      <td><When at={g.importedAt??g.finishedAt??g.sentAt} now={now}/></td></tr>)}
-  </Table>;
+
+export function DownloadHistoryPage() {
+  const view=useApi<DownloadsHistory>('/admin/library/history'),mutation=useMutation(changed);useRefresh(view.reload);
+  const [query,setQuery]=useState(''),[step,setStep]=useState<Step>('all');
+  const events=view.data?.events??[];
+  // A failure is settled once a later grab of the same title was imported: no Retry, and it says so.
+  const importedAt=new Map<number,number>();
+  for(const e of events)if(e.kind==='imported'||e.kind==='seeding')importedAt.set(e.grab.titleId,Math.max(importedAt.get(e.grab.titleId)??0,e.at));
+  const latest=new Map<number,number>();
+  for(const e of events)if(!latest.has(e.grab.titleId))latest.set(e.grab.titleId,e.id);
+  const settled=(e:DownloadsEvent)=>e.kind==='failed'&&(importedAt.get(e.grab.titleId)??0)>e.at;
+  const shown=events.filter(e=>(step==='all'||stepOf[e.kind]===step)&&matches(query,e.grab.title,e.grab.year,e.grab.releaseName,e.grab.indexer,e.note));
+  const {rows:sorted,sort,onSort}=useSorted(shown,{title:e=>e.grab.title,event:e=>eventWords[e.kind][0],quality:e=>qualityRank(e.grab.quality),size:e=>e.grab.size,when:e=>e.at});
+  const {rows,more}=usePaged(sorted,`${query}|${step}|${sort?.key}|${sort?.dir}`);
+  const retry=(e:DownloadsEvent)=>void mutation.run(async()=>{await api(`/admin/library/grabs/${e.grab.id}/retry`,'POST');toast.info(`Retrying ${e.grab.title}`);view.reload();});
+  const now=Date.now();
+  return <><SectionHead title="History"/>
+    {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
+    <Toolbar query={query} setQuery={setQuery} placeholder="Search history" count={view.data?`${shown.length} of ${events.length}`:undefined}>
+      <Segmented label="Step" value={step} options={steps} onChange={setStep}/>
+    </Toolbar>
+    <Loaded view={view}>{()=><Panel flush>
+      <Table posters more={more} sort={sort} onSort={onSort} empty={!events.length?'Nothing downloaded yet':!shown.length?'Nothing matches':undefined}
+        columns={[{label:'Title',sort:'title'},{label:'Step',width:260,sort:'event'},{label:'Quality',width:130,sort:'quality',desc:true},
+          {label:'Size',width:90,num:true,sort:'size',desc:true},{label:'When',width:110,sort:'when',desc:true},{...ACTIONS,width:52}]}>
+        {rows.map(e=>{const [word,tone]=eventWords[e.kind],later=settled(e);return <tr key={e.id}>
+          <td><TitleCell id={e.grab.titleId} title={e.grab.title} year={e.grab.year} tags={e.grab.upgrade&&<Tag>Upgrade</Tag>}
+            sub={`${e.grab.releaseName} · ${protocol(e.grab.protocol)} · ${e.grab.indexer}`}/></td>
+          <td><Pill tone={later?'off':tone}>{word}</Pill><EventNote e={e} later={later}/></td>
+          <td>{e.grab.quality}</td><td className="num">{bytes(e.grab.size)??<Dash/>}</td><td><When at={e.at} now={now}/></td>
+          <td>{e.kind==='failed'&&e.grab.state==='failed'&&!later&&latest.get(e.grab.titleId)===e.id&&<RowActions>
+            <IconAction icon="restart" label={`Retry ${e.grab.title}`} disabled={mutation.busy} onClick={()=>retry(e)}/></RowActions>}</td>
+        </tr>;})}
+      </Table></Panel>}</Loaded>
+  </>;
 }
 
 // ---- Wanted ----
 
 const wantedFilters=[['all','All'],['missing','Missing'],['cutoff','Below cutoff'],['paused','Paused']] as const;
-const wantedSorts=[['next','Next search'],['title','Title'],['added','Added']] as const;
-type WantedFilter=typeof wantedFilters[number][0];type WantedSort=typeof wantedSorts[number][0];
+type WantedFilter=typeof wantedFilters[number][0];
+const wantedStatus=(w:WantedItem)=>w.paused?'Paused':w.grab?grabNames[w.grab]:w.why==='missing'?'Missing':'Below cutoff';
+const wantedSorts={title:(w:WantedItem)=>w.title,next:(w:WantedItem)=>w.paused||w.grab?undefined:w.nextAt??0,misses:(w:WantedItem)=>w.misses,status:wantedStatus};
 
 export function WantedPage() {
   const view=useApi<WantedList>('/admin/library/wanted'),mutation=useMutation(changed);useRefresh(view.reload);
-  const [query,setQuery]=useState(''),[filter,setFilter]=useState<WantedFilter>('all'),[sort,setSort]=useState<WantedSort>('next');
+  const [query,setQuery]=useState(''),[filter,setFilter]=useState<WantedFilter>('all');
   const search=(w:WantedItem)=>void mutation.run(async()=>{await api(`/admin/library/titles/${w.id}/search`,'POST');toast.info(`Searching for ${w.title}`);});
   const pause=(w:WantedItem)=>void mutation.run(()=>api(`/admin/library/titles/${w.id}/pause`,'POST',{paused:!w.paused}));
+  const items=(view.data?.items??[]).filter(w=>matches(query,w.title,w.year)&&(filter==='all'?true:filter==='paused'?w.paused:!w.paused&&w.why===filter))
+    .sort((a,b)=>a.title.localeCompare(b.title));
+  const {rows:sorted,sort,onSort}=useSorted(items,wantedSorts,{key:'next',dir:1});
+  const {rows,more}=usePaged(sorted,`${query}|${filter}|${sort?.key}|${sort?.dir}`);
   return <><SectionHead title="Wanted"/>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Loaded view={view}>{({items:all})=>{
-      const now=Date.now();
-      const items=all.filter(w=>matches(query,w.title,w.year)&&(filter==='all'?true:filter==='paused'?w.paused:!w.paused&&w.why===filter))
-        .sort((a,b)=>sort==='title'?a.title.localeCompare(b.title):sort==='added'?b.addedAt-a.addedAt:(a.paused||a.grab?Infinity:a.nextAt??0)-(b.paused||b.grab?Infinity:b.nextAt??0)||a.title.localeCompare(b.title));
-      return <>
-        <Toolbar query={query} setQuery={setQuery} placeholder="Search wanted movies">
-          <Segmented label="Show" value={filter} options={wantedFilters} onChange={setFilter}/>
-          <label className="manage-sort">Sort<select value={sort} onChange={e=>setSort(e.target.value as WantedSort)}>{wantedSorts.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
-          <span className="muted small">{items.length} of {all.length}</span>
-        </Toolbar>
-        {!all.length?<EmptyLine>Nothing wanted</EmptyLine>:!items.length?<EmptyLine>No wanted movie matches</EmptyLine>:
-        <Table columns={[{label:'Title'},{label:'Why'},{label:'Quality'},{label:'Next search'},{label:'Misses',num:true},{label:'State'},{label:<span className="sr-only">Actions</span>}]}>
-          {items.map(w=><tr key={w.id} className={w.paused?'is-off':undefined}>
-            <td><TitleCell id={w.id} title={w.title} year={w.year}/></td>
-            <td>{w.why==='missing'?'Missing':'Below cutoff'}</td><td>{w.quality??<span className="muted">—</span>}</td>
-            <td>{w.paused||w.grab?<span className="muted">—</span>:<When at={w.nextAt} now={now} due="Due" empty="Not yet"/>}{w.lastAt&&<small>Last <When at={w.lastAt} now={now}/></small>}</td>
-            <td className="num">{w.misses}</td>
-            <td>{w.paused?<><Badge tone="danger">Paused</Badge>{w.pausedReason&&<small>{w.pausedReason}</small>}</>:w.grab?<GrabBadge state={w.grab}/>:<Badge>Waiting</Badge>}</td>
-            <td><div className="manage-actions">{!w.paused&&<button className="link-button" disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}>Search now</button>}
-              <button className="link-button" disabled={mutation.busy} onClick={()=>pause(w)}>{w.paused?'Unpause':'Pause'}</button></div></td>
-          </tr>)}
-        </Table>}
-      </>;}}</Loaded>
+    <Toolbar query={query} setQuery={setQuery} placeholder="Search wanted movies" count={view.data?`${items.length} of ${view.data.items.length}`:undefined}>
+      <Segmented label="Show" value={filter} options={wantedFilters} onChange={setFilter}/>
+    </Toolbar>
+    <Loaded view={view}>{({items:all})=>{const now=Date.now();return <Panel flush>
+      <Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing wanted':!items.length?'No wanted movie matches':undefined}
+        columns={[{label:'Title',sort:'title'},{label:'Next search',width:130,sort:'next'},{label:'Misses',width:80,num:true,sort:'misses',desc:true},{label:'Status',width:140,sort:'status'},{...ACTIONS,width:124}]}>
+        {rows.map(w=><tr key={w.id} className={w.paused?'is-off':undefined}>
+          <td><TitleCell id={w.id} title={w.title} year={w.year} sub={w.paused&&w.pausedReason?<span className="danger-text">{w.pausedReason}</span>:<>{w.quality?`Have ${w.quality} · `:''}{w.lastAt?<>Searched <When at={w.lastAt} now={now}/></>:'Not searched yet'}</>}/></td>
+          <td>{w.paused||w.grab?<Dash/>:<When at={w.nextAt} now={now} due="Due" empty="Not yet"/>}</td>
+          <td className="num">{w.misses}</td>
+          <td>{w.paused?<Pill tone="off">Paused</Pill>:w.grab?<GrabPill state={w.grab}/>:<Pill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</Pill>}</td>
+          <td><RowActions>
+            {!w.paused&&<IconAction icon="search" label={`Automatic search for ${w.title}`} disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}/>}
+            <IconAction icon="list" label={`Interactive search for ${w.title}`} onClick={()=>openMovie(w.id,'search')}/>
+            <IconAction icon={w.paused?'play':'pause'} label={w.paused?`Unpause ${w.title}`:`Pause ${w.title}`} disabled={mutation.busy} onClick={()=>pause(w)}/>
+          </RowActions></td>
+        </tr>)}
+      </Table></Panel>;}}</Loaded>
   </>;
 }

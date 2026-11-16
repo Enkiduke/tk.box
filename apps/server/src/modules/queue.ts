@@ -1,4 +1,5 @@
 import { defineModule } from './module.js';
+import { preview } from '../errors.js';
 import { queueMigrations } from './migrations/queue.js';
 import { Queue, type QueueApi } from '../services/queue.js';
 
@@ -10,6 +11,6 @@ export const queueModule = defineModule({
   setup(_routes, { db, jobs, log }) {
     const queue = new Queue(db, { jobs, log: (message, detail) => log.warn(message, detail) });
     const api: QueueApi = queue;
-    return { api, start() { queue.start(); }, stop() { queue.stop(); } };
+    return { api, start() { if (!preview()) queue.start(); }, stop() { queue.stop(); } };
   }
 });

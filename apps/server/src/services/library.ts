@@ -1,10 +1,14 @@
-import { dirname } from 'node:path';
+import { dirname, win32 } from 'node:path';
+import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, MovieSource } from '../../../../packages/contracts/src/downloads.js';
 import * as fs from 'node:fs/promises';
-import { AppError, readOnly, requireThat } from '../errors.js';
-import { allows2160p, defaultProfile, rank, type Profile } from '../lib/quality.js';
+import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
+import { scoreFormats } from '../lib/formats.js';
+import { DEFAULT_RUNTIME, allows2160p, isPreferred, preferredText, sizeLimits, tierOf, type QualityProfile } from '../lib/profiles.js';
+import { builtInProfile } from '../lib/builtin-profiles.js';
 import { seedingDecision, seedingRule } from '../lib/seeding.js';
-import { pick, type Decision, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
-import { imdbNumber, normaliseTitle, parseRelease } from '../lib/release-name.js';
+import { compareDecisions, pick, type Decision, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
+import { EARLY_COPIES, rank } from '../lib/quality.js';
+import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
 import { firstSearchAt, isOut, movieWanted, nextSearchAt, type Wanted } from './wanted.js';
 import { findVideos, type MovieImporter } from './library-import.js';
@@ -14,7 +18,7 @@ import type { Download, DownloaderName, GrabRef, RemoveOptions, Sent } from './d
 import type { DownloadStatus } from '../providers/download-status.js';
 import { stallClock } from '../providers/qbittorrent.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
-import type { Grab, LibraryStore, LibraryTitle, Released } from '../persistence/library-store.js';
+import type { Grab, LibraryFileRow, LibraryStore, LibraryTitle, Released } from '../persistence/library-store.js';
 import type { BusEvents } from '../modules/bus.js';
 
 // The library for movies (docs/ARR-REPLACEMENT.md, phases 1 and 3): adding a title, wanted, searching (on add, the
@@ -28,7 +32,9 @@ export type IndexersApi = {
   feeds(listener: FeedListener): () => void;
   download(release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal): Promise<NzbFile>;
 };
-export type DownloadersApi = { send(download: Download): Promise<Sent>; status(name?: DownloaderName): Promise<DownloadStatus[]>; remove(grab: GrabRef, options?: RemoveOptions): Promise<void> };
+export type DownloadersApi = { send(download: Download): Promise<Sent>; status(name?: DownloaderName): Promise<DownloadStatus[]>; remove(grab: GrabRef, options?: RemoveOptions): Promise<void>;
+  // Admin's live queue (every item, any category); optional so tests can leave it out.
+  live?(): Promise<{ clients: DownloaderLive[]; items: ClientItem[] }> };
 // Unpacking a torrent's RARs (services/unpack.ts); tests swap it.
 export type Unpacker = { sets(root: string): Promise<string[]>; hasVideo(root: string): Promise<boolean>; unpack(archives: string[], dest: string, signal?: AbortSignal): Promise<void>;
   clear(dest: string): Promise<void> };
@@ -63,6 +69,8 @@ const downloaderLabel = (name: string) => name === 'qbittorrent' ? 'qBittorrent'
 // The alert key while a downloader can't be reached or take downloads (SABnzbd kept phase 1's).
 const downloaderKey = (name: string) => name === 'qbittorrent' ? 'library.downloader.qbittorrent' : 'library.downloader';
 const asDownloader = (name: string): DownloaderName => name === 'qbittorrent' ? 'qbittorrent' : 'sabnzbd';
+const matchesLibraryFile = (release: Release, file: LibraryFileRow, grab: Grab | undefined) =>
+  (grab?.guid === release.guid && grab.indexer === release.indexer) || file.releaseName?.toLowerCase() === release.name.toLowerCase();
 
 // TMDB's days for a movie: release_dates types 3 (theatrical; 2, limited, when there's no 3), 4 (digital), 5 (physical).
 // The US dates when TMDB has them, else the earliest anywhere.
@@ -76,6 +84,15 @@ export function releasedFrom(movie: TmdbMovie): Released {
   const digital = pickDay([4]), physical = pickDay([5]);
   return { ...(theatrical ? { theatrical } : {}), ...(digital ? { digital } : {}), ...(physical ? { physical } : {}) };
 }
+
+// What Interactive search shows was read from a release's name.
+export const parsedFacts = (p: ParsedRelease) => ({
+  ...(p.resolution ? { resolution: `${p.resolution}p` } : {}), ...(p.source ? { source: p.source } : {}), remux: p.remux,
+  ...(p.codec || p.encoder ? { codec: p.encoder ?? p.codec } : {}), hdr: [...p.hdr],
+  ...(p.audio.codec ? { audio: [p.audio.codec, p.audio.atmos ? 'Atmos' : '', p.audio.channels ?? ''].filter(Boolean).join(' ') } : {}),
+  ...(p.service ? { service: p.service } : {}),
+  ...(p.group ? { group: p.group } : {}), editions: [...p.editions], languages: [...p.languages], proper: p.proper, repack: p.repack, hardcodedSubs: p.hardcodedSubs,
+});
 
 export class Library {
   private missing = new Map<number, number>();
@@ -143,7 +160,7 @@ export class Library {
     } else {
       title = this.store.insertTitle({ kind: 'movie', tmdbId: input.tmdbId, ...(facts.imdbId ? { imdbId: facts.imdbId } : {}), title: facts.title,
         ...(facts.year ? { year: facts.year } : {}), aliases: facts.aliases, monitor: 'all', profileId, root: settings.roots.movie, keep: !!input.keep,
-        released: facts.released, addedBy: input.by });
+        released: facts.released, addedBy: input.by, ...(facts.runtime ? { runtime: facts.runtime } : {}) });
       this.deps.log('library: movie added', { id: title.id, tmdb: input.tmdbId, by: input.by });
     }
     title = this.store.title(title.id)!;
@@ -192,26 +209,29 @@ export class Library {
   }
   pause(titleId: number, reason: string | null) { this.store.setPaused(titleId, reason); if (reason === null) this.resolve(`library.paused.${titleId}`); }
 
-  private have(title: LibraryTitle): LibraryFile | undefined {
-    const file = this.store.files(title.id)[0];
+  private have(title: LibraryTitle, file: LibraryFileRow | undefined) {
     if (!file) return undefined;
     const grabbedAt = this.store.grabbedAt(file.grabId);
-    return { quality: file.quality, proper: file.proper, ...(file.releaseGroup ? { group: file.releaseGroup } : {}), ...(grabbedAt ? { grabbedAt } : {}) };
+    // Its score under the title's profile as it is now, from the name it was grabbed by. With no release name it has no
+    // score, and upgrades by tier only.
+    const scored = file.releaseName ? scoreFormats({ parsed: parseRelease(file.releaseName), quality: file.quality }, this.store.formats(), this.profile(title).scores) : undefined;
+    return { quality: file.quality, proper: file.proper, ...(file.releaseGroup ? { group: file.releaseGroup } : {}), ...(grabbedAt ? { grabbedAt } : {}),
+      ...(scored ? { score: scored.score, scoreParts: scored.parts } : {}) } satisfies LibraryFile & { scoreParts?: InteractiveCurrentRelease['scoreParts'] };
   }
   wanted(title: LibraryTitle): Wanted {
     const profile = this.profile(title), file = this.store.files(title.id)[0];
     return movieWanted({ monitor: title.monitor, paused: title.paused, inPlex: this.deps.plex.has(title.tmdbId), ...(file ? { file } : {}) }, profile);
   }
-  private profile(title: LibraryTitle): Profile { return this.store.profile(title.profileId) ?? defaultProfile(); }
+  private profile(title: LibraryTitle): QualityProfile { return this.store.profile(title.profileId) ?? builtInProfile('standard')!.profile; }
   private context(title: LibraryTitle): PickContext {
     const s = this.store.settings();
-    return { profile: this.profile(title), rules: this.store.rules(), settings: { earlyCopies: s.earlyCopies, protocol: s.protocol, properDays: s.properDays },
+    return { profile: this.profile(title), formats: this.store.formats(), settings: { earlyCopies: s.earlyCopies, protocol: s.protocol, properDays: s.properDays },
       blocklist: this.store.blocklist(title.id), now: this.now() };
   }
-  private want(title: LibraryTitle) {
-    const have = this.have(title);
+  private want(title: LibraryTitle, file = this.store.files(title.id)[0]) {
+    const have = this.have(title, file);
     return { kind: 'movie' as const, title: { title: title.title, ...(title.year ? { year: title.year } : {}), aliases: title.aliases, ...(title.imdbId ? { imdbId: title.imdbId } : {}) },
-      ...(have ? { have } : {}) };
+      ...(have ? { have } : {}), ...(title.runtime ? { runtime: title.runtime } : {}) };
   }
 
   private queueSearch(titleId: number, runAt?: number, extra?: Release[]) {
@@ -270,18 +290,18 @@ export class Library {
     const first = settings.protocol === 'torrent-first' ? 'torrent' as const : 'usenet' as const, second = first === 'usenet' ? 'torrent' as const : 'usenet' as const;
     const one = await this.deps.indexers.search(query, signal, { protocols: [first] });
     const releases = [...one.releases, ...extra.filter(r => !one.releases.some(o => o.guid === r.guid))];
-    const { best } = pick(releases, this.want(title), this.context(title));
-    if (best && rank(best.quality!) >= rank(profile.cutoff) && best.release.protocol === first) return { releases, indexers: one.indexers };
+    const context = this.context(title), { best } = pick(releases, this.want(title), context);
+    if (best && isPreferred(context.profile, best.quality!) && best.release.protocol === first) return { releases, indexers: one.indexers };
     const two = await this.deps.indexers.search(query, signal, { protocols: [second] });
     return { releases: [...releases, ...two.releases.filter(r => !releases.some(o => o.guid === r.guid))], indexers: [...one.indexers, ...two.indexers] };
   }
 
   // A grab for the decision's release, sent by the queue. Undefined when the title already has one under way.
-  private grab(title: LibraryTitle, decision: Decision) {
+  private grab(title: LibraryTitle, decision: Decision, note?: string) {
     const release = decision.release as Release;
     const grab = this.store.insertGrab({ titleId: title.id, releaseName: release.name, indexer: release.indexer, guid: release.guid, protocol: release.protocol,
       ...(release.size !== undefined ? { size: release.size } : {}), quality: decision.quality!, score: decision.score, upgrade: decision.upgrade,
-      downloader: release.protocol === 'torrent' ? 'qbittorrent' : 'sabnzbd' });
+      downloader: release.protocol === 'torrent' ? 'qbittorrent' : 'sabnzbd' }, note);
     if (!grab) return undefined;
     this.deps.log('library: grabbed', { title: title.id, grab: grab.id, release: release.name, reasons: decision.reasons });
     this.deps.queue.enqueue('send', `grab:${grab.id}`, { grabId: grab.id, link: release.link });
@@ -353,7 +373,7 @@ export class Library {
       const sent = await this.deps.downloaders.send({ kind: 'movie', protocol: grab.protocol, name: grab.releaseName.slice(0, 200), file: nzb.bytes,
         ...(nzb.infoHash ? { infoHash: nzb.infoHash, seedingMinutes } : {}) });
       const now = this.now();
-      this.store.updateGrab(grab.id, { state: 'downloading', downloadId: sent.downloadId, sentAt: now, progress: 0, progressAt: now, error: null });
+      this.store.updateGrab(grab.id, { state: 'downloading', downloadId: sent.downloadId, sentAt: now, progress: 0, progressAt: now, error: null }, `Sent to ${label}`);
       if (sent.warning) this.deps.log('library: sent with a warning', { grab: grab.id, warning: sent.warning });
       this.resolve(key);
       this.grabChanged(grab);
@@ -542,7 +562,7 @@ export class Library {
       catch (e) { this.deps.log('library: a seeded torrent could not be removed', { hash, error: errorText(e) }); return; }
       removed++;
       this.deps.log('library: removed a seeded torrent; the library file stays', { hash, ...(grab ? { grab: grab.id } : { orphan: true }), reason: decision.reason });
-      if (grab) { this.store.updateGrab(grab.id, { state: 'done', removedAt: now }); this.grabChanged(grab); }
+      if (grab) { this.store.updateGrab(grab.id, { state: 'done', removedAt: now }, `Removed from qBittorrent: ${decision.reason ?? "seeding done"}`); this.grabChanged(grab); }
     };
     for (const grab of seeding) {
       const status = byHash.get((grab.downloadId ?? '').toLowerCase());
@@ -593,13 +613,13 @@ export class Library {
     });
   }
   // Every movie, for Admin › Manage › Movies. Below cutoff is the profile's rule on its file (paused or not).
-  movieList() {
+  movieList(sourceOf: (title: LibraryTitle) => MovieSource) {
     const names = new Map(this.store.profiles().map(p => [p.id, p.name]));
     return this.store.allMovies().map(t => {
       const belowCutoff = !!t.fileQuality && movieWanted({ monitor: 'all', paused: false, inPlex: true, file: { quality: t.fileQuality } }, this.profile(t)).wanted;
       return { id: t.id, tmdbId: t.tmdbId, title: t.title, ...(t.year ? { year: t.year } : {}), ...(t.fileQuality ? { quality: t.fileQuality } : {}),
         ...(t.fileSize !== undefined ? { size: t.fileSize } : {}), profileId: t.profileId, profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused,
-        monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt };
+        monitored: t.monitor !== 'none', belowCutoff, ...(t.grab ? { grab: t.grab } : {}), addedAt: t.addedAt, source: sourceOf(t) };
     });
   }
   async titleWanted(title: LibraryTitle) { await this.deps.plex.ready(); return this.wanted(title); }
@@ -631,35 +651,62 @@ export class Library {
   // Interactive search: every release found, with its decision. The releases are kept 30 minutes for Grab, so a grab
   // only ever sends what an indexer itself returned.
   private found = new Map<number, { at: number; releases: Release[] }>();
+  private currentRelease(file: LibraryFileRow, protocol: Grab['protocol'] | undefined, want: ReturnType<Library['want']>,
+    ctx: PickContext, decisions: Decision[]): InteractiveCurrentRelease {
+    const name = file.releaseName || win32.basename(file.path);
+    const tier = tierOf(ctx.profile, file.quality);
+    const sizeTarget = tier >= 0 && !EARLY_COPIES.has(file.quality)
+      ? sizeLimits(ctx.profile.tiers[tier]!, want.runtime || DEFAULT_RUNTIME.movie)?.target : undefined;
+    const score = want.have?.score;
+    const current = { tier, ...(sizeTarget !== undefined ? { sizeTarget } : {}), ...(score !== undefined ? { score } : {}),
+      release: { size: file.size, ...(protocol ? { protocol } : {}) } };
+    // Insert among the ranked candidates, leaving the rejected releases in their original order.
+    const position = decisions.findIndex(d => !d.accepted || (tier < 0
+      ? rank(file.quality) >= rank(d.quality!)
+      : compareDecisions(current, d, ctx) <= 0));
+    return { current: true, name, quality: file.quality, size: file.size, ...(score !== undefined ? { score } : {}),
+      scoreParts: want.have?.scoreParts ?? [], parsed: parsedFacts(parseRelease(name)),
+      position: position < 0 ? decisions.length : position };
+  }
+
   async interactive(titleId: number, signal?: AbortSignal) {
     const title = this.movie(titleId);
     // Every enabled indexer, Usenet and torrents.
     const result = await this.deps.indexers.search({ kind: 'movie', title: title.title, ...(title.year ? { year: title.year } : {}),
-      ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(this.profile(title)) }, signal);
+      ...(title.imdbId ? { imdbId: title.imdbId } : {}), uhd: allows2160p(this.profile(title)) }, signal, { manual: true });
+    const file = this.store.files(title.id)[0], fileGrab = file?.grabId === undefined ? undefined : this.store.grab(file.grabId);
+    const releases = file ? result.releases.filter(r => !matchesLibraryFile(r, file, fileGrab)) : result.releases;
     const now = this.now();
     for (const [id, entry] of this.found) if (now - entry.at > 30 * MINUTE) this.found.delete(id);
     if (this.found.size >= 20) this.found.delete(this.found.keys().next().value!);
     this.found.delete(title.id);
-    this.found.set(title.id, { at: now, releases: result.releases });
-    const { decisions } = pick(result.releases, this.want(title), this.context(title));
+    this.found.set(title.id, { at: now, releases });
+    const want = this.want(title, file), ctx = this.context(title), { decisions, best } = pick(releases, want, ctx);
+    const have = file ? this.currentRelease(file, fileGrab?.protocol, want, ctx, decisions) : undefined;
+    const profileRow = this.store.profiles().find(p => p.id === title.profileId);
     return {
+      profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) }, ...(have ? { have } : {}),
       releases: decisions.map(d => ({ guid: d.release.guid, name: d.release.name, indexer: d.release.indexer, protocol: d.release.protocol,
         ...(d.release.size !== undefined ? { size: d.release.size } : {}), ...(d.release.publishedAt !== undefined ? { publishedAt: d.release.publishedAt } : {}),
         ...(d.release.grabs !== undefined ? { grabs: d.release.grabs } : {}), ...(d.release.seeders !== undefined ? { seeders: d.release.seeders } : {}),
         ...(d.release.freeleech ? { freeleech: true } : {}), ...(d.quality ? { quality: d.quality } : {}),
-        score: d.score, accepted: d.accepted, upgrade: d.upgrade, reasons: d.reasons })),
+        score: d.score, accepted: d.accepted, upgrade: d.upgrade, reasons: d.reasons, scoreParts: d.scoreParts, rejections: d.rejections,
+        ...(d.upgradeReason ? { upgradeReason: d.upgradeReason } : {}), ...(d === best ? { best: true } : {}), parsed: parsedFacts(d.parsed) })),
       indexers: result.indexers.map(r => ({ indexer: r.indexer, searched: r.searched, ...(r.error ? { error: r.error } : {}) })),
     };
   }
 
   // Grab from the last interactive search. A rejected release may be grabbed by hand, but only one whose quality is known.
   grabRelease(titleId: number, guid: string) {
+    requireWritable();
     const title = this.movie(titleId);
     const release = this.found.get(title.id)?.releases.find(r => r.guid === guid);
     requireThat(release, 'SEARCH_EXPIRED', 'Search again: that result is no longer held.', 409);
-    const decision = pick([release], this.want(title), this.context(title)).decisions[0]!;
+    const file = this.store.files(title.id)[0], fileGrab = file?.grabId === undefined ? undefined : this.store.grab(file.grabId);
+    requireThat(!file || !matchesLibraryFile(release, file, fileGrab), 'ALREADY_HAVE', 'This release is already in the library.', 409);
+    const decision = pick([release], this.want(title, file), this.context(title)).decisions[0]!;
     requireThat(decision.quality, 'QUALITY_UNKNOWN', 'Its quality can’t be read from the name, so it can’t be grabbed.', 409);
-    const grab = this.grab(title, decision);
+    const grab = this.grab(title, decision, 'By hand');
     requireThat(grab, 'GRAB_OPEN', `${title.title} already has a download under way.`, 409);
     this.store.audit('library_manual_grab', { title: title.id, grab: grab.id, release: release.name, accepted: decision.accepted });
     return grab;
@@ -673,6 +720,7 @@ export class Library {
     const title = this.movie(grab.titleId);
     if (title.paused) this.setPaused(title.id, false);
     if (title.monitor === 'none') this.store.setMonitor(title.id, 'all');
+    this.store.grabEvent(grab.id, 'retried');
     this.searchNow(title.id);
   }
 

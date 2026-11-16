@@ -42,7 +42,8 @@ export function fetchCached<T>(path:string):Promise<T> {
   if(!pending){
     const generation=sessionGeneration;
     pending=api<T>(path).then(data=>{
-      if(generation!==sessionGeneration)throw new Error('The account changed.');
+      // /setup is public and the same for everyone, so a sign-out (a 401 on /me) racing it doesn't discard it.
+      if(generation!==sessionGeneration&&path!=='/setup')throw new Error('The account changed.');
       // Another account signed in: nothing kept for the previous one may show.
       const previous=path==='/me'?accountOf(cache.get('/me')?.data):undefined,switched=previous!==undefined&&previous!==accountOf(data);
       if(switched){forgetStored();sessionGeneration++;inflight.clear();for(const key of [...cache.keys()])if(key!=='/me')cache.delete(key);}

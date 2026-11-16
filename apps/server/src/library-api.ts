@@ -2,61 +2,86 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { DownloadsActivity, DownloadsGrab, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, MovieList, NamingPreview, PickProfile,
-  PickRules, WantedList } from '../../../packages/contracts/src/downloads.js';
+import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
+  PickProfile, PickRules, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
-import { EARLY_COPIES, LADDER, isQuality, qualityOf, scoreRelease, type Profile, type Quality, type ScoreRule } from './lib/quality.js';
+import { EARLY_COPIES, LADDER, isQuality, qualityOf, type Quality } from './lib/quality.js';
+import { BOOLEAN_FIELDS, FLAGS, FORMAT_CATEGORIES, FORMAT_FIELDS, formatMatches, scoreFormats, type Format } from './lib/formats.js';
+import type { QualityProfile } from './lib/profiles.js';
+import { builtInProfile } from './lib/builtin-profiles.js';
+import { decide } from './lib/pick-rules.js';
+import { parsedFacts } from './services/library.js';
 import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
 import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
 import { tmdbImage } from './providers/explore-images.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import type { Grab, LibraryStore } from './persistence/library-store.js';
-import type { Library } from './services/library.js';
+import type { DownloadersApi, Library } from './services/library.js';
 import type { QueueApi } from './services/queue.js';
 
 // Admin › Manage for movies (docs/ARR-REPLACEMENT.md, "Admin UI"; docs/PHASE-3.5.md): downloads, wanted, every movie,
 // a title with its interactive search, pick rules (profiles and score rules) and the library settings with a naming
 // preview. All admin.
 
-const GB_MAX = 500;
+// Sizes are MB a minute of runtime: 1000 is about 107 GB for a two-hour movie.
+const MB_MIN_MAX = 1000, SCORE_MAX = 1000;
 const version = (value: unknown) => createHash('sha1').update(JSON.stringify(value)).digest('hex').slice(0, 12);
 const id = z.object({ id: z.coerce.number().int().positive() }).strict();
 const size = (max: number) => z.tuple([z.number().min(0).max(max), z.number().min(0).max(max)]).refine(([min, most]) => min < most, 'The smallest size must be under the largest.');
+const score = z.number().int().min(-10 * SCORE_MAX).max(10 * SCORE_MAX);
 
-// A profile as Admin sends it: any order, unknown rungs refused. Saved in the ladder's fixed order with every rung.
+// A profile as Admin sends it (docs/PROFILES.md, "The model"). Checked again against the ladder and the formats.
 export const profileInput = z.object({
   name: z.string().trim().min(1).max(40),
   value: z.object({
-    qualities: z.array(z.object({ name: z.string(), allowed: z.boolean() }).strict()).max(LADDER.length),
-    cutoff: z.string(), movieSize: size(GB_MAX), episodeSize: size(GB_MAX),
+    tiers: z.array(z.object({ qualities: z.array(z.string()).min(1).max(LADDER.length), size: size(MB_MIN_MAX).optional() }).strict()).min(1).max(20),
+    preferred: z.number().int().min(1).max(20),
+    scores: z.record(z.string().max(60), z.union([z.number().int().min(-SCORE_MAX).max(SCORE_MAX), z.literal('ban')])),
+    minScore: score.optional(), upgradeUntil: score.optional(), upgradeStep: z.number().int().min(1).max(SCORE_MAX),
   }).strict(),
 }).strict();
-export function profileValue(input: z.infer<typeof profileInput>['value']): Profile {
-  const unknown = input.qualities.find(q => !isQuality(q.name));
-  if (unknown) throw new AppError('PROFILE_INVALID', `${unknown.name} isn’t a quality.`);
-  const allowed = new Set(input.qualities.filter(q => q.allowed).map(q => q.name));
-  requireThat([...allowed].some(q => !EARLY_COPIES.has(q as Quality)), 'PROFILE_INVALID', 'Allow at least one quality besides the early copies.');
-  requireThat(isQuality(input.cutoff), 'PROFILE_INVALID', `${input.cutoff} isn’t a quality.`);
-  requireThat(allowed.has(input.cutoff) && !EARLY_COPIES.has(input.cutoff), 'PROFILE_INVALID', 'The cutoff must be one of the allowed qualities, and not an early copy.');
-  return { qualities: LADDER.map(name => ({ name, allowed: allowed.has(name) })), cutoff: input.cutoff, movieSize: input.movieSize, episodeSize: input.episodeSize };
+export function profileValue(input: z.infer<typeof profileInput>['value'], formats: readonly Format[]): QualityProfile {
+  const seen = new Set<string>();
+  for (const tier of input.tiers) for (const q of tier.qualities) {
+    requireThat(isQuality(q), 'PROFILE_INVALID', `${q} isn’t a quality.`);
+    requireThat(!seen.has(q), 'PROFILE_INVALID', `${q} is in two tiers.`);
+    seen.add(q);
+  }
+  requireThat(input.preferred <= input.tiers.length, 'PROFILE_INVALID', 'More preferred tiers than tiers.');
+  requireThat(input.tiers.slice(0, input.preferred).some(t => t.qualities.some(q => !EARLY_COPIES.has(q as Quality))), 'PROFILE_INVALID',
+    'The preferred tiers need a quality besides the early copies.');
+  const names = new Set(formats.map(f => f.name));
+  const unknown = Object.keys(input.scores).find(name => !names.has(name));
+  requireThat(!unknown, 'PROFILE_INVALID', `No format is named ${unknown}.`);
+  requireThat(input.minScore === undefined || input.upgradeUntil === undefined || input.minScore <= input.upgradeUntil, 'PROFILE_INVALID',
+    'The minimum score must not be over the upgrade-until.');
+  const scores = Object.fromEntries(formats.flatMap(f => input.scores[f.name] !== undefined && input.scores[f.name] !== 0 ? [[f.name, input.scores[f.name]!]] : []));
+  return { tiers: input.tiers.map(t => ({ qualities: t.qualities as Quality[], ...(t.size ? { size: t.size } : {}) })), preferred: input.preferred, scores,
+    ...(input.minScore !== undefined ? { minScore: input.minScore } : {}), ...(input.upgradeUntil !== undefined ? { upgradeUntil: input.upgradeUntil } : {}),
+    upgradeStep: input.upgradeStep };
 }
 
-const FIELDS = ['codec', 'hdr', 'edition', 'group', 'language', 'flag', 'source', 'resolution'];
-// Labels go into file names ({[Custom Formats]}), so only letters, digits, spaces and + . -.
-export const ruleInput = z.object({
+// Formats as Admin sends them: the whole ordered list. Labels go into file names ({[Custom Formats]}), so only letters,
+// digits, spaces and + . -.
+const conditionInput = z.object({
+  field: z.enum(FORMAT_FIELDS), values: z.array(z.string().trim().min(1).max(200)).max(500),
+  required: z.boolean().optional(), negate: z.boolean().optional(),
+}).strict().superRefine((c, ctx) => {
+  if (BOOLEAN_FIELDS.has(c.field)) return;
+  if (!c.values.length) ctx.addIssue({ code: 'custom', message: `A ${c.field} condition needs a value.` });
+  if (c.field === 'flag') for (const v of c.values) if (!(FLAGS as readonly string[]).includes(v.toLowerCase())) ctx.addIssue({ code: 'custom', message: `${v} isn’t a flag.` });
+  if (c.field === 'title') for (const v of c.values) { try { new RegExp(v, 'i'); } catch { ctx.addIssue({ code: 'custom', message: `“${v}” isn’t a valid pattern` }); } }
+});
+export const formatInput = z.object({
   name: z.string().trim().min(1).max(60),
   label: z.string().trim().max(20).regex(/^[A-Za-z0-9 +.-]*$/, 'Labels take letters, digits, spaces and + . - only').optional(),
-  pattern: z.string().trim().min(1).max(200).superRefine((pattern, ctx) => {
-    const field = /^([a-z]+):(.+)$/i.exec(pattern);
-    if (field && FIELDS.includes(field[1]!.toLowerCase())) return;
-    try { new RegExp(pattern, 'i'); } catch { ctx.addIssue({ code: 'custom', message: `“${pattern}” isn’t a valid pattern` }); }
-  }),
-  points: z.number().int().min(-1000).max(1000), ban: z.boolean(), applies: z.enum(['movie', 'show', 'both']),
+  category: z.enum(FORMAT_CATEGORIES), conditions: z.array(conditionInput).min(1).max(20),
+  from: z.string().max(60).optional(),
 }).strict();
-const rulesInput = z.object({ expectedVersion: z.string().max(40), rules: z.array(ruleInput).max(100) }).strict();
-const rulesOf = (rules: ScoreRule[]) => rules.map(r => ({ ...r, points: r.ban ? 0 : r.points }));
+const formatsInput = z.object({ expectedVersion: z.string().max(40), formats: z.array(formatInput).max(300) }).strict();
+const tryInput = z.object({ release: z.string().trim().min(1).max(300), runtime: z.number().int().min(1).max(1000).optional(), size: z.number().int().min(0).max(1e13).optional() }).strict();
 
 const root = z.string().trim().min(1).max(300).refine(p => isAbsolute(p) && !p.split(/[\\/]/).includes('..'), 'Use a full path');
 export const settingsInput = z.object({
@@ -72,11 +97,11 @@ export const settingsInput = z.object({
 
 const previewInput = z.object({ release: z.string().trim().min(1).max(300), tmdbId: z.number().int().positive().max(99999999).optional() }).strict();
 // The name a release would get, from what its name says (an import reads the audio, HDR and codec from ffprobe instead).
-export function namingPreview(store: Pick<LibraryStore, 'rules' | 'settings'>, input: z.infer<typeof previewInput>): NamingPreview {
+export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>, input: z.infer<typeof previewInput>): NamingPreview {
   const parsed = parseRelease(input.release), quality = qualityOf(parsed);
   requireThat(quality, 'QUALITY_UNKNOWN', 'Its quality can’t be read from the name.');
   const movie = { title: parsed.title || 'Untitled', ...(parsed.year ? { year: parsed.year } : {}), tmdbId: input.tmdbId ?? 44115 };
-  const { labels } = scoreRelease({ parsed }, store.rules(), 'movie');
+  const { labels } = scoreFormats({ parsed, quality }, store.formats(), {});
   const hdr = parsed.hdr.map(h => h === 'HDR' ? 'HDR10' : h);
   const dynamicRange = [hdr.includes('DV') ? 'DV' : '', hdr.find(h => h !== 'DV') ?? ''].filter(Boolean).join(' ') || undefined;
   const audioCodec = parsed.audio.codec ? `${parsed.audio.codec}${parsed.audio.atmos ? ' Atmos' : ''}` : undefined;
@@ -90,9 +115,27 @@ export function namingPreview(store: Pick<LibraryStore, 'rules' | 'settings'>, i
 }
 
 // `titles`: TMDB details, cached (the library and the calendar read the same ones), for posters.
-type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'> };
+// Where Admin › Manage › Movies learns why each movie is there: who requested it (the requests module) and which
+// collections downloaded it (the artwork engine's journals). Filled in as those modules mount; empty until then.
+export type LibrarySources = {
+  requesters?: () => Map<number, { name: string; at: number; status: string }[]>;
+  collections?: () => Map<number, string[]>;
+};
+type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'> };
+// A movie's source: a request first, then collections, then the cutover from Radarr.
+export function movieSource(title: { tmdbId: number; addedBy: string }, requests: Map<number, { name: string; at: number; status: string }[]>,
+  collections: Map<number, string[]>): MovieSource {
+  const asked = requests.get(title.tmdbId);
+  if (asked?.length) return { kind: 'request', requests: asked };
+  const owners = collections.get(title.tmdbId);
+  if (owners?.length || title.addedBy === 'collections') return { kind: 'collection', collections: owners ?? [] };
+  if (title.addedBy === 'cutover') return { kind: 'radarr' };
+  return { kind: 'other', by: title.addedBy };
+}
 
-export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles }: Deps) {
+export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders }: Deps) {
+  const sourcesNow = () => { const requests = sources.requesters?.() ?? new Map(), collections = sources.collections?.() ?? new Map();
+    return (t: { tmdbId: number; addedBy: string }) => movieSource(t, requests, collections); };
   const admin = { config: { access: 'admin' as const } };
   const actor = (request: Parameters<typeof viewer>[0]) => viewer(request).grant.accountId;
   const titleName = new Map<number, { title: string; year?: number }>();
@@ -112,9 +155,9 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     return kind === 'movie' ? n : kind === 'grab' ? store.grab(n)?.titleId : kind === 'file' ? store.file(n)?.titleId : undefined;
   };
   const pickRules = (): PickRules => {
-    const rules = rulesOf(store.rules());
-    return { profiles: store.profileRows().map(p => ({ ...p, value: p.value as PickProfile, version: version([p.name, p.value]) })), rules, rulesVersion: version(rules),
-      ladder: [...LADDER], earlyCopies: LADDER.filter(q => EARLY_COPIES.has(q)) };
+    const formats = store.formats();
+    return { profiles: store.profileRows().map(p => ({ ...p, value: p.value as PickProfile, version: version([p.name, p.value]) })), formats, formatsVersion: version(formats),
+      ladder: [...LADDER], earlyCopies: LADDER.filter(q => EARLY_COPIES.has(q)), fields: [...FORMAT_FIELDS], flags: [...FLAGS], categories: [...FORMAT_CATEGORIES] };
   };
   const settingsView = (): LibrarySettingsView => ({ ...store.settings(), seedingFloor: { ...IPT_FLOOR } });
   const titleView = async (titleId: number): Promise<LibraryTitleView> => {
@@ -125,7 +168,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     return { id: title.id, tmdbId: title.tmdbId, ...(title.imdbId ? { imdbId: title.imdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
       profileId: title.profileId, keep: title.keep, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
       wanted, released: title.released, ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}) } : {}), misses: search?.misses ?? 0,
-      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles() };
+      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt };
   };
 
   const seedingView = (g: Grab): DownloadsSeeding => {
@@ -148,6 +191,42 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       }),
     } satisfies DownloadsActivity;
   });
+  // Downloads › History: the newest grab steps (the page filters and pages them).
+  app.get('/api/v1/admin/library/history', admin, async () => {
+    titleName.clear();
+    return { events: store.grabEvents(2000).map(e => ({ id: e.id, at: e.at, kind: e.kind, ...(e.note ? { note: e.note } : {}), grab: grabView(e.grab) })) } satisfies DownloadsHistory;
+  });
+  // Everything the downloaders hold, live, each matched to its tk.box grab and who asked for it; then the grabs under
+  // way that no downloader lists (sending, or importing after SABnzbd let go).
+  const sourceWord = (s: MovieSource): string | undefined => s.kind === 'request' ? `${s.requests[0]!.name}${s.requests.length > 1 ? ` +${s.requests.length - 1}` : ''}`
+    : s.kind === 'collection' ? 'Collections' : s.kind === 'radarr' ? 'Radarr' : s.by || undefined;
+  const grabStates: Partial<Record<DownloadsGrab['state'], [ClientState, string?]>> = { sending: ['queued', 'Sending'], downloading: ['downloading'], unpacking: ['unpacking'], importing: ['importing'] };
+  app.get('/api/v1/admin/library/downloads', admin, async () => {
+    titleName.clear();
+    const live = downloaders?.live ? await downloaders.live() : { clients: [], items: [] };
+    const grabs = store.grabsByDownload(live.items.map(i => i.id)), source = sourcesNow();
+    const about = (g: Grab) => {
+      const t = store.title(g.titleId), seeding = g.state === 'seeding' ? seedingView(g).removeAt : undefined;
+      return { grab: { id: g.id, titleId: g.titleId, ...nameOf(g.titleId), quality: g.quality, state: g.state, upgrade: g.upgrade, indexer: g.indexer,
+        ...(seeding !== undefined ? { removeAt: seeding } : {}) }, ...(t && sourceWord(source(t)) ? { requestedBy: sourceWord(source(t))! } : {}) };
+    };
+    const items: DownloadItem[] = live.items.map(i => {
+      const g = grabs.get(i.id), mine = g && g.downloader === i.downloader ? g : undefined;
+      // A finished download tk.box is importing, or imported and let go: say so rather than the client's Completed.
+      const state: ClientState = mine?.state === 'importing' && (i.state === 'completed' || i.state === 'seeding') && i.downloader === 'sabnzbd' ? 'importing' : i.state;
+      return { ...i, state, key: `${i.downloader}:${i.id}`, ...(mine ? about(mine) : {}) };
+    });
+    const listed = new Set(items.filter(i => i.grab).map(i => i.grab!.id));
+    // A downloader that didn't answer lists nothing: its grabs show as tk.box last saw them.
+    for (const g of store.activeGrabs()) {
+      if (listed.has(g.id)) continue;
+      const [state, detail] = grabStates[g.state] ?? ['queued'];
+      items.push({ key: `grab:${g.id}`, downloader: g.downloader === 'qbittorrent' ? 'qbittorrent' : 'sabnzbd', id: g.downloadId ?? '', name: g.releaseName, protocol: g.protocol,
+        state, ...(detail ? { detail } : {}), progress: g.progress ?? (state === 'importing' ? 1 : 0), mine: true, ...(g.size !== undefined ? { size: g.size } : {}),
+        ...(g.sentAt ? { addedAt: g.sentAt } : {}), ...(g.error ? { error: g.error } : {}), ...about(g) });
+    }
+    return { clients: live.clients, items } satisfies DownloadsLive;
+  });
   app.post('/api/v1/admin/library/grabs/:id/retry', admin, async request => { library.retryGrab(id.parse(request.params).id); return { ok: true }; });
   app.post('/api/v1/admin/library/jobs/:id/retry', admin, async request => {
     requireThat(queue.retry(id.parse(request.params).id), 'JOB_NOT_RETRIED', 'That job isn’t failed, or the same work is already queued.', 409);
@@ -155,7 +234,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   });
 
   app.get('/api/v1/admin/library/wanted', admin, async () => ({ items: await library.wantedList() }) satisfies WantedList);
-  app.get('/api/v1/admin/library/movies', admin, async () => ({ items: library.movieList() }) satisfies MovieList);
+  app.get('/api/v1/admin/library/movies', admin, async () => ({ items: library.movieList(sourcesNow()) }) satisfies MovieList);
   // A movie's poster: a redirect to TMDB's, through the image proxy, from the cached details. 404 without one.
   app.get('/api/v1/admin/library/titles/:id/poster', { config: { access: 'admin', rateLimit: { max: 1200, timeWindow: 60000 } } }, async (request, reply) => {
     const title = store.title(id.parse(request.params).id);
@@ -193,7 +272,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
 
   app.get('/api/v1/admin/library/rules', admin, async () => pickRules());
   app.post('/api/v1/admin/library/profiles', admin, async request => {
-    const { name, value } = profileInput.parse(request.body), profile = profileValue(value);
+    const { name, value } = profileInput.parse(request.body), profile = profileValue(value, store.formats());
     requireThat(!store.profileNamed(name), 'PROFILE_EXISTS', `A profile named ${name} already exists.`, 409);
     const profileId = store.insertProfile(name, profile);
     store.audit('pick_profile_created', { id: profileId, name, by: actor(request) });
@@ -202,7 +281,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   app.put('/api/v1/admin/library/profiles/:id', admin, async request => {
     const { id: profileId } = id.parse(request.params);
     const { expectedVersion, name, value } = profileInput.extend({ expectedVersion: z.string().max(40) }).strict().parse(request.body);
-    const profile = profileValue(value);
+    const profile = profileValue(value, store.formats());
     store.db.transaction(() => {
       const current = store.profileRows().find(p => p.id === profileId);
       requireThat(current, 'PROFILE_NOT_FOUND', 'No such profile.', 404);
@@ -226,14 +305,57 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     })();
     return pickRules();
   });
-  app.put('/api/v1/admin/library/rules', admin, async request => {
-    const { expectedVersion, rules } = rulesInput.parse(request.body);
+  // A built-in profile back as it shipped, keeping its name; points for formats since deleted are left out.
+  app.post('/api/v1/admin/library/profiles/:id/reset', admin, async request => {
+    const { id: profileId } = id.parse(request.params), { expectedVersion } = z.object({ expectedVersion: z.string().max(40) }).strict().parse(request.body);
     store.db.transaction(() => {
-      requireThat(version(rulesOf(store.rules())) === expectedVersion, 'REVISION_CONFLICT', 'The score rules changed. Reload and retry.', 409);
-      store.replaceRules(rules.map(r => ({ name: r.name, ...(r.label ? { label: r.label } : {}), pattern: r.pattern, points: r.ban ? 0 : r.points, ban: r.ban, applies: r.applies })));
-      store.audit('score_rules_changed', { count: rules.length, by: actor(request) });
+      const current = store.profileRows().find(p => p.id === profileId);
+      requireThat(current, 'PROFILE_NOT_FOUND', 'No such profile.', 404);
+      requireThat(version([current.name, current.value]) === expectedVersion, 'REVISION_CONFLICT', 'The profile changed. Reload and retry.', 409);
+      const built = current.builtIn ? builtInProfile(current.builtIn) : undefined;
+      requireThat(built, 'PROFILE_NOT_BUILT_IN', `${current.name} isn’t a built-in profile.`, 409);
+      const names = new Set(store.formats().map(f => f.name));
+      store.updateProfile(profileId, current.name, { ...built.profile, scores: Object.fromEntries(Object.entries(built.profile.scores).filter(([n]) => names.has(n))) });
+      store.audit('pick_profile_reset', { id: profileId, name: current.name, by: actor(request) });
     })();
     return pickRules();
+  });
+  // The formats, as one ordered list. Profiles keep their points for a renamed format (`from`) and lose them for a
+  // removed one.
+  app.put('/api/v1/admin/library/formats', admin, async request => {
+    const { expectedVersion, formats } = formatsInput.parse(request.body);
+    const names = new Set<string>();
+    for (const f of formats) {
+      requireThat(!names.has(f.name.toLowerCase()), 'FORMAT_EXISTS', `Two formats are named ${f.name}.`, 409);
+      names.add(f.name.toLowerCase());
+    }
+    const saved: Format[] = formats.map(({ from: _, ...f }) => ({ name: f.name, ...(f.label ? { label: f.label } : {}), category: f.category,
+      conditions: f.conditions.map(c => ({ field: c.field, values: BOOLEAN_FIELDS.has(c.field) ? [] : c.values, ...(c.required ? { required: true } : {}), ...(c.negate ? { negate: true } : {}) })) }));
+    store.db.transaction(() => {
+      requireThat(version(store.formats()) === expectedVersion, 'REVISION_CONFLICT', 'The formats changed. Reload and retry.', 409);
+      store.replaceFormats(saved);
+      for (const p of store.profileRows()) {
+        const scores = Object.fromEntries(formats.flatMap(f => { const points = p.value.scores[f.from ?? f.name]; return points === undefined ? [] : [[f.name, points]]; }));
+        if (JSON.stringify(scores) !== JSON.stringify(p.value.scores)) store.updateProfile(p.id, p.name, { ...p.value, scores });
+      }
+      store.audit('formats_changed', { count: saved.length, by: actor(request) });
+    })();
+    return pickRules();
+  });
+  // Try a release: what each profile would do with it, as if it were a search result for the title its name gives.
+  app.post('/api/v1/admin/library/try', admin, async request => {
+    const input = tryInput.parse(request.body), parsed = parseRelease(input.release), quality = qualityOf(parsed);
+    const formats = store.formats(), settings = store.settings(), now = Date.now();
+    const candidate = { name: input.release, indexer: 'try', guid: 'try', protocol: 'usenet' as const, ...(input.size !== undefined ? { size: input.size } : {}) };
+    const want = { kind: 'movie' as const, title: { title: parsed.title || input.release, ...(parsed.year ? { year: parsed.year } : {}) }, ...(input.runtime ? { runtime: input.runtime } : {}) };
+    return {
+      parsed: parsedFacts(parsed), formats: formats.filter(f => formatMatches(f, { parsed, ...(quality ? { quality } : {}) })).map(f => f.name),
+      profiles: store.profileRows().map(p => {
+        const d = decide(candidate, want, { profile: p.value, formats, settings: { earlyCopies: settings.earlyCopies, protocol: settings.protocol, properDays: settings.properDays }, now });
+        return { id: p.id, name: p.name, ...(d.quality ? { quality: d.quality } : {}), ...(d.tier !== undefined ? { tier: d.tier } : {}),
+          preferred: d.tier !== undefined && d.tier < p.value.preferred, score: d.score, accepted: d.accepted, scoreParts: d.scoreParts, rejections: d.rejections };
+      }),
+    } satisfies TryRelease;
   });
 
   app.get('/api/v1/admin/library/settings', admin, async () => settingsView());

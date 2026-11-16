@@ -1,9 +1,11 @@
 import * as fs from 'node:fs/promises';
+import { readOnly } from '../errors.js';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { runProcess } from '../streaming/ffmpeg.js';
 import { parseRelease, type ParsedRelease } from '../lib/release-name.js';
-import { qualityOf, scoreRelease } from '../lib/quality.js';
+import { qualityOf } from '../lib/quality.js';
+import { scoreFormats } from '../lib/formats.js';
 import { audioChannelsName, audioCodecName, dynamicRangeName, movieFileName, movieFolder, videoCodecName } from '../lib/naming.js';
 import type { FileMedia, Grab, LibraryStore, LibraryTitle } from '../persistence/library-store.js';
 
@@ -101,6 +103,7 @@ export class MovieImporter {
   // movie. The newest is the one to keep; the others are deleted from disk, then forgotten.
   async cleanLeftovers() {
     const removed: string[] = [], kept = new Map<number, string>();
+    if (readOnly()) return removed;
     for (const file of this.store.leftoverFiles()) {
       const keep = kept.get(file.titleId);
       if (keep === undefined) { kept.set(file.titleId, file.path); continue; }
@@ -157,7 +160,8 @@ export class MovieImporter {
         reason: `It runs ${Math.round(probe.durationSec / 60)} min, under half of the ${runtimeMin} min runtime.`, skipped };
     }
 
-    const { score, labels } = scoreRelease({ parsed }, this.store.rules(), 'movie');
+    // The score under the title's profile when imported (shown on the file; picks work it out again from the name).
+    const { score, labels } = scoreFormats({ parsed, ...(quality ? { quality } : {}) }, this.store.formats(), this.store.profile(title.profileId)?.scores ?? {});
     const media: FileMedia = {
       ...(probe.durationSec !== undefined ? { durationSec: Math.round(probe.durationSec) } : {}),
       ...optional('videoCodec', videoCodecName(parsed, probe.videoCodec)),
@@ -179,7 +183,7 @@ export class MovieImporter {
       this.store.setFolder(title.id, folder);
       const id = this.store.insertFile({ titleId: title.id, path: dest, size: main.size, quality, proper: parsed.proper || parsed.repack, score,
         releaseName: grab.releaseName, ...(group ? { releaseGroup: group } : {}), media, grabId: grab.id });
-      this.store.updateGrab(grab.id, { state: options.state ?? 'imported', importedAt: Date.now(), progress: 1, error: null });
+      this.store.updateGrab(grab.id, { state: options.state ?? 'imported', importedAt: Date.now(), progress: 1, error: null }, dest);
       // On another mount the file was copied, not moved: said in the activity (Admin › Downloads reads it in 1c).
       if (copied) this.store.audit('library_import_copied', { grab: grab.id, title: title.id, from: main.path, to: dest });
       return id;

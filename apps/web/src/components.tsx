@@ -36,7 +36,7 @@ const paths:Record<string,ReactNode>={
   queue:<path d="M3 6h13M3 12h13M3 18h8m4-2.5v5l4.5-2.5z"/>,
   collection:<><rect x="3" y="8" width="14" height="13" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v11"/></>,tag:<><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></>,unwatched:<><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></>,
   explore:<><circle cx="12" cy="12" r="9.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></>,trending:<path d="m3 17 6-6 4 4 8-8m-5 0h5v5"/>,
-  clock:<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
+  clock:<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,history:<><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 3.5v5h5"/><path d="M12 8v4l3 2"/></>,
   shield:<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z"/>,
   users:<><circle cx="9" cy="7.5" r="3"/><path d="M3 20v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2m3-7a5 5 0 0 1 3 5v2M16 4.7a3 3 0 0 1 0 5.6"/></>,
   image:<><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="m21 16-5-5-9 9"/></>,

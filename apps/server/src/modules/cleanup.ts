@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import type { CleanupUsersView } from '../../../../packages/contracts/src/index.js';
 import { defineModule } from './module.js';
 import { viewer } from './access.js';
-import { requireThat } from '../errors.js';
+import { preview, requireThat } from '../errors.js';
 import { cleanupMigrations } from './migrations/cleanup.js';
 import { CleanupStore } from '../persistence/cleanup-store.js';
 import { CleanupEngine, cleanupCollections, type CleanupServices } from '../services/cleanup-engine.js';
@@ -85,7 +85,7 @@ export const cleanupModule = defineModule({
     return {
       // The saved watch history, for Explore's suggestions.
       api: { services, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
-      start() { engine.start(); },
+      start() { if (!preview()) engine.start(); },
       stop() { engine.close(); }
     };
   }

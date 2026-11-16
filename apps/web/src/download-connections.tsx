@@ -75,7 +75,9 @@ export function IptorrentsEditor({indexer,onClose}:{indexer:IndexerView;onClose:
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();void save();}}>
     <Switch label="On" checked={enabled} onChange={setEnabled}/>
     <label>RSS address<input type="password" autoComplete="off" spellCheck={false} value={rss} placeholder={secret(saved?.rssSet)} onChange={e=>setRss(e.target.value)}/></label>
-    <label>Cookie<input type="password" autoComplete="off" spellCheck={false} value={cookie} placeholder={secret(saved?.cookieSet)} onChange={e=>setCookie(e.target.value)}/></label>
+    <label>Cookie<input type="password" autoComplete="off" spellCheck={false} value={cookie} placeholder={secret(saved?.cookieSet)} onChange={e=>setCookie(e.target.value)}/>
+      <small className="muted">Copy the full Cookie value from Request Headers on the signed-in iptorrents.com/t page, including the uid and pass entries.</small>
+    </label>
     <label>User agent<input autoComplete="off" spellCheck={false} value={agent} onChange={e=>setAgent(e.target.value)}/></label>
     <CategoryChecks label="Movie categories" options={iptMovies} value={movies} onChange={setMovies}/>
     <CategoryChecks label="TV categories" options={iptTv} value={tv} onChange={setTv}/>
@@ -95,22 +97,21 @@ export function IptorrentsEditor({indexer,onClose}:{indexer:IndexerView;onClose:
 }
 
 export function QbittorrentEditor({downloader,onClose}:{downloader:DownloaderView;onClose:()=>void}) {
-  const s=downloader.settings,saved=downloader.qbittorrent;
-  const [url,setUrl]=useState(downloader.url),[user,setUser]=useState(saved?.username??''),[password,setPassword]=useState('');
+  const s=downloader.settings;
+  const [url,setUrl]=useState(downloader.url),[key,setKey]=useState('');
   const [movie,setMovie]=useState(s.categories.movie),[show,setShow]=useState(s.categories.show);
   const mutation=useMutation(refresh);
   const save=async()=>{
     const ok=await mutation.run(async()=>{
-      await api('/admin/downloaders/qbittorrent','PUT',{url:url.trim(),...(user.trim()!==(saved?.username??'')?{username:user.trim()}:{}),...(password?{password}:{}),
+      await api('/admin/downloaders/qbittorrent','PUT',{url:url.trim(),...(key.trim()?{key:key.trim()}:{}),
         settings:{categories:{movie:movie.trim(),show:show.trim()}}});
     });
     if(ok){toast.success('qBittorrent saved');onClose();}
   };
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();void save();}}>
     <label>Server address<input type="url" placeholder="http://127.0.0.1:8080" value={url} onChange={e=>setUrl(e.target.value)}/></label>
+    <label>API key<input type="password" autoComplete="off" spellCheck={false} value={key} placeholder={downloader.secretSet?'Saved. Enter a new value to replace it.':''} onChange={e=>setKey(e.target.value)}/></label>
     <div className="form-columns">
-      <label>Username<input autoComplete="off" spellCheck={false} value={user} onChange={e=>setUser(e.target.value)}/></label>
-      <label>Password<input type="password" autoComplete="off" value={password} placeholder={saved?.passwordSet?'Saved. Enter a new value to replace it.':''} onChange={e=>setPassword(e.target.value)}/></label>
       <label>Movie category<input required pattern="[\w.\-]+" value={movie} onChange={e=>setMovie(e.target.value)}/></label>
       <label>TV category<input required pattern="[\w.\-]+" value={show} onChange={e=>setShow(e.target.value)}/></label>
     </div>

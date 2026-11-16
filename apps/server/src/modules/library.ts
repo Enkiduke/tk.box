@@ -1,19 +1,19 @@
 import { defineModule } from './module.js';
 import { libraryMigrations } from './migrations/library.js';
-import { AppError } from '../errors.js';
+import { AppError, preview } from '../errors.js';
 import { every, errorDetail } from '../lib/every.js';
 import { LibraryStore } from '../persistence/library-store.js';
 import { Library, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
 import { MovieImporter, ffprobe } from '../services/library-import.js';
 import { RequestAvailability } from '../services/request-availability.js';
 import { LibraryFulfiller } from '../providers/library-fulfiller.js';
-import { registerLibraryAdmin } from '../library-api.js';
+import { registerLibraryAdmin, type LibrarySources } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 
 const SWEEP_MINUTES = 30, CHECK_MS = 30000, SEEDING_MINUTES = 60;
 
-type Deps = { queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'> };
+type Deps = { queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>; sources?: LibrarySources };
 
 // tk.box's own library (docs/ARR-REPLACEMENT.md, phase 1b): movies, from adding one to importing it. Its work runs on
 // the queue (search, send, unpack, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes, the
@@ -24,7 +24,7 @@ export const libraryModule = defineModule({
   name: 'library',
   access: 'admin',
   migrations: libraryMigrations,
-  setup(routes, { config, db, plex, bus, background, jobs, log }, { queue, indexers, downloaders, titles }: Deps) {
+  setup(routes, { config, db, plex, bus, background, jobs, log }, { queue, indexers, downloaders, titles, sources }: Deps) {
     const store = new LibraryStore(db);
     // What Plex holds, read with the owner's grant, as requests read it.
     const availability = new RequestAvailability(async () => {
@@ -49,7 +49,7 @@ export const libraryModule = defineModule({
       log: (message, detail) => log.info(message, detail),
     });
     library.register();
-    registerLibraryAdmin(routes, { store, library, queue, titles });
+    registerLibraryAdmin(routes, { store, library, queue, titles, downloaders, ...(sources ? { sources } : {}) });
     bus.on('plex.library.changed', () => availability.soon());
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library
@@ -73,9 +73,9 @@ export const libraryModule = defineModule({
     jobs.add(
       { id: 'library.wanted', label: 'Search for wanted movies', area: 'Library', section: 'wanted',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SWEEP_MINUTES } }), status: () => jobs.tracked('library.wanted'), run: sweepNow },
-      { id: 'library.downloads', label: 'Check downloads', area: 'Library', section: 'downloads',
+      { id: 'library.downloads', label: 'Check downloads', area: 'Library', section: 'queue',
         schedule: () => ({ enabled: store.hasOpenGrabs(), schedule: { kind: 'every', minutes: CHECK_MS / 60000 } }), status: () => jobs.tracked('library.downloads'), run: checkNow },
-      { id: 'library.seeding', label: 'Remove seeded torrents', area: 'Library', section: 'downloads',
+      { id: 'library.seeding', label: 'Remove seeded torrents', area: 'Library', section: 'queue',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SEEDING_MINUTES } }), status: () => jobs.tracked('library.seeding'), run: seedNow });
 
     const fulfiller = new LibraryFulfiller(library, store);
@@ -90,6 +90,7 @@ export const libraryModule = defineModule({
       },
       start() {
         void availability.rebuild();
+        if (preview()) return;
         void importer.cleanLeftovers().catch(e => log.warn('library leftover cleanup failed', errorDetail(e)));
         timers = [
           every(SWEEP_MINUTES * 60000, sweepNow, e => log.warn('library sweep failed', errorDetail(e))),

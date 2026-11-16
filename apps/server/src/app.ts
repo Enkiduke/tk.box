@@ -39,6 +39,7 @@ import { queueModule } from './modules/queue.js';
 import { indexersModule } from './modules/indexers.js';
 import { downloadersModule } from './modules/downloaders.js';
 import { libraryModule } from './modules/library.js';
+import type { LibrarySources } from './library-api.js';
 import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
 import { exploreModule } from './modules/explore.js';
@@ -194,8 +195,11 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
   // tk.box's own library for movies. Requests send movies to it, and shows to Sonarr.
-  const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles});
+  // Why each movie is there (Admin › Manage › Movies): its requesters, filled in once requests mounts, and collections.
+  const librarySources: LibrarySources = {collections: () => artwork.engine.collectionMovies()};
+  const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles, sources: librarySources});
   const requestsApi = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site, library}), {requests} = requestsApi;
+  librarySources.requesters = () => requestsApi.store.requesters('movie');
   const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches, identity, library});
   // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
   const watches = (account: string) => {

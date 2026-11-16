@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { preview } from '../errors.js';
 import { defineModule } from './module.js';
 import { iptvMigrations } from './migrations/iptv.js';
 import { viewer } from './access.js';
@@ -80,6 +81,7 @@ export const iptvModule = defineModule({
     return {
       api: { store: iptv, live },
       async start() {
+        if (preview()) { iptv.relistAll(); return; }
         timer = every(15000, () => refresh.tick(), e => log.warn('source refresh tick failed', errorDetail(e)));
         iptv.relistAll(); await refresh.tick();
         void sports.tick();

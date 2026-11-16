@@ -78,6 +78,14 @@ export class RequestStore {
   open() { return this.rows(prepared(this.db, `SELECT * FROM requests WHERE status IN ('queued','requested','downloading','partial') ORDER BY id`).all() as Raw[]); }
   // Every row that still names the title as requested or on the server: neither failed nor removed.
   live() { return this.rows(prepared(this.db, `SELECT * FROM requests WHERE status NOT IN ('failed','removed') ORDER BY id`).all() as Raw[]); }
+  // Who asked for each title, by TMDB id, oldest first; removed requests don't count (Admin › Manage › Movies' source).
+  requesters(kind: RequestKind) {
+    const rows = prepared(this.db, `SELECT tmdb_id, account_name, created_at, status FROM requests WHERE kind=? AND status != 'removed' ORDER BY created_at, id`).all(kind) as
+      { tmdb_id: number; account_name: string; created_at: number; status: RequestStatus }[];
+    const result = new Map<number, { name: string; at: number; status: RequestStatus }[]>();
+    for (const r of rows) result.set(r.tmdb_id, [...result.get(r.tmdb_id) ?? [], { name: r.account_name, at: r.created_at, status: r.status }]);
+    return result;
+  }
   forTitle(kind: RequestKind, tmdbId: number) {
     return this.rows(prepared(this.db, `SELECT * FROM requests WHERE kind=? AND tmdb_id=? AND status NOT IN ('failed','removed') ORDER BY id`).all(kind, tmdbId) as Raw[]);
   }

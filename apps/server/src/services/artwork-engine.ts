@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
-import { hiddenDownloads } from './hidden-downloads.js';
+import { collectionsByMovie, hiddenDownloads } from './hidden-downloads.js';
 
 // Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
 // their own Python processes: tk.box writes their shared JSON config from the database, passes credentials in the
@@ -197,6 +197,12 @@ export class ArtworkEngine {
       const file = JSON.parse(readFileSync(join(this.workDir, 'kept_collections.json'), 'utf8')) as Partial<KeptCollections>;
       return { updated: typeof file.updated === 'string' ? file.updated : null, collections: Array.isArray(file.collections) ? file.collections : [] };
     } catch { return { updated: null, collections: [] }; }
+  }
+  // Which collections downloaded each movie (Admin › Manage › Movies' source), from both journals; a journal that can't
+  // be read counts as empty.
+  collectionMovies() {
+    const read = (file: string) => { try { return JSON.parse(readFileSync(join(this.workDir, file), 'utf8')) as unknown; } catch { return null; } };
+    return collectionsByMovie([read('collections-tkbox.json'), read('collections-state.json')], this.store.collections().definitions);
   }
   // The movies collections downloaded that stay off Recently added; none while the journal can't be read.
   hiddenFromRecent() {

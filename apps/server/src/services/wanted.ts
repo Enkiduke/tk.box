@@ -1,4 +1,5 @@
-import { EARLY_COPIES, rank, type Profile, type Quality } from '../lib/quality.js';
+import { EARLY_COPIES, type Quality } from '../lib/quality.js';
+import { meetsCutoff, type QualityProfile } from '../lib/profiles.js';
 import type { Monitor, Released } from '../persistence/library-store.js';
 
 // Wanted and search timing for movies (docs/ARR-REPLACEMENT.md, "Wanted" and "Search timing"). Pure: the library
@@ -21,12 +22,13 @@ export type MovieState = {
 };
 export type Wanted = { wanted: true; why: 'missing' | 'cutoff' } | { wanted: false; why: 'unmonitored' | 'paused' | 'have' };
 
-// Wanted when monitored and not paused, and either nothing is on the server, or tk.box's file is below the cutoff (an
-// early copy always is). A file Plex has that tk.box never recorded (before the cutover) is taken as the movie.
-export function movieWanted(state: MovieState, profile: Pick<Profile, 'cutoff'>): Wanted {
+// Wanted when monitored and not paused, and either nothing is on the server, or tk.box's file is below the cutoff: in a
+// fallback tier (an early copy always is). A score under the profile's upgrade-until isn't searched for: the upgrade is
+// taken when a search or the RSS feed finds it. A file Plex has that tk.box never recorded is taken as the movie.
+export function movieWanted(state: MovieState, profile: QualityProfile): Wanted {
   if (state.monitor === 'none') return { wanted: false, why: 'unmonitored' };
   if (state.paused) return { wanted: false, why: 'paused' };
-  if (state.file) return EARLY_COPIES.has(state.file.quality) || rank(state.file.quality) < rank(profile.cutoff) ? { wanted: true, why: 'cutoff' } : { wanted: false, why: 'have' };
+  if (state.file) return meetsCutoff(profile, state.file.quality) ? { wanted: false, why: 'have' } : { wanted: true, why: 'cutoff' };
   return state.inPlex ? { wanted: false, why: 'have' } : { wanted: true, why: 'missing' };
 }
 

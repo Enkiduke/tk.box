@@ -1,5 +1,5 @@
 // The IPTV, Live Events and server playback sections of the Admin console.
-import {useEffect,useState} from 'react';
+import {useEffect,useState,type ReactNode} from 'react';
 import type {PlaybackSettings} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
@@ -446,7 +446,8 @@ function IptvAppSettings() {
     <input id="iptv-max-connections" type="number" min="1" max="16" required value={max} onChange={e=>setMax(Number(e.target.value))}/>
   </form>;
 }
-export function SourceSettings() {
+// `tabs`: the IPTV page's tabs (Sources, Live Events), shown under the heading.
+export function SourceSettings({tabs}:{tabs?:ReactNode}={}) {
   const drag=useDragOrder(),sources=useApi<{sources:Source[]}>('/admin/iptv/sources'),[selected,setSelected]=useState(()=>remembered('source','')),[create,setCreate]=useState(false),[importError,setImportError]=useState('');
   const choose=(id:string)=>{setSelected(id);remember('source',id);setImportError('');};
   const playlists=sources.data?.sources.filter(s=>s.kind==='m3u')??[],source=playlists.find(s=>s.id===selected),ordering=useMutation(sources.reload);
@@ -455,6 +456,7 @@ export function SourceSettings() {
   if(source)return <>{importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}<SourceDetail key={source.id} source={source} sources={sources.data!.sources} changed={sources.reload} removed={()=>choose('')} back={()=>choose('')}/></>;
   return <>
     <SectionHead title="IPTV"/>
+    {tabs}
     <IptvAppSettings/>
     <div className="section-heading"><div><h3>Sources</h3><p className="muted small">Live TV groups channels in this order.</p></div><button className="primary" onClick={()=>setCreate(true)}>Add source</button></div>
     {importError&&<ErrorNotice message={importError} dismiss={()=>setImportError('')}/>}{ordering.error&&<ErrorNotice message={ordering.error}/>}
@@ -494,10 +496,11 @@ type SportsSettingsValue={leagueMode:'all'|'selected';leagues:string[];unschedul
 type SportsSettingsView={settings:SportsSettingsValue&{revision:number};leagues:League[];lastSync:number|null;lastError:string|null};
 const sportNames:Record<string,string>={football:'American football',basketball:'Basketball',baseball:'Baseball',hockey:'Hockey',soccer:'Soccer',mma:'MMA',boxing:'Boxing',wrestling:'Wrestling',racing:'Motorsport',golf:'Golf',tennis:'Tennis',rugby:'Rugby',cricket:'Cricket',cycling:'Cycling',darts:'Darts',curling:'Curling',sports:'Other sports'};
 // Server-wide: which leagues event channels are shown for, the order sports and leagues appear in, and their numbers.
-export function LiveSportsSettings() {
+// Shown as the IPTV page's Live Events tab: its schedules come from the IPTV sources.
+export function LiveSportsSettings({tabs}:{tabs?:ReactNode}={}) {
   const view=useApi<SportsSettingsView>('/admin/sports/settings'),[draft,setDraft]=useState<SportsSettingsValue>(),[open,setOpen]=useState<string[]>([]),mutation=useMutation(view.reload),drag=useDragOrder();
   useEffect(()=>{if(view.data){const {revision:_,...value}=view.data.settings;setDraft(value);}},[view.data?.settings.revision]);
-  const head=<SectionHead title="Live Events"/>;
+  const head=<><SectionHead title="IPTV"/>{tabs}</>;
   if(view.loading&&!view.data)return <>{head}<Loading/></>;
   if(view.error)return <>{head}<ErrorNotice message={view.error.message} retry={view.reload}/></>;
   if(!view.data||!draft)return head;

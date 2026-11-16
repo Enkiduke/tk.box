@@ -2,9 +2,9 @@ import { z } from 'zod';
 import type { Db } from '../persistence/database.js';
 import type { Vault } from '../security/vault.js';
 import { prepared } from '../persistence/statements.js';
-import { AppError } from '../errors.js';
+import { AppError, requireLive } from '../errors.js';
 import { IndexerError, NzbGeek, type NewznabItem } from '../providers/newznab.js';
-import { IPT_DEFAULT_CATEGORIES, IPTorrents, NEWZNAB_CATEGORIES, PASSKEY, type IptItem, type IptSecret } from '../providers/iptorrents.js';
+import { IPT_COOKIE_FORMAT_ERROR, IPT_DEFAULT_CATEGORIES, IPTorrents, isIptCookieHeader, NEWZNAB_CATEGORIES, PASSKEY, type IptItem, type IptSecret } from '../providers/iptorrents.js';
 import type { Candidate } from '../lib/pick-rules.js';
 import { imdbNumber } from '../lib/release-name.js';
 
@@ -53,7 +53,8 @@ export const COOKIE_ALERT = 'indexer.iptorrents.cookie';
 export type Release = Candidate & { indexer: IndexerName; link: string; categories: number[] };
 export type MovieQuery = { kind: 'movie'; title: string; year?: number; imdbId?: string; uhd?: boolean };
 // Which protocols' indexers a search asks (the library asks Usenet first, then torrents); all when omitted.
-export type SearchOptions = { protocols?: readonly ('usenet' | 'torrent')[] };
+// `manual`: an admin asked (Interactive search), which the preview allows; automatic searches it doesn't.
+export type SearchOptions = { protocols?: readonly ('usenet' | 'torrent')[]; manual?: boolean };
 // What each indexer did for a search: the calls it made, or why it made none (paused, over a cap) and until when.
 export type IndexerReport = { indexer: IndexerName; searched: string[]; error?: string; waitUntil?: number };
 export type SearchResult = { releases: Release[]; indexers: IndexerReport[] };
@@ -141,6 +142,7 @@ export class Indexers {
     const settings = parsed && Object.fromEntries(Object.entries(parsed).filter(([k]) => sent.has(k))) as typeof parsed;
     if (name === 'nzbgeek' && (rssUrl !== undefined || cookie !== undefined || userAgent !== undefined)) throw new AppError('INDEXER_INVALID', 'NZBGeek takes an API key only.', 400);
     if (name === 'iptorrents' && key !== undefined) throw new AppError('INDEXER_INVALID', 'IPTorrents takes an RSS address, cookie and user agent.', 400);
+    if (cookie && !isIptCookieHeader(cookie)) throw new AppError('INDEXER_INVALID', IPT_COOKIE_FORMAT_ERROR);
     if (name === 'iptorrents' && settings?.categories) {
       const unknown = [...settings.categories.movies ?? [], ...settings.categories.tv ?? []].find(c => !NEWZNAB_CATEGORIES.has(c));
       if (unknown !== undefined) throw new AppError('INDEXER_INVALID', `IPTorrents has no category ${unknown}.`, 400);
@@ -280,6 +282,7 @@ export class Indexers {
   // A movie: t=movie by IMDb id, and t=search by "Title Year" when that finds nothing (or there is no id). IPTorrents
   // the same way on its search page: q=+(tt…)&qf=all, then q=+(Title Year).
   async search(query: MovieQuery, signal?: AbortSignal, options: SearchOptions = {}): Promise<SearchResult> {
+    if (!options.manual) requireLive('Searching indexers');
     const releases: Release[] = [], indexers: IndexerReport[] = [];
     for (const row of this.enabledRows(options.protocols)) {
       const settings = this.settingsOf(row), report: IndexerReport = { indexer: row.name, searched: [] };
@@ -317,6 +320,7 @@ export class Indexers {
   // IPTorrents' personal RSS address. Items already in rss_seen are skipped; the new ones go to the listeners, then are
   // recorded as seen. Seen rows older than 14 days go first.
   async poll(signal?: AbortSignal) {
+    requireLive('The RSS feed');
     const results: { indexer: IndexerName; fresh: number; error?: string }[] = [];
     this.pruneSeen();
     for (const row of this.feedRows()) {
@@ -365,6 +369,7 @@ export class Indexers {
   // cookie lands in the downloader). A .torrent comes with its info hash. A feed's link needs only the passkey, so a
   // paused IPTorrents (an expired cookie) still fetches it.
   async download(release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal): Promise<NzbFile> {
+    requireLive('Fetching from indexers');
     const row = this.row(release.indexer);
     if (!row?.enabled) throw new AppError('INDEXER_DISABLED', `${release.indexer} isn't enabled.`, 409);
     const now = this.now();

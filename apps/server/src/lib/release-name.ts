@@ -28,6 +28,8 @@ export type ParsedRelease = {
   encoder?: 'x264' | 'x265';
   hdr: Hdr[];
   audio: { codec?: AudioCodec; atmos: boolean; channels?: string };
+  // The streaming service a WEB release came from, as the scene writes it: AMZN, NF, DSNP, ATVP, HMAX, MAX, MA, iT…
+  service?: string;
   proper: boolean; repack: boolean; real: boolean;
   hardcodedSubs: boolean;
   editions: Edition[];
@@ -126,6 +128,9 @@ const SOURCES: [Source, RegExp][] = [
 ];
 const REMUX = tag('Remux');
 const STREAMING = tag('AMZN|NF|DSNP|HMAX|ATVP|PCOK|HULU|PMTP|iT|CRAV|STAN', '');
+// The service names, in capitals as the scene writes them. MA is Movies Anywhere, not DTS-HD MA.
+const SERVICES: [string, RegExp][] = ['AMZN', 'NF', 'DSNP', 'ATVP', 'HMAX', 'MAX', 'PCOK', 'HULU', 'PMTP', 'iT', 'CRAV', 'STAN']
+  .map(name => [name, tag(name, '')] as [string, RegExp]).concat([['MA', new RegExp(`(?<!HD[ ._-]?)${A}MA${Z}`)]]);
 const CODECS: [VideoCodec, RegExp, ('x264' | 'x265')?][] = [
   ['h265', tag('x265'), 'x265'], ['h265', tag('h[ .]?265|HEVC')],
   ['h264', tag('x264'), 'x264'], ['h264', tag('h[ .]?264|AVC')],
@@ -249,6 +254,7 @@ export function parseRelease(raw: string, thisYear = new Date().getUTCFullYear()
   let source = first(SOURCES, rest);
   if (!source && remux) source = 'BluRay';
   if (!source && STREAMING.test(rest)) source = 'WEBDL';
+  const service = SERVICES.find(([, re]) => re.test(rest));
   const languages = [...new Set(tokens(rest.replace(/-/g, ' ')).map(t => languageOf(t.text, lower)).filter((l): l is string => !!l))];
   const tmdb = /\{tmdb-(\d+)\}|tmdbid[-=](\d+)/i.exec(name), imdb = /(?<![a-z0-9])(tt\d{7,9})(?!\d)/i.exec(name);
 
@@ -260,6 +266,7 @@ export function parseRelease(raw: string, thisYear = new Date().getUTCFullYear()
     ...(codec ? { codec: codec[0], ...(codec[2] ? { encoder: codec[2] } : {}) } : {}),
     hdr: HDRS.filter(([, re]) => re.test(rest)).map(([h]) => h),
     audio: { ...(audioMatch ? { codec: audioMatch.codec } : {}), atmos: ATMOS.test(rest), ...(channels ? { channels } : {}) },
+    ...(service ? { service: service[0] } : {}),
     proper: tag('PROPER').test(rest), repack: tag('REPACK\\d?|RERIP\\d?').test(rest), real: tag('REAL', '').test(rest),
     hardcodedSubs: HARDCODED.test(rest),
     editions: EDITIONS.filter(([, re]) => re.test(rest)).map(([e]) => e),

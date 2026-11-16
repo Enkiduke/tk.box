@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { Db } from './database.js';
 import { prepared } from './statements.js';
-import { isQuality, type Profile, type Quality, type ScoreRule } from '../lib/quality.js';
+import { isQuality, type Quality } from '../lib/quality.js';
+import type { Format } from '../lib/formats.js';
+import type { QualityProfile } from '../lib/profiles.js';
 import { MOVIES_ROOT } from '../lib/naming.js';
 import type { BlockedRelease, Protocol } from '../lib/pick-rules.js';
 
@@ -47,6 +49,8 @@ export type LibraryTitle = {
   id: number; kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; imdbId?: string; title: string; year?: number; aliases: string[];
   monitor: Monitor; monitorFrom?: number; profileId: number; root: string; folder?: string; keep: boolean;
   released: Released; paused: boolean; pausedReason?: string; addedAt: number; addedBy: string; refreshedAt?: number;
+  // TMDB's runtime in minutes, for the size limits.
+  runtime?: number;
 };
 export type FileMedia = { durationSec?: number; videoCodec?: string; dynamicRange?: string; audioCodec?: string; audioChannels?: string; copied?: boolean };
 export type LibraryFileRow = { id: number; titleId: number; path: string; size: number; quality: Quality; proper: boolean; score: number;
@@ -60,11 +64,13 @@ export type Grab = {
   // Torrents: when progress last moved, and the seeding figures qBittorrent last gave (and when).
   progressAt?: number; ratio?: number; seedingSeconds?: number; seedingCheckedAt?: number;
 };
+export type GrabEventKind = GrabState | 'grabbed' | 'retried';
+export type GrabEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: Grab };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
 
 type TitleRaw = { id: number; kind: 'movie' | 'show'; tmdb_id: number; tvdb_id: number | null; imdb_id: string | null; title: string; year: number | null; aliases: string;
   monitor: Monitor; monitor_from: number | null; profile_id: number; root: string; folder: string | null; keep: number; released: string | null; paused: number;
-  paused_reason: string | null; added_at: number; added_by: string; refreshed_at: number | null };
+  paused_reason: string | null; added_at: number; added_by: string; refreshed_at: number | null; runtime: number | null };
 type FileRaw = { id: number; title_id: number; path: string; size: number; quality: string; proper: number; score: number; release_name: string | null;
   release_group: string | null; media: string; grab_id: number | null; imported_at: number };
 type GrabRaw = { id: number; title_id: number; release_name: string; indexer: string; guid: string; protocol: Protocol; size: number | null; quality: string; score: number;
@@ -80,7 +86,7 @@ const title = (r: TitleRaw): LibraryTitle => ({
   id: r.id, kind: r.kind, tmdbId: r.tmdb_id, ...opt('tvdbId', r.tvdb_id), ...opt('imdbId', r.imdb_id), title: r.title, ...opt('year', r.year),
   aliases: json<string[]>(r.aliases, []), monitor: r.monitor, ...opt('monitorFrom', r.monitor_from), profileId: r.profile_id, root: r.root, ...opt('folder', r.folder),
   keep: !!r.keep, released: json<Released>(r.released, {}), paused: !!r.paused, ...opt('pausedReason', r.paused_reason), addedAt: r.added_at, addedBy: r.added_by,
-  ...opt('refreshedAt', r.refreshed_at),
+  ...opt('refreshedAt', r.refreshed_at), ...opt('runtime', r.runtime),
 });
 const file = (r: FileRaw): LibraryFileRow => ({
   id: r.id, titleId: r.title_id, path: r.path, size: r.size, quality: quality(r.quality), proper: !!r.proper, score: r.score, ...opt('releaseName', r.release_name),
@@ -98,7 +104,7 @@ const OPEN = `state IN ('sending','downloading','unpacking','importing','seeding
 const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
 
 export type NewTitle = { kind: 'movie'; tmdbId: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
-  root: string; keep: boolean; released: Released; addedBy: string };
+  root: string; keep: boolean; released: Released; addedBy: string; runtime?: number };
 export type NewGrab = { titleId: number; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
   upgrade: boolean; downloader: string };
 export type NewFile = { titleId: number; path: string; size: number; quality: Quality; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;
@@ -129,31 +135,37 @@ export class LibraryStore {
     prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run('library', event, this.now(), JSON.stringify(detail));
   }
 
-  profile(id: number): Profile | undefined {
+  // ---- Profiles and formats (docs/PROFILES.md) ----
+
+  profile(id: number): QualityProfile | undefined {
     const row = prepared(this.db, 'SELECT value FROM pick_profiles WHERE id = ?').get(id) as { value: string } | undefined;
-    return row ? JSON.parse(row.value) as Profile : undefined;
+    return row ? JSON.parse(row.value) as QualityProfile : undefined;
   }
   profiles() { return (prepared(this.db, 'SELECT id, name FROM pick_profiles ORDER BY id').all() as { id: number; name: string }[]); }
-  rules(): ScoreRule[] {
-    return (prepared(this.db, 'SELECT * FROM score_rules ORDER BY position, id').all() as { name: string; label: string | null; pattern: string; points: number; ban: number; applies: ScoreRule['applies'] }[])
-      .map(r => ({ name: r.name, ...(r.label ? { label: r.label } : {}), pattern: r.pattern, points: r.points, ban: !!r.ban, applies: r.applies }));
-  }
-
-  // Admin › Downloads › Pick rules: each profile in full, with how many titles use it.
+  // Each profile in full, with the built-in it came from and how many titles use it.
   profileRows() {
-    return (prepared(this.db, 'SELECT p.id, p.name, p.value, (SELECT COUNT(*) FROM library_titles t WHERE t.profile_id = p.id) AS used FROM pick_profiles p ORDER BY p.id').all() as
-      { id: number; name: string; value: string; used: number }[]).map(r => ({ id: r.id, name: r.name, value: JSON.parse(r.value) as Profile, used: r.used }));
+    return (prepared(this.db, 'SELECT p.id, p.name, p.value, p.built_in, (SELECT COUNT(*) FROM library_titles t WHERE t.profile_id = p.id) AS used FROM pick_profiles p ORDER BY p.id').all() as
+      { id: number; name: string; value: string; built_in: string | null; used: number }[])
+      .map(r => ({ id: r.id, name: r.name, value: JSON.parse(r.value) as QualityProfile, ...opt('builtIn', r.built_in), used: r.used }));
   }
   profileNamed(name: string) { return prepared(this.db, 'SELECT id FROM pick_profiles WHERE name = ? COLLATE NOCASE').get(name) as { id: number } | undefined; }
-  insertProfile(name: string, value: Profile) { return Number(prepared(this.db, 'INSERT INTO pick_profiles(name, value) VALUES(?, ?)').run(name, JSON.stringify(value)).lastInsertRowid); }
-  updateProfile(id: number, name: string, value: Profile) { prepared(this.db, 'UPDATE pick_profiles SET name = ?, value = ? WHERE id = ?').run(name, JSON.stringify(value), id); }
-  deleteProfile(id: number) { prepared(this.db, 'DELETE FROM pick_profiles WHERE id = ?').run(id); }
-  // The whole ordered list at once (Admin's table is saved as one).
-  replaceRules(rules: readonly ScoreRule[]) {
-    prepared(this.db, 'DELETE FROM score_rules').run();
-    const insert = prepared(this.db, 'INSERT INTO score_rules(name, label, pattern, points, ban, applies, position) VALUES(?, ?, ?, ?, ?, ?, ?)');
-    rules.forEach((r, i) => insert.run(r.name, r.label ?? null, r.pattern, r.ban ? 0 : r.points, r.ban ? 1 : 0, r.applies, i));
+  insertProfile(name: string, value: QualityProfile, builtIn?: string) {
+    return Number(prepared(this.db, 'INSERT INTO pick_profiles(name, value, built_in) VALUES(?, ?, ?)').run(name, JSON.stringify(value), builtIn ?? null).lastInsertRowid);
   }
+  updateProfile(id: number, name: string, value: QualityProfile) { prepared(this.db, 'UPDATE pick_profiles SET name = ?, value = ? WHERE id = ?').run(name, JSON.stringify(value), id); }
+  deleteProfile(id: number) { prepared(this.db, 'DELETE FROM pick_profiles WHERE id = ?').run(id); }
+
+  formats(): Format[] {
+    return (prepared(this.db, 'SELECT name, value FROM formats ORDER BY position, id').all() as { name: string; value: string }[])
+      .map(r => ({ name: r.name, ...JSON.parse(r.value) as Omit<Format, 'name'> }));
+  }
+  // The whole ordered list at once (Admin saves it as one).
+  replaceFormats(formats: readonly Format[]) {
+    prepared(this.db, 'DELETE FROM formats').run();
+    const insert = prepared(this.db, 'INSERT INTO formats(name, value, position) VALUES(?, ?, ?)');
+    formats.forEach(({ name, ...value }, i) => insert.run(name, JSON.stringify(value), i));
+  }
+
 
   // Every movie in the library with its newest file and last grab (Admin › Manage › Movies).
   allMovies() {
@@ -180,15 +192,15 @@ export class LibraryStore {
   // Monitored, unpaused movies: the ones the sweep and RSS look at.
   activeMovies() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'movie' AND monitor != 'none' AND paused = 0 ORDER BY id`).all() as TitleRaw[]).map(title); }
   insertTitle(t: NewTitle) {
-    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, imdb_id, title, year, aliases, monitor, profile_id, root, keep, released, added_at, added_by, refreshed_at)
-      VALUES(@kind, @tmdbId, @imdbId, @title, @year, @aliases, @monitor, @profileId, @root, @keep, @released, @now, @addedBy, @now)`)
-      .run({ ...t, imdbId: t.imdbId ?? null, year: t.year ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
+    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, imdb_id, title, year, aliases, monitor, profile_id, root, keep, released, added_at, added_by, refreshed_at, runtime)
+      VALUES(@kind, @tmdbId, @imdbId, @title, @year, @aliases, @monitor, @profileId, @root, @keep, @released, @now, @addedBy, @now, @runtime)`)
+      .run({ ...t, imdbId: t.imdbId ?? null, year: t.year ?? null, runtime: t.runtime ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
     return this.title(id)!;
   }
   // TMDB's facts, from add or refresh-title.
-  refreshed(id: number, facts: { imdbId?: string; title: string; year?: number; aliases: string[]; released: Released }) {
-    prepared(this.db, 'UPDATE library_titles SET imdb_id = COALESCE(?, imdb_id), title = ?, year = ?, aliases = ?, released = ?, refreshed_at = ? WHERE id = ?')
-      .run(facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), this.now(), id);
+  refreshed(id: number, facts: { imdbId?: string; title: string; year?: number; aliases: string[]; released: Released; runtime?: number }) {
+    prepared(this.db, 'UPDATE library_titles SET imdb_id = COALESCE(?, imdb_id), title = ?, year = ?, aliases = ?, released = ?, runtime = COALESCE(?, runtime), refreshed_at = ? WHERE id = ?')
+      .run(facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), facts.runtime ?? null, this.now(), id);
   }
   setMonitor(id: number, monitor: Monitor) { prepared(this.db, 'UPDATE library_titles SET monitor = ? WHERE id = ?').run(monitor, id); }
   setKeep(id: number, keep: boolean) { prepared(this.db, 'UPDATE library_titles SET keep = ? WHERE id = ?').run(keep ? 1 : 0, id); }
@@ -226,22 +238,46 @@ export class LibraryStore {
   hasSeeding() { return !!prepared(this.db, `SELECT 1 FROM grabs WHERE state = 'seeding' LIMIT 1`).get(); }
   // Whether any grab, in any state, has this download id (a torrent's info hash).
   knowsDownload(downloadId: string) { return !!prepared(this.db, 'SELECT 1 FROM grabs WHERE download_id = ? LIMIT 1').get(downloadId); }
+  // The newest grab for each of these download ids (Admin's live queue).
+  grabsByDownload(downloadIds: string[]) {
+    if (!downloadIds.length) return new Map<string, Grab>();
+    const rows = prepared(this.db, `SELECT * FROM grabs WHERE id IN (SELECT MAX(id) FROM grabs WHERE download_id IN (SELECT value FROM json_each(?)) GROUP BY download_id)`)
+      .all(JSON.stringify(downloadIds)) as GrabRaw[];
+    return new Map(rows.map(grab).map(g => [g.downloadId!, g]));
+  }
   // The title's grab under way (a seeding torrent doesn't count).
   openGrabFor(titleId: number) { const r = prepared(this.db, `SELECT * FROM grabs WHERE title_id = ? AND ${ACTIVE} ORDER BY id DESC LIMIT 1`).get(titleId) as GrabRaw | undefined; return r ? grab(r) : undefined; }
   // Titles with a grab under way (LibraryFulfiller.queue).
   grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${ACTIVE}`).all() as { title_id: number }[]).map(r => r.title_id)); }
-  // A new grab, unless the title already has an open one (then undefined).
-  insertGrab(g: NewGrab) {
+  // A step in a grab's history (grab_events): a GrabState it moved to, `grabbed` or `retried`.
+  grabEvent(grabId: number, kind: GrabEventKind, note?: string) {
+    prepared(this.db, 'INSERT INTO grab_events(grab_id, at, kind, note) VALUES(?, ?, ?, ?)').run(grabId, this.now(), kind, note ?? null);
+  }
+  // Downloads › History, newest first.
+  grabEvents(limit: number): GrabEvent[] {
+    return (prepared(this.db, `SELECT e.id AS event_id, e.at AS event_at, e.kind AS event_kind, e.note AS event_note, g.* FROM grab_events e
+      JOIN grabs g ON g.id = e.grab_id ORDER BY e.at DESC, e.id DESC LIMIT ?`).all(limit) as (GrabRaw & { event_id: number; event_at: number; event_kind: GrabEventKind; event_note: string | null })[])
+      .map(r => ({ id: r.event_id, at: r.event_at, kind: r.event_kind, ...opt('note', r.event_note), grab: grab(r) }));
+  }
+  // A new grab, unless the title already has an open one (then undefined). `note`: how it was grabbed ("By hand").
+  insertGrab(g: NewGrab, note?: string) {
     return this.db.transaction(() => {
       if (this.openGrabFor(g.titleId)) return undefined;
       const id = Number(prepared(this.db, `INSERT INTO grabs(title_id, release_name, indexer, guid, protocol, size, quality, score, upgrade, downloader, state)
         VALUES(@titleId, @releaseName, @indexer, @guid, @protocol, @size, @quality, @score, @upgrade, @downloader, 'sending')`)
         .run({ ...g, size: g.size ?? null, upgrade: g.upgrade ? 1 : 0 }).lastInsertRowid);
+      this.grabEvent(id, 'grabbed', note);
       return this.grab(id)!;
     })();
   }
+  // A change of state is a step in Downloads › History; `note` says more than the state (the error, by default).
   updateGrab(id: number, fields: Partial<{ state: GrabState; downloadId: string; progress: number | null; error: string | null; contentPath: string;
-    sentAt: number; finishedAt: number; importedAt: number; removedAt: number; progressAt: number; ratio: number; seedingSeconds: number; seedingCheckedAt: number }>) {
+    sentAt: number; finishedAt: number; importedAt: number; removedAt: number; progressAt: number; ratio: number; seedingSeconds: number; seedingCheckedAt: number }>,
+    note?: string) {
+    if (fields.state) {
+      const was = (prepared(this.db, 'SELECT state FROM grabs WHERE id = ?').get(id) as { state: GrabState } | undefined)?.state;
+      if (was && was !== fields.state) this.grabEvent(id, fields.state, note ?? fields.error ?? undefined);
+    }
     const columns: Record<string, string> = { state: 'state', downloadId: 'download_id', progress: 'progress', error: 'error', contentPath: 'content_path',
       sentAt: 'sent_at', finishedAt: 'finished_at', importedAt: 'imported_at', removedAt: 'removed_at', progressAt: 'progress_at', ratio: 'ratio',
       seedingSeconds: 'seeding_seconds', seedingCheckedAt: 'seeding_checked_at' };

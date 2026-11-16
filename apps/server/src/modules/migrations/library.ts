@@ -1,5 +1,8 @@
 import type { Migration } from '../../persistence/migrate.js';
-import { DEFAULT_PROFILE_NAME, defaultProfile, defaultScoreRules } from '../../lib/quality.js';
+import { DEFAULT_PROFILE_NAME, defaultProfile, defaultScoreRules, type Profile, type ScoreRule } from '../../lib/quality.js';
+import type { Format } from '../../lib/formats.js';
+import { fromLegacy } from '../../lib/profiles.js';
+import { BUILTIN_FORMATS, BUILTIN_PROFILES, builtInProfile } from '../../lib/builtin-profiles.js';
 import { defaultLibrarySettings } from '../../persistence/library-store.js';
 
 // Titles, files, grabs, the blocklist, search backoff, pick profiles, score rules and the library settings
@@ -97,5 +100,66 @@ export const libraryMigrations: Migration[] = [
     const value = JSON.parse(row.value) as { fulfil?: { movie?: string; show?: string } };
     const { movie: _, ...fulfil } = value.fulfil ?? {};
     db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, fulfil: { show: 'sonarr', ...fulfil } }));
-  } }
+  } },
+  // Downloads › History: every step of every grab (grabbed, sent, imported, failed, removed…), kept after the grab's
+  // row moves on. Grabs from before it get their first and last step from the grab's own times.
+  { name: 'grab-events', up: `
+    CREATE TABLE grab_events(id INTEGER PRIMARY KEY, grab_id INTEGER NOT NULL REFERENCES grabs(id) ON DELETE CASCADE,
+      at INTEGER NOT NULL, kind TEXT NOT NULL, note TEXT);
+    CREATE INDEX grab_events_at ON grab_events(at);
+    CREATE INDEX grab_events_grab ON grab_events(grab_id);
+    INSERT INTO grab_events(grab_id, at, kind)
+      SELECT id, COALESCE(sent_at, finished_at, imported_at, removed_at), 'grabbed' FROM grabs WHERE COALESCE(sent_at, finished_at, imported_at, removed_at) IS NOT NULL;
+    INSERT INTO grab_events(grab_id, at, kind)
+      SELECT id, imported_at, CASE WHEN state = 'seeding' THEN 'seeding' ELSE 'imported' END FROM grabs WHERE imported_at IS NOT NULL;
+    INSERT INTO grab_events(grab_id, at, kind, note)
+      SELECT id, COALESCE(removed_at, finished_at), state, error FROM grabs
+      WHERE state IN ('failed','cancelled','done') AND COALESCE(removed_at, finished_at) IS NOT NULL;` },
+  // Quality profiles v2 (docs/PROFILES.md, "Migration"): formats replace score rules, profiles become tiers and scores.
+  // The phase-1 "1080p" becomes Standard with its id, so titles and requests keep pointing at it; any other profile is
+  // converted as it was (one tier per rung, its rules as its scores); Quality, Best, Lite and Any are added. A title's
+  // TMDB runtime is kept for the size limits.
+  { name: 'profiles-v2', up: db => {
+    db.exec(`CREATE TABLE formats(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, value TEXT NOT NULL, position INTEGER NOT NULL);
+      ALTER TABLE pick_profiles ADD COLUMN built_in TEXT;
+      ALTER TABLE library_titles ADD COLUMN runtime INTEGER;`);
+    const rules = (db.prepare('SELECT * FROM score_rules ORDER BY position, id').all() as { name: string; label: string | null; pattern: string; points: number; ban: number; applies: ScoreRule['applies'] }[])
+      .map(r => ({ name: r.name, ...(r.label ? { label: r.label } : {}), pattern: r.pattern, points: r.points, ban: !!r.ban, applies: r.applies }));
+    const formats: Format[] = [...BUILTIN_FORMATS], taken = new Set(formats.map(f => f.name.toLowerCase()));
+    const update = db.prepare('UPDATE pick_profiles SET name = ?, value = ?, built_in = ? WHERE id = ?');
+    const rows = db.prepare('SELECT id, name, value FROM pick_profiles ORDER BY id').all() as { id: number; name: string; value: string }[];
+    const names = new Set(rows.map(r => r.name.toLowerCase()));
+    for (const row of rows) {
+      if (row.name.toLowerCase() === DEFAULT_PROFILE_NAME.toLowerCase() && !names.has('standard')) {
+        const standard = builtInProfile('standard')!;
+        update.run(standard.name, JSON.stringify(standard.profile), standard.key, row.id);
+        names.delete(row.name.toLowerCase()); names.add('standard');
+        continue;
+      }
+      // Its rules become formats of their own, named apart from the built-ins.
+      const { profile, formats: own } = fromLegacy(JSON.parse(row.value) as Profile, rules, 'movie');
+      const scores: Record<string, number | 'ban'> = {};
+      for (const format of own) {
+        let name = format.name;
+        if (!formats.some(f => f.name === name && JSON.stringify(f.conditions) === JSON.stringify(format.conditions))) {
+          for (let i = 1; taken.has(name.toLowerCase()); i++) name = `${format.name} (rule${i > 1 ? ` ${i}` : ''})`;
+          taken.add(name.toLowerCase());
+          formats.push({ ...format, name });
+        }
+        scores[name] = profile.scores[format.name]!;
+      }
+      update.run(row.name, JSON.stringify({ ...profile, scores }), null, row.id);
+    }
+    const insertFormat = db.prepare('INSERT INTO formats(name, value, position) VALUES(?, ?, ?)');
+    formats.forEach(({ name, ...value }, i) => insertFormat.run(name, JSON.stringify(value), i));
+    const insertProfile = db.prepare('INSERT INTO pick_profiles(name, value, built_in) VALUES(?, ?, ?)'), has = db.prepare('SELECT 1 FROM pick_profiles WHERE built_in = ?');
+    for (const { key, name, profile } of BUILTIN_PROFILES) {
+      if (has.get(key)) continue;
+      let free = name;
+      for (let i = 2; names.has(free.toLowerCase()); i++) free = `${name} ${i}`;
+      names.add(free.toLowerCase());
+      insertProfile.run(free, JSON.stringify(profile), key);
+    }
+    db.exec('DROP TABLE score_rules;');
+  } },
 ];

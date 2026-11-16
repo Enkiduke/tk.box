@@ -3,6 +3,7 @@
 
 import type { DownloadState, DownloadStatus } from './download-status.js';
 export type { DownloadState, DownloadStatus } from './download-status.js';
+import type { ClientItem, ClientState, ClientSummary } from '../../../../packages/contracts/src/downloads.js';
 
 export class DownloaderError extends Error {
   constructor(public kind: 'auth' | 'unreachable' | 'other', message: string) { super(message); }
@@ -57,6 +58,57 @@ export function statuses(queue: unknown, history: unknown, categories: readonly 
   return [...byId.values()];
 }
 
+// "1:02:03" or "2:01:02:03" (days first) as seconds.
+const clock = (v: unknown) => {
+  const parts = (text(v) ?? '').split(':').map(Number);
+  if (!parts.length || parts.some(n => !Number.isFinite(n))) return undefined;
+  const days = parts.length === 4 ? parts.shift()! : 0;
+  const s = days * 86400 + parts.reduce((total, n) => total * 60 + n, 0);
+  return s > 0 ? s : undefined;
+};
+const word = (s: string) => s ? s[0]!.toUpperCase() + s.slice(1).toLowerCase() : s;
+const QUEUE_LIVE: Record<string, [ClientState, string?]> = {
+  downloading: ['downloading'], queued: ['queued'], paused: ['paused'], checking: ['checking'],
+  grabbing: ['queued', 'Grabbing'], fetching: ['queued', 'Fetching'], propagating: ['queued', 'Propagating'],
+};
+
+// mode=queue and mode=history: every job SABnzbd has (any category), and its speed and free space. The speed is
+// SABnzbd's own, given to the job it is downloading.
+export function liveJobs(queue: unknown, history: unknown, categories: readonly string[]): { summary: ClientSummary; items: ClientItem[] } {
+  const q = (queue && typeof queue === 'object' ? (queue as Json).queue : undefined) as Json | undefined ?? {};
+  const speed = Math.round((num(q.kbpersec) ?? 0) * 1024), paused = q.paused === true || text(q.status)?.toLowerCase() === 'paused';
+  let speedGiven = false;
+  const items: ClientItem[] = [];
+  for (const slot of slots(queue, 'queue')) {
+    const id = text(slot.nzo_id);
+    if (!id) continue;
+    const raw = (text(slot.status) ?? '').toLowerCase(), category = text(slot.cat) ?? '';
+    let [state, detail] = QUEUE_LIVE[raw] ?? ['queued', word(raw)] as [ClientState, string?];
+    if (paused && state === 'queued') [state, detail] = ['paused', 'SABnzbd is paused'];
+    const mb = num(slot.mb), left = num(slot.mbleft), percent = num(slot.percentage);
+    const progress = percent !== undefined ? clamp(percent / 100) : mb && left !== undefined ? clamp(1 - left / mb) : 0;
+    const down = state === 'downloading' && !speedGiven && speed ? speed : undefined;
+    if (down) speedGiven = true;
+    const eta = state === 'downloading' ? clock(slot.timeleft) : undefined, position = num(slot.index);
+    items.push({ downloader: 'sabnzbd', id, name: text(slot.filename) ?? id, protocol: 'usenet', state, progress, mine: categories.includes(category),
+      ...(detail ? { detail } : {}), ...(mb ? { size: Math.round(mb * 1024 * 1024) } : {}), ...(left !== undefined ? { left: Math.round(left * 1024 * 1024) } : {}),
+      ...(down ? { down } : {}), ...(eta ? { eta } : {}), ...(position !== undefined && state !== 'downloading' ? { position: position + 1 } : {}),
+      ...(category && category !== '*' ? { category } : {}) });
+  }
+  for (const slot of slots(history, 'history')) {
+    const id = text(slot.nzo_id);
+    if (!id || items.some(i => i.id === id)) continue;
+    const raw = (text(slot.status) ?? '').toLowerCase(), category = text(slot.category) ?? '', bytes = num(slot.bytes), done = num(slot.completed);
+    const state: ClientState = raw === 'completed' ? 'completed' : raw === 'failed' ? 'failed' : POST.has(raw) ? 'unpacking' : 'queued';
+    const detail = state === 'unpacking' || state === 'queued' ? word(raw) : undefined, error = state === 'failed' ? text(slot.fail_message) || 'SABnzbd marked the download failed.' : undefined;
+    items.push({ downloader: 'sabnzbd', id, name: text(slot.name) ?? id, protocol: 'usenet', state, progress: 1, mine: categories.includes(category),
+      ...(detail ? { detail } : {}), ...(bytes ? { size: bytes } : {}), ...(category && category !== '*' ? { category } : {}),
+      ...(done && state !== 'unpacking' ? { finishedAt: done * 1000 } : {}), ...(error ? { error } : {}) });
+  }
+  const free = num(q.diskspace1);
+  return { summary: { name: 'sabnzbd', down: speed, up: 0, paused, ...(free !== undefined ? { free: Math.round(free * 1024 ** 3) } : {}) }, items };
+}
+
 export class Sabnzbd {
   constructor(private url: string, private key: string, private transport: typeof fetch = fetch, private timeoutMs = 30000) {}
 
@@ -96,7 +148,7 @@ export class Sabnzbd {
   }
 
   queue() { return this.call({ mode: 'queue', limit: '500' }); }
-  history() { return this.call({ mode: 'history', limit: '500' }); }
+  history(limit = 500) { return this.call({ mode: 'history', limit: String(limit) }); }
 
   // After import: the history job and its folder go (the library file was moved out). A job still in the queue (a
   // cancelled grab) is deleted there too.

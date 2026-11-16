@@ -2,50 +2,46 @@ import {useEffect,useState} from 'react';
 import type {LibrarySettingsView,NamingPreview} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {useApi,useDebounced} from './hooks.js';
-import {Card,SectionHead} from './settings-ui.js';
+import {SectionHead} from './settings-ui.js';
 import {toast} from './toasts.js';
-import {Loaded,SaveBar,changed,useSave} from './manage-ui.js';
+import {Field,FieldError,Loaded,Panel,SaveBar,changed,useSave} from './manage-ui.js';
 
-// Admin › Manage › Library settings (docs/PHASE-3.5.md): the movie root, the naming formats (shown, not edited) with a
-// live preview, and the seeding numbers.
+// Admin › Downloads › Settings (docs/PHASE-3.5.md, docs/UI.md): where movies go, when seeding torrents go, and
+// how files are named (shown, not edited) with a live preview.
 
 export function LibrarySettingsPage() {
   const view=useApi<LibrarySettingsView>('/admin/library/settings');
-  return <><SectionHead title="Library settings"/>
-    <Loaded view={view}>{s=><><Root key={`root${s.revision}`} settings={s}/><Seeding key={`seed${s.revision}`} settings={s}/><Naming settings={s}/></>}</Loaded>
+  return <><SectionHead title="Download settings"/>
+    <Loaded view={view}>{s=><><Storage key={`s${s.revision}`} settings={s}/><Naming settings={s}/></>}</Loaded>
   </>;
 }
 
-function Root({settings}:{settings:LibrarySettingsView}) {
-  const [movie,setMovie]=useState(settings.roots.movie),save=useSave(changed);
-  const submit=()=>void save.run(async()=>{await api('/admin/library/settings','PUT',{expectedRevision:settings.revision,roots:{movie:movie.trim()}});toast.success('Saved');});
-  return <form onSubmit={e=>{e.preventDefault();submit();}}><Card title="Movie root">
-    <label>Folder<input required spellCheck={false} value={movie} onChange={e=>setMovie(e.target.value)}/></label>
-    <SaveBar dirty={movie.trim()!==settings.roots.movie} busy={save.busy} error={save.error} onCancel={()=>{setMovie(settings.roots.movie);save.clear();}} onReload={changed}/>
-  </Card></form>;
-}
+type Draft={root:string;ratio:string;minDays:string;maxDays:string};
+const draftOf=(s:LibrarySettingsView):Draft=>({root:s.roots.movie,ratio:String(s.seeding.ratio),minDays:String(s.seeding.minDays),maxDays:String(s.seeding.maxDays)});
 
-// Ratio and days as typed; the server checks them against IPTorrents' floor too.
-function Seeding({settings}:{settings:LibrarySettingsView}) {
-  const start=settings.seeding,floor=settings.seedingFloor;
-  const [draft,setDraft]=useState({ratio:String(start.ratio),minDays:String(start.minDays),maxDays:String(start.maxDays)}),save=useSave(changed);
+// The movie root and the seeding numbers, saved together. The server checks them against IPTorrents' floor too.
+function Storage({settings}:{settings:LibrarySettingsView}) {
+  const start=draftOf(settings),floor=settings.seedingFloor;
+  const [draft,setDraft]=useState(start),save=useSave(changed);
+  const set=(patch:Partial<Draft>)=>setDraft(d=>({...d,...patch}));
   const n={ratio:Number(draft.ratio),minDays:Number(draft.minDays),maxDays:Number(draft.maxDays)};
-  const errors={ratio:!(n.ratio>=floor.ratio)?`At least ${floor.ratio}`:undefined,minDays:!(n.minDays>=floor.days)?`At least ${floor.days}`:undefined,
-    maxDays:!(n.maxDays>=floor.days)?`At least ${floor.days}`:n.maxDays<n.minDays?'Not under the minimum':undefined};
-  const dirty=n.ratio!==start.ratio||n.minDays!==start.minDays||n.maxDays!==start.maxDays,invalid=Object.values(errors).some(Boolean);
-  const submit=()=>{if(invalid)return;void save.run(async()=>{await api('/admin/library/settings','PUT',{expectedRevision:settings.revision,seeding:n});toast.success('Saved');});};
-  const field=(key:keyof typeof draft,label:string,step:number,min:number)=><label>{label}
-    <input type="number" step={step} min={min} aria-invalid={!!errors[key]||undefined} value={draft[key]} onChange={e=>setDraft(d=>({...d,[key]:e.target.value}))}/>
-    {errors[key]?<small className="danger-text">{errors[key]}</small>:<small>Minimum {min}</small>}</label>;
-  return <form onSubmit={e=>{e.preventDefault();submit();}}><Card title="Seeding">
-    <div className="form-columns manage-seeding">
-      {field('ratio','Ratio',0.1,floor.ratio)}
-      {field('minDays','Min days',1,floor.days)}
-      {field('maxDays','Max days',1,floor.days)}
-    </div>
-    <SaveBar dirty={dirty} busy={save.busy||invalid} error={save.error} onReload={changed}
-      onCancel={()=>{setDraft({ratio:String(start.ratio),minDays:String(start.minDays),maxDays:String(start.maxDays)});save.clear();}}/>
-  </Card></form>;
+  const errors={root:!draft.root.trim().startsWith('/')?'A full path, starting with /':undefined,ratio:!(n.ratio>=floor.ratio)?`At least ${floor.ratio}`:undefined,
+    minDays:!(n.minDays>=floor.days)?`At least ${floor.days} days`:undefined,maxDays:!(n.maxDays>=floor.days)?`At least ${floor.days} days`:n.maxDays<n.minDays?'Not under the minimum':undefined};
+  const dirty=JSON.stringify(draft)!==JSON.stringify(start),invalid=Object.values(errors).some(Boolean);
+  const submit=()=>{if(invalid)return;void save.run(async()=>{
+    const seedingChanged=n.ratio!==settings.seeding.ratio||n.minDays!==settings.seeding.minDays||n.maxDays!==settings.seeding.maxDays;
+    await api('/admin/library/settings','PUT',{expectedRevision:settings.revision,...(draft.root.trim()!==settings.roots.movie?{roots:{movie:draft.root.trim()}}:{}),...(seedingChanged?{seeding:n}:{})});
+    toast.success('Saved');});};
+  const num=(key:'ratio'|'minDays'|'maxDays',step:number,unit:string)=><><div className="ui-range">
+    <input type="number" step={step} aria-invalid={!!errors[key]} value={draft[key]} onChange={e=>set({[key]:e.target.value})}/>{unit}</div><FieldError>{errors[key]}</FieldError></>;
+  return <form onSubmit={e=>{e.preventDefault();submit();}}>
+    <Panel flush title="Movies" footer={<SaveBar dirty={dirty} busy={save.busy} error={save.error} invalid={invalid} onCancel={()=>{setDraft(start);save.clear();}} onReload={changed}/>}>
+      <Field label="Root folder" hint="Where movie folders are made"><input className="wide ui-mono" spellCheck={false} aria-invalid={!!errors.root} value={draft.root} onChange={e=>set({root:e.target.value})}/><FieldError>{errors.root}</FieldError></Field>
+      <Field label="Seeding ratio" hint={`At least ${floor.ratio}`}>{num('ratio',0.1,'×')}</Field>
+      <Field label="Minimum days" hint={`At least ${floor.days} (IPTorrents)`}>{num('minDays',1,'days')}</Field>
+      <Field label="Maximum days" hint="Removed then, whatever the ratio">{num('maxDays',1,'days')}</Field>
+    </Panel>
+  </form>;
 }
 
 const SAMPLE='127.Hours.2010.1080p.WEB-DL.DDP5.1.H.264-C76';
@@ -60,19 +56,14 @@ function Naming({settings}:{settings:LibrarySettingsView}) {
       .then(p=>{setPreview(p);setError('');},e=>{if(!controller.signal.aborted){setPreview(undefined);setError((e as Error).message);}});
     return()=>controller.abort();
   },[input,settings.revision]);
-  return <Card title="Naming">
-    <div className="downloads-formats">
-      <span><small>Movie folder</small><code>{settings.naming.movieFolder}</code></span>
-      <span><small>Movie file</small><code>{settings.naming.movieFile}</code></span>
-    </div>
-    <div className="form-columns downloads-sample">
-      <label>Sample release<input spellCheck={false} value={release} onChange={e=>setRelease(e.target.value)}/></label>
-      <label>TMDB id<input type="number" min={1} value={tmdb} onChange={e=>setTmdb(e.target.value)}/></label>
-    </div>
-    {error?<p className="danger-text small">{error}</p>:preview&&<div className="downloads-preview" aria-live="polite">
-      <span><small>Folder</small><code>{preview.folder}</code></span>
-      <span><small>File</small><code>{preview.file}</code></span>
-      <span><small>Path</small><code>{preview.path}</code></span>
-    </div>}
-  </Card>;
+  return <Panel flush title="Naming">
+    <Field label="Folder format"><code className="ui-code">{settings.naming.movieFolder}</code></Field>
+    <Field label="File format"><code className="ui-code">{settings.naming.movieFile}</code></Field>
+    <Field label="Try a release" hint="As an import would name it">
+      <input className="wide ui-mono" spellCheck={false} aria-label="Release name" value={release} onChange={e=>setRelease(e.target.value)}/>
+      <input type="number" min={1} aria-label="TMDB id" placeholder="TMDB id" value={tmdb} onChange={e=>setTmdb(e.target.value)} style={{minWidth:0,width:120}}/>
+    </Field>
+    <Field label="Result">{error?<span className="danger-text">{error}</span>:preview?<div className="ui-preview" aria-live="polite">
+      <code className="ui-code" title="Folder">{preview.folder}</code><code className="ui-code" title="File">{preview.file}</code><small>{preview.path}</small></div>:<span className="ui-dash">—</span>}</Field>
+  </Panel>;
 }

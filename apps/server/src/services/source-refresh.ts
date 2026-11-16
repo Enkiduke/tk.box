@@ -1,6 +1,6 @@
 import { IptvStore } from '../persistence/iptv-store.js';
 import { RestrictedSourceFetcher, SourceFetchError } from '../providers/source-fetch.js';
-import { requireThat } from '../errors.js';
+import { requireLive, requireThat } from '../errors.js';
 import { parseXmltvOffThread } from '../providers/xmltv-parse.js';
 
 // One application process owns the SQLite state and this registry. No detached
@@ -14,6 +14,7 @@ export class SourceRefresh {
   // Guides are parsed off the main thread; the store, on this thread, stays the only SQLite writer.
   constructor(private store:IptvStore,private fetcher:Pick<RestrictedSourceFetcher,'fetch'>=new RestrictedSourceFetcher(),private parseGuide=parseXmltvOffThread) {}
   refresh(actor:string,id:string) {
+    requireLive('Refreshing IPTV sources');
     const active=this.running.get(id);if(active)return active;
     requireThat(!this.abort.signal.aborted,'REFRESH_STOPPED','Refresh service is stopped.',503);
     requireThat(this.running.size<4,'REFRESH_CAPACITY','Too many source refreshes are active.',429);

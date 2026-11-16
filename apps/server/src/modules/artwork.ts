@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { preview } from '../errors.js';
 import { defineModule } from './module.js';
 import { artworkMigrations } from './migrations/artwork.js';
 import { ArtworkStore } from '../persistence/artwork-store.js';
@@ -52,7 +53,7 @@ export const artworkModule = defineModule({
       job('collections-added', 'Collections for newly added', 'collections', () => store.collections().schedules.added, () => schedule.collectionStates().added));
     return {
       api: { store, engine, titles },
-      start() { schedule.start(); },
+      start() { if (!preview()) schedule.start(); },
       stop() { schedule.close(); worker.close(); engine.close(); }
     };
   }

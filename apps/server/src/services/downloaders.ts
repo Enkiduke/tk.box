@@ -3,8 +3,9 @@ import type { Db } from '../persistence/database.js';
 import type { Vault } from '../security/vault.js';
 import { prepared } from '../persistence/statements.js';
 import { AppError, requireWritable } from '../errors.js';
-import { DownloaderError, Sabnzbd, statuses, type DownloadStatus } from '../providers/sabnzbd.js';
-import { Qbittorrent, torrentStatuses, type QbitLogin } from '../providers/qbittorrent.js';
+import { DownloaderError, Sabnzbd, liveJobs, statuses, type DownloadStatus } from '../providers/sabnzbd.js';
+import { Qbittorrent, liveTorrents, torrentStatuses } from '../providers/qbittorrent.js';
+import type { ClientItem, DownloaderLive } from '../../../../packages/contracts/src/downloads.js';
 
 // The downloaders (docs/ARR-REPLACEMENT.md, "Clients"): their addresses, sealed secrets and categories. SABnzbd for
 // Usenet (phase 1) and qBittorrent for torrents (phase 3).
@@ -20,12 +21,10 @@ export const downloaderSettings = z.object({
 }).strict();
 export type DownloaderSettings = z.infer<typeof downloaderSettings>;
 const origin = z.string().trim().max(300).refine(value => { if (!value) return true; try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }, 'Use an http(s) address').transform(value => value.replace(/\/+$/, ''));
-// Omitted keeps a saved key (or qBittorrent username, password); an empty string removes it.
+// Omitted keeps a saved API key; an empty string removes it.
 export const downloaderInput = z.object({
   url: origin,
   key: z.string().trim().max(200).regex(/^[\w-]*$/).optional(),
-  username: z.string().trim().max(200).optional(),
-  password: z.string().max(500).optional(),
   settings: downloaderSettings.partial().optional(),
 }).strict();
 
@@ -41,31 +40,25 @@ const secretContext = (name: DownloaderName) => `downloaders:${name}-secret`;
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 
 export class Downloaders {
-  // One qBittorrent client per saved address and login, so its SID cookie is kept between calls.
-  private qbitClient?: { key: string; client: Qbittorrent };
   constructor(private db: Db, private vault: Vault, private transport: typeof fetch = fetch) {}
 
   private row(name: DownloaderName) { return prepared(this.db, 'SELECT * FROM downloaders WHERE name = ?').get(name) as Row | undefined; }
   private settingsOf(row: Row | undefined): DownloaderSettings { return downloaderSettings.parse(row ? JSON.parse(row.settings) : {}); }
-  private qbitLogin(row: Row | undefined): Partial<QbitLogin> {
-    if (!row?.sealed_secret || row.name !== 'qbittorrent') return {};
-    try { return JSON.parse(this.vault.open(row.sealed_secret, secretContext('qbittorrent'))) as Partial<QbitLogin>; } catch { return {}; }
+  // The sealed API key. A qBittorrent login saved before API keys ({username, password} JSON) counts as none.
+  private key(row: Row | undefined) {
+    if (!row?.sealed_secret) return undefined;
+    try { const key = this.vault.open(row.sealed_secret, secretContext(row.name)); return key.startsWith('{') ? undefined : key; } catch { return undefined; }
   }
   private sabnzbd(): { client: Sabnzbd; settings: DownloaderSettings } | undefined {
-    const row = this.row('sabnzbd');
-    if (!row?.url || !row.sealed_secret) return undefined;
-    return { client: new Sabnzbd(row.url, this.vault.open(row.sealed_secret, secretContext('sabnzbd')), this.transport), settings: this.settingsOf(row) };
+    const row = this.row('sabnzbd'), key = this.key(row);
+    if (!row?.url || !key) return undefined;
+    return { client: new Sabnzbd(row.url, key, this.transport), settings: this.settingsOf(row) };
   }
-  // qBittorrent needs an address; a login is optional (its "bypass for localhost" needs none).
+  // qBittorrent needs an address; a key is optional (its "bypass authentication" needs none).
   private qbittorrent(): { client: Qbittorrent; settings: DownloaderSettings } | undefined {
     const row = this.row('qbittorrent');
     if (!row?.url) return undefined;
-    const key = `${row.url}\n${row.sealed_secret ?? ''}`;
-    if (this.qbitClient?.key !== key) {
-      const login = this.qbitLogin(row);
-      this.qbitClient = { key, client: new Qbittorrent(row.url, { username: login.username ?? '', password: login.password ?? '' }, this.transport) };
-    }
-    return { client: this.qbitClient.client, settings: this.settingsOf(row) };
+    return { client: new Qbittorrent(row.url, this.key(row), this.transport), settings: this.settingsOf(row) };
   }
   private required(name: DownloaderName) {
     const client = name === 'sabnzbd' ? this.sabnzbd() : this.qbittorrent();
@@ -77,33 +70,21 @@ export class Downloaders {
     throw e;
   }
 
-  // What Admin shows: never the secret itself (qBittorrent's username isn't secret, so it is shown).
+  // What Admin shows: never the secret itself.
   view() {
     return downloaderNames.map(name => {
       const row = this.row(name);
-      const login = name === 'qbittorrent' ? this.qbitLogin(row) : undefined;
-      return { name, url: row?.url ?? '', secretSet: !!row?.sealed_secret, settings: this.settingsOf(row),
-        ...(login ? { qbittorrent: { username: login.username ?? '', passwordSet: !!login.password } } : {}) };
+      return { name, url: row?.url ?? '', secretSet: !!this.key(row), settings: this.settingsOf(row) };
     });
   }
 
   configure(actor: string, name: DownloaderName, input: z.input<typeof downloaderInput>, now = Date.now()) {
-    const { url, key, username, password, settings } = downloaderInput.parse(input);
-    if (name === 'sabnzbd' && (username !== undefined || password !== undefined)) throw new AppError('DOWNLOADER_INVALID', 'SABnzbd takes an API key only.', 400);
-    if (name === 'qbittorrent' && key !== undefined) throw new AppError('DOWNLOADER_INVALID', 'qBittorrent takes a username and password.', 400);
+    const { url, key, settings } = downloaderInput.parse(input);
     if (name === 'qbittorrent' && settings?.priority !== undefined) throw new AppError('DOWNLOADER_INVALID', 'Priority is SABnzbd’s.', 400);
     this.db.transaction(() => {
       const row = this.row(name);
       const merged = downloaderSettings.parse({ ...this.settingsOf(row), ...settings });
-      let sealed: string | null;
-      if (name === 'qbittorrent') {
-        const next: Partial<QbitLogin> = { ...this.qbitLogin(row) };
-        for (const [field, value] of [['username', username], ['password', password]] as const) {
-          if (value === undefined) continue;
-          if (value) next[field] = value; else delete next[field];
-        }
-        sealed = Object.keys(next).length ? this.vault.seal(JSON.stringify(next), secretContext(name)) : null;
-      } else sealed = key === undefined ? row?.sealed_secret ?? null : key ? this.vault.seal(key, secretContext(name)) : null;
+      const sealed = key === undefined ? row?.sealed_secret ?? null : key ? this.vault.seal(key, secretContext(name)) : null;
       prepared(this.db, `INSERT INTO downloaders(name, url, sealed_secret, settings) VALUES(?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET url = excluded.url, sealed_secret = excluded.sealed_secret, settings = excluded.settings`)
         .run(name, url, sealed, JSON.stringify(merged));
@@ -113,15 +94,14 @@ export class Downloaders {
     return this.view().find(v => v.name === name)!;
   }
 
-  // Admin's Test. SABnzbd: its version, then its queue, which needs the key. qBittorrent: sign in, its version, then
-  // tk.box's torrents.
+  // Admin's Test. SABnzbd: its version, then its queue, which needs the key. qBittorrent: its version, then tk.box's
+  // torrents.
   async test(name: DownloaderName) {
     const { client } = this.required(name);
     try {
       if (client instanceof Qbittorrent) {
-        await client.signIn();
         const version = await client.version(), list = await client.info();
-        return { ok: true as const, detail: `qBittorrent ${version} signed tk.box in; it has ${Array.isArray(list) ? list.length : 0} tk.box torrents.` };
+        return { ok: true as const, detail: `qBittorrent ${version} accepted tk.box; it has ${Array.isArray(list) ? list.length : 0} tk.box torrents.` };
       }
       const version = await client.version();
       await client.queue();
@@ -172,6 +152,21 @@ export class Downloaders {
       }
     }
     return out;
+  }
+
+  // Admin's live queue: everything each connected downloader has, any category, with its speeds and free space. One
+  // that fails is listed with its error and no items; one that isn't connected isn't listed.
+  async live(): Promise<{ clients: DownloaderLive[]; items: ClientItem[] }> {
+    const sab = this.sabnzbd(), qbit = this.qbittorrent();
+    const read = async (name: DownloaderName, run: () => Promise<{ summary: DownloaderLive; items: ClientItem[] }>) => {
+      try { return await run(); } catch (e) { return { summary: { name, down: 0, up: 0, error: errorText(e) } as DownloaderLive, items: [] as ClientItem[] }; }
+    };
+    const reads = await Promise.all([
+      ...(sab ? [read('sabnzbd', async () => { const [queue, history] = await Promise.all([sab.client.queue(), sab.client.history(100)]);
+        return liveJobs(queue, history, Object.values(sab.settings.categories)); })] : []),
+      ...(qbit ? [read('qbittorrent', async () => liveTorrents(await qbit.client.mainData(), Object.values(qbit.settings.categories)))] : []),
+    ]);
+    return { clients: reads.map(r => r.summary), items: reads.flatMap(r => r.items) };
   }
 
   // SABnzbd: the job and its folder are deleted (after import, or for a cancelled grab). qBittorrent: the torrent goes,

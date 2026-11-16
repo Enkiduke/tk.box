@@ -1,9 +1,11 @@
 import type { ParsedRelease } from './release-name.js';
 
-// The quality ladder, lowest first (docs/ARR-REPLACEMENT.md, "Quality ladder"). Its order is fixed; profiles only say
-// which rungs are allowed and where the cutoff is. The names match Radarr's {Quality Full}.
+// The quality ladder, lowest first (docs/ARR-REPLACEMENT.md, "Quality ladder"; docs/PROFILES.md). Its order is fixed;
+// profiles say which rungs they take and in what order. The names match Radarr's {Quality Full}. Unknown is a release
+// whose name doesn't say its quality; only a profile that lists it takes one.
 export const LADDER = [
-  'CAM', 'TELESYNC', 'TELECINE', 'SCREENER', 'DVD',
+  'Unknown', 'CAM', 'TELESYNC', 'TELECINE', 'SCREENER',
+  'SDTV', 'DVD', 'WEBRip-480p', 'WEBDL-480p', 'Bluray-480p', 'Bluray-576p',
   'HDTV-720p', 'WEBRip-720p', 'WEBDL-720p', 'Bluray-720p',
   'HDTV-1080p', 'WEBRip-1080p', 'WEBDL-1080p', 'Bluray-1080p', 'Remux-1080p',
   'HDTV-2160p', 'WEBRip-2160p', 'WEBDL-2160p', 'Bluray-2160p', 'Remux-2160p',
@@ -16,10 +18,19 @@ export const EARLY_COPIES: ReadonlySet<Quality> = new Set<Quality>(['CAM', 'TELE
 export const isQuality = (name: string): name is Quality => (LADDER as readonly string[]).includes(name);
 export const rank = (quality: Quality) => LADDER.indexOf(quality);
 
-// The rung a parsed release sits on. Undefined when the name doesn't say enough (a WEB-DL with no resolution, SD TV).
+// The rung a parsed release sits on. Undefined when the name doesn't say enough (a WEB-DL with no resolution); never
+// Unknown, which is the pick's to give. HDTV with no resolution is SD TV; 576p WEB goes on the 480p rungs, as in Radarr.
 export function qualityOf(parsed: Pick<ParsedRelease, 'source' | 'resolution' | 'remux'>): Quality | undefined {
   const { source, resolution, remux } = parsed;
   if (source === 'CAM' || source === 'TELESYNC' || source === 'TELECINE' || source === 'SCREENER' || source === 'DVD') return source;
+  if (source === 'HDTV' && (resolution === undefined || resolution === 480 || resolution === 576)) return 'SDTV';
+  if (resolution === 480 || resolution === 576) {
+    if (remux) return undefined;
+    if (source === 'BluRay') return `Bluray-${resolution}p`;
+    if (source === 'WEBDL') return 'WEBDL-480p';
+    if (source === 'WEBRip') return 'WEBRip-480p';
+    return undefined;
+  }
   if (resolution !== 720 && resolution !== 1080 && resolution !== 2160) return undefined;
   if (remux) return resolution === 720 ? undefined : `Remux-${resolution}p`;
   switch (source) {
@@ -35,7 +46,9 @@ export function qualityOf(parsed: Pick<ParsedRelease, 'source' | 'resolution' | 
 export const qualityFull = (quality: Quality, flags: { proper?: boolean; repack?: boolean } = {}) =>
   `${quality}${flags.repack ? ' Repack' : flags.proper ? ' Proper' : ''}`;
 
-// pick_profiles.value. Sizes are in GB (1024³ bytes), as Radarr shows them.
+// Phase 1's pick_profiles.value and score_rules rows, kept for the migrations that seed and convert them
+// (modules/migrations/library.ts) and for fromLegacy. Sizes are in GB (1024³ bytes). A rule's pattern is a field:value
+// (codec:x264, hdr:DV, group:FLUX, source:remux…) or a regex on the release name.
 export type Profile = {
   qualities: { name: Quality; allowed: boolean }[];
   cutoff: Quality;
@@ -52,14 +65,6 @@ export const defaultProfile = (): Profile => ({
   episodeSize: [0.5, 5],
 });
 
-export const allowed = (profile: Profile, quality: Quality) => profile.qualities.some(q => q.name === quality && q.allowed);
-export const allows2160p = (profile: Profile) => profile.qualities.some(q => q.allowed && q.name.endsWith('2160p'));
-
-// ---- Score rules ----
-
-// score_rules rows. A pattern is a regex on the release name, or a parsed field: codec:x264, hdr:DV, edition:IMAX,
-// group:FLUX, language:foreign, language:French, flag:hardcoded, flag:freeleech, flag:proper, source:WEBRip,
-// resolution:720p.
 export type ScoreRule = { name: string; label?: string; pattern: string; points: number; ban: boolean; applies: 'movie' | 'show' | 'both' };
 
 export const defaultScoreRules = (): ScoreRule[] => [
@@ -71,62 +76,3 @@ export const defaultScoreRules = (): ScoreRule[] => [
   { name: 'Foreign language', pattern: 'language:foreign', points: 0, ban: true, applies: 'both' },
   { name: '3D / upscaled', pattern: '\\b(3D|upscaled?|AI.?upscale)\\b', points: 0, ban: true, applies: 'both' },
 ];
-
-// What a rule is tested against: the parse, plus what the indexer said (IPTorrents' freeleech).
-export type Scored = { parsed: ParsedRelease; freeleech?: boolean };
-
-const CODEC_NAMES: Record<string, string> = { x264: 'h264', h264: 'h264', 'h.264': 'h264', avc: 'h264', x265: 'h265', h265: 'h265', 'h.265': 'h265', hevc: 'h265', av1: 'av1', xvid: 'xvid', divx: 'xvid' };
-const FIELD = /^(codec|hdr|edition|group|language|flag|source|resolution):(.+)$/i;
-const lower = (s: string) => s.toLowerCase().replace(/[^a-z0-9+]/g, '');
-const regexCache = new Map<string, RegExp | null>();
-function regexOf(pattern: string) {
-  if (!regexCache.has(pattern)) {
-    let re: RegExp | null = null;
-    try { re = new RegExp(pattern, 'i'); } catch { /* an invalid pattern matches nothing */ }
-    if (regexCache.size > 500) regexCache.clear();
-    regexCache.set(pattern, re);
-  }
-  return regexCache.get(pattern) ?? null;
-}
-
-export function ruleMatches(rule: Pick<ScoreRule, 'pattern'>, { parsed, freeleech }: Scored): boolean {
-  const field = FIELD.exec(rule.pattern.trim());
-  if (!field) return regexOf(rule.pattern)?.test(parsed.name) ?? false;
-  const [, key, raw] = field as unknown as [string, string, string];
-  const value = lower(raw);
-  switch (key.toLowerCase()) {
-    case 'codec': return !!parsed.codec && (CODEC_NAMES[raw.toLowerCase()] ?? value) === parsed.codec;
-    case 'hdr': return parsed.hdr.some(h => lower(h) === value);
-    case 'edition': return parsed.editions.some(e => lower(e) === value || lower(e).startsWith(value));
-    case 'group': return !!parsed.group && lower(parsed.group) === value;
-    case 'language': return value === 'foreign' ? parsed.languages.some(l => l !== 'English') : parsed.languages.some(l => lower(l) === value);
-    case 'source': return !!parsed.source && (lower(parsed.source) === value || (value === 'remux' && parsed.remux));
-    case 'resolution': return parsed.resolution !== undefined && `${parsed.resolution}p` === value;
-    case 'flag':
-      switch (value) {
-        case 'hardcoded': return parsed.hardcodedSubs;
-        case 'freeleech': return !!freeleech;
-        case 'proper': return parsed.proper;
-        case 'repack': return parsed.repack;
-        case '3d': return parsed.threeD;
-        default: return false;
-      }
-    default: return false;
-  }
-}
-
-export type Score = { score: number; bans: string[]; labels: string[]; matched: string[] };
-// A release's score is the sum of the rules that match it; a matching ban rule rejects it. Rules with a label fill
-// {[Custom Formats]}, in rule order.
-export function scoreRelease(release: Scored, rules: readonly ScoreRule[], kind: 'movie' | 'show'): Score {
-  const result: Score = { score: 0, bans: [], labels: [], matched: [] };
-  for (const rule of rules) {
-    if (rule.applies !== 'both' && rule.applies !== kind) continue;
-    if (!ruleMatches(rule, release)) continue;
-    result.matched.push(rule.name);
-    if (rule.ban) result.bans.push(rule.name);
-    else result.score += rule.points;
-    if (rule.label && !result.labels.includes(rule.label)) result.labels.push(rule.label);
-  }
-  return result;
-}

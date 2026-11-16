@@ -170,6 +170,12 @@ export function parseRss(xml: string, passkey?: string): IptItem[] {
 // ---- The client ----
 
 export type IptSecret = { rssUrl?: string; cookie?: string; userAgent?: string };
+export const IPT_COOKIE_FORMAT_ERROR = 'Paste the full IPTorrents Cookie value from your browser’s Request Headers (uid=…; pass=…).';
+
+export function isIptCookieHeader(cookie: string) {
+  return cookie.trim().replace(/;$/, '').split(';').every(pair => /^[\w!#$%&'*+.^`|~-]+=/.test(pair.trimStart()));
+}
+
 const isIptHost = (url: URL, also?: string) => { const h = url.hostname.toLowerCase(); return h === 'iptorrents.com' || h.endsWith('.iptorrents.com') || h === also; };
 const looksSignedOut = (body: string) => /<html|<form|<!doctype/i.test(body.slice(0, 4096)) && !body.includes('lout.php');
 
@@ -180,6 +186,7 @@ export class IPTorrents {
     const headers: Record<string, string> = { 'User-Agent': this.secret.userAgent || 'tk.box/0.0.1' };
     if (withCookie) {
       if (!this.secret.cookie) throw new IndexerError('cookie', 'IPTorrents has no cookie saved.');
+      if (!isIptCookieHeader(this.secret.cookie)) throw new IndexerError('other', IPT_COOKIE_FORMAT_ERROR);
       headers.Cookie = this.secret.cookie;
     }
     let response: Response;

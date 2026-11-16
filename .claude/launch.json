@@ -12,6 +12,56 @@
       "url": "http://127.0.0.1:3000"
     },
     {
+      "name": "plex-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:plex"
+      ],
+      "port": 3012,
+      "url": "http://localhost:3012"
+    },
+    {
+      "name": "plex-preview-keep",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:plex",
+        "--",
+        "--keep"
+      ],
+      "port": 3012,
+      "url": "http://localhost:3012"
+    },
+    {
+      "name": "plex-preview-side2",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:plex",
+        "--",
+        "--keep",
+        "--port=3015"
+      ],
+      "port": 3015,
+      "url": "http://localhost:3015",
+      "autoPort": false
+    },
+    {
+      "name": "plex-preview-side",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview:plex",
+        "--",
+        "--keep",
+        "--port=3014"
+      ],
+      "port": 3014,
+      "url": "http://localhost:3014",
+      "autoPort": false
+    },
+    {
       "name": "ui-preview",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

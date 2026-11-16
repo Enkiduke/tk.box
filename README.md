@@ -105,16 +105,13 @@ The Plex preview disables scheduled and manual channel health checks. Live TV ca
 | `scripts` | Setup, diagnostics and media experiments |
 | `tests` | Test suite |
 | `deploy` | Example systemd unit |
-| `docs` | Design notes and guides |
+| `docs` | Guides |
 
 ## Docs
 
 - [Deployment](docs/DEPLOYMENT.md)
-- [IPTV](docs/IPTV_INGESTION.md)
-- [Plex Channels](docs/CUSTOM_CHANNELS.md)
 - [Artwork and Collections](docs/ARTWORK.md)
 - [Clean Up](docs/CLEANUP.md)
-- [Implementation status](docs/IMPLEMENTATION_STATUS.md)
 
 ## License
 

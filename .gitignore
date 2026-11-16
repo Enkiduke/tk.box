@@ -11,3 +11,11 @@ coverage/
 references/
 /init.mp4
 __pycache__/
+
+# Development docs (plans, phases, handoffs, reviews): kept local, never pushed.
+/UNIFIED_MEDIA_PLATFORM_SPEC_v30.md
+/docs/*.md
+!/docs/ARTWORK.md
+!/docs/CLEANUP.md
+!/docs/DEPLOYMENT.md
+!/docs/UI.md

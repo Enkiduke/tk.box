@@ -22,6 +22,7 @@ export const downloadersModule = defineModule({
       api: {
         send: (download: Download) => downloaders.send(download),
         status: (name?: DownloaderName) => downloaders.status(name),
+        live: () => downloaders.live(),
         remove: (grab: GrabRef, options?: RemoveOptions) => downloaders.remove(grab, options),
       }
     };

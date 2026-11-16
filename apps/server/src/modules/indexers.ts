@@ -1,4 +1,5 @@
 import { defineModule } from './module.js';
+import { preview } from '../errors.js';
 import { indexersMigrations } from './migrations/indexers.js';
 import { every, errorDetail } from '../lib/every.js';
 import { z } from 'zod';
@@ -22,7 +23,7 @@ export const indexersModule = defineModule({
         resolve: key => bus.emit('notification.resolve', { to: 'admins', key }),
       } });
     const pollNow = () => jobs.track('indexers.rss', () => indexers.poll());
-    jobs.add({ id: 'indexers.rss', label: 'Read new releases', area: 'Indexers', section: 'downloads',
+    jobs.add({ id: 'indexers.rss', label: 'Read new releases', area: 'Indexers', section: 'queue',
       schedule: () => ({ enabled: indexers.anyEnabled(), schedule: { kind: 'every', minutes: RSS_MINUTES } }),
       status: () => jobs.tracked('indexers.rss'), run: pollNow });
     const name = z.object({ name: z.enum(indexerNames) }).strict();
@@ -40,6 +41,7 @@ export const indexersModule = defineModule({
         download: (release: Pick<Release, 'indexer' | 'link' | 'name'>, signal?: AbortSignal) => indexers.download(release, signal),
       },
       start() {
+        if (preview()) return;
         timer = every(RSS_MINUTES * 60000, () => indexers.anyEnabled() ? pollNow() : undefined, e => log.warn('indexer feed failed', errorDetail(e)));
       },
       stop() { timer?.stop(); }
