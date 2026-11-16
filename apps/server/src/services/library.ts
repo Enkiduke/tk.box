@@ -10,7 +10,7 @@ import { compareDecisions, pick, type Decision, type LibraryFile, type PickConte
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
-import { firstSearchAt, isOut, movieWanted, nextSearchAt, type Wanted } from './wanted.js';
+import { airedAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextSearchAt, showEnded, type EpisodeFact, type Wanted } from './wanted.js';
 import { findVideos, type MovieImporter } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
 import type { FeedListener, MovieQuery, NzbFile, Release, SearchOptions, SearchResult } from './indexers.js';
@@ -52,6 +52,14 @@ type TmdbMovie = { title?: string; original_title?: string; release_date?: strin
   external_ids?: { imdb_id?: string | null };
   alternative_titles?: { titles?: { title?: string }[] };
   release_dates?: { results?: { iso_3166_1?: string; release_dates?: { type?: number; release_date?: string }[] }[] } };
+type TmdbShow = { name?: string; original_name?: string; first_air_date?: string; status?: string; episode_run_time?: number[];
+  seasons?: { season_number?: number }[];
+  external_ids?: { tvdb_id?: number | null; imdb_id?: string | null };
+  alternative_titles?: { results?: { title?: string }[] } };
+type TmdbSeason = { episodes?: { season_number?: number; episode_number?: number; name?: string; air_date?: string | null; runtime?: number | null }[] };
+// TMDB's other names for a title (its original one and alternative titles), for matching release names.
+const aliasesOf = (main: string, others: (string | undefined)[]) => [...new Set(others.filter((t): t is string => !!t && t !== main))].slice(0, 50);
+const yearOf = (day: string | undefined) => day && /^\d{4}/.test(day) ? Number(day.slice(0, 4)) : undefined;
 // `extra`: torrents an RSS feed found, weighed with what the Usenet search finds (Usenet first).
 type SearchPayload = { titleId: number; extra?: Release[] };
 type SendPayload = { grabId: number; link: string };
@@ -62,7 +70,7 @@ type FilePayload = { fileId: number };
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // SABnzbd's history holds 500 jobs; a grab it no longer lists for this many checks (30 s apart) is taken as gone.
 const MISSING_CHECKS = 6;
-// TMDB's facts are read again daily for a movie that isn't out, weekly for one that is.
+// TMDB's facts are read again daily for a movie that isn't out (a show still airing), weekly for one that is (ended).
 const REFRESH_UNRELEASED = DAY, REFRESH_RELEASED = 7 * DAY;
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const downloaderLabel = (name: string) => name === 'qbittorrent' ? 'qBittorrent' : 'SABnzbd';
@@ -136,13 +144,48 @@ export class Library {
   private async tmdb(tmdbId: number) {
     const movie = await this.deps.titles.get(`/movie/${tmdbId}`, { append_to_response: 'alternative_titles,release_dates,external_ids' }) as TmdbMovie | undefined;
     requireThat(movie?.title, 'NOT_FOUND', `TMDB doesn't know movie ${tmdbId}.`, 404);
-    const year = movie.release_date && /^\d{4}/.test(movie.release_date) ? Number(movie.release_date.slice(0, 4)) : undefined;
+    const year = yearOf(movie.release_date);
     const imdbId = movie.imdb_id || movie.external_ids?.imdb_id || undefined;
-    const aliases = [...new Set([movie.original_title, ...(movie.alternative_titles?.titles ?? []).map(t => t.title)]
-      .filter((t): t is string => !!t && t !== movie.title))].slice(0, 50);
+    const aliases = aliasesOf(movie.title, [movie.original_title, ...(movie.alternative_titles?.titles ?? []).map(t => t.title)]);
     return { title: movie.title, ...(year ? { year } : {}), ...(imdbId ? { imdbId } : {}), aliases, released: releasedFrom(movie),
       ...(movie.runtime ? { runtime: movie.runtime } : {}) };
   }
+
+  // A show's facts and its episodes (no specials), one TMDB call per season. Episodes' runtimes are their own; the
+  // title's is the show's usual one, for an episode TMDB gives none.
+  private async tmdbShow(tmdbId: number) {
+    const show = await this.deps.titles.get(`/tv/${tmdbId}`, { append_to_response: 'external_ids,alternative_titles' }, HOUR) as TmdbShow | undefined;
+    requireThat(show?.name, 'NOT_FOUND', `TMDB doesn't know show ${tmdbId}.`, 404);
+    const seasons = [...new Set((show.seasons ?? []).map(s => s.season_number).filter((n): n is number => typeof n === 'number' && n > 0))].sort((a, b) => a - b);
+    const listed = await Promise.all(seasons.map(n => this.deps.titles.get(`/tv/${tmdbId}/season/${n}`, {}, HOUR) as Promise<TmdbSeason | undefined>));
+    const episodes: EpisodeFact[] = listed.flatMap((season, i) => (season?.episodes ?? []).flatMap(e => {
+      if (typeof e.episode_number !== 'number') return [];
+      const airDate = e.air_date || undefined, airAt = airedAt(airDate);
+      return [{ season: seasons[i]!, episode: e.episode_number, ...(e.name ? { name: e.name } : {}), ...(airDate ? { airDate } : {}),
+        ...(airAt !== undefined ? { airAt } : {}), ...(e.runtime ? { runtime: e.runtime } : {}) }];
+    }));
+    const year = yearOf(show.first_air_date), tvdbId = show.external_ids?.tvdb_id || undefined, imdbId = show.external_ids?.imdb_id || undefined;
+    const runtime = show.episode_run_time?.find(m => m > 0) ?? episodes.find(e => e.runtime)?.runtime;
+    return {
+      facts: { title: show.name, ...(year ? { year } : {}), ...(tvdbId ? { tvdbId } : {}), ...(imdbId ? { imdbId } : {}),
+        aliases: aliasesOf(show.name, [show.original_name, ...(show.alternative_titles?.results ?? []).map(t => t.title)]),
+        released: show.status ? { status: show.status } : {}, ...(runtime ? { runtime } : {}) },
+      seasons, episodes,
+    };
+  }
+
+  // Reads a show from TMDB again: its facts, seasons and episodes, with the monitored flags its mode gives new ones
+  // (`chosen`: Manual's seasons, the first time).
+  async refreshShow(titleId: number, chosen?: readonly number[]) {
+    const title = this.store.title(titleId);
+    requireThat(title?.kind === 'show', 'NOT_FOUND', 'No such show.', 404);
+    const { facts, ...tmdb } = await this.tmdbShow(title.tmdbId);
+    const follow = { monitor: title.monitor, ...(title.monitorFrom !== undefined ? { monitorFrom: title.monitorFrom } : {}), ...(chosen ? { chosen } : {}) };
+    const next = followEpisodes(follow, tmdb, { seasons: this.store.seasons(title.id), episodes: this.store.episodes(title.id) });
+    this.inTransaction(() => { this.store.refreshed(title.id, facts); this.store.saveEpisodes(title.id, next.seasons, next.episodes); });
+    return this.store.title(title.id)!;
+  }
+  private inTransaction(write: () => void) { this.store.db.transaction(write)(); }
 
   // Adds a movie (or monitors it again), with TMDB's ids, aliases and release dates, and searches it as the timing
   // says: at once, or (not out, Early copies off) from its home release.
@@ -250,9 +293,10 @@ export class Library {
       if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) continue;
       if (this.queueSearch(title.id).added) searched++;
     }
-    for (const title of this.store.activeMovies()) {
-      const out = isOut(title.released, now), age = now - (title.refreshedAt ?? 0);
-      if (age >= (out ? REFRESH_RELEASED : REFRESH_UNRELEASED) && this.deps.queue.enqueue('refresh-title', `movie:${title.id}`, { titleId: title.id }).added) refreshed++;
+    // TMDB again: daily for a movie that isn't out or a show still airing, weekly once it's out or ended.
+    for (const title of [...this.store.activeMovies(), ...this.store.activeShows()]) {
+      const settled = title.kind === 'movie' ? isOut(title.released, now) : showEnded(title.released), age = now - (title.refreshedAt ?? 0);
+      if (age >= (settled ? REFRESH_RELEASED : REFRESH_UNRELEASED) && this.deps.queue.enqueue('refresh-title', `${title.kind}:${title.id}`, { titleId: title.id }).added) refreshed++;
     }
     return { searched, refreshed };
   }
@@ -728,8 +772,11 @@ export class Library {
 
   private async refresh(item: QueueItem<SearchPayload>): Promise<Outcome> {
     const title = this.store.title(item.payload.titleId);
-    if (!title || title.kind !== 'movie') return done();
-    try { this.store.refreshed(title.id, await this.tmdb(title.tmdbId)); }
+    if (!title) return done();
+    try {
+      if (title.kind === 'show') await this.refreshShow(title.id);
+      else this.store.refreshed(title.id, await this.tmdb(title.tmdbId));
+    }
     catch (e) { return fail(errorText(e), e instanceof AppError && e.code === 'NOT_FOUND'); }
     return done();
   }

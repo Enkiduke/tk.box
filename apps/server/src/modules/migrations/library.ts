@@ -162,4 +162,6 @@ export const libraryMigrations: Migration[] = [
     }
     db.exec('DROP TABLE score_rules;');
   } },
+  // Phase 2: an episode's own TMDB runtime, for its size limits (runtimes vary within a show).
+  { name: 'show-episodes', up: `ALTER TABLE library_episodes ADD COLUMN runtime INTEGER;` },
 ];

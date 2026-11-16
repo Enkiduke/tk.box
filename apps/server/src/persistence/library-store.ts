@@ -4,12 +4,10 @@ import { prepared } from './statements.js';
 import { isQuality, type Quality } from '../lib/quality.js';
 import type { Format } from '../lib/formats.js';
 import type { QualityProfile } from '../lib/profiles.js';
-import { MOVIES_ROOT } from '../lib/naming.js';
+import { MOVIES_ROOT, SHOWS_ROOT } from '../lib/naming.js';
 import type { BlockedRelease, Protocol } from '../lib/pick-rules.js';
 
 // The library module's rows (docs/ARR-REPLACEMENT.md, "Data model" › library). SQL for the library lives here only.
-
-export const SHOWS_ROOT = '/srv/media/tv';
 
 // Radarr's and Sonarr's formats as text, for the record (the library's files are named by them). lib/naming.ts
 // reproduces them.
@@ -42,8 +40,8 @@ export const defaultLibrarySettings = (defaultProfile: number): LibrarySettings 
   fulfil: { show: 'sonarr' },
 });
 
-// library_titles.released for a movie: TMDB's days (YYYY-MM-DD).
-export type Released = { theatrical?: string; digital?: string; physical?: string };
+// library_titles.released: for a movie TMDB's days (YYYY-MM-DD); for a show TMDB's status ("Returning Series", "Ended").
+export type Released = { theatrical?: string; digital?: string; physical?: string; status?: string };
 export type Monitor = 'all' | 'future' | 'first' | 'last' | 'manual' | 'none';
 export type LibraryTitle = {
   id: number; kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; imdbId?: string; title: string; year?: number; aliases: string[];
@@ -67,6 +65,9 @@ export type Grab = {
 export type GrabEventKind = GrabState | 'grabbed' | 'retried';
 export type GrabEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: Grab };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
+// A show's seasons (season 0, specials, is never stored) and episodes. `airAt`: when it counts as aired.
+export type SeasonRow = { season: number; monitored: boolean };
+export type EpisodeRow = { season: number; episode: number; name?: string; airDate?: string; airAt?: number; runtime?: number; monitored: boolean };
 
 type TitleRaw = { id: number; kind: 'movie' | 'show'; tmdb_id: number; tvdb_id: number | null; imdb_id: string | null; title: string; year: number | null; aliases: string;
   monitor: Monitor; monitor_from: number | null; profile_id: number; root: string; folder: string | null; keep: number; released: string | null; paused: number;
@@ -103,7 +104,7 @@ const OPEN = `state IN ('sending','downloading','unpacking','importing','seeding
 // Under way: open but not yet imported. A seeding torrent's title is in the library, so it may be searched and upgraded.
 const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
 
-export type NewTitle = { kind: 'movie'; tmdbId: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
+export type NewTitle = { kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; monitorFrom?: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
   root: string; keep: boolean; released: Released; addedBy: string; runtime?: number };
 export type NewGrab = { titleId: number; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
   upgrade: boolean; downloader: string };
@@ -192,17 +193,50 @@ export class LibraryStore {
   // Monitored, unpaused movies: the ones the sweep and RSS look at.
   activeMovies() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'movie' AND monitor != 'none' AND paused = 0 ORDER BY id`).all() as TitleRaw[]).map(title); }
   insertTitle(t: NewTitle) {
-    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, imdb_id, title, year, aliases, monitor, profile_id, root, keep, released, added_at, added_by, refreshed_at, runtime)
-      VALUES(@kind, @tmdbId, @imdbId, @title, @year, @aliases, @monitor, @profileId, @root, @keep, @released, @now, @addedBy, @now, @runtime)`)
-      .run({ ...t, imdbId: t.imdbId ?? null, year: t.year ?? null, runtime: t.runtime ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
+    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, tvdb_id, imdb_id, title, year, aliases, monitor, monitor_from, profile_id, root, keep, released, added_at, added_by, refreshed_at, runtime)
+      VALUES(@kind, @tmdbId, @tvdbId, @imdbId, @title, @year, @aliases, @monitor, @monitorFrom, @profileId, @root, @keep, @released, @now, @addedBy, @now, @runtime)`)
+      .run({ ...t, tvdbId: t.tvdbId ?? null, monitorFrom: t.monitorFrom ?? null, imdbId: t.imdbId ?? null, year: t.year ?? null, runtime: t.runtime ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
     return this.title(id)!;
   }
   // TMDB's facts, from add or refresh-title.
-  refreshed(id: number, facts: { imdbId?: string; title: string; year?: number; aliases: string[]; released: Released; runtime?: number }) {
-    prepared(this.db, 'UPDATE library_titles SET imdb_id = COALESCE(?, imdb_id), title = ?, year = ?, aliases = ?, released = ?, runtime = COALESCE(?, runtime), refreshed_at = ? WHERE id = ?')
-      .run(facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), facts.runtime ?? null, this.now(), id);
+  refreshed(id: number, facts: { tvdbId?: number; imdbId?: string; title: string; year?: number; aliases: string[]; released: Released; runtime?: number }) {
+    prepared(this.db, 'UPDATE library_titles SET tvdb_id = COALESCE(?, tvdb_id), imdb_id = COALESCE(?, imdb_id), title = ?, year = ?, aliases = ?, released = ?, runtime = COALESCE(?, runtime), refreshed_at = ? WHERE id = ?')
+      .run(facts.tvdbId ?? null, facts.imdbId ?? null, facts.title, facts.year ?? null, JSON.stringify(facts.aliases), JSON.stringify(facts.released), facts.runtime ?? null, this.now(), id);
   }
   setMonitor(id: number, monitor: Monitor) { prepared(this.db, 'UPDATE library_titles SET monitor = ? WHERE id = ?').run(monitor, id); }
+  // Monitored, unpaused shows (their TMDB refresh).
+  activeShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' AND monitor != 'none' AND paused = 0 ORDER BY id`).all() as TitleRaw[]).map(title); }
+
+  seasons(titleId: number): SeasonRow[] {
+    return (prepared(this.db, 'SELECT season, monitored FROM library_seasons WHERE title_id = ? ORDER BY season').all(titleId) as { season: number; monitored: number }[])
+      .map(r => ({ season: r.season, monitored: !!r.monitored }));
+  }
+  episodes(titleId: number): EpisodeRow[] {
+    return (prepared(this.db, 'SELECT * FROM library_episodes WHERE title_id = ? ORDER BY season, episode').all(titleId) as
+      { season: number; episode: number; name: string | null; air_date: string | null; air_at: number | null; runtime: number | null; monitored: number }[])
+      .map(r => ({ season: r.season, episode: r.episode, ...opt('name', r.name), ...opt('airDate', r.air_date), ...opt('airAt', r.air_at), ...opt('runtime', r.runtime),
+        monitored: !!r.monitored }));
+  }
+  // A show's seasons and episodes as TMDB now lists them (refresh-title). Ones TMDB dropped go, unless a file is mapped
+  // to them. Specials (season 0) are never stored.
+  saveEpisodes(titleId: number, seasons: SeasonRow[], episodes: EpisodeRow[]) {
+    this.db.transaction(() => {
+      const season = prepared(this.db, `INSERT INTO library_seasons(title_id, season, monitored) VALUES(?, ?, ?)
+        ON CONFLICT(title_id, season) DO UPDATE SET monitored = excluded.monitored`);
+      const episode = prepared(this.db, `INSERT INTO library_episodes(title_id, season, episode, name, air_date, air_at, runtime, monitored) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(title_id, season, episode) DO UPDATE SET name = excluded.name, air_date = excluded.air_date, air_at = excluded.air_at, runtime = excluded.runtime,
+          monitored = excluded.monitored`);
+      const keepSeasons = seasons.filter(s => s.season > 0), keepEpisodes = episodes.filter(e => e.season > 0);
+      for (const s of keepSeasons) season.run(titleId, s.season, s.monitored ? 1 : 0);
+      for (const e of keepEpisodes) episode.run(titleId, e.season, e.episode, e.name ?? null, e.airDate ?? null, e.airAt ?? null, e.runtime ?? null, e.monitored ? 1 : 0);
+      prepared(this.db, `DELETE FROM library_episodes WHERE title_id = ? AND (season, episode) NOT IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM library_file_episodes f WHERE f.title_id = library_episodes.title_id AND f.season = library_episodes.season AND f.episode = library_episodes.episode)`)
+        .run(titleId, JSON.stringify(keepEpisodes.map(e => [e.season, e.episode])));
+      prepared(this.db, `DELETE FROM library_seasons WHERE title_id = ? AND season NOT IN (SELECT value FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM library_episodes e WHERE e.title_id = library_seasons.title_id AND e.season = library_seasons.season)`)
+        .run(titleId, JSON.stringify(keepSeasons.map(s => s.season)));
+    })();
+  }
   setKeep(id: number, keep: boolean) { prepared(this.db, 'UPDATE library_titles SET keep = ? WHERE id = ?').run(keep ? 1 : 0, id); }
   setPaused(id: number, reason: string | null) { prepared(this.db, 'UPDATE library_titles SET paused = ?, paused_reason = ? WHERE id = ?').run(reason === null ? 0 : 1, reason, id); }
   setAddedBy(id: number, by: string) { prepared(this.db, 'UPDATE library_titles SET added_by = ? WHERE id = ?').run(by, id); }
