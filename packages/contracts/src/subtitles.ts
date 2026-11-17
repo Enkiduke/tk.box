@@ -63,3 +63,8 @@ export type TitleSubtitle =
   | { state: 'skipped'; reason: string; at: number }
   | { state: 'unchecked' };
 export type TitleSubtitles = { files: Record<number, TitleSubtitle> };
+
+// Admin › Downloads › Subtitles › Workers (docs/PHASE-5.md): the PC workers' tokens. A new token is shown once.
+export type SubtitleWorkerView = { id: number; name: string; createdAt: number; lastSeenAt?: number; revokedAt?: number; holding: number };
+export type SubtitleWorkers = { workers: SubtitleWorkerView[] };
+export type SubtitleWorkerCreated = { worker: SubtitleWorkerView; token: string };

@@ -1,8 +1,8 @@
 import {useState,type ReactNode} from 'react';
-import type {SubtitleMissing,SubtitleJobState,SubtitleLists,SubtitleSource,SubtitleVideo,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
+import type {SubtitleMissing,SubtitleJobState,SubtitleLists,SubtitleSource,SubtitleVideo,SubtitlesView,SubtitleWorkerCreated,SubtitleWorkers,SubtitleWorkerView} from '../../../packages/contracts/src/subtitles.js';
 import {api} from './api.js';
 import {invalidate,link,useApi} from './hooks.js';
-import {ErrorNotice} from './components.js';
+import {ErrorNotice,Modal} from './components.js';
 import {SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {ACTIONS,Field,FieldError,IconAction,Loaded,Panel,Pill,RowActions,SaveBar,Table,Tabs,Tag,TitleCell,When,usePaged,useRefresh,useSave,useSorted,type Tone} from './manage-ui.js';
@@ -11,21 +11,23 @@ import {ACTIONS,Field,FieldError,IconAction,Loaded,Panel,Pill,RowActions,SaveBar
 // done, one list at a time.
 
 const changed=()=>invalidate('/admin/subtitles');
-type View='settings'|'missing';
+type View='settings'|'missing'|'workers';
 const sourceNames:Record<SubtitleSource,string>={opensubtitles:'OpenSubtitles',whisper:'Whisper',embedded:'Embedded',sidecar:'Sidecar'};
 const jobNames:Record<SubtitleJobState,[string,Tone]>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],done:['Done','ok'],failed:['Failed','bad'],cancelled:['Cancelled','off']};
 const count=(n:number)=>n.toLocaleString();
 
 export function SubtitlesPage() {
-  const view=useApi<SubtitlesView>('/admin/subtitles'),lists=useApi<SubtitleLists>('/admin/subtitles/videos');
-  useRefresh(()=>{view.reload();lists.reload();},view.data?.checking?5000:30000);
+  const view=useApi<SubtitlesView>('/admin/subtitles'),lists=useApi<SubtitleLists>('/admin/subtitles/videos'),workers=useApi<SubtitleWorkers>('/admin/subtitles/workers');
+  useRefresh(()=>{view.reload();lists.reload();workers.reload();},view.data?.checking?5000:30000);
   const [tab,setTab]=useState<View>('settings');
   const s=view.data,l=lists.data;
   const tabs=<Tabs label="Subtitles" value={tab} onChange={setTab} tabs={[{id:'settings',label:'Settings'},
-    {id:'missing',label:'Missing',...(l?{count:l.missing.length,...(l.missing.some(r=>r.skipped||r.job?.state==='failed')?{tone:'bad' as const}:{})}:{})}]}/>;
+    {id:'missing',label:'Missing',...(l?{count:l.missing.length,...(l.missing.some(r=>r.skipped||r.job?.state==='failed')?{tone:'bad' as const}:{})}:{})},
+    {id:'workers',label:'Workers',...(workers.data?{count:workers.data.workers.filter(w=>!w.revokedAt).length}:{})}]}/>;
   return <><SectionHead title="Subtitles"/>{tabs}
     {tab==='settings'?<Loaded view={view}>{v=><><Status view={v}/><Settings key={`s${v.revision}`} view={v}/></>}</Loaded>
-      :<Loaded view={lists}>{d=><Missing rows={d.missing}/>}</Loaded>}
+      :tab==='missing'?<Loaded view={lists}>{d=><Missing rows={d.missing}/>}</Loaded>
+      :<Loaded view={workers}>{d=><Workers rows={d.workers}/>}</Loaded>}
   </>;
 }
 
@@ -103,3 +105,44 @@ function Missing({rows:all}:{rows:SubtitleMissing[]}) {
     </Table></Panel></>;
 }
 
+// The PC workers (docs/PHASE-5.md): each one's token, shown once when made, its last check-in, and Revoke.
+const workersChanged=()=>invalidate('/admin/subtitles');
+const workerSorts={name:(w:SubtitleWorkerView)=>w.name.toLocaleLowerCase(),seen:(w:SubtitleWorkerView)=>w.lastSeenAt,made:(w:SubtitleWorkerView)=>w.createdAt};
+function Workers({rows:all}:{rows:SubtitleWorkerView[]}) {
+  const mutation=useMutation(workersChanged),[adding,setAdding]=useState(false);
+  const {rows,sort,onSort}=useSorted(all,workerSorts),now=Date.now();
+  const revoke=(w:SubtitleWorkerView)=>{if(!window.confirm(`Revoke ${w.name}? It stops at once; its jobs go back to the queue.`))return;
+    void mutation.run(async()=>{await api(`/admin/subtitles/workers/${w.id}/revoke`,'POST',{});toast.success(`Revoked ${w.name}`);});};
+  return <>{mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
+    <Panel flush title="Workers" actions={<button type="button" onClick={()=>setAdding(true)}>New token</button>}>
+      <Table sort={sort} onSort={onSort} empty={!all.length?'No workers':undefined}
+        columns={[{label:'Name',sort:'name'},{label:'Last seen',width:110,sort:'seen',desc:true},{label:'Made',width:110,sort:'made',desc:true},{label:'Status',width:130},ACTIONS]}>
+        {rows.map(w=><tr key={w.id}>
+          <td><div className="ui-title"><div><span className="ui-title-name">{w.name}</span>{w.holding>0&&<small>{w.holding===1?'Making 1 subtitle':`Making ${w.holding} subtitles`}</small>}</div></div></td>
+          <td><When at={w.lastSeenAt} now={now} empty="Never"/></td>
+          <td><When at={w.createdAt} now={now}/></td>
+          <td>{w.revokedAt?<Pill tone="off">Revoked</Pill>:w.holding?<Pill tone="active">Running</Pill>:<Pill tone="ok">Active</Pill>}</td>
+          <td><RowActions>{!w.revokedAt&&<IconAction icon="close" label={`Revoke ${w.name}`} disabled={mutation.busy} onClick={()=>revoke(w)}/>}</RowActions></td>
+        </tr>)}
+      </Table>
+    </Panel>
+    {adding&&<NewWorker onClose={()=>setAdding(false)}/>}
+  </>;
+}
+
+// A new worker: its name, then its token, shown this once for worker.json.
+function NewWorker({onClose}:{onClose:()=>void}) {
+  const [name,setName]=useState('Home PC'),[made,setMade]=useState<SubtitleWorkerCreated>(),mutation=useMutation(workersChanged);
+  const copy=()=>{if(!made)return;void navigator.clipboard.writeText(made.token).then(()=>toast.success('Token copied'),()=>toast.error('Copy failed; select the token instead'));};
+  return <Modal title="New worker token" onClose={()=>{if(!mutation.busy)onClose();}}>
+    <h2>{made?made.worker.name:'New worker token'}</h2>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    {made?<div className="form-stack">
+      <label>Token<input readOnly value={made.token} spellCheck={false} onFocus={e=>e.target.select()} autoFocus/><small>Shown once. Put it in worker.json.</small></label>
+      <div className="button-row"><button className="primary" type="button" onClick={copy}>Copy</button><button type="button" onClick={onClose}>Done</button></div>
+    </div>:<form className="form-stack" onSubmit={e=>{e.preventDefault();void mutation.run(async()=>{setMade(await api<SubtitleWorkerCreated>('/admin/subtitles/workers','POST',{name:name.trim()}));});}}>
+      <label>Name<input value={name} onChange={e=>setName(e.target.value)} required maxLength={60} autoFocus/></label>
+      <div className="button-row"><button className="primary" disabled={mutation.busy||!name.trim()} type="submit">Make token</button><button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button></div>
+    </form>}
+  </Modal>;
+}

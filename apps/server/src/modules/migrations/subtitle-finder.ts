@@ -30,5 +30,9 @@ export const subtitleFinderMigrations: Migration[] = [
   // Videos checked and found without English (no sidecar, no embedded text track), for the accounting in Admin ›
   // Downloads › Subtitles. Gone once English is recorded for it, or the video is.
   { name: 'subtitle-missing', up: `
-    CREATE TABLE subtitle_missing(path TEXT PRIMARY KEY, at INTEGER NOT NULL);` }
+    CREATE TABLE subtitle_missing(path TEXT PRIMARY KEY, at INTEGER NOT NULL);` },
+  // The PC workers (docs/PHASE-5.md): each one's bearer token, stored as its SHA-256, and revocable.
+  { name: 'subtitle-workers', up: `
+    CREATE TABLE subtitle_workers(id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL, last_seen_at INTEGER, revoked_at INTEGER);` }
 ];

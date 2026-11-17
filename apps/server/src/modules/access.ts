@@ -8,18 +8,21 @@ import { requireThat } from '../errors.js';
 // are reauthorized fully elsewhere. viewer: any signed-in Plex account. admin: the owner or an account made admin,
 // acting on Plex with the owner's saved token. owner: the Plex server owner alone.
 // connectionAdmin: Admin › Connections settings and checks that don't need a Plex grant.
-export type AccessLevel = 'public' | 'session' | 'viewer' | 'admin' | 'owner' | 'connectionAdmin';
+// worker: the PC subtitle worker's bearer token (docs/PHASE-5.md), accepted on its own routes only; no cookies there.
+export type AccessLevel = 'public' | 'session' | 'viewer' | 'admin' | 'owner' | 'connectionAdmin' | 'worker';
 export type Viewer = Awaited<ReturnType<IdentityService['authenticate']>>;
-type FullLevel = Exclude<AccessLevel, 'public' | 'session' | 'connectionAdmin'>;
+type FullLevel = Exclude<AccessLevel, 'public' | 'session' | 'connectionAdmin' | 'worker'>;
+export type WorkerIdentity = { id: number; name: string };
 export type AccessChecks = Record<FullLevel, (req: FastifyRequest) => Promise<Viewer>> & {
   session: (req: FastifyRequest) => Promise<string>;
   connectionAdmin: (req: FastifyRequest) => Promise<string>;
+  worker: (req: FastifyRequest) => Promise<WorkerIdentity>;
 };
 
 declare module 'fastify' {
   // portal: the route is also served on the Requests site (modules/module.ts); 'admin' lets an admin route through there.
   interface FastifyContextConfig { access?: AccessLevel; portal?: boolean | 'admin' }
-  interface FastifyRequest { viewer: Viewer | null; sessionHash: string | null; connectionActor: string | null }
+  interface FastifyRequest { viewer: Viewer | null; sessionHash: string | null; connectionActor: string | null; subtitleWorker: WorkerIdentity | null }
   interface FastifyInstance { accessChecks: Partial<AccessChecks> }
 }
 
@@ -29,12 +32,18 @@ export function installAccess(app: FastifyInstance, checks: Partial<AccessChecks
   app.decorateRequest('viewer', null);
   app.decorateRequest('sessionHash', null);
   app.decorateRequest('connectionActor', null);
+  app.decorateRequest('subtitleWorker', null);
   app.addHook('onRequest', async req => {
     const level = req.routeOptions.config.access;
     if (!level || level === 'public') return;
     if (level === 'connectionAdmin') {
       requireThat(checks.connectionAdmin, 'FORBIDDEN', 'Access level is not available.', 403);
       req.connectionActor = await checks.connectionAdmin(req);
+      return;
+    }
+    if (level === 'worker') {
+      requireThat(checks.worker, 'FORBIDDEN', 'Access level is not available.', 403);
+      req.subtitleWorker = await checks.worker(req);
       return;
     }
     if (level === 'session') {
@@ -77,6 +86,15 @@ export function viewer(req: FastifyRequest): Viewer {
   requireThat(req.viewer, 'UNAUTHENTICATED', 'Sign in with Plex.', 401);
   return req.viewer;
 }
+
+// The PC worker a 'worker' route's check admitted.
+export function subtitleWorker(req: FastifyRequest): WorkerIdentity {
+  requireThat(req.subtitleWorker, 'UNAUTHENTICATED', 'A worker token is required.', 401);
+  return req.subtitleWorker;
+}
+
+// The bearer token in a request's Authorization header.
+export const bearerToken = (req: FastifyRequest) => /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? '')?.[1];
 
 // The browser session a 'session' route's check admitted.
 export function session(req: FastifyRequest): string {

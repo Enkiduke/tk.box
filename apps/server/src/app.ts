@@ -1,4 +1,4 @@
-import Fastify, { LogController } from 'fastify';
+import Fastify, { LogController, type FastifyRequest } from 'fastify';
 import { RequestsSite } from './services/requests-site.js';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -18,7 +18,8 @@ import { ServiceKeys } from './persistence/service-keys.js';
 import { AdminStore } from './persistence/admin-store.js';
 import { PlexBackground } from './services/plex-background.js';
 import { ServerMetrics } from './services/metrics.js';
-import { installAccess, requireDeclaredAccess } from './modules/access.js';
+import { bearerToken, installAccess, requireDeclaredAccess } from './modules/access.js';
+import { SubtitleWorkerStore } from './persistence/subtitle-worker-store.js';
 import { EventBus } from './modules/bus.js';
 import { mountModule, type ModuleContext } from './modules/module.js';
 import { Jobs } from './services/jobs.js';
@@ -95,13 +96,15 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     if (site.has(req.raw)) {
       req.portal = true;
       const route = req.routeOptions.config as {portal?: boolean | 'admin'; access?: string} | undefined;
-      requireThat(route?.portal && (route.portal === 'admin' ? route.access === 'admin' : route.access !== 'admin' && route.access !== 'owner' && route.access !== 'connectionAdmin'), 'NOT_FOUND', 'Not found.', 404);
+      requireThat(route?.portal && (route.portal === 'admin' ? route.access === 'admin' : route.access !== 'admin' && route.access !== 'owner' && route.access !== 'connectionAdmin' && route.access !== 'worker'), 'NOT_FOUND', 'Not found.', 404);
     }
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
     // blob: images are ones the page made itself (the artwork layout editor's previews); data: stays blocked.
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
     if (config.secureCookies) reply.header('Strict-Transport-Security', 'max-age=31536000');
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    // The PC subtitle worker's routes take a bearer token and never cookies, so a browser can't be made to send one.
+    const bearerOnly = (req.routeOptions.config as {access?: string} | undefined)?.access === 'worker';
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !bearerOnly) {
       const host = req.headers.host, peer = req.raw.socket.remoteAddress;
       const validOrigin = req.portal ? !!site.origin && req.headers.origin === site.origin
         : previewHosts
@@ -159,7 +162,14 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
     return accountId;
   };
   // Every route declares an access level, checked here before its handler runs; one that declares none stops startup.
-  installAccess(app, {viewer: auth, admin, owner: ownerOnly, connectionAdmin, session: async req => identity.session(req.cookies[sessionCookie])});
+  // The PC subtitle worker (docs/PHASE-5.md): its bearer token, on its own routes only.
+  const subtitleWorkers = new SubtitleWorkerStore(db);
+  const worker = async (req: FastifyRequest) => {
+    const found = subtitleWorkers.authenticate(bearerToken(req));
+    requireThat(found, 'UNAUTHENTICATED', 'Worker token not recognised.', 401);
+    return {id: found.id, name: found.name};
+  };
+  installAccess(app, {viewer: auth, admin, owner: ownerOnly, connectionAdmin, worker, session: async req => identity.session(req.cookies[sessionCookie])});
   requireDeclaredAccess(app);
   const bus = new EventBus((message, detail) => app.log.warn(detail, message));
   // Plex caches go first, so every module reacting to the same change (and every page told to reload) reads Plex anew.
