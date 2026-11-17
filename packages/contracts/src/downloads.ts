@@ -8,11 +8,18 @@ export type DownloadsGrab = {
   size?: number; quality: string; score: number; upgrade: boolean; state: GrabState; progress?: number; error?: string;
   sentAt?: number; finishedAt?: number; importedAt?: number;
 };
-// Admin › Downloads › History: one step of one grab, newest first. `kind` is the state it moved to, or grabbed / retried;
-// `note` says more (the error, where it was imported, why it was removed, "By hand").
+// Admin › Downloads › History: one row per grab, newest activity first, opening to its steps (oldest first). A step's
+// `kind` is the state it moved to, or grabbed / retried; `note` says more (the error, where it was imported, why it
+// was removed, "By hand"). `outcome`: where the grab ended up; `replaced` is a failed or cancelled grab that a later
+// grab of the same title (and episodes) took over (`replacedBy`), so it needs no Retry. `swappedFrom`: the slow grab
+// this one was swapped in for. `endedAt`: when it was imported, or failed or was cancelled.
 export type GrabEventKind = GrabState | 'grabbed' | 'retried' | 'only-source';
-export type DownloadsEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: DownloadsGrab };
-export type DownloadsHistory = { events: DownloadsEvent[] };
+export type DownloadsStep = { id: number; at: number; kind: GrabEventKind; note?: string };
+export type GrabOutcome = 'active' | 'imported' | 'failed' | 'replaced' | 'cancelled';
+export type GrabLink = { id: number; releaseName: string };
+export type DownloadsHistoryGrab = DownloadsGrab & { outcome: GrabOutcome; startedAt: number; lastAt: number; endedAt?: number;
+  swappedFrom?: GrabLink; replacedBy?: GrabLink; steps: DownloadsStep[] };
+export type DownloadsHistory = { grabs: DownloadsHistoryGrab[] };
 export type DownloadsJobState = 'queued' | 'running' | 'failed';
 // A queue item: `subject` names the title it is for, when it is for one.
 export type DownloadsJob = { id: number; kind: string; label: string; subject?: string; titleId?: number; state: DownloadsJobState; runAt: number;
@@ -93,8 +100,10 @@ export type LibraryTitleView = {
   released: { theatrical?: string; digital?: string; physical?: string };
   nextAt?: number; lastAt?: number; misses: number;
   files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[];
-  source: MovieSource; addedAt: number; requests: TitleRequest[];
+  source: MovieSource; addedAt: number; requests: TitleRequest[]; plex?: PlexKey;
 };
+// Where a title is on Plex (the server's machine id and its rating key), for its watch history.
+export type PlexKey = { server: string; key: string };
 // A show's episode in its dialog: `monitored` with its season; `wanted` as if unpaused; `grab` one under way; the
 // times are its own search's (S02E05).
 export type ShowEpisodeView = { episode: number; name?: string; airDate?: string; aired: boolean; monitored: boolean;
@@ -105,7 +114,7 @@ export type ShowTitleView = {
   kind: 'show'; id: number; tmdbId: number; tvdbId?: number; title: string; year?: number; status?: string; profileId: number; keep: boolean;
   monitor: string; monitored: boolean; paused: boolean; pausedReason?: string; wanted: { missing: number; cutoff: number };
   seasons: ShowSeasonView[]; files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[]; source: MovieSource; addedAt: number;
-  requests: TitleRequest[];
+  requests: TitleRequest[]; plex?: PlexKey;
 };
 // What /admin/library/titles/:id answers: a movie or a show.
 export type TitleView = LibraryTitleView | ShowTitleView;

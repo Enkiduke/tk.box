@@ -3,7 +3,7 @@ import { RECHECK } from './services/download-health.js';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
+import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview, PlexKey,
   LibraryBulkResult, PickProfile, PickRules, ShowList, ShowTitleView, TitleRequest, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
@@ -16,6 +16,7 @@ import { parsedFacts } from './services/library.js';
 import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
 import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
+import { grabHistoryFacts } from './lib/grab-history.js';
 import { tmdbImage } from './providers/explore-images.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import type { Grab, LibraryStore, LibraryTitle } from './persistence/library-store.js';
@@ -100,6 +101,8 @@ export const settingsInput = z.object({
 
 // How long Queue says a download was swapped in for a slow one.
 const SWAPPED_SHOWN = 10 * 60000;
+// How many grabs Downloads › History lists.
+const HISTORY_GRABS = 500;
 const previewInput = z.object({ release: z.string().trim().min(1).max(300), tmdbId: z.number().int().positive().max(99999999).optional() }).strict();
 // The name a release would get, from what its name says (an import reads the audio, HDR and codec from ffprobe instead).
 export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>, input: z.infer<typeof previewInput>): NamingPreview {
@@ -129,7 +132,9 @@ export type LibrarySources = {
   // Every request for one title, newest first (its dialog's Requests tab).
   history?: (kind: 'movie' | 'show', tmdbId: number) => TitleRequest[];
 };
-type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'> };
+type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'>;
+  // Where a title is on Plex, for its dialog's History tab; none until Plex has been read.
+  plexKey?: (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => PlexKey | undefined };
 // A movie's source: a request first, then collections, then the one-time import. A show's: a request, else the
 // one-time import.
 export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'movie' | 'show' }, requests: Map<number, { name: string; at: number; status: string }[]>,
@@ -143,7 +148,8 @@ export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'mo
   return { kind: 'other', by: title.addedBy };
 }
 
-export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders }: Deps) {
+export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders, plexKey }: Deps) {
+  const plexOf = (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => { const plex = plexKey?.(kind, tmdbId, tvdbId); return plex ? { plex } : {}; };
   const sourcesNow = () => { const requests = sources.requesters?.() ?? new Map(), collections = sources.collections?.() ?? new Map();
     return (t: { tmdbId: number; addedBy: string }) => movieSource(t, requests, collections); };
   const showSourcesNow = () => { const requests = sources.showRequesters?.() ?? new Map();
@@ -191,7 +197,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       ...(title.released.status ? { status: title.released.status } : {}), profileId: title.profileId, keep: title.keep, monitor: title.monitor, monitored: title.monitor !== 'none',
       paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}), wanted: { missing, cutoff }, seasons, files,
       grabs: store.grabsFor(title.id, 50).map(grabView), profiles: store.profiles(), source: showSourcesNow()(title), addedAt: title.addedAt,
-      requests: sources.history?.('show', title.tmdbId) ?? [] };
+      requests: sources.history?.('show', title.tmdbId) ?? [], ...plexOf('show', title.tmdbId, title.tvdbId) };
   };
   const titleView = async (titleId: number): Promise<TitleView> => {
     const title = store.title(titleId);
@@ -203,7 +209,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       profileId: title.profileId, keep: title.keep, earlyCopies: title.earlyCopies, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
       wanted, released: title.released, ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}) } : {}), misses: search?.misses ?? 0,
       files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt,
-      requests: sources.history?.('movie', title.tmdbId) ?? [] } satisfies LibraryTitleView;
+      requests: sources.history?.('movie', title.tmdbId) ?? [], ...plexOf('movie', title.tmdbId) } satisfies LibraryTitleView;
   };
 
   const seedingView = (g: Grab): DownloadsSeeding => {
@@ -226,10 +232,16 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       }),
     } satisfies DownloadsActivity;
   });
-  // Downloads › History: the newest grab steps (the page filters and pages them).
+  // Downloads › History: the grabs with the newest steps, each with all its steps (the page filters and pages them).
   app.get('/api/v1/admin/library/history', admin, async () => {
     clearNames();
-    return { events: store.grabEvents(2000).map(e => ({ id: e.id, at: e.at, kind: e.kind, ...(e.note ? { note: e.note } : {}), grab: grabView(e.grab) })) } satisfies DownloadsHistory;
+    const rows = store.grabHistory(HISTORY_GRABS), facts = grabHistoryFacts(rows), byId = new Map(rows.map(r => [r.grab.id, r.grab]));
+    const link = (id?: number) => { const g = id === undefined ? undefined : byId.get(id) ?? store.grab(id); return g ? { id: g.id, releaseName: g.releaseName } : undefined; };
+    return { grabs: rows.map(({ grab, steps }) => {
+      const f = facts.get(grab.id)!, from = link(grab.swappedFrom), by = link(f.replacedBy);
+      return { ...grabView(grab), outcome: f.outcome, startedAt: f.startedAt, lastAt: f.lastAt, ...(f.endedAt !== undefined ? { endedAt: f.endedAt } : {}),
+        ...(from ? { swappedFrom: from } : {}), ...(by ? { replacedBy: by } : {}), steps };
+    }) } satisfies DownloadsHistory;
   });
   // Everything the downloaders hold, live, each matched to its tk.box grab and who asked for it; then the grabs under
   // way that no downloader lists (sending, or importing after SABnzbd let go).
@@ -301,6 +313,17 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}),
         ...(earlyCopies !== undefined ? { earlyCopies } : {}) });
     return titleView(titleId);
+  });
+  // Deleted from the library, with its folder on disk unless `files` is false.
+  app.delete('/api/v1/admin/library/titles/:id', admin, async request => {
+    const { files } = z.object({ files: z.boolean().default(true) }).strict().parse(request.body ?? {});
+    clearNames();
+    return await library.remove(id.parse(request.params).id, files);
+  });
+  // One of its files deleted from disk and the library.
+  app.delete('/api/v1/admin/library/titles/:id/files/:fileId', admin, async request => {
+    const { id: titleId, fileId } = z.object({ id: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }).strict().parse(request.params);
+    return await library.removeFile(titleId, fileId);
   });
   // Quick edit: the same changes to many movies or shows at once.
   app.post('/api/v1/admin/library/titles/bulk', admin, async request => {

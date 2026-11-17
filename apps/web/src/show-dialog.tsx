@@ -6,7 +6,7 @@ import {Switch} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {RequestsTable,SourceLine} from './movie-source.js';
-import {FilesTable,GrabsTable,TitleControls,type Mutation} from './movie-dialog.js';
+import {FilesTable,GrabsTable,TitleControls,WatchHistoryPanel,type Mutation} from './movie-dialog.js';
 import {ACTIONS,Dash,FavoriteStar,GrabPill,IconAction,Panel,Pill,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
 
 // A show in the library (docs/UI.md), in the same dialog as a movie (movie-dialog.tsx): its seasons with their
@@ -50,23 +50,24 @@ function counts(episodes:ShowEpisodeView[]) {
   return {have:episodes.filter(e=>e.file).length,total:episodes.filter(e=>e.file||(e.aired&&e.monitored)).length,size:[...files.values()].reduce((a,b)=>a+b,0)};
 }
 
-export function ShowDialogBody({t,path,pane,scope,setPane,mutation}:{t:ShowTitleView;path:string;pane:TitlePane;scope?:string;setPane:(pane:TitlePane,scope?:string)=>void;mutation:Mutation}) {
+export function ShowDialogBody({t,path,pane,scope,setPane,mutation,onDeleted}:{t:ShowTitleView;path:string;pane:TitlePane;scope?:string;setPane:(pane:TitlePane,scope?:string)=>void;mutation:Mutation;onDeleted:()=>void}) {
   const search=(scope?:string)=>void mutation.run(async()=>{await api(`${path}/search`,'POST',scope?{scope}:{});toast.info(`Searching for ${t.title}${scope?` ${scope}`:''}`);});
   const interactive=(scope:string)=>setPane('search',scope);
   return <div className="ui-movie-dialog">
-    <Head t={t} path={path} mutation={mutation} search={()=>search()}/>
+    <Head t={t} path={path} mutation={mutation} search={()=>search()} onDeleted={onDeleted}/>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     <Tabs label={t.title} value={pane} onChange={p=>setPane(p,p==='search'?scope:undefined)} tabs={[{id:'overview',label:'Seasons',count:t.seasons.length},
-      {id:'files',label:'Files',count:t.files.length},{id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'search',label:'Interactive search'}]}/>
+      {id:'files',label:'Files',count:t.files.length},{id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'history',label:'Watch history'},{id:'search',label:'Interactive search'}]}/>
     {pane==='search'?<ShowSearch t={t} scope={scope} setScope={s=>setPane('search',s)}/>
-      :pane==='files'?<Panel flush><FilesTable files={t.files} now={Date.now()}/></Panel>
+      :pane==='history'?<WatchHistoryPanel plex={t.plex} show/>
+      :pane==='files'?<Panel flush><FilesTable files={t.files} path={path} now={Date.now()}/></Panel>
       :pane==='grabs'?<Panel flush><GrabsTable grabs={t.grabs} now={Date.now()}/></Panel>
       :pane==='requests'?<Panel flush><RequestsTable requests={t.requests} show/></Panel>
       :<Panel flush><SeasonsTable t={t} path={path} mutation={mutation} search={search} interactive={interactive}/></Panel>}
   </div>;
 }
 
-function Head({t,path,mutation,search}:{t:ShowTitleView;path:string;mutation:Mutation;search:()=>void}) {
+function Head({t,path,mutation,search,onDeleted}:{t:ShowTitleView;path:string;mutation:Mutation;search:()=>void;onDeleted:()=>void}) {
   const now=Date.now(),s=showStatus(t),all=t.seasons.flatMap(x=>x.episodes),{have,total,size}=counts(all);
   const today=new Date(now).toISOString().slice(0,10),next=all.filter(e=>!e.aired&&e.airDate&&e.airDate>=today).map(e=>e.airDate!).sort()[0];
   return <header className="ui-movie">
@@ -85,7 +86,7 @@ function Head({t,path,mutation,search}:{t:ShowTitleView;path:string;mutation:Mut
         <div><dt>Seasons</dt><dd>{t.seasons.length}</dd></div>
         <div><dt>Follows</dt><dd>{modes[t.monitor]??t.monitor}</dd></div>
       </dl>
-      <TitleControls t={t} path={path} mutation={mutation}>
+      <TitleControls t={t} path={path} mutation={mutation} onDeleted={onDeleted}>
         <button disabled={mutation.busy||t.paused||!t.monitored||!t.wanted.missing&&!t.wanted.cutoff} title="Search now for every wanted episode and grab the best matches" onClick={search}>
           <Icon name="search" size={16}/>Automatic search</button>
       </TitleControls>

@@ -422,6 +422,33 @@ export class Library {
     if (folder && removed.length) await this.deps.scan(folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder, error: errorText(e) }));
     return true;
   }
+  // An admin deleted one of its files: gone from disk and the library, and Plex scans the folder. The title stays as
+  // it was otherwise, so a monitored one wants the movie or episodes again.
+  async removeFile(titleId: number, fileId: number) {
+    requireWritable();
+    const title = this.store.title(titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
+    const result = await this.deps.importer.deleteOneFile(title, fileId);
+    requireThat(result, 'NOT_FOUND', 'No such file for this title.', 404);
+    this.store.audit('library_file_deleted', { title: title.id, file: fileId, onDisk: result.deleted });
+    this.deps.log('library: an admin deleted a file', { title: title.id, file: fileId, onDisk: result.deleted });
+    if (result.folder) await this.deps.scan(result.folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder: result.folder, error: errorText(e) }));
+    return { deleted: result.deleted };
+  }
+  // An admin deleted it: downloads under way are cancelled, its folder goes from disk (unless `files` is false), the
+  // library forgets it, and Plex scans the folder so the title drops out.
+  async remove(titleId: number, files: boolean) {
+    requireWritable();
+    const title = this.store.title(titleId);
+    requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
+    for (const grab of this.store.activeGrabs().filter(g => g.titleId === titleId)) await this.cancelGrab(grab, 'An admin deleted the title.');
+    const { folder, removed } = files ? await this.deps.importer.deleteTitleFolder(title) : { folder: undefined, removed: [] as string[] };
+    this.forget(title.id, 'admin');
+    this.store.audit('library_title_deleted', { title: title.id, kind: title.kind, tmdb: title.tmdbId, name: title.title, files: removed.length });
+    this.deps.log('library: an admin deleted a title', { title: title.id, tmdb: title.tmdbId, files: removed.length });
+    if (folder && removed.length) await this.deps.scan(folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder, error: errorText(e) }));
+    return { files: removed.length };
+  }
   pause(titleId: number, reason: string | null) { this.store.setPaused(titleId, reason); if (reason === null) this.resolve(`library.paused.${titleId}`); }
 
   private have(title: LibraryTitle, file: LibraryFileRow | undefined) {
@@ -1316,14 +1343,21 @@ export class Library {
   }
   private async interactiveShow(title: LibraryTitle, scopeText: string | undefined, signal?: AbortSignal): Promise<InteractiveSearch> {
     const scope = this.scopeOf(scopeText), result = await this.deps.indexers.search(this.showQuery(title, scope.season, scope.episode), signal, { manual: true });
-    this.hold(`${title.id}:${scopeName(scope.season, scope.episode)}`, result.releases);
     const state = this.showState(title), ctx = this.context(title);
-    const decisions = result.releases.map(r => this.showDecision(title, r, scope, state, ctx));
+    // An episode search shows the episode's file among the results (a season's has one per episode, so none).
+    const file = scope.episode === undefined ? undefined : state.files.get(`${scope.season}:${scope.episode}`);
+    const fileGrab = file?.grabId === undefined ? undefined : this.store.grab(file.grabId);
+    const releases = file ? result.releases.filter(r => !matchesLibraryFile(r, file, fileGrab)) : result.releases;
+    this.hold(`${title.id}:${scopeName(scope.season, scope.episode)}`, releases);
+    const decisions = releases.map(r => this.showDecision(title, r, scope, state, ctx));
     const accepted = decisions.filter(d => d.accepted).sort((a, b) => compareDecisions(a, b, ctx)), best = accepted[0];
+    const ranked = [...accepted, ...decisions.filter(d => !d.accepted)];
+    const runtime = state.episodes.find(e => e.season === scope.season && e.episode === scope.episode)?.runtime || title.runtime || DEFAULT_RUNTIME.show;
+    const have = file ? this.currentRelease(file, fileGrab?.protocol, this.have(title, file), runtime, ctx, ranked) : undefined;
     const profileRow = this.store.profiles().find(p => p.id === title.profileId);
     return {
-      profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) },
-      releases: [...accepted, ...decisions.filter(d => !d.accepted)].map(d => this.releaseView(d, best)),
+      profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) }, ...(have ? { have } : {}),
+      releases: ranked.map(d => this.releaseView(d, best)),
       indexers: result.indexers.map(r => ({ indexer: r.indexer, searched: r.searched, ...(r.error ? { error: r.error } : {}) })),
     };
   }
@@ -1341,13 +1375,13 @@ export class Library {
     this.store.audit('library_manual_grab', { title: title.id, grab: grab.id, release: release.name, accepted: decision.accepted });
     return grab;
   }
-  private currentRelease(file: LibraryFileRow, protocol: Grab['protocol'] | undefined, want: ReturnType<Library['want']>,
+  // The library's file as a row of interactive search, for comparison: a movie's file, or an episode search's episode file.
+  private currentRelease(file: LibraryFileRow, protocol: Grab['protocol'] | undefined, have: ReturnType<Library['have']>, runtime: number,
     ctx: PickContext, decisions: Decision[]): InteractiveCurrentRelease {
     const name = file.releaseName || win32.basename(file.path);
     const tier = tierOf(ctx.profile, file.quality);
-    const sizeTarget = tier >= 0 && !EARLY_COPIES.has(file.quality)
-      ? sizeLimits(ctx.profile.tiers[tier]!, want.runtime || DEFAULT_RUNTIME.movie)?.target : undefined;
-    const score = want.have?.score;
+    const sizeTarget = tier >= 0 && !EARLY_COPIES.has(file.quality) ? sizeLimits(ctx.profile.tiers[tier]!, runtime)?.target : undefined;
+    const score = have?.score;
     const current = { tier, ...(sizeTarget !== undefined ? { sizeTarget } : {}), ...(score !== undefined ? { score } : {}),
       release: { size: file.size, ...(protocol ? { protocol } : {}) } };
     // Insert among the ranked candidates, leaving the rejected releases in their original order.
@@ -1355,7 +1389,7 @@ export class Library {
       ? rank(file.quality) >= rank(d.quality!)
       : compareDecisions(current, d, ctx) <= 0));
     return { current: true, name, quality: file.quality, size: file.size, ...(score !== undefined ? { score } : {}),
-      scoreParts: want.have?.scoreParts ?? [], parsed: parsedFacts(parseRelease(name)),
+      scoreParts: have?.scoreParts ?? [], parsed: parsedFacts(parseRelease(name)),
       position: position < 0 ? decisions.length : position };
   }
 
@@ -1370,7 +1404,7 @@ export class Library {
     const releases = file ? result.releases.filter(r => !matchesLibraryFile(r, file, fileGrab)) : result.releases;
     this.hold(String(title.id), releases);
     const want = this.want(title, file), ctx = this.context(title), { decisions, best } = pick(releases, want, ctx);
-    const have = file ? this.currentRelease(file, fileGrab?.protocol, want, ctx, decisions) : undefined;
+    const have = file ? this.currentRelease(file, fileGrab?.protocol, want.have, want.runtime || DEFAULT_RUNTIME.movie, ctx, decisions) : undefined;
     const profileRow = this.store.profiles().find(p => p.id === title.profileId);
     return {
       profile: { name: profileRow?.name ?? 'Default', cutoff: preferredText(ctx.profile) }, ...(have ? { have } : {}),

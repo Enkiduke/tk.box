@@ -10,6 +10,8 @@ const rangeQuery = z.object({ days: periods.default('30'), source: z.enum(histor
   user: z.string().regex(/^\d{1,40}$/).optional() });
 const sessionQuery = rangeQuery.extend({ cursor: z.string().regex(/^\d{1,16}:[\da-f-]{36}$/).optional(), q: z.string().trim().max(80).optional(),
   media: z.coerce.number().int().positive().optional(), show: z.string().regex(/^\d{1,40}$/).optional(), server: z.string().max(100).optional(),
+  // A Plex rating key: the movie itself, or every episode of the show (a library title's History tab).
+  key: z.string().regex(/^\d{1,40}$/).optional(),
   airing: z.string().max(1800).optional(), kind: z.enum(['movie', 'episode', 'channel']).optional(), sort: z.enum(['newest', 'longest']).default('newest') });
 const mediaQuery = rangeQuery.extend({ kind: z.enum(['all', 'movies', 'shows', 'episodes', 'channels', 'programs']).default('all') });
 type Range = z.infer<typeof rangeQuery>;
@@ -133,14 +135,15 @@ export function registerHistory(app: FastifyInstance, db: Db) {
         OR instr(lower(COALESCE(s.account_name,'')),lower(?))>0 OR s.account_id=?)`);
       range.bindings.push(filter.q, filter.q, filter.q, filter.q);
     }
-    if (filter.media || filter.show && filter.server) {
+    if (filter.media || (filter.show || filter.key) && filter.server) {
       const where = filter.media
         ? 'target.server_id=(SELECT server_id FROM history_media WHERE id=?) AND target.rating_key=(SELECT rating_key FROM history_media WHERE id=?)'
-        : "target.server_id=? AND json_extract(target.metadata,'$.showId')=?";
+        : filter.show ? "target.server_id=? AND json_extract(target.metadata,'$.showId')=?"
+        : "target.server_id=? AND (target.rating_key=? OR json_extract(target.metadata,'$.showId')=?)";
       range.where.push(`(EXISTS(SELECT 1 FROM history_media target WHERE target.id=s.media_id AND ${where})
         OR EXISTS(SELECT 1 FROM history_live_allocations a JOIN history_media target ON target.id=a.media_id WHERE a.session_id=s.id AND ${where}))`);
-      const pair = filter.media ? [filter.media, filter.media] : [filter.server!, filter.show!];
-      range.bindings.push(...pair, ...pair);
+      const set = filter.media ? [filter.media, filter.media] : filter.show ? [filter.server!, filter.show] : [filter.server!, filter.key!, filter.key!];
+      range.bindings.push(...set, ...set);
     }
     if (filter.airing) {
       const separator = filter.airing.indexOf(':');

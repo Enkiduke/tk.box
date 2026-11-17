@@ -24,7 +24,7 @@ export type Probe = { durationSec?: number; videoCodec?: string; audioCodec?: st
   transfer?: string; dolbyVision?: boolean; hdr10Plus?: boolean };
 export type ProbeFn = (path: string, signal?: AbortSignal) => Promise<Probe>;
 // The file operations import uses, so tests can make a rename fail with EXDEV or stop between two steps.
-export type FileOps = Pick<typeof fs, 'rename' | 'copyFile' | 'unlink' | 'mkdir' | 'stat' | 'readdir' | 'rmdir' | 'link'>;
+export type FileOps = Pick<typeof fs, 'rename' | 'copyFile' | 'unlink' | 'mkdir' | 'stat' | 'readdir' | 'rmdir' | 'rm' | 'link'>;
 // How a download is brought in. Usenet and unpacked files are moved (renamed); a torrent's file is hardlinked, so it
 // keeps seeding. Both copy instead on EXDEV (another mount), and a hardlink copies too where links aren't possible.
 // `from` is the folder to read instead of the grab's (the unpack folder); `state` is the grab's state once imported
@@ -158,6 +158,45 @@ export class LibraryImporter {
       removed.push(file.path);
     }
     if (folder) try { if (!(await this.ops.readdir(folder)).length) await this.ops.rmdir(folder); } catch (e) { if (errno(e) !== 'ENOENT') throw e; }
+    return { folder, removed };
+  }
+
+  // An admin deleted one file: it goes from disk if it's inside the title's folder (a file recorded elsewhere is only
+  // forgotten), its record goes, and a season folder it leaves empty goes too. Returns the folder for Plex to scan.
+  async deleteOneFile(title: LibraryTitle, fileId: number) {
+    const slash = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '');
+    const file = this.store.file(fileId);
+    if (!file || file.titleId !== title.id) return undefined;
+    const folder = title.folder && !/[\\/]|^\.\.?$/.test(title.folder) ? `${slash(title.root)}/${title.folder}` : undefined;
+    const path = slash(file.path), inside = !!folder && path.startsWith(`${folder}/`) && !path.split('/').includes('..');
+    if (inside) await unlinkQuietly(this.ops, file.path);
+    else this.log('library: forgot a file outside the title’s folder without deleting it', { title: title.id, path: file.path });
+    this.store.deleteFile(file.id);
+    const parent = path.slice(0, path.lastIndexOf('/'));
+    if (inside && parent !== folder) try { if (!(await this.ops.readdir(parent)).length) await this.ops.rmdir(parent); } catch (e) { if (errno(e) !== 'ENOENT') throw e; }
+    return { folder: inside ? folder : undefined, deleted: inside };
+  }
+
+  // An admin deleted the title: its whole folder under its root goes (season folders, subtitles, everything in it), and
+  // the records of its files with it. Recorded files outside that folder are left alone. A folder another title also
+  // uses isn't removed; only this title's own files in it are.
+  async deleteTitleFolder(title: LibraryTitle) {
+    const slash = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '');
+    const folder = title.folder && !/[\\/]|^\.\.?$/.test(title.folder) ? `${slash(title.root)}/${title.folder}` : undefined;
+    const shared = !!folder && this.store.titlesInFolder(title.root, title.folder!).some(id => id !== title.id);
+    if (!folder || shared) {
+      if (shared) this.log('library: another title uses this folder, so only the title’s own files go', { title: title.id, folder });
+      const { removed } = await this.deleteFiles(title);
+      return { folder, removed };
+    }
+    const inside = (path: string) => slash(path).startsWith(`${folder}/`) && !slash(path).split('/').includes('..');
+    const removed: string[] = [];
+    for (const file of this.store.files(title.id)) {
+      if (!inside(file.path)) { this.log('library: left a file outside the title’s folder', { title: title.id, path: file.path }); continue; }
+      removed.push(file.path);
+    }
+    await this.ops.rm(folder, { recursive: true, force: true });
+    for (const file of this.store.files(title.id)) if (inside(file.path)) this.store.deleteFile(file.id);
     return { folder, removed };
   }
 

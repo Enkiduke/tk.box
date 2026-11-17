@@ -1,8 +1,9 @@
-import {useState} from 'react';
-import type {ClientState,DownloadItem,DownloadsActivity,DownloadsEvent,DownloadsHistory,DownloadsJob,GrabEventKind,DownloadsLive,WantedItem,WantedList} from '../../../packages/contracts/src/downloads.js';
+import {Fragment,useState} from 'react';
+import type {ClientState,DownloadItem,DownloadsActivity,DownloadsHistory,DownloadsHistoryGrab,DownloadsJob,DownloadsStep,GrabEventKind,GrabOutcome,DownloadsLive,WantedItem,
+  WantedList} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {replaceRoute,link,useApi} from './hooks.js';
-import {ErrorNotice} from './components.js';
+import {ErrorNotice,Icon} from './components.js';
 import {SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {ACTIONS,Dash,GrabPill,IconAction,Loaded,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
@@ -179,54 +180,78 @@ export function DownloadJobs() {
   </>;
 }
 
-// ---- History: every step of every tk.box grab ----
+// ---- History: one row per tk.box grab, opening to its steps ----
 
-const eventWords:Record<GrabEventKind,[string,Tone]>={grabbed:['Grabbed','active'],retried:['Retried','wait'],sending:['Sending','active'],downloading:['Sent','active'],
+const stepWords:Record<GrabEventKind,[string,Tone]>={grabbed:['Grabbed','active'],retried:['Retried','wait'],sending:['Sending','active'],downloading:['Sent','active'],
   unpacking:['Unpacking','active'],importing:['Importing','active'],imported:['Imported','ok'],seeding:['Imported','ok'],done:['Removed','off'],failed:['Failed','bad'],
   cancelled:['Cancelled','off'],'only-source':['Only source','off']};
-const steps=[['all','All'],['grabbed','Grabbed'],['imported','Imported'],['failed','Failed'],['removed','Removed']] as const;
-type Step=typeof steps[number][0];
-const stepOf:Partial<Record<GrabEventKind,Step>>={grabbed:'grabbed',retried:'grabbed',imported:'imported',seeding:'imported',failed:'failed',done:'removed',cancelled:'removed'};
-const fileName=(path:string)=>path.split(/[\/]/).pop()||path;
+const outcomeWords:Record<Exclude<GrabOutcome,'active'>,[string,Tone]>={imported:['Imported','ok'],failed:['Failed','bad'],replaced:['Replaced','off'],cancelled:['Cancelled','off']};
+const outcomeWord=(g:DownloadsHistoryGrab):[string,Tone]=>g.outcome==='active'?[grabNames[g.state],'active']:outcomeWords[g.outcome];
+const outcomes=['all','active','imported','failed','replaced','cancelled'] as const;
+type OutcomeFilter=typeof outcomes[number];
+const outcomeNames:Record<OutcomeFilter,string>={all:'All',active:'In progress',imported:'Imported',failed:'Failed',replaced:'Replaced',cancelled:'Cancelled'};
+const fileName=(path:string)=>path.split(/[\\/]/).pop()||path;
+const exactTime=new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'});
+const lastStep=(g:DownloadsHistoryGrab,is:(s:DownloadsStep)=>boolean)=>[...g.steps].reverse().find(is);
+const stepNote=(s:DownloadsStep)=>s.note&&(s.kind==='imported'||s.kind==='seeding'?fileName(s.note):s.note);
 
-function EventNote({e,later}:{e:DownloadsEvent;later:boolean}) {
-  if(!e.note&&!later)return null;
-  const text=e.kind==='imported'||e.kind==='seeding'?e.note&&fileName(e.note):e.note;
-  return <small className={e.kind==='failed'?'danger-text':undefined} title={e.note}>{later?<>Re-downloaded{text?' · ':''}</>:null}{text}</small>;
+// The line under a grab's status: how far it got, where it went, or why it stopped.
+function OutcomeLine({g}:{g:DownloadsHistoryGrab}) {
+  if(g.outcome==='active')return g.progress!==undefined&&g.state==='downloading'?<small>{Math.floor(g.progress*100)}%</small>:null;
+  if(g.outcome==='replaced')return <small title={g.replacedBy?.releaseName}>By {g.replacedBy?.releaseName}</small>;
+  if(g.outcome==='imported'){
+    const removed=g.state==='done'?lastStep(g,s=>s.kind==='done')?.note:undefined,imported=lastStep(g,s=>s.kind==='imported'||s.kind==='seeding');
+    const text=g.state==='seeding'?'Seeding':removed??(imported&&stepNote(imported));
+    return text?<small title={text}>{text}</small>:null;
+  }
+  const why=g.error??lastStep(g,s=>s.kind===g.state)?.note;
+  return why?<small className={g.outcome==='failed'?'danger-text':undefined} title={why}>{why}</small>:null;
+}
+function Steps({g}:{g:DownloadsHistoryGrab}) {
+  return <ol className="ui-steps">{g.steps.map(s=>{const [word,tone]=stepWords[s.kind],note=stepNote(s);return <li key={s.id}>
+    <time dateTime={new Date(s.at).toISOString()}>{exactTime.format(s.at)}</time><Pill tone={tone}>{word}</Pill>
+    {note?<span className={s.kind==='failed'?'danger-text':undefined} title={s.note}>{note}</span>:<span/>}</li>;})}</ol>;
 }
 
 export function DownloadHistoryPage() {
   const view=useApi<DownloadsHistory>('/admin/library/history'),mutation=useMutation(changed);useRefresh(view.reload);
-  const [query,setQuery]=useState(''),[step,setStep]=useState<Step>('all');
-  const events=view.data?.events??[];
-  // A failure is settled once a later grab of the same title was imported: no Retry, and it says so.
-  const importedAt=new Map<number,number>();
-  for(const e of events)if(e.kind==='imported'||e.kind==='seeding')importedAt.set(e.grab.titleId,Math.max(importedAt.get(e.grab.titleId)??0,e.at));
-  const latest=new Map<number,number>();
-  for(const e of events)if(!latest.has(e.grab.titleId))latest.set(e.grab.titleId,e.id);
-  const settled=(e:DownloadsEvent)=>e.kind==='failed'&&(importedAt.get(e.grab.titleId)??0)>e.at;
-  const shown=events.filter(e=>(step==='all'||stepOf[e.kind]===step)&&matches(query,e.grab.title,e.grab.year,e.grab.releaseName,e.grab.indexer,e.note));
-  const {rows:sorted,sort,onSort}=useSorted(shown,{title:e=>e.grab.title,event:e=>eventWords[e.kind][0],quality:e=>qualityRank(e.grab.quality),size:e=>e.grab.size,when:e=>e.at});
-  const {rows,more}=usePaged(sorted,`${query}|${step}|${sort?.key}|${sort?.dir}`);
-  const retry=(e:DownloadsEvent)=>void mutation.run(async()=>{await api(`/admin/library/grabs/${e.grab.id}/retry`,'POST');toast.info(`Retrying ${e.grab.title}`);view.reload();});
+  const [query,setQuery]=useState(''),[filter,setFilter]=useState<OutcomeFilter>('all'),[open,setOpen]=useState<ReadonlySet<number>>(()=>new Set());
+  const toggle=(id:number)=>setOpen(o=>{const next=new Set(o);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  const grabs=view.data?.grabs??[];
+  const narrowed=grabs.filter(g=>matches(query,g.title,g.year,g.episodes,g.releaseName,g.indexer,...g.steps.map(s=>s.note)));
+  const counts=Object.fromEntries(outcomes.map(o=>[o,o==='all'?narrowed.length:narrowed.filter(g=>g.outcome===o).length])) as Record<OutcomeFilter,number>;
+  const shown=filter==='all'?narrowed:narrowed.filter(g=>g.outcome===filter);
+  const {rows:sorted,sort,onSort}=useSorted(shown,{title:g=>g.title,status:g=>outcomeWord(g)[0],quality:g=>qualityRank(g.quality),size:g=>g.size,
+    started:g=>g.startedAt,finished:g=>g.endedAt});
+  const {rows,more}=usePaged(sorted,`${query}|${filter}|${sort?.key}|${sort?.dir}`);
+  const retry=(g:DownloadsHistoryGrab)=>void mutation.run(async()=>{await api(`/admin/library/grabs/${g.id}/retry`,'POST');toast.info(`Retrying ${g.title}`);view.reload();});
   const now=Date.now();
   return <><SectionHead title="History"/>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Toolbar query={query} setQuery={setQuery} placeholder="Search history" count={view.data?`${shown.length} of ${events.length}`:undefined}>
-      <Segmented label="Step" value={step} options={steps} onChange={setStep}/>
+    <Toolbar query={query} setQuery={setQuery} placeholder="Search history" count={view.data?`${shown.length} of ${grabs.length}`:undefined}>
+      <Segmented label="Status" value={filter} options={outcomes.map(o=>[o,`${outcomeNames[o]} ${counts[o]}`] as const)} onChange={setFilter}/>
     </Toolbar>
     <Loaded view={view}>{()=><Panel flush>
-      <Table posters more={more} sort={sort} onSort={onSort} empty={!events.length?'Nothing downloaded yet':!shown.length?'Nothing matches':undefined}
-        columns={[{label:'Title',sort:'title'},{label:'Step',width:260,sort:'event'},{label:'Quality',width:130,sort:'quality',desc:true},
-          {label:'Size',width:90,num:true,sort:'size',desc:true},{label:'When',width:110,sort:'when',desc:true},{...ACTIONS,width:52}]}>
-        {rows.map(e=>{const [word,tone]=eventWords[e.kind],later=settled(e);return <tr key={e.id}>
-          <td><TitleCell id={e.grab.titleId} title={e.grab.title} year={e.grab.year} tags={<>{e.grab.episodes&&<Tag>{e.grab.episodes}</Tag>}{e.grab.upgrade&&<Tag>Upgrade</Tag>}</>}
-            sub={`${e.grab.releaseName} · ${protocol(e.grab.protocol)} · ${e.grab.indexer}`}/></td>
-          <td><Pill tone={later?'off':tone}>{word}</Pill><EventNote e={e} later={later}/></td>
-          <td>{e.grab.quality}</td><td className="num">{bytes(e.grab.size)??<Dash/>}</td><td><When at={e.at} now={now}/></td>
-          <td>{e.kind==='failed'&&e.grab.state==='failed'&&!later&&latest.get(e.grab.titleId)===e.id&&<RowActions>
-            <IconAction icon="restart" label={`Retry ${e.grab.title}`} disabled={mutation.busy} onClick={()=>retry(e)}/></RowActions>}</td>
-        </tr>;})}
+      <Table posters more={more} sort={sort} onSort={onSort} empty={!grabs.length?'Nothing downloaded yet':!shown.length?'Nothing matches':undefined}
+        columns={[{label:'Title',sort:'title'},{label:'Status',width:220,sort:'status'},{label:'Quality',width:130,sort:'quality',desc:true},
+          {label:'Size',width:90,num:true,sort:'size',desc:true},{label:'Started',width:110,sort:'started',desc:true},{label:'Finished',width:110,sort:'finished',desc:true},{...ACTIONS,width:52}]}>
+        {rows.map(g=>{const [word,tone]=outcomeWord(g),expanded=open.has(g.id),took=g.endedAt!==undefined?duration((g.endedAt-g.startedAt)/1000):undefined;
+          return <Fragment key={g.id}>
+            <tr className={`ui-release ${expanded?'is-open':''}`} onClick={e=>{if(!(e.target as HTMLElement).closest('a,button'))toggle(g.id);}}>
+              <td><div className="ui-release-name">
+                <button type="button" className="ui-expand" aria-expanded={expanded} aria-label={`${expanded?'Hide':'Show'} the steps of ${g.title}`} onClick={()=>toggle(g.id)}>
+                  <Icon name={expanded?'down':'next'} size={14}/></button>
+                <TitleCell id={g.titleId} title={g.title} year={g.year} tags={<>{g.episodes&&<Tag>{g.episodes}</Tag>}{g.upgrade&&<Tag>Upgrade</Tag>}</>}
+                  sub={`${g.swappedFrom?'Swapped in · ':''}${g.releaseName} · ${protocol(g.protocol)} · ${g.indexer}`}/></div></td>
+              <td><Pill tone={tone}>{word}</Pill><OutcomeLine g={g}/></td>
+              <td>{g.quality}</td><td className="num">{bytes(g.size)??<Dash/>}</td>
+              <td><When at={g.startedAt} now={now}/></td>
+              <td>{g.endedAt!==undefined?<><When at={g.endedAt} now={now}/>{took&&<small>Took {took}</small>}</>:<Dash/>}</td>
+              <td>{g.outcome==='failed'&&g.state==='failed'&&<RowActions>
+                <IconAction icon="restart" label={`Retry ${g.title}`} disabled={mutation.busy} onClick={()=>retry(g)}/></RowActions>}</td>
+            </tr>
+            {expanded&&<tr className="ui-release-detail"><td colSpan={7}><Steps g={g}/></td></tr>}
+          </Fragment>;})}
       </Table></Panel>}</Loaded>
   </>;
 }

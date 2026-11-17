@@ -79,6 +79,15 @@ export class Requests {
     }
   }
 
+  // An admin deleted it from the library: its requests are marked removed, and requesters hear of it.
+  removedFromLibrary(titles: { kind: RequestKind; tmdb: number }[]) {
+    for (const { kind, tmdb } of titles) for (const row of this.store.forTitle(kind, tmdb)) {
+      if (row.status === 'removed') continue;
+      this.store.setStatus(row.id, 'removed', { removedBy: 'arr', seen: false });
+      this.emit(row, 'removed');
+    }
+  }
+
   // This server's rating key for the title, when Plex has it.
   plexKey(kind: RequestKind, tmdbId: number, tvdbId?: number) { return this.held({ kind, tmdbId, ...(tvdbId ? { tvdbId } : {}) })?.ratingKey; }
   // The other way: the TMDB id of a movie or show this server holds, by its rating key.

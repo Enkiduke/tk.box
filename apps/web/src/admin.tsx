@@ -38,7 +38,7 @@ const groups=[
   ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['schedule','Schedule','clock']]]
 ] as const;
 // The address with a title's dialog open on a tab (and a show's search on a season or episode), or closed.
-const panes=new Set<string>(['files','grabs','requests','search']);
+const panes=new Set<string>(['files','grabs','requests','history','search']);
 function withMovie(params:URLSearchParams,title?:string,pane?:TitlePane,scope?:string) {
   const query=new URLSearchParams(params);
   query.delete('title');query.delete('pane');query.delete('scope');

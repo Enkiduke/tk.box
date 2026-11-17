@@ -59,7 +59,7 @@ export const requestsModule = defineModule({
       grabSweep.unref();
     });
     bus.on('library.file.imported', () => availability.soon(10000));
-    bus.on('library.title.removed', ({ kind, tmdbId, by }) => { if (by === 'cleanup') requests.removedByCleanup([{ kind, tmdb: tmdbId }]); });
+    bus.on('library.title.removed', ({ kind, tmdbId, by }) => { if (by === 'cleanup') requests.removedByCleanup([{ kind, tmdb: tmdbId }]); else if (by === 'admin') requests.removedFromLibrary([{ kind, tmdb: tmdbId }]); });
     bus.on('library.edited', ({ by }) => { if (by === 'cleanup') availability.soon(5000); });
     registerRequests(routes, store, requests, fulfiller);
     // Admin › Requests › Requests site. A change applies at once; a port that's taken is refused and nothing is saved.

@@ -72,7 +72,8 @@ export type RunnerUp = Candidate & { link: string; categories?: number[] };
 // Why a download is out: a confirmed dud (dead after a reannounce, or no complete copy in the swarm) or just slow.
 export type OutKind = 'dud' | 'slow';
 export type GrabEventKind = GrabState | 'grabbed' | 'retried' | 'only-source';
-export type GrabEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: Grab };
+export type GrabStep = { id: number; at: number; kind: GrabEventKind; note?: string };
+export type GrabEvent = GrabStep & { grab: Grab };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
 // A show's seasons (season 0, specials, is never stored) and episodes. `airAt`: when it counts as aired.
 export type SeasonRow = { season: number; monitored: boolean };
@@ -299,6 +300,8 @@ export class LibraryStore {
   setFolder(id: number, folder: string) { prepared(this.db, 'UPDATE library_titles SET folder = ? WHERE id = ? AND folder IS NULL').run(folder, id); }
   setProfile(id: number, profileId: number) { prepared(this.db, 'UPDATE library_titles SET profile_id = ? WHERE id = ?').run(profileId, id); }
   deleteTitle(id: number) { prepared(this.db, 'DELETE FROM library_titles WHERE id = ?').run(id); }
+  // Titles recorded as living in this folder under this root.
+  titlesInFolder(root: string, folder: string) { return (prepared(this.db, 'SELECT id FROM library_titles WHERE root = ? AND folder = ?').all(root, folder) as { id: number }[]).map(r => r.id); }
 
   // Newest first. A movie has one; two means an upgrade stopped between recording the new file and deleting the old.
   files(titleId: number) { return (prepared(this.db, 'SELECT * FROM library_files WHERE title_id = ? ORDER BY imported_at DESC, id DESC').all(titleId) as FileRaw[]).map(file); }
@@ -375,6 +378,17 @@ export class LibraryStore {
     return (prepared(this.db, `SELECT e.id AS event_id, e.at AS event_at, e.kind AS event_kind, e.note AS event_note, g.* FROM grab_events e
       JOIN grabs g ON g.id = e.grab_id ORDER BY e.at DESC, e.id DESC LIMIT ?`).all(limit) as (GrabRaw & { event_id: number; event_at: number; event_kind: GrabEventKind; event_note: string | null })[])
       .map(r => ({ id: r.event_id, at: r.event_at, kind: r.event_kind, ...opt('note', r.event_note), grab: grab(r) }));
+  }
+  // Downloads › History by grab: the `limit` grabs with the latest steps, newest first, each with all its steps, oldest first.
+  grabHistory(limit: number): { grab: Grab; steps: GrabStep[] }[] {
+    const rows = prepared(this.db, `SELECT g.* FROM grabs g JOIN (SELECT grab_id, MAX(at) AS last_at FROM grab_events GROUP BY grab_id) e ON e.grab_id = g.id
+      ORDER BY e.last_at DESC, g.id DESC LIMIT ?`).all(limit) as GrabRaw[];
+    if (!rows.length) return [];
+    const steps = new Map<number, GrabStep[]>(rows.map(r => [r.id, []]));
+    for (const e of prepared(this.db, `SELECT id, grab_id, at, kind, note FROM grab_events WHERE grab_id IN (SELECT value FROM json_each(?)) ORDER BY at, id`)
+      .all(JSON.stringify(rows.map(r => r.id))) as { id: number; grab_id: number; at: number; kind: GrabEventKind; note: string | null }[])
+      steps.get(e.grab_id)!.push({ id: e.id, at: e.at, kind: e.kind, ...opt('note', e.note) });
+    return rows.map(r => ({ grab: grab(r), steps: steps.get(r.id)! }));
   }
   // A new grab, unless one under way already covers it (then undefined): for a movie any open grab of the title, for a
   // show one covering any of the same episodes. `note`: how it was grabbed ("By hand").

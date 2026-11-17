@@ -1,5 +1,6 @@
-import type {ReactNode} from 'react';
-import type {LibraryTitleView,TitleView} from '../../../packages/contracts/src/downloads.js';
+import {useState,type ReactNode} from 'react';
+import type {LibraryTitleView,PlexKey,TitleView} from '../../../packages/contracts/src/downloads.js';
+import type {HistoryListRow} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading,Modal} from './components.js';
@@ -8,7 +9,7 @@ import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {RequestsTable,SourceLine} from './movie-source.js';
 import {ShowDialogBody} from './show-dialog.js';
-import {Dash,FavoriteStar,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
+import {ACTIONS,Dash,FavoriteStar,IconAction,RowActions,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
 
 // A movie or show in the library (docs/UI.md), as a dialog over whichever Admin page opened it (`&title=<id>`, and
 // `&pane=` for a tab): its head holds what it has, its settings and the searches; the tabs hold its files, grabs,
@@ -21,15 +22,16 @@ export function MovieDialog({id,pane,scope,setPane,onClose}:{id:number;pane:Titl
   const t=view.data,tab=pane==='overview'?'files':pane;
   return <Modal title={t?.title??'Title'} variant="wide" onClose={onClose} scrollKey={`${id}`}>
     {view.error&&!t?<ErrorNotice message={view.error.message} retry={view.reload}/>:!t?<Loading/>
-    :t.kind==='show'?<ShowDialogBody t={t} path={path} pane={pane} scope={scope} setPane={setPane} mutation={mutation}/>:<div className="ui-movie-dialog">
-      <Head t={t} path={path} mutation={mutation}/>
+    :t.kind==='show'?<ShowDialogBody t={t} path={path} pane={pane} scope={scope} setPane={setPane} mutation={mutation} onDeleted={onClose}/>:<div className="ui-movie-dialog">
+      <Head t={t} path={path} mutation={mutation} onDeleted={onClose}/>
       {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
       <Tabs label={t.title} value={tab} onChange={p=>setPane(p==='files'?'overview':p)} tabs={[{id:'files',label:'Files',count:t.files.length},
-        {id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'search',label:'Interactive search'}]}/>
+        {id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'history',label:'Watch history'},{id:'search',label:'Interactive search'}]}/>
       {tab==='search'?<InteractiveSearchPanel titleId={t.id}/>
+        :tab==='history'?<WatchHistoryPanel plex={t.plex}/>
         :tab==='grabs'?<Panel flush><GrabsTable grabs={t.grabs} now={Date.now()}/></Panel>
         :tab==='requests'?<Panel flush><RequestsTable requests={t.requests}/></Panel>
-        :<Panel flush><FilesTable files={t.files} now={Date.now()}/></Panel>}
+        :<Panel flush><FilesTable files={t.files} path={path} now={Date.now()}/></Panel>}
     </div>}
   </Modal>;
 }
@@ -41,7 +43,7 @@ function statusOf(t:LibraryTitleView):{tone:Tone;label:string} {
 }
 
 // Poster, title, status, the facts that matter, then its settings and searches in one strip.
-function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutation}) {
+function Head({t,path,mutation,onDeleted}:{t:LibraryTitleView;path:string;mutation:Mutation;onDeleted:()=>void}) {
   const now=Date.now(),s=statusOf(t),have=t.files[0];
   const search=()=>void mutation.run(async()=>{await api(`${path}/search`,'POST');toast.info(`Searching for ${t.title}`);});
   return <header className="ui-movie">
@@ -60,7 +62,7 @@ function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutatio
         <div><dt>Digital</dt><dd><WhenDay day={t.released.digital} now={now}/></dd></div>
         <div><dt>Physical</dt><dd><WhenDay day={t.released.physical} now={now}/></dd></div>
       </dl>
-      <TitleControls t={t} path={path} mutation={mutation}>
+      <TitleControls t={t} path={path} mutation={mutation} onDeleted={onDeleted}>
         <button disabled={mutation.busy||t.paused||!t.monitored} title="Search now and grab the best match" onClick={search}><Icon name="search" size={16}/>Automatic search</button>
       </TitleControls>
     </div>
@@ -68,8 +70,9 @@ function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutatio
 }
 
 // A title's settings as one strip under its facts: Monitored, Profile, Favorite (and a movie's Early copies), then its
-// searches on the right, and Resume while it's Failing.
-export function TitleControls({t,path,mutation,children}:{t:{monitored:boolean;keep:boolean;earlyCopies?:boolean;paused:boolean;profileId:number;profiles:{id:number;name:string}[]};path:string;mutation:Mutation;children:ReactNode}) {
+// searches on the right, Resume while it's Failing, and Delete last.
+export function TitleControls({t,path,mutation,onDeleted,children}:{t:{title:string;kind:'movie'|'show';files:unknown[];monitored:boolean;keep:boolean;earlyCopies?:boolean;paused:boolean;profileId:number;profiles:{id:number;name:string}[]};path:string;mutation:Mutation;onDeleted:()=>void;children:ReactNode}) {
+  const [deleting,setDeleting]=useState(false);
   const update=(body:{profileId?:number;keep?:boolean;monitored?:boolean;earlyCopies?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
   const resume=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:false}));
   return <div className="ui-movie-controls">
@@ -84,20 +87,83 @@ export function TitleControls({t,path,mutation,children}:{t:{monitored:boolean;k
     <div className="ui-movie-actions">
       {t.paused&&<button disabled={mutation.busy} title="Clear the failures and start searching again" onClick={resume}><Icon name="play" size={16}/>Resume</button>}
       {children}
+      <button className="danger" disabled={mutation.busy} title={`Delete the ${t.kind} and its files`} onClick={()=>setDeleting(true)}><Icon name="trash" size={16}/>Delete</button>
     </div>
+    {deleting&&<DeleteTitle t={t} path={path} onCancel={()=>setDeleting(false)} onDeleted={()=>{setDeleting(false);onDeleted();}}/>}
   </div>;
 }
 
+// Confirms a delete: the library forgets the title and, unless unticked, its folder goes from disk.
+function DeleteTitle({t,path,onCancel,onDeleted}:{t:{title:string;kind:'movie'|'show';files:unknown[]};path:string;onCancel:()=>void;onDeleted:()=>void}) {
+  const [files,setFiles]=useState(true),remove=useMutation(changed);
+  const run=()=>void remove.run(async()=>{
+    const r=await api<{files:number}>(path,'DELETE',{files});
+    toast.info(`Deleted ${t.title}${files?` and ${r.files===1?'1 file':`${r.files} files`}`:''}`);onDeleted();
+  });
+  return <Modal title={`Delete ${t.kind}`} onClose={()=>{if(!remove.busy)onCancel();}}>
+    <h2>Delete {t.title}?</h2>
+    <p>This can’t be undone. It stops being monitored and leaves the library{files?', with its folder on disk':''}.</p>
+    {t.files.length>0&&<label className="ui-movie-control"><input type="checkbox" checked={files} disabled={remove.busy} onChange={e=>setFiles(e.target.checked)}/><span>Delete files from disk</span></label>}
+    {remove.error&&<ErrorNotice message={remove.error}/>}
+    <div className="button-row"><button className="danger" disabled={remove.busy} onClick={run}>Delete</button><button disabled={remove.busy} onClick={onCancel}>Cancel</button></div>
+  </Modal>;
+}
+
 // A show's files and grabs say which episodes each holds (S02E05, S02 for a pack).
-export function FilesTable({files,now}:{files:LibraryTitleView['files'];now:number}) {
+export function FilesTable({files,path,now}:{files:LibraryTitleView['files'];path:string;now:number}) {
+  const [deleting,setDeleting]=useState<LibraryTitleView['files'][number]>();
   const episodes=files.some(f=>f.episodes);
   const {rows,sort,onSort}=useSorted(files,{file:f=>f.path.split('/').pop(),episodes:f=>f.episodes,quality:f=>qualityRank(f.quality),size:f=>f.size,imported:f=>f.importedAt});
   return <Table sort={sort} onSort={onSort} empty={files.length?undefined:'No file'} columns={[{label:'File',sort:'file'},...(episodes?[{label:'Episodes',width:130,sort:'episodes'}]:[]),
-    {label:'Quality',width:130,sort:'quality',desc:true},{label:'Size',width:90,num:true,sort:'size',desc:true},{label:'Imported',width:110,sort:'imported',desc:true}]}>
+    {label:'Quality',width:130,sort:'quality',desc:true},{label:'Size',width:90,num:true,sort:'size',desc:true},{label:'Imported',width:110,sort:'imported',desc:true},ACTIONS]}>
     {rows.map(f=><tr key={f.id}><td><span className="ui-mono" title={f.path}>{f.path.split('/').pop()}</span><small title={f.path}>{f.path}</small></td>
       {episodes&&<td>{f.episodes??<Dash/>}</td>}
-      <td>{f.quality}{f.proper&&<small>Proper</small>}</td><td className="num">{gb(f.size)}</td><td><When at={f.importedAt} now={now}/></td></tr>)}
+      <td>{f.quality}{f.proper&&<small>Proper</small>}</td><td className="num">{gb(f.size)}</td><td><When at={f.importedAt} now={now}/></td>
+      <td><RowActions><IconAction icon="trash" label="Delete this file" onClick={()=>setDeleting(f)}/></RowActions></td></tr>)}
+    {deleting&&<DeleteFile file={deleting} path={path} onDone={()=>setDeleting(undefined)}/>}
   </Table>;
+}
+
+// Confirms deleting one file from disk; the title stays, so a monitored one wants it again.
+function DeleteFile({file,path,onDone}:{file:LibraryTitleView['files'][number];path:string;onDone:()=>void}) {
+  const remove=useMutation(changed),name=file.path.split('/').pop();
+  const run=()=>void remove.run(async()=>{await api(`${path}/files/${file.id}`,'DELETE');toast.info(`Deleted ${name}`);onDone();});
+  return <Modal title="Delete file" onClose={()=>{if(!remove.busy)onDone();}}>
+    <h2>Delete this file?</h2>
+    <p className="ui-mono">{name}</p>
+    <p>This can’t be undone. The title stays in the library.</p>
+    {remove.error&&<ErrorNotice message={remove.error}/>}
+    <div className="button-row"><button className="danger" disabled={remove.busy} onClick={run}>Delete</button><button disabled={remove.busy} onClick={onDone}>Cancel</button></div>
+  </Modal>;
+}
+// Who watched it and when (Admin › Activity › History's sessions for its Plex rating key), 50 at a time, newest first.
+const sourceNames:Record<HistoryListRow['source'],string>={vod:'tk.box',plex:'Plex app',iptv:'IPTV',custom:'Custom Channel'};
+const deliveryNames:Record<string,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
+const watched=(ms:number)=>ms<60000?`${Math.floor(ms/1000)}s`:`${ms>=3600000?`${Math.floor(ms/3600000)}h `:''}${Math.floor(ms/60000)%60}m`;
+const pad=(n:number)=>String(n).padStart(2,'0');
+export function WatchHistoryPanel({plex,show}:{plex?:PlexKey;show?:boolean}) {
+  const [cursor,setCursor]=useState<string>(),[older,setOlder]=useState<string[]>([]);
+  const query=plex&&new URLSearchParams({days:'all',server:plex.server,key:plex.key,...(cursor?{cursor}:{})});
+  const view=useApi<{items:HistoryListRow[];next?:string}>(query&&`/admin/history/sessions?${query}`),now=Date.now();
+  if(!plex)return <Panel><div className="ui-empty">Not on Plex yet</div></Panel>;
+  if(view.error&&!view.data)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
+  if(!view.data)return <Loading/>;
+  const {items,next}=view.data;
+  const more=(older.length>0||next)&&<div className="ui-more">
+    {older.length>0&&<button type="button" onClick={()=>{setCursor(older.at(-2));setOlder(o=>o.slice(0,-1));}}>Newer</button>}
+    {next&&<button type="button" onClick={()=>{setOlder(o=>[...o,next]);setCursor(next);}}>Older</button>}</div>;
+  return <Panel flush><Table empty={items.length?undefined:'Nobody has watched it yet'} more={more} columns={[...(show?[{label:'Episode'}]:[]),{label:'Viewer',...(show?{width:200}:{})},
+    {label:'Played on',width:170},{label:'Watched',width:110,num:true},{label:'When',width:110}]}>
+    {items.map(r=>{
+      const pct=r.durationMs&&r.durationMs>0?Math.min(100,Math.round(r.positionMs/r.durationMs*100)):undefined;
+      return <tr key={r.id}>
+        {show&&<td><span title={r.title}>{r.season!=null&&r.episode!=null&&<Tag>S{pad(r.season)}E{pad(r.episode)}</Tag>} {r.title}</span></td>}
+        <td>{r.accountName??`Plex user ${r.accountId}`}<small>{r.client}</small></td>
+        <td>{sourceNames[r.source]}<small>{deliveryNames[r.stream.delivery]??'Unknown'}</small></td>
+        <td className="num">{watched(r.watchMs)}<small>{r.endedAt===null?'In progress':pct!==undefined?`Reached ${pct}%`:''}</small></td>
+        <td><When at={r.startedAt} now={now}/></td></tr>;
+    })}
+  </Table></Panel>;
 }
 export function GrabsTable({grabs,now}:{grabs:LibraryTitleView['grabs'];now:number}) {
   const {rows,sort,onSort}=useSorted(grabs,{release:g=>g.releaseName,quality:g=>qualityRank(g.quality),size:g=>g.size,state:g=>g.state,when:g=>g.importedAt??g.finishedAt??g.sentAt});

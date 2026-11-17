@@ -53,7 +53,11 @@ export const libraryModule = defineModule({
     });
     library.register();
     indexers.feedEvery?.(() => store.settings().rssMinutes);
-    registerLibraryAdmin(routes, { store, library, queue, titles, downloaders, ...(sources ? { sources } : {}) });
+    const plexKey = (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => {
+      const held = kind === 'movie' ? availability.movie(tmdbId) : availability.show(tmdbId, tvdbId);
+      return held && config.PLEX_MACHINE_ID ? { server: config.PLEX_MACHINE_ID, key: held.ratingKey } : undefined;
+    };
+    registerLibraryAdmin(routes, { store, library, queue, titles, downloaders, plexKey, ...(sources ? { sources } : {}) });
     bus.on('plex.library.changed', () => availability.soon());
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library
