@@ -15,6 +15,9 @@ export type SubtitlesView = {
   blocked?: string;
   // The library's files, and how many the finder hasn't dealt with yet.
   progress: { total: number; left: number };
+  // Every library file: with English, checked and missing it, or not checked yet; and checks queued or running.
+  accounting: { total: number; english: number; missing: number; unchecked: number };
+  checking: number;
   sources: Record<SubtitleSource, number>;
   jobs: Record<SubtitleJobState, number>;
   skipped: number;
@@ -46,4 +49,14 @@ export type SubtitleVideo = {
 export type SubtitleFound = SubtitleVideo & { source: SubtitleSource; at: number; subtitlePath?: string; hashMatch?: boolean };
 export type SubtitleJob = SubtitleVideo & { state: SubtitleJobState; notBefore: number; attempts: number; error?: string; createdAt: number };
 export type SubtitleSkip = SubtitleVideo & { reason: string; at: number };
-export type SubtitleLists = { found: SubtitleFound[]; jobs: SubtitleJob[]; skipped: SubtitleSkip[] };
+export type SubtitleMissing = SubtitleVideo & { at: number };
+export type SubtitleLists = { found: SubtitleFound[]; missing: SubtitleMissing[]; jobs: SubtitleJob[]; skipped: SubtitleSkip[] };
+
+// A title's files in its Admin dialog (GET /api/v1/admin/subtitles/title/:id), by library file id: English and where it
+// came from; checked and missing it, with the worker's job if there is one; given up on; or not checked yet.
+export type TitleSubtitle =
+  | { state: 'english'; source: SubtitleSource; subtitlePath?: string; hashMatch?: boolean; at: number }
+  | { state: 'missing'; at?: number; job?: { state: SubtitleJobState; notBefore: number; attempts: number; error?: string } }
+  | { state: 'skipped'; reason: string; at: number }
+  | { state: 'unchecked' };
+export type TitleSubtitles = { files: Record<number, TitleSubtitle> };

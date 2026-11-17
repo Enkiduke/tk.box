@@ -7,6 +7,7 @@ import { OpenSubtitles } from '../providers/opensubtitles.js';
 import { SubtitleFinder } from '../services/subtitle-finder.js';
 import { probeSubtitles } from '../services/subtitle-check.js';
 import { registerSubtitlesAdmin } from '../subtitles-api.js';
+import { registerTitleSubtitles } from '../subtitles-title-api.js';
 import type { QueueApi } from '../services/queue.js';
 import type { LibraryStore } from '../persistence/library-store.js';
 
@@ -37,6 +38,7 @@ export const subtitleFinderModule = defineModule({
     });
     finder.register();
     registerSubtitlesAdmin(routes, { store, finder, library: library.store });
+    registerTitleSubtitles(routes, { db, library: library.store });
     bus.on('library.file.imported', ({ path }) => {
       if (preview()) return;
       void finder.imported(path).catch(e => log.warn('subtitles: an imported file could not be queued', { path, ...errorDetail(e) }));

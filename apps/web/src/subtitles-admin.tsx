@@ -1,5 +1,5 @@
 import {useState,type ReactNode} from 'react';
-import type {SubtitleFound,SubtitleJob,SubtitleJobState,SubtitleLists,SubtitleSkip,SubtitleSource,SubtitleVideo,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
+import type {SubtitleFound,SubtitleJob,SubtitleMissing,SubtitleJobState,SubtitleLists,SubtitleSkip,SubtitleSource,SubtitleVideo,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
 import {api} from './api.js';
 import {invalidate,link,useApi} from './hooks.js';
 import {ErrorNotice} from './components.js';
@@ -11,7 +11,7 @@ import {ACTIONS,Field,FieldError,IconAction,Loaded,Panel,Pill,RowActions,SaveBar
 // done, one list at a time.
 
 const changed=()=>invalidate('/admin/subtitles');
-type View='settings'|'found'|'jobs'|'skipped';
+type View='settings'|'found'|'missing'|'jobs'|'skipped';
 const sourceNames:Record<SubtitleSource,string>={opensubtitles:'OpenSubtitles',whisper:'Whisper',embedded:'In the file',sidecar:'Already there'};
 const sourceTones:Record<SubtitleSource,Tone>={opensubtitles:'ok',whisper:'ok',embedded:'off',sidecar:'off'};
 const jobNames:Record<SubtitleJobState,[string,Tone]>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],done:['Done','ok'],failed:['Failed','bad'],cancelled:['Cancelled','off']};
@@ -19,27 +19,30 @@ const count=(n:number)=>n.toLocaleString();
 
 export function SubtitlesPage() {
   const view=useApi<SubtitlesView>('/admin/subtitles'),lists=useApi<SubtitleLists>('/admin/subtitles/videos');
-  useRefresh(()=>{view.reload();lists.reload();},30000);
+  useRefresh(()=>{view.reload();lists.reload();},view.data?.checking?5000:30000);
   const [tab,setTab]=useState<View>('settings');
   const s=view.data,l=lists.data;
   const tabs=<Tabs label="Subtitles" value={tab} onChange={setTab} tabs={[{id:'settings',label:'Settings'},
-    {id:'found',label:'Found',...(l?{count:l.found.length}:{})},
+    {id:'found',label:'Have English',...(l?{count:l.found.length}:{})},
+    {id:'missing',label:'Missing',...(l?{count:l.missing.length}:{})},
     {id:'jobs',label:'For the worker',...(s?{count:s.jobs.waiting+s.jobs.queued+s.jobs.claimed+s.jobs.failed,...(s.jobs.failed?{tone:'bad' as const}:{})}:{})},
     {id:'skipped',label:'Skipped',...(s?{count:s.skipped,...(s.skipped?{tone:'bad' as const}:{})}:{})}]}/>;
   return <><SectionHead title="Subtitles"/>{tabs}
     {tab==='settings'?<Loaded view={view}>{v=><><Status view={v}/><Settings key={`s${v.revision}`} view={v}/></>}</Loaded>
-      :<Loaded view={lists}>{d=>tab==='found'?<Found rows={d.found}/>:tab==='jobs'?<Jobs rows={d.jobs}/>:<Skipped rows={d.skipped}/>}</Loaded>}
+      :<Loaded view={lists}>{d=>tab==='found'?<Found rows={d.found}/>:tab==='missing'?<Missing rows={d.missing}/>:tab==='jobs'?<Jobs rows={d.jobs}/>:<Skipped rows={d.skipped}/>}</Loaded>}
   </>;
 }
 
 function Status({view}:{view:SubtitlesView}) {
-  const done=view.progress.total-view.progress.left,s=view.sources;
-  return <Panel flush title="Status">
+  const a=view.accounting,s=view.sources,mutation=useMutation(changed);
+  const check=()=>void mutation.run(async()=>{const r=await api<{queued:number}>('/admin/subtitles/check','POST');toast.info(r.queued?`Checking ${count(r.queued)} files`:'Every file is already checked');});
+  return <>{mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
+  <Panel flush title="Status" actions={<button type="button" disabled={mutation.busy||view.checking>0} onClick={check}>{view.checking?`Checking… ${count(view.checking)} left`:'Check library'}</button>}>
     {view.blocked&&<Field label="Stopped"><span className="danger-text">{view.blocked}</span></Field>}
     <Field label="Today">{count(view.today)} of {count(view.dailyCap)} downloads</Field>
-    <Field label="Library">{count(done)} of {count(view.progress.total)} files checked</Field>
+    <Field label="Library">{count(a.total)} files · {count(a.english)} with English · {a.missing?<span className="danger-text">{count(a.missing)} missing</span>:'0 missing'}{a.unchecked?` · ${count(a.unchecked)} not checked`:''}</Field>
     <Field label="English from">{(Object.keys(sourceNames) as SubtitleSource[]).map(k=>`${sourceNames[k]} ${count(s[k])}`).join(' · ')}</Field>
-  </Panel>;
+  </Panel></>;
 }
 
 type Draft={enabled:boolean;dailyCap:string;preferHearingImpaired:boolean};
@@ -90,6 +93,15 @@ function Found({rows:all}:{rows:SubtitleFound[]}) {
       <td><When at={r.at} now={now}/></td>
       <td><Pill tone={sourceTones[r.source]}>{sourceNames[r.source]}</Pill></td>
     </tr>)}
+  </Table></Panel>;
+}
+
+const missingSorts={title:(r:SubtitleMissing)=>r.title??r.path,at:(r:SubtitleMissing)=>r.at};
+function Missing({rows:all}:{rows:SubtitleMissing[]}) {
+  const {rows:sorted,sort,onSort}=useSorted(all,missingSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
+  return <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing missing':undefined}
+    columns={[{label:'Title',sort:'title'},{label:'Checked',width:110,sort:'at',desc:true}]}>
+    {rows.map(r=><tr key={r.path}><td><VideoCell video={r}/></td><td><When at={r.at} now={now}/></td></tr>)}
   </Table></Panel>;
 }
 

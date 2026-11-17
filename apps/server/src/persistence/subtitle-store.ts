@@ -131,6 +131,7 @@ export class SubtitleStore {
         .run(file.path, file.language, file.source, file.subtitlePath ?? null, file.osFileId ?? null, file.hashMatch === undefined ? null : file.hashMatch ? 1 : 0, this.now());
       prepared(this.db, "UPDATE subtitle_jobs SET state = 'done', done_at = ? WHERE path = ? AND language = ? AND state IN ('waiting','queued','claimed')")
         .run(this.now(), file.path, file.language);
+      prepared(this.db, 'DELETE FROM subtitle_missing WHERE path = ?').run(file.path);
     })();
   }
   // The video is gone (an upgrade or a delete): its row and open jobs go. Returns the generated sidecar to delete, if
@@ -140,6 +141,7 @@ export class SubtitleStore {
       const rows = prepared(this.db, "SELECT subtitle_path FROM subtitle_files WHERE path = ? AND source IN ('opensubtitles','whisper') AND subtitle_path IS NOT NULL").all(path) as { subtitle_path: string }[];
       prepared(this.db, 'DELETE FROM subtitle_files WHERE path = ?').run(path);
       prepared(this.db, 'DELETE FROM subtitle_skips WHERE path = ?').run(path);
+      prepared(this.db, 'DELETE FROM subtitle_missing WHERE path = ?').run(path);
       prepared(this.db, "UPDATE subtitle_jobs SET state = 'cancelled', done_at = ? WHERE path = ? AND state IN ('waiting','queued','claimed')").run(this.now(), path);
       return rows.map(r => r.subtitle_path);
     })();
@@ -162,7 +164,7 @@ export class SubtitleStore {
   }
   // Every video with a row or an open job, for forgetting the ones the library no longer has.
   knownPaths() {
-    return (prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_jobs WHERE state IN ('waiting','queued','claimed')`).all() as { path: string }[]).map(r => r.path);
+    return (prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_missing UNION SELECT path FROM subtitle_jobs WHERE state IN ('waiting','queued','claimed')`).all() as { path: string }[]).map(r => r.path);
   }
   // Every video the finder has dealt with or is dealing with: recorded, any job but a cancelled one, or skipped.
   handledPaths() {
@@ -172,6 +174,13 @@ export class SubtitleStore {
   skip(path: string, reason: string) {
     prepared(this.db, 'INSERT INTO subtitle_skips(path, reason, at) VALUES(?, ?, ?) ON CONFLICT(path) DO UPDATE SET reason = excluded.reason, at = excluded.at').run(path, reason, this.now());
   }
+  // The accounting: videos checked and found without English, and those with it.
+  markMissing(path: string) {
+    prepared(this.db, 'INSERT INTO subtitle_missing(path, at) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET at = excluded.at').run(path, this.now());
+  }
+  missingPaths() { return new Set((prepared(this.db, 'SELECT path FROM subtitle_missing').all() as { path: string }[]).map(r => r.path)); }
+  missing() { return prepared(this.db, 'SELECT path, at FROM subtitle_missing ORDER BY path').all() as { path: string; at: number }[]; }
+  englishPaths() { return new Set((prepared(this.db, "SELECT path FROM subtitle_files WHERE language = 'en'").all() as { path: string }[]).map(r => r.path)); }
   skipCount() { return (prepared(this.db, 'SELECT count(*) AS n FROM subtitle_skips').get() as { n: number }).n; }
   unskip(path: string) { return prepared(this.db, 'DELETE FROM subtitle_skips WHERE path = ?').run(path).changes > 0; }
   skips(limit = 100) {
@@ -190,7 +199,7 @@ export class SubtitleStore {
     return counts;
   }
   // Admin › Downloads › Subtitles: the latest recorded videos, and the open or failed jobs, newest first.
-  recent(limit = 200) {
+  recent(limit = 100000) {
     return (prepared(this.db, 'SELECT * FROM subtitle_files ORDER BY at DESC LIMIT ?').all(limit) as FileRow[]).map(row => ({
       path: row.path, source: row.source, at: row.at, ...(row.subtitle_path ? { subtitlePath: row.subtitle_path } : {}), ...(row.hash_match !== null ? { hashMatch: row.hash_match === 1 } : {}),
     }));

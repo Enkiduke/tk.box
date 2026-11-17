@@ -26,5 +26,9 @@ export const subtitleFinderMigrations: Migration[] = [
   // Videos the finder gave up on (ffprobe or the download failed through every try), so the backfill doesn't take them
   // again. Retry in Admin › Downloads › Subtitles clears one.
   { name: 'subtitle-skips', up: `
-    CREATE TABLE subtitle_skips(path TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);` }
+    CREATE TABLE subtitle_skips(path TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);` },
+  // Videos checked and found without English (no sidecar, no embedded text track), for the accounting in Admin ›
+  // Downloads › Subtitles. Gone once English is recorded for it, or the video is.
+  { name: 'subtitle-missing', up: `
+    CREATE TABLE subtitle_missing(path TEXT PRIMARY KEY, at INTEGER NOT NULL);` }
 ];

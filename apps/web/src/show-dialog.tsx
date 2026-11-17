@@ -60,7 +60,7 @@ export function ShowDialogBody({t,path,pane,scope,setPane,mutation,onDeleted}:{t
       {id:'files',label:'Files',count:t.files.length},{id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'history',label:'Watch history'},{id:'search',label:'Interactive search'}]}/>
     {pane==='search'?<ShowSearch t={t} scope={scope} setScope={s=>setPane('search',s)}/>
       :pane==='history'?<WatchHistoryPanel plex={t.plex} show/>
-      :pane==='files'?<Panel flush><FilesTable files={t.files} path={path} now={Date.now()}/></Panel>
+      :pane==='files'?<Panel flush><FilesTable titleId={t.id} files={t.files} path={path} now={Date.now()}/></Panel>
       :pane==='grabs'?<Panel flush><GrabsTable grabs={t.grabs} now={Date.now()}/></Panel>
       :pane==='requests'?<Panel flush><RequestsTable requests={t.requests} show/></Panel>
       :<Panel flush><SeasonsTable t={t} path={path} mutation={mutation} search={search} interactive={interactive}/></Panel>}

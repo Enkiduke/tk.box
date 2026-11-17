@@ -34,7 +34,7 @@ export function registerSubtitlesAdmin(app: FastifyInstance, deps: { store: Subt
   const view = (): SubtitlesView => {
     const { revision, enabled, dailyCap, preferHearingImpaired } = store.settings(), blocked = finder.blocked();
     return { revision, enabled, dailyCap, preferHearingImpaired, login: store.loginParts(), today: store.downloadsOn(utcDay(Date.now())),
-      ...(blocked ? { blocked } : {}), progress: finder.progress(), sources: store.sources(), jobs: store.counts(), skipped: store.skipCount() };
+      ...(blocked ? { blocked } : {}), progress: finder.progress(), accounting: finder.accounting(), checking: finder.checking(), sources: store.sources(), jobs: store.counts(), skipped: store.skipCount() };
   };
   // The library's title for a video, and a show file's episodes.
   const video = (path: string): SubtitleVideo => {
@@ -80,7 +80,11 @@ export function registerSubtitlesAdmin(app: FastifyInstance, deps: { store: Subt
     found: store.recent().map(r => ({ ...video(r.path), ...r })),
     jobs: store.jobs().map(({ error, ...j }) => ({ ...video(j.path), ...j, ...(error ? { error } : {}) })),
     skipped: store.skips(200).map(s => ({ ...video(s.path), ...s })),
+    missing: store.missing().map(m => ({ ...video(m.path), at: m.at })),
   }));
+  // The accounting, once: every library file not known to have English is checked (sidecar or embedded track), and
+  // those without are listed as missing. Nothing is searched or downloaded.
+  app.post('/api/v1/admin/subtitles/check', async () => ({ queued: finder.checkLibrary() }));
   // A skipped video is looked at again now.
   app.post('/api/v1/admin/subtitles/retry', async request => {
     const { path } = pathInput.parse(request.body);

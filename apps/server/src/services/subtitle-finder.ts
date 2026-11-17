@@ -20,8 +20,8 @@ import { findSidecar, isEnglishText, type ProbeSubtitles } from './subtitle-chec
 // Whisper retry (`recheck`, which skips straight to OpenSubtitles) feed it too.
 // The cap, a 429 and a 406 put the item back for later (each uses one of its 10 tries).
 
-export const FIND = 'find-subtitles';
-const MAX_TRIES = 10, RATE_WAIT_MS = 60000, BLOCK_MS = 3600000, BATCH = 50, MONTH_MS = 30 * 86400000;
+export const FIND = 'find-subtitles', CHECK = 'check-subtitles';
+const MAX_TRIES = 10, CHECK_TRIES = 3,RATE_WAIT_MS = 60000, BLOCK_MS = 3600000, BATCH = 50, MONTH_MS = 30 * 86400000;
 export const NO_LOGIN = 'No OpenSubtitles login in Admin › Downloads › Subtitles.';
 type Payload = { path: string; recheck?: boolean };
 export type SubtitleClient = Pick<OpenSubtitles, 'search' | 'download' | 'fetchText'>;
@@ -55,6 +55,8 @@ export class SubtitleFinder {
     this.deps.queue.handle<Payload>(FIND, { concurrency: 2, label: 'Find subtitles', area: 'Subtitles', handler: (item, { signal }) => this.handle(item, signal),
       // Out of tries (ffprobe or a download kept failing): skipped, so the backfill doesn't take it again.
       onFailed: (item, error) => { if (!item.payload.recheck) this.deps.store.skip(item.payload.path, error); } });
+    this.deps.queue.handle<Payload>(CHECK, { concurrency: 2, label: 'Check subtitles', area: 'Subtitles', handler: (item, { signal }) => this.check(item, signal),
+      onFailed: (item, error) => this.deps.store.skip(item.payload.path, error) });
   }
 
   // Look for this video's subtitles (now, or at `runAt`).
@@ -63,10 +65,55 @@ export class SubtitleFinder {
   }
 
   // The library imported a file: whatever was known for that path was for the file it replaced, so it's forgotten
-  // (with a sidecar tk.box wrote for it), and the new file is looked at.
+  // (with a sidecar tk.box wrote for it), and the new file is looked at: searched for when subtitles are on, else
+  // only checked, so the accounting stays whole.
   async imported(path: string) {
     await this.removeSidecars(this.deps.store.forgetFile(path));
     if (this.deps.store.settings().enabled) this.request(path);
+    else this.deps.queue.enqueue(CHECK, path, { path }, { maxAttempts: CHECK_TRIES });
+  }
+
+  // ---- the accounting: which files have English and which are missing it, without searching ----
+
+  // Every library file not yet known to have English is checked again (a sidecar, or an embedded text track); one
+  // without is recorded as missing. Needs no login, and nothing is downloaded. Returns how many were queued.
+  checkLibrary() {
+    const known = this.deps.store.englishPaths();
+    let queued = 0;
+    for (const path of [...this.deps.library.filePaths()].sort()) {
+      if (known.has(path)) continue;
+      if (this.deps.queue.enqueue(CHECK, path, { path }, { maxAttempts: CHECK_TRIES }).added) queued++;
+    }
+    return queued;
+  }
+  // How many checks are queued or running.
+  checking() {
+    const kind = this.deps.queue.view().kinds.find(k => k.kind === CHECK);
+    return kind ? kind.queued + kind.running : 0;
+  }
+  // The library's files: how many have English, how many are missing it, and how many aren't checked yet.
+  accounting() {
+    const all = this.deps.library.filePaths(), english = this.deps.store.englishPaths(), missing = this.deps.store.missingPaths();
+    let have = 0, lacking = 0;
+    for (const path of all) if (english.has(path)) have++; else if (missing.has(path)) lacking++;
+    return { total: all.size, english: have, missing: lacking, unchecked: all.size - have - lacking };
+  }
+
+  // A sidecar or an embedded English text track: recorded, true. Neither: recorded as missing, false.
+  private async local(path: string, signal?: AbortSignal) {
+    const { store } = this.deps;
+    const sidecar = await findSidecar(path, this.files.readdir);
+    if (sidecar) { store.recordFile({ path, language: 'en', source: 'sidecar', subtitlePath: sidecar }); return true; }
+    const streams = await this.deps.probe(path, signal);
+    if (streams.some(isEnglishText)) { store.recordFile({ path, language: 'en', source: 'embedded' }); return true; }
+    store.markMissing(path);
+    return false;
+  }
+  async check(item: QueueItem<Payload>, signal?: AbortSignal): Promise<Outcome> {
+    const { path } = item.payload;
+    if (!this.deps.library.fileByPath(path) || this.deps.store.file(path)) return done();
+    try { await this.local(path, signal); } catch (e) { return fail(`ffprobe: ${errorText(e)}`); }
+    return done();
   }
 
   // Videos the library no longer has (an upgrade replaced them, or they were deleted): their rows and jobs go, with
@@ -185,11 +232,7 @@ export class SubtitleFinder {
       if (job && job.state !== 'waiting') return done();
       if (job && job.notBefore > this.now()) return done();
 
-      const sidecar = await findSidecar(path, this.files.readdir);
-      if (sidecar) { store.recordFile({ path, language: 'en', source: 'sidecar', subtitlePath: sidecar }); return done(); }
-      let streams;
-      try { streams = await this.deps.probe(path, signal); } catch (e) { return fail(`ffprobe: ${errorText(e)}`); }
-      if (streams.some(isEnglishText)) { store.recordFile({ path, language: 'en', source: 'embedded' }); return done(); }
+      try { if (await this.local(path, signal)) return done(); } catch (e) { return fail(`ffprobe: ${errorText(e)}`); }
     }
 
     const login = store.login();

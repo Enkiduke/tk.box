@@ -1,6 +1,7 @@
 import {useState,type ReactNode} from 'react';
 import type {LibraryTitleView,PlexKey,TitleView} from '../../../packages/contracts/src/downloads.js';
 import type {HistoryListRow} from '../../../packages/contracts/src/index.js';
+import type {SubtitleJobState,SubtitleSource,TitleSubtitle,TitleSubtitles} from '../../../packages/contracts/src/subtitles.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading,Modal} from './components.js';
@@ -31,7 +32,7 @@ export function MovieDialog({id,pane,scope,setPane,onClose}:{id:number;pane:Titl
         :tab==='history'?<WatchHistoryPanel plex={t.plex}/>
         :tab==='grabs'?<Panel flush><GrabsTable grabs={t.grabs} now={Date.now()}/></Panel>
         :tab==='requests'?<Panel flush><RequestsTable requests={t.requests}/></Panel>
-        :<Panel flush><FilesTable files={t.files} path={path} now={Date.now()}/></Panel>}
+        :<Panel flush><FilesTable titleId={t.id} files={t.files} path={path} now={Date.now()}/></Panel>}
     </div>}
   </Modal>;
 }
@@ -109,19 +110,52 @@ function DeleteTitle({t,path,onCancel,onDeleted}:{t:{title:string;kind:'movie'|'
   </Modal>;
 }
 
-// A show's files and grabs say which episodes each holds (S02E05, S02 for a pack).
-export function FilesTable({files,path,now}:{files:LibraryTitleView['files'];path:string;now:number}) {
+// A show's files and grabs say which episodes each holds (S02E05, S02 for a pack). Each file says whether it has English
+// subtitles and from where (subtitle-finder's /admin/subtitles/title/:id; the column is left out if that can't load).
+export function FilesTable({titleId,files,path,now}:{titleId:number;files:LibraryTitleView['files'];path:string;now:number}) {
   const [deleting,setDeleting]=useState<LibraryTitleView['files'][number]>();
-  const episodes=files.some(f=>f.episodes);
-  const {rows,sort,onSort}=useSorted(files,{file:f=>f.path.split('/').pop(),episodes:f=>f.episodes,quality:f=>qualityRank(f.quality),size:f=>f.size,imported:f=>f.importedAt});
+  const subs=useApi<TitleSubtitles>(`/admin/subtitles/title/${titleId}`);useRefresh(subs.reload);
+  const episodes=files.some(f=>f.episodes),subtitles=subs.data?.files;
+  const {rows,sort,onSort}=useSorted(files,{file:f=>f.path.split('/').pop(),episodes:f=>f.episodes,quality:f=>qualityRank(f.quality),size:f=>f.size,imported:f=>f.importedAt,
+    subtitles:f=>subtitleRank(subtitles?.[f.id])});
   return <Table sort={sort} onSort={onSort} empty={files.length?undefined:'No file'} columns={[{label:'File',sort:'file'},...(episodes?[{label:'Episodes',width:130,sort:'episodes'}]:[]),
-    {label:'Quality',width:130,sort:'quality',desc:true},{label:'Size',width:90,num:true,sort:'size',desc:true},{label:'Imported',width:110,sort:'imported',desc:true},ACTIONS]}>
+    {label:'Quality',width:130,sort:'quality',desc:true},{label:'Size',width:90,num:true,sort:'size',desc:true},...(subtitles?[{label:'Subtitles',width:180,sort:'subtitles'}]:[]),
+    {label:'Imported',width:110,sort:'imported',desc:true},ACTIONS]}>
     {rows.map(f=><tr key={f.id}><td><span className="ui-mono" title={f.path}>{f.path.split('/').pop()}</span><small title={f.path}>{f.path}</small></td>
       {episodes&&<td>{f.episodes??<Dash/>}</td>}
-      <td>{f.quality}{f.proper&&<small>Proper</small>}</td><td className="num">{gb(f.size)}</td><td><When at={f.importedAt} now={now}/></td>
+      <td>{f.quality}{f.proper&&<small>Proper</small>}</td><td className="num">{gb(f.size)}</td>
+      {subtitles&&<td><SubtitleCell s={subtitles[f.id]??{state:'unchecked'}} video={f.path} now={now}/></td>}
+      <td><When at={f.importedAt} now={now}/></td>
       <td><RowActions><IconAction icon="trash" label="Delete this file" onClick={()=>setDeleting(f)}/></RowActions></td></tr>)}
     {deleting&&<DeleteFile file={deleting} path={path} onDone={()=>setDeleting(undefined)}/>}
   </Table>;
+}
+
+// English (green, named by where it came from), missing or the worker's job (amber; red when failed), not checked (grey).
+const sourceNames:Record<SubtitleSource,[string,string]>={sidecar:['Sidecar','An English subtitle file was beside it'],embedded:['Embedded','An English text track inside the file'],
+  opensubtitles:['OpenSubtitles','Downloaded from OpenSubtitles'],whisper:['Whisper','Made by the PC worker']};
+const subtitleJobs:Partial<Record<SubtitleJobState,[string,Tone]>>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],failed:['Failed','bad']};
+const subtitleRank=(s?:TitleSubtitle)=>!s||s.state==='unchecked'?undefined:s.state==='english'?0:s.state==='missing'?1:2;
+// A subtitle named after its video shows only what it adds (.en.srt); the full path is on hover.
+function subtitleName(path:string,video:string) {
+  const name=path.split('/').pop()??path,base=(video.split('/').pop()??video).replace(/\.[^.]+$/,'');
+  return name.startsWith(`${base}.`)?name.slice(base.length):name;
+}
+function SubtitleCell({s,video,now}:{s:TitleSubtitle;video:string;now:number}) {
+  if(s.state==='english'){
+    const [label,hint]=sourceNames[s.source],name=s.subtitlePath&&subtitleName(s.subtitlePath,video);
+    const match=s.source==='opensubtitles'&&s.hashMatch!==undefined?`, ${s.hashMatch?'matched to this exact file':'matched by name'}`:'';
+    return <><Pill tone="ok" title={`${hint}${match}`}>{label}</Pill>{name?<small className="ui-mono" title={s.subtitlePath}>{name}</small>:<small>In the file</small>}</>;
+  }
+  if(s.state==='missing'){
+    const job=s.job&&subtitleJobs[s.job.state];
+    return <>{job?<Pill tone={job[1]}>{job[0]}</Pill>:<Pill tone="wait">Missing</Pill>}
+      {s.job?.error?<small className="bad" title={s.job.error}>{s.job.error}</small>
+        :s.job?.state==='waiting'?<small>Again <When at={s.job.notBefore} now={now}/></small>
+        :s.job?<small>For the worker</small>:<small>No English</small>}</>;
+  }
+  if(s.state==='skipped')return <><Pill tone="bad">Skipped</Pill><small className="bad" title={s.reason}>{s.reason}</small></>;
+  return <Pill tone="off">Not checked</Pill>;
 }
 
 // Confirms deleting one file from disk; the title stays, so a monitored one wants it again.
@@ -137,7 +171,7 @@ function DeleteFile({file,path,onDone}:{file:LibraryTitleView['files'][number];p
   </Modal>;
 }
 // Who watched it and when (Admin › Activity › History's sessions for its Plex rating key), 50 at a time, newest first.
-const sourceNames:Record<HistoryListRow['source'],string>={vod:'tk.box',plex:'Plex app',iptv:'IPTV',custom:'Custom Channel'};
+const watchSources:Record<HistoryListRow['source'],string>={vod:'tk.box',plex:'Plex app',iptv:'IPTV',custom:'Custom Channel'};
 const deliveryNames:Record<string,string>={direct:'Direct Play',remux:'Direct Stream',transcode:'Transcode'};
 const watched=(ms:number)=>ms<60000?`${Math.floor(ms/1000)}s`:`${ms>=3600000?`${Math.floor(ms/3600000)}h `:''}${Math.floor(ms/60000)%60}m`;
 const pad=(n:number)=>String(n).padStart(2,'0');
@@ -159,7 +193,7 @@ export function WatchHistoryPanel({plex,show}:{plex?:PlexKey;show?:boolean}) {
       return <tr key={r.id}>
         {show&&<td><span title={r.title}>{r.season!=null&&r.episode!=null&&<Tag>S{pad(r.season)}E{pad(r.episode)}</Tag>} {r.title}</span></td>}
         <td>{r.accountName??`Plex user ${r.accountId}`}<small>{r.client}</small></td>
-        <td>{sourceNames[r.source]}<small>{deliveryNames[r.stream.delivery]??'Unknown'}</small></td>
+        <td>{watchSources[r.source]}<small>{deliveryNames[r.stream.delivery]??'Unknown'}</small></td>
         <td className="num">{watched(r.watchMs)}<small>{r.endedAt===null?'In progress':pct!==undefined?`Reached ${pct}%`:''}</small></td>
         <td><When at={r.startedAt} now={now}/></td></tr>;
     })}
