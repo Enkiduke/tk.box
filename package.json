@@ -15,6 +15,7 @@
     "preview:plex": "tsx scripts/preview-plex.ts",
     "preview:sync": "tsx scripts/preview-sync.ts",
     "typecheck": "tsc --noEmit",
+    "build:worker": "cd apps/subtitle-worker && go test ./... && go build -trimpath -ldflags \"-H windowsgui -s -w\" -o dist/worker.exe .",
     "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts",
     "start": "node dist/apps/server/src/index.js",
     "start:readonly": "node dist/apps/server/src/index.js --read-only",

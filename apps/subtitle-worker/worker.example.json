@@ -1,0 +1,12 @@
+{
+  "server": "https://tk.example.com",
+  "token": "tkw_paste-the-token-from-Admin-Downloads-Subtitles-Workers",
+  "whisper": "C:\\whisper\\whisper-cli.exe",
+  "model": "C:\\whisper\\ggml-large-v3-turbo.bin",
+  "vad": "C:\\whisper\\ggml-silero-v5.1.2.bin",
+  "window": "01:00-08:00",
+  "maxGpu": 15,
+  "maxVram": 1536,
+  "threads": 0,
+  "everyMin": 5
+}

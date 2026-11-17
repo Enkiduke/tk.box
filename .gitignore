@@ -4,6 +4,9 @@ dist/
 .env.*
 !.env.example
 data/
+# The PC subtitle worker's own settings (its token) and log.
+apps/subtitle-worker/worker.json
+apps/subtitle-worker/worker.log*
 .local/
 *.sqlite*
 *.key
