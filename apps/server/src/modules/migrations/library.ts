@@ -7,7 +7,7 @@ import { defaultLibrarySettings } from '../../persistence/library-store.js';
 
 // Titles, files, grabs, the blocklist, search backoff, pick profiles, score rules and the library settings
 // (docs/ARR-REPLACEMENT.md, "Data model" › library). The tables are the plan's, as written. The seed is the default
-// "1080p" profile, the default score rules and the settings row, with shows fulfilled by Sonarr.
+// "1080p" profile, the default score rules and the settings row.
 export const libraryMigrations: Migration[] = [
   { name: 'library', up: `
     CREATE TABLE pick_profiles(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, value TEXT NOT NULL);
@@ -76,7 +76,7 @@ export const libraryMigrations: Migration[] = [
     db.prepare('INSERT INTO library_settings(id, revision, value) VALUES(1, 1, ?)')
       .run(JSON.stringify(defaultLibrarySettings(Number(profile.lastInsertRowid))));
   } },
-  // The cutover from Radarr (and later Sonarr): each imported title's id there, so requests' arr_id can move between
+  // The one-time import from the old download services: each imported title's id there, so requests' arr_id can move between
   // the two ids on Switch and Switch back, and when each kind was imported, switched and switched back.
   { name: 'library-cutover', up: `
     CREATE TABLE library_cutover(kind TEXT NOT NULL CHECK(kind IN ('movie','show')), arr_id INTEGER NOT NULL,
@@ -99,7 +99,7 @@ export const libraryMigrations: Migration[] = [
     if (!row) return;
     const value = JSON.parse(row.value) as { fulfil?: { movie?: string; show?: string } };
     const { movie: _, ...fulfil } = value.fulfil ?? {};
-    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, fulfil: { show: 'sonarr', ...fulfil } }));
+    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, fulfil }));
   } },
   // Downloads › History: every step of every grab (grabbed, sent, imported, failed, removed…), kept after the grab's
   // row moves on. Grabs from before it get their first and last step from the grab's own times.
@@ -164,12 +164,48 @@ export const libraryMigrations: Migration[] = [
   } },
   // Phase 2: an episode's own TMDB runtime, for its size limits (runtimes vary within a show).
   { name: 'show-episodes', up: `ALTER TABLE library_episodes ADD COLUMN runtime INTEGER;` },
-  // Phase 2 step 6, the Sonarr import: each imported show's Sonarr id, so requests' arr_id can move between the two ids
-  // on Switch and Switch back, and when it was imported, switched and switched back. Step 7 drops them.
+  // Phase 2 step 6, the one-time show import: each imported show's id there, so requests' arr_id could move on Switch
+  // and Switch back. Dropped by `retire-import`.
   { name: 'show-cutover', up: `
-    CREATE TABLE show_cutover(sonarr_id INTEGER PRIMARY KEY, title_id INTEGER NOT NULL REFERENCES library_titles(id) ON DELETE CASCADE);
+    CREATE TABLE show_cutover(source_id INTEGER PRIMARY KEY, title_id INTEGER NOT NULL REFERENCES library_titles(id) ON DELETE CASCADE);
     CREATE INDEX show_cutover_title ON show_cutover(title_id);
     CREATE TABLE show_cutover_state(id INTEGER PRIMARY KEY CHECK(id = 1), imported_at INTEGER, summary TEXT, switched_at INTEGER, switched_back_at INTEGER);` },
   // The Monitored switch: the follow mode a title had before it was switched off, given back when it's switched on.
   { name: 'monitor-was', up: `ALTER TABLE library_titles ADD COLUMN monitor_was TEXT;` },
+  // Phase 2 step 7: shows are always tk.box's. The import's tables and the old connections table go, and the
+  // settings lose `fulfil`.
+  { name: 'retire-import', up: db => {
+    db.exec('DROP TABLE IF EXISTS show_cutover; DROP TABLE IF EXISTS show_cutover_state; DROP TABLE IF EXISTS arr_connections;');
+    const row = db.prepare('SELECT value FROM library_settings WHERE id=1').get() as { value: string } | undefined;
+    if (!row) return;
+    const { fulfil: _, ...value } = JSON.parse(row.value) as { fulfil?: unknown };
+    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify(value));
+  } },
+  // Early copies is each movie's own switch: the settings lose `earlyCopies`, and with it on, every movie starts on.
+  { name: 'early-copies-per-movie', up: db => {
+    db.exec('ALTER TABLE library_titles ADD COLUMN early_copies INTEGER NOT NULL DEFAULT 0;');
+    const row = db.prepare('SELECT value FROM library_settings WHERE id=1').get() as { value: string } | undefined;
+    if (!row) return;
+    const { earlyCopies, ...value } = JSON.parse(row.value) as { earlyCopies?: boolean };
+    if (earlyCopies) db.exec(`UPDATE library_titles SET early_copies = 1 WHERE kind = 'movie';`);
+    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify(value));
+  } },
+  // Slow and stalled downloads (docs/STALLS.md): a grab's strikes, its runner-ups from the search that picked it, the
+  // release it was swapped in for, and when it became Only source (and why: a dud or slow) and was last checked for a
+  // faster release. Blocklist entries get a kind: `skipped` ones expire (`until`) and never count toward pausing. The
+  // settings swap `stalledHours` for the download budget.
+  { name: 'download-health', up: db => {
+    db.exec(`ALTER TABLE grabs ADD COLUMN strikes INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE grabs ADD COLUMN runners TEXT;
+      ALTER TABLE grabs ADD COLUMN swapped_from INTEGER;
+      ALTER TABLE grabs ADD COLUMN only_source TEXT;
+      ALTER TABLE grabs ADD COLUMN only_source_at INTEGER;
+      ALTER TABLE grabs ADD COLUMN swap_checked_at INTEGER;
+      ALTER TABLE blocklist ADD COLUMN kind TEXT NOT NULL DEFAULT 'failed';
+      ALTER TABLE blocklist ADD COLUMN until INTEGER;`);
+    const row = db.prepare('SELECT value FROM library_settings WHERE id=1').get() as { value: string } | undefined;
+    if (!row) return;
+    const { stalledHours: _, ...value } = JSON.parse(row.value) as { stalledHours?: number };
+    db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, budget: { movie: 30, episode: 15 } }));
+  } },
 ];

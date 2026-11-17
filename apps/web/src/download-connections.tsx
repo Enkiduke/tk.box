@@ -49,7 +49,7 @@ export function NzbGeekEditor({indexer,onClose}:{indexer:IndexerView;onClose:()=
   </form>;
 }
 
-// IPTorrents' categories as Prowlarr maps them (Newznab ids); a parent takes every site category under it.
+// IPTorrents' categories as Newznab ids; a parent takes every site category under it.
 const iptMovies=[[2000,'Movies'],[2010,'Foreign'],[2030,'SD'],[2040,'HD'],[2045,'UHD'],[2050,'BluRay'],[2060,'3D'],[2070,'DVD'],[2080,'WEB-DL']] as const;
 const iptTv=[[5000,'TV'],[5010,'WEB-DL'],[5020,'Foreign'],[5030,'SD'],[5040,'HD']] as const;
 function CategoryChecks({label,options,value,onChange}:{label:string;options:readonly (readonly [number,string])[];value:number[];onChange:(next:number[])=>void}) {

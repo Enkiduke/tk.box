@@ -1,30 +1,35 @@
+import type {ReactNode} from 'react';
 import type {LibraryTitleView,TitleView} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading,Modal} from './components.js';
-import {Switch,useMutation} from './settings-ui.js';
+import {useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
-import {SourceLine,SourcePanel} from './movie-source.js';
+import {RequestsTable,SourceLine} from './movie-source.js';
 import {ShowDialogBody} from './show-dialog.js';
-import {Dash,FavoriteStar,Field,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
+import {Dash,FavoriteStar,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
 
 // A movie or show in the library (docs/UI.md), as a dialog over whichever Admin page opened it (`&title=<id>`, and
-// `&pane=search` for its Interactive search tab): what it has and needs, its settings, files and grabs, and the search.
-// A show's dialog is show-dialog.tsx, sharing the tables here.
+// `&pane=` for a tab): its head holds what it has, its settings and the searches; the tabs hold its files, grabs,
+// requests and Interactive search. A show's dialog is show-dialog.tsx, sharing the head's controls and the tables here.
 
 export type MoviePane=TitlePane;
 
 export function MovieDialog({id,pane,scope,setPane,onClose}:{id:number;pane:TitlePane;scope?:string;setPane:(pane:TitlePane,scope?:string)=>void;onClose:()=>void}) {
   const path=`/admin/library/titles/${id}`,view=useApi<TitleView>(path),mutation=useMutation(changed);useRefresh(view.reload);
-  const t=view.data;
+  const t=view.data,tab=pane==='overview'?'files':pane;
   return <Modal title={t?.title??'Title'} variant="wide" onClose={onClose} scrollKey={`${id}`}>
     {view.error&&!t?<ErrorNotice message={view.error.message} retry={view.reload}/>:!t?<Loading/>
     :t.kind==='show'?<ShowDialogBody t={t} path={path} pane={pane} scope={scope} setPane={setPane} mutation={mutation}/>:<div className="ui-movie-dialog">
       <Head t={t} path={path} mutation={mutation}/>
       {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-      <Tabs label={t.title} value={pane==='search'?'search':'overview'} onChange={p=>setPane(p)} tabs={[{id:'overview',label:'Overview'},{id:'search',label:'Interactive search'}]}/>
-      {pane==='search'?<InteractiveSearchPanel titleId={t.id}/>:<Overview t={t} path={path} mutation={mutation}/>}
+      <Tabs label={t.title} value={tab} onChange={p=>setPane(p==='files'?'overview':p)} tabs={[{id:'files',label:'Files',count:t.files.length},
+        {id:'grabs',label:'Grabs',count:t.grabs.length},{id:'requests',label:'Requests',count:t.requests.length},{id:'search',label:'Interactive search'}]}/>
+      {tab==='search'?<InteractiveSearchPanel titleId={t.id}/>
+        :tab==='grabs'?<Panel flush><GrabsTable grabs={t.grabs} now={Date.now()}/></Panel>
+        :tab==='requests'?<Panel flush><RequestsTable requests={t.requests}/></Panel>
+        :<Panel flush><FilesTable files={t.files} now={Date.now()}/></Panel>}
     </div>}
   </Modal>;
 }
@@ -35,11 +40,10 @@ function statusOf(t:LibraryTitleView):{tone:Tone;label:string} {
     :t.wanted.wanted?{tone:'wait',label:t.wanted.why==='missing'?'Missing':'Below cutoff'}:{tone:'ok',label:'Available'};
 }
 
-// Poster, title, status, the facts that matter, and the two actions that don't need the tabs.
+// Poster, title, status, the facts that matter, then its settings and searches in one strip.
 function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutation}) {
   const now=Date.now(),s=statusOf(t),have=t.files[0];
   const search=()=>void mutation.run(async()=>{await api(`${path}/search`,'POST');toast.info(`Searching for ${t.title}`);});
-  const resume=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:false}));
   return <header className="ui-movie">
     <Poster id={t.id} className="ui-movie-poster"/>
     <div className="ui-movie-main">
@@ -56,27 +60,32 @@ function Head({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutatio
         <div><dt>Digital</dt><dd><WhenDay day={t.released.digital} now={now}/></dd></div>
         <div><dt>Physical</dt><dd><WhenDay day={t.released.physical} now={now}/></dd></div>
       </dl>
-      <div className="button-row">
+      <TitleControls t={t} path={path} mutation={mutation}>
         <button disabled={mutation.busy||t.paused||!t.monitored} title="Search now and grab the best match" onClick={search}><Icon name="search" size={16}/>Automatic search</button>
-        {t.paused&&<button disabled={mutation.busy} title="Clear the failures and start searching again" onClick={resume}><Icon name="play" size={16}/>Resume</button>}
-      </div>
+      </TitleControls>
     </div>
   </header>;
 }
 
-function Overview({t,path,mutation}:{t:LibraryTitleView;path:string;mutation:Mutation}) {
-  const now=Date.now();
-  const update=(body:{profileId?:number;keep?:boolean;monitored?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
-  return <>
-    <Panel flush title="Settings">
-      <Field label="Monitored" hint="Off: no searches or upgrades"><Switch label="" ariaLabel="Monitored" checked={t.monitored} disabled={mutation.busy} onChange={monitored=>update({monitored})}/></Field>
-      <Field label="Profile"><select value={t.profileId} disabled={mutation.busy} onChange={e=>update({profileId:Number(e.target.value)})}>{t.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
-      <Field label="Favorite" hint="Clean Up never removes it"><Switch label="" ariaLabel="Favorite" checked={t.keep} disabled={mutation.busy} onChange={keep=>update({keep})}/></Field>
-    </Panel>
-    <SourcePanel source={t.source}/>
-    <Panel flush title="Files"><FilesTable files={t.files} now={now}/></Panel>
-    <Panel flush title="Grabs"><GrabsTable grabs={t.grabs} now={now}/></Panel>
-  </>;
+// A title's settings as one strip under its facts: Monitored, Profile, Favorite (and a movie's Early copies), then its
+// searches on the right, and Resume while it's Failing.
+export function TitleControls({t,path,mutation,children}:{t:{monitored:boolean;keep:boolean;earlyCopies?:boolean;paused:boolean;profileId:number;profiles:{id:number;name:string}[]};path:string;mutation:Mutation;children:ReactNode}) {
+  const update=(body:{profileId?:number;keep?:boolean;monitored?:boolean;earlyCopies?:boolean})=>void mutation.run(()=>api(path,'PUT',body));
+  const resume=()=>void mutation.run(()=>api(`${path}/pause`,'POST',{paused:false}));
+  return <div className="ui-movie-controls">
+    <label className="ui-movie-control" title="Off: no searches or upgrades"><span>Monitored</span>
+      <input type="checkbox" role="switch" className="switch" checked={t.monitored} disabled={mutation.busy} onChange={e=>update({monitored:e.target.checked})}/></label>
+    <label className="ui-movie-control"><span>Profile</span>
+      <select value={t.profileId} disabled={mutation.busy} onChange={e=>update({profileId:Number(e.target.value)})}>{t.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    <label className="ui-movie-control" title="Clean Up never removes it"><span>Favorite</span>
+      <input type="checkbox" role="switch" className="switch" checked={t.keep} disabled={mutation.busy} onChange={e=>update({keep:e.target.checked})}/></label>
+    {t.earlyCopies!==undefined&&<label className="ui-movie-control" title="Take cams and telesyncs from the cinema release until a better copy is out"><span>Early copies</span>
+      <input type="checkbox" role="switch" className="switch" checked={t.earlyCopies} disabled={mutation.busy} onChange={e=>update({earlyCopies:e.target.checked})}/></label>}
+    <div className="ui-movie-actions">
+      {t.paused&&<button disabled={mutation.busy} title="Clear the failures and start searching again" onClick={resume}><Icon name="play" size={16}/>Resume</button>}
+      {children}
+    </div>
+  </div>;
 }
 
 // A show's files and grabs say which episodes each holds (S02E05, S02 for a pack).

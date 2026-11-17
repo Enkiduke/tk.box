@@ -7,7 +7,6 @@ import { notificationsMigrations } from './notifications.js';
 import { queueMigrations } from './queue.js';
 import { indexersMigrations } from './indexers.js';
 import { downloadersMigrations } from './downloaders.js';
-import { arrMigrations } from './arr.js';
 import { artworkMigrations } from './artwork.js';
 import { libraryMigrations } from './library.js';
 import { requestsMigrations } from './requests.js';
@@ -24,7 +23,6 @@ export const moduleMigrations: Readonly<Record<string, readonly Migration[]>> = 
   queue: queueMigrations,
   indexers: indexersMigrations,
   downloaders: downloadersMigrations,
-  arr: arrMigrations,
   artwork: artworkMigrations,
   library: libraryMigrations,
   requests: requestsMigrations,

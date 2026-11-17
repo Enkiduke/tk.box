@@ -4,15 +4,14 @@ import { readTorrent } from './bencode.js';
 
 // IPTorrents, read directly (docs/ARR-REPLACEMENT.md, "Clients" › IPTorrents): the personal RSS feed (its links carry
 // the passkey), the search page read with the browser cookie and user agent, and the .torrent itself. The page is read
-// the way Prowlarr's IPTorrents definition reads it: rows of `table#torrents`, the title in `a.hv`, the download link
+// the way the common IPTorrents indexer definition reads it: rows of `table#torrents`, the title in `a.hv`, the download link
 // `a[href^="/download.php/"]`, size, snatches, seeders and leechers found by their header ("Sort by size", …),
 // freeleech by `span.free`, and the page is signed in only when it links to lout.php.
 
 export const IPTORRENTS = 'https://iptorrents.com';
 export const PASSKEY = '{passkey}';
 
-// The site's category ids and the Newznab category Prowlarr maps each to (movies and TV). Admin picks Newznab ids, as
-// Prowlarr shows them; a parent (2000, 5000) takes every site category under it.
+// The site's category ids and the Newznab category each maps to (movies and TV). Admin picks Newznab ids; a parent (2000, 5000) takes every site category under it.
 export const SITE_CATEGORIES: readonly (readonly [site: number, newznab: number, name: string])[] = [
   [72, 2000, 'Movies'], [87, 2060, 'Movie/3D'], [77, 2030, 'Movie/480p'], [101, 2045, 'Movie/4K'], [89, 2040, 'Movie/BD-R'],
   [90, 2030, 'Movie/BD-Rip'], [96, 2030, 'Movie/Cam'], [6, 2070, 'Movie/DVD-R'], [48, 2050, 'Movie/HD/Bluray'], [54, 2000, 'Movie/Kids'],
@@ -91,7 +90,7 @@ export function parseSearchPage(html: string, now = Date.now(), base = IPTORRENT
   const end = html.indexOf('</table>', start);
   const table = html.slice(start, end < 0 ? undefined : end);
   const rows = table.split(/<tr\b/i).slice(1).map(r => `<tr${r}`);
-  // The header labels (text, or a link's title), to find the columns as Prowlarr does; else its defaults.
+  // The header labels (text, or a link's title), to find the columns; else its defaults.
   const header = rows.find(r => /<th\b/i.test(r));
   const labels = header ? cellsOf(header).map(cell => `${textOf(cell)} ${[...cell.matchAll(/\btitle\s*=\s*"([^"]*)"/gi)].map(m => m[1]).join(' ')}`.toLowerCase()) : [];
   const column = (label: string) => { const i = labels.findIndex(l => l.includes(label)); return i >= 0 ? i : undefined; };

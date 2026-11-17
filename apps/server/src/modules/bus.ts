@@ -24,7 +24,7 @@ export type BusEvents = {
   'plex.playback.connection': { connected: boolean };
   // A browser session signed out: everything it was watching stops.
   'session.signed-out': { hash: string };
-  // A request was made, sent, moved on (Plex, the library, Sonarr), cancelled or removed. `accountId` is the requester's.
+  // A request was made, sent, moved on (Plex, the library), cancelled or removed. `accountId` is the requester's.
   'requests.changed': RequestChange;
   // Post a notification, or close an open condition (modules/notifications.ts), without depending on that module.
   'notification.post': NewNotification;

@@ -172,23 +172,17 @@ class Service:
 @dataclass(frozen=True)
 class Settings:
     plex: Service
-    sonarr: Service
     # Plex library section IDs.
     movie_libraries: tuple[str, ...]
     tv_libraries: tuple[str, ...]
     dry_run: bool = True
-    # Movies are tk.box's own: a movie is kept by tk.box's Keep (a request's `keep`) and deleted from Plex only, and
-    # tk.box forgets it after the run. Only shows go through Sonarr, until they're tk.box's too (`tkbox_shows`): then a
-    # show is handled as a movie is, kept by its requests' `keep` and deleted (whole or by season) from Plex only, and
-    # Sonarr is never asked.
-    delete_from_sonarr: bool = False
-    tkbox_shows: bool = False
+    # Movies and shows are tk.box's own: a title is kept by tk.box's Keep (a request's `keep`) and deleted (a show
+    # whole or by season) from Plex only, and tk.box forgets it after the run.
     days_after_watched: int = 30
     days_after_unwatched: int = 60
     days_after_any_watch_exempt: int = 90
     days_after_exempt_watch: int = 180
     exempt_user_ids: frozenset[int] = frozenset()
-    exempt_arr_tags: frozenset[str] = frozenset()
     exempt_if_in_collection: bool = False
     # Which collections protect a title, and tk.box's own collections by kind (see tkbox_collections).
     protecting_collection_kinds: frozenset[str] = frozenset(COLLECTION_KINDS)
@@ -234,17 +228,13 @@ class Settings:
         poster = text(config, "leaving_soon_poster")
         settings = cls(
             plex=service("plex", "PLEX_TOKEN"),
-            sonarr=service("sonarr", "SONARR_API_KEY"),
             movie_libraries=text_list(config, "movie_libraries"), tv_libraries=text_list(config, "tv_libraries"),
             dry_run=dry_run or boolean(config, "dry_run", default=True),
-            delete_from_sonarr=boolean(config, "delete_from_sonarr"),
-            tkbox_shows=boolean(config, "tkbox_shows"),
             days_after_watched=integer(config, "days_after_watched", default=30),
             days_after_unwatched=integer(config, "days_after_unwatched", default=60),
             days_after_any_watch_exempt=integer(config, "days_after_any_watch_exempt", default=90),
             days_after_exempt_watch=integer(config, "days_after_exempt_watch", default=180),
             exempt_user_ids=frozenset(ids),
-            exempt_arr_tags=frozenset(tag.casefold() for tag in text_list(config, "exempt_arr_tags")),
             exempt_if_in_collection=boolean(config, "exempt_if_in_collection"),
             protecting_collection_kinds=collection_kinds(config),
             tkbox_collections=tkbox_collections(config),
@@ -265,10 +255,5 @@ class Settings:
 
     def validate(self):
         self.plex.validate("Plex", required=True)
-        if self.tkbox_shows and (self.delete_from_sonarr or self.exempt_arr_tags):
-            raise ConfigError("Shows are tk.box's: Delete from Sonarr and Sonarr tags don't apply")
-        self.sonarr.validate("Sonarr", required=self.delete_from_sonarr)
         if not self.movie_libraries and not self.tv_libraries:
             raise ConfigError("Choose at least one movie or TV library")
-        if self.exempt_arr_tags and self.tv_libraries:
-            self.sonarr.validate("Sonarr", required=True)

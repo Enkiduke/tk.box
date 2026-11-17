@@ -73,6 +73,21 @@ function ItemStatus({item,now}:{item:DownloadItem;now:number}) {
     :item.detail??(item.position?`#${item.position} in line`:undefined);
   return <><Pill tone={tone}>{word}</Pill>{line&&<small>{line}</small>}</>;
 }
+// Download health (docs/STALLS.md): Only source, or Slow while it has strikes, in place of the client's word; and
+// under it the strikes, when the next look for a faster release is, or that it was just swapped in.
+function grabHealth(item:DownloadItem,now:number):{pill?:[string,Tone];line?:string}|undefined {
+  const g=item.grab;if(!g)return undefined;
+  if(g.onlySource)return {pill:['Only source','off'],line:g.nextCheckAt?`Checking again ${g.nextCheckAt<=now?'now':relative(g.nextCheckAt,now)}`:undefined};
+  if(g.strikes)return {pill:['Slow','wait'],line:`${g.strikes} strike${g.strikes>1?'s':''}`};
+  if(g.swapped)return {line:'Swapped for a faster release'};
+  return undefined;
+}
+function HealthStatus({item,now}:{item:DownloadItem;now:number}) {
+  const health=grabHealth(item,now);
+  if(!health)return <ItemStatus item={item} now={now}/>;
+  const [word,tone]=health.pill??stateWords[item.state];
+  return <><Pill tone={tone}>{word}</Pill>{health.line&&<small>{health.line}</small>}</>;
+}
 const Requested=({item}:{item:DownloadItem})=>item.requestedBy?<span title={item.requestedBy}>{item.requestedBy}</span>:fromTkbox(item)?<span>tk.box</span>:<span className="ui-dash">Outside</span>;
 const Swarm=({item}:{item:DownloadItem})=>item.protocol!=='torrent'||item.seeds===undefined?<Dash/>
   :<span title={`${item.seeds} of ${item.seedsTotal??'?'} seeds, ${item.peers??0} of ${item.peersTotal??'?'} peers`}>{item.seeds}<span className="ui-dash"> ({item.seedsTotal??0})</span> / {item.peers??0}</span>;
@@ -135,7 +150,7 @@ export function DownloadsPage({params}:{params:URLSearchParams}) {
           <td className="num">{rate(i.down)??(i.up?null:<Dash/>)}{i.up?<small>↑ {rate(i.up)}</small>:null}</td>
           <td className="num">{statusOf[i.state]==='done'?<Dash/>:duration(i.eta)??<Dash/>}</td>
           <td className="num"><Swarm item={i}/></td>
-          <td><ItemStatus item={i} now={now}/></td>
+          <td><HealthStatus item={i} now={now}/></td>
           <td><Requested item={i}/></td>
           <td>{i.state==='failed'&&i.grab?.state==='failed'&&<RowActions>
             <IconAction icon="restart" label={`Retry ${i.grab.title}`} disabled={mutation.busy} onClick={()=>retry(i.grab!.id,i.grab!.title)}/></RowActions>}</td>
@@ -168,7 +183,7 @@ export function DownloadJobs() {
 
 const eventWords:Record<GrabEventKind,[string,Tone]>={grabbed:['Grabbed','active'],retried:['Retried','wait'],sending:['Sending','active'],downloading:['Sent','active'],
   unpacking:['Unpacking','active'],importing:['Importing','active'],imported:['Imported','ok'],seeding:['Imported','ok'],done:['Removed','off'],failed:['Failed','bad'],
-  cancelled:['Cancelled','off']};
+  cancelled:['Cancelled','off'],'only-source':['Only source','off']};
 const steps=[['all','All'],['grabbed','Grabbed'],['imported','Imported'],['failed','Failed'],['removed','Removed']] as const;
 type Step=typeof steps[number][0];
 const stepOf:Partial<Record<GrabEventKind,Step>>={grabbed:'grabbed',retried:'grabbed',imported:'imported',seeding:'imported',failed:'failed',done:'removed',cancelled:'removed'};

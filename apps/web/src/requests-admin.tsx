@@ -6,12 +6,12 @@ import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading} from './components.js'
 import {Card,SectionHead,Switch,date,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 
-// Admin › Requests: every request (docs/REQUESTS.md), where requests go (tk.box's profiles for movies, Sonarr for shows), and the Requests site.
+// Admin › Requests: every request (docs/REQUESTS.md), their default profiles (tk.box's), and the Requests site.
 export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',requested:'Requested',downloading:'Downloading',partial:'Partly available',available:'Available',failed:'Failed',removed:'Removed'};
 const statusFilters=[['','All'] as const,...Object.entries(requestStatusNames)];
 const kindFilters=[['','All'],['movie','Movies'],['show','Shows']] as const;
 const tone:Partial<Record<RequestStatus,string>>={available:'ok',partial:'ok',downloading:'warning',failed:'danger'};
-const removedBy:Record<string,string>={requester:'by the requester',admin:'by an administrator',cleanup:'by Clean Up',arr:'from Radarr or Sonarr'};
+const removedBy:Record<string,string>={requester:'by the requester',admin:'by an administrator',cleanup:'by Clean Up',arr:'from the library'};
 const seasonText=(item:RequestItem)=>item.kind==='movie'?'Movie':item.seasons.length?`Season${item.seasons.length>1?'s':''} ${item.seasons.map(s=>s.season).join(', ')}`:'Show';
 
 export function RequestsAdmin() {
@@ -95,29 +95,21 @@ function RequestDefaults() {
   return <form onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Where requests go" description="Administrators can change these per request.">
       <div className="form-columns">
-        <Destination title="Movies" service="tk.box" options={movie} value={draft.movie} set={v=>{setDraft({...draft,movie:{...draft.movie,...v}});}}/>
-        <Destination title="Shows" service="Sonarr" options={show} value={draft.show} set={v=>{setDraft({...draft,show:{...draft.show,...v}});}}/>
+        <Destination title="Movies" options={movie} value={draft.movie} set={v=>{setDraft({...draft,movie:{...draft.movie,...v}});}}/>
+        <Destination title="Shows" options={show} value={draft.show} set={v=>{setDraft({...draft,show:{...draft.show,...v}});}}/>
       </div>
-      <Switch label="Season folders" checked={draft.show.seasonFolders} onChange={v=>{setDraft({...draft,show:{...draft.show,seasonFolders:v}});}}/>
       <Switch label="Search when added" checked={draft.searchOnAdd} onChange={v=>{setDraft({...draft,searchOnAdd:v});}}/>
       {mutation.error&&<ErrorNotice message={mutation.error}/>}
       <div className="button-row"><button className="primary" disabled={mutation.busy}>Save</button></div>
     </Card>
   </form>;
 }
-function Destination({title,service,options,value,set}:{title:string;service:string;options:ReturnType<typeof useApi<RequestOptions>>;value:RequestSettings['movie'];set:(patch:Partial<RequestSettings['movie']>)=>void}) {
+function Destination({title,options,value,set}:{title:string;options:ReturnType<typeof useApi<RequestOptions>>;value:RequestSettings['movie'];set:(patch:Partial<RequestSettings['movie']>)=>void}) {
   const o=options.data;
-  // On tk.box (Admin › Downloads) the profiles are its pick profiles, and there is no folder or tag to pick.
-  if(o?.tkbox)return <fieldset className="requests-destination"><legend>{title}</legend>
-    <label>Quality profile<select value={o.profiles.some(p=>p.id===value.profileId)?value.profileId:0} onChange={e=>set({profileId:Number(e.target.value)})}><option value={0}>Default profile</option>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-  </fieldset>;
+  // The profiles are the library's pick profiles (Admin › Downloads › Quality).
   return <fieldset className="requests-destination"><legend>{title}</legend>
-    {options.error?<ErrorNotice message={options.error.message} retry={options.reload}/>:!o?<Loading/>:!o.connected?<p className="muted small">{service} isn’t connected. Add it in <a href="#admin?section=connections&category=downloads">Admin › Connections</a>.</p>:<>
-      <label>Quality profile<select value={value.profileId} onChange={e=>set({profileId:Number(e.target.value)})}><option value={0}>{service}’s first{o.profiles[0]?` (${o.profiles[0].name})`:''}</option>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-      <label>Root folder<select value={value.rootFolder} onChange={e=>set({rootFolder:e.target.value})}><option value="">{service}’s first{o.rootFolders[0]?` (${o.rootFolders[0].path})`:''}</option>{o.rootFolders.map(r=><option key={r.path} value={r.path}>{r.path}</option>)}</select></label>
-      {o.tags.length>0&&<div className="requests-tags" role="group" aria-label={`${title} tags`}><span>Tags</span>{o.tags.map(t=><label key={t.id}><input type="checkbox" checked={value.tags.includes(t.id)}
-        onChange={e=>set({tags:e.target.checked?[...value.tags,t.id]:value.tags.filter(x=>x!==t.id)})}/>{t.label}</label>)}</div>}
-    </>}
+    {options.error?<ErrorNotice message={options.error.message} retry={options.reload}/>:!o?<Loading/>:
+      <label>Quality profile<select value={o.profiles.some(p=>p.id===value.profileId)?value.profileId:0} onChange={e=>set({profileId:Number(e.target.value)})}><option value={0}>Default profile</option>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
   </fieldset>;
 }
 

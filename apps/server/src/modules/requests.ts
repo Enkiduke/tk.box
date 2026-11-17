@@ -2,9 +2,7 @@ import { defineModule } from './module.js';
 import { requestsMigrations } from './migrations/requests.js';
 import { requireThat } from '../errors.js';
 import { RequestStore } from '../persistence/requests-store.js';
-import { ArrFulfiller, type Fulfiller } from '../providers/arr-fulfiller.js';
-import { fulfillerByKind } from '../providers/library-fulfiller.js';
-import type { ArrService } from '../providers/arr-tags.js';
+import type { Fulfiller } from '../providers/fulfiller.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { RequestAvailability } from '../services/request-availability.js';
 import { Requests } from '../services/requests.js';
@@ -17,13 +15,10 @@ import type { RequestsSite } from '../services/requests-site.js';
 import type { RequestsSiteStatus } from '../../../../packages/contracts/src/index.js';
 
 type Deps = {
-  arr: { connection: (name: 'sonarr') => ArrService };
   // TMDB names the title and gives a show's seasons and TVDB id.
   titles: Pick<TmdbTitles, 'get'>;
-  arrTransport?: typeof fetch;
-  // tk.box's own library (docs/ARR-REPLACEMENT.md): movies go to it; shows too once `fulfil.show` is tkbox
-  // (`showsHere`), else to Sonarr.
-  library: { fulfiller: Fulfiller; showsHere(): boolean };
+  // tk.box's own library (docs/ARR-REPLACEMENT.md), which takes every request.
+  library: { fulfiller: Fulfiller };
   // The Requests site's listener (app.ts), started from its saved settings and moved when they change.
   site?: RequestsSite;
 };
@@ -31,23 +26,21 @@ const siteInput = z.object({ expectedRevision: z.number().int().nonnegative(), p
 
 const SWEEP_MS = 60000, REBUILD_MS = 6 * 3600000;
 
-// tk.box's own requests (docs/REQUESTS.md). Sends movies to tk.box's library and shows to Sonarr, follows them on Plex
-// and the library's grabs or Sonarr's queue, and gives Explore its labels (`requests.labels()`). Each change is `requests.changed` on
+// tk.box's own requests (docs/REQUESTS.md). Sends movies and shows to tk.box's library, follows them on Plex and the
+// library's grabs, and gives Explore its labels (`requests.labels()`). Each change is `requests.changed` on
 // the bus. Plex is read with the owner's grant.
 export const requestsModule = defineModule({
   name: 'requests',
   portal: true,
   migrations: requestsMigrations,
-  setup(routes, { config, db, plex, bus, background, jobs, log }, { arr, titles, arrTransport, site, library }: Deps) {
-    const store = new RequestStore(db), arrFulfiller = new ArrFulfiller(() => arr.connection('sonarr'), arrTransport);
-    const fulfiller = fulfillerByKind(kind => kind === 'movie' || library.showsHere() ? library.fulfiller : arrFulfiller);
+  setup(routes, { config, db, plex, bus, background, jobs, log }, { titles, site, library }: Deps) {
+    const store = new RequestStore(db), fulfiller = library.fulfiller;
     const availability = new RequestAvailability(async () => {
       const grant = await background.grant();
       if (!grant) throw new Error('No Plex admin token in Admin › Connections');
       return plex.availability(grant);
     }, (message, detail) => log.warn(message, detail));
-    const requests = new Requests(store, fulfiller, availability, titles, () => arr.connection('sonarr'), (message, detail) => log.info(message, detail));
-    requests.showsHere = () => library.showsHere();
+    const requests = new Requests(store, fulfiller, availability, titles, (message, detail) => log.info(message, detail));
     // Each change also tells the bell: the requester how it went, the admins of new and failed requests.
     requests.changed = change => {
       bus.emit('requests.changed', change);

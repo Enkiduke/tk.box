@@ -1003,7 +1003,7 @@ def banner_date(day, pattern, simplify, today):
 
 
 def banner_pick(data, added, today, settings):
-    """The status banner a show gets, by TSSK's rules but from TMDb's /tv details `data` (no Sonarr) and the day it was added to Plex
+    """The status banner a show gets, by TSSK's rules but from TMDb's /tv details `data` and the day it was added to Plex
     (`added`, or None): {"category", "season", "episode", "date"}, or None. A category applies when its event falls inside its window
     of days (ahead for what is coming, back for what has happened) and it is enabled; `settings` is banner_settings()."""
     status = data.get("status")

@@ -5,10 +5,16 @@ import type { EpisodeRow, Monitor, Released, SeasonRow } from '../persistence/li
 // Wanted and search timing for movies, and which of a show's seasons and episodes are followed (docs/ARR-REPLACEMENT.md, "Wanted" and "Search timing"). Pure: the library
 // reads the rows and Plex, these say what follows.
 
-const HOUR = 3600000, DAY = 24 * HOUR;
-// A miss waits 1, 2, 4, then every 7 days.
-export const MISS_BACKOFF_DAYS = [1, 2, 4, 7] as const;
-export const missBackoff = (misses: number) => MISS_BACKOFF_DAYS[Math.min(Math.max(misses, 1), MISS_BACKOFF_DAYS.length) - 1]! * DAY;
+const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
+// A miss waits 1, 2, 4, then 7 days; a title long out (LONG_OUT) that still misses after that, 14 days from the 9th
+// miss and 30 from the 11th, as RSS still catches it. Anything that could change a search's outcome (a new profile,
+// Monitored or Resume, Search now, new release dates) starts the misses over (Library.searchAfresh).
+export const MISS_BACKOFF_DAYS = [1, 2, 4, 7, 7, 7, 7, 7, 14, 14, 30] as const;
+export const LONG_OUT = 90 * DAY;
+export const missBackoff = (misses: number, longOut = false) => {
+  const days = MISS_BACKOFF_DAYS[Math.min(Math.max(misses, 1), MISS_BACKOFF_DAYS.length) - 1]!;
+  return Math.min(days, longOut ? days : 7) * DAY;
+};
 export const EARLY_COPY_EVERY = 12 * HOUR, RELEASE_EVERY = 6 * HOUR, RELEASE_WINDOW = 3 * DAY;
 // A movie with no home release date is taken as out this long after it reached cinemas.
 const THEATRICAL_GRACE = 120 * DAY;
@@ -47,16 +53,22 @@ export function isOut(released: Released, now: number) {
   return theatrical === undefined || theatrical + THEATRICAL_GRACE <= now;
 }
 
+// `earlyCopies`: the movie's own switch.
 export type TimingInput = { now: number; released: Released; earlyCopies: boolean; file?: { quality: Quality } };
 
-// On request or add: at once, unless the movie isn't out and Early copies is off. Then RSS only until its home
-// release (undefined: no search until then; the sweep has nothing due).
+// Never before the cinema release: nothing worth having is out sooner, Early copies or not.
+const beforeCinemas = (released: Released, now: number) => { const at = dayStart(released.theatrical); return at !== undefined && at > now ? at : undefined; };
+
+// On request or add: at once when the movie is out. Not out: from its cinema release with Early copies on, else from
+// its home release, with RSS only until then.
 export function firstSearchAt(input: TimingInput): number {
-  if (input.earlyCopies || isOut(input.released, input.now)) return input.now;
+  if (isOut(input.released, input.now)) return input.now;
+  if (input.earlyCopies) return beforeCinemas(input.released, input.now) ?? input.now;
   return homeRelease(input.released) ?? input.now + MISS_BACKOFF_DAYS[3] * DAY;
 }
 
 // After a search that found nothing to grab (`misses` counts it). The backoff, then:
+// - not before the cinema release;
 // - not out with Early copies off: not before the home release;
 // - an early copy on disk: at most 12 hours (Early copies);
 // - from the home release: every 6 hours for 3 days, when the good copies appear;
@@ -64,18 +76,21 @@ export function firstSearchAt(input: TimingInput): number {
 export function nextSearchAt(input: TimingInput & { misses: number }): number {
   const { now, released, earlyCopies, file } = input;
   const home = homeRelease(released);
-  let next = now + missBackoff(input.misses);
+  let next = now + missBackoff(input.misses, isOut(released, now - LONG_OUT));
+  const cinemas = beforeCinemas(released, now);
+  if (earlyCopies && cinemas !== undefined) return cinemas;
   if (!earlyCopies && !isOut(released, now) && home !== undefined) return home;
   if (earlyCopies && file && EARLY_COPIES.has(file.quality)) next = Math.min(next, now + EARLY_COPY_EVERY);
   if (home !== undefined && home <= now && now < home + RELEASE_WINDOW) next = Math.min(next, now + RELEASE_EVERY);
   if (home !== undefined && home > now) next = Math.min(next, home);
-  return next;
+  return cinemas === undefined ? next : Math.max(next, cinemas);
 }
 
 // ---- Shows: which seasons and episodes are followed ----
 
-// TMDB gives an episode's air date, not its time. It counts as aired at the end of that day in US Pacific time (08:00
-// UTC the next day), when an episode shown anywhere in the US that day is out. RSS picks up anything sooner.
+// TMDB gives an episode's air date, not its time. Without TVmaze's exact time (providers/tvmaze.ts) it counts as aired
+// at the end of that day in US Pacific time (08:00 UTC the next day), when an episode shown anywhere in the US that day
+// is out. RSS picks up anything sooner.
 const AIRED_AFTER = DAY + 8 * HOUR;
 export const airedAt = (airDate: string | undefined) => { const day = dayStart(airDate); return day === undefined ? undefined : day + AIRED_AFTER; };
 
@@ -177,13 +192,15 @@ export function showScopes(show: { monitor: Monitor; paused: boolean }, seasons:
   return scopes;
 }
 
-// New episodes: searched 1 hour after they air, again at 6 hours, then on the backoff. A season, or an episode that
-// aired long ago, is searched at once.
-export const AIRED_SEARCHES = [1 * HOUR, 6 * HOUR] as const;
+// New episodes: searched 15 minutes after they air (uploads of a big show are up by then), at 1 hour and at 6 hours,
+// then on the backoff. A season, or an episode that aired long ago, is searched at once.
+export const AIRED_SEARCHES = [15 * MINUTE, 1 * HOUR, 6 * HOUR] as const;
 export function firstEpisodeSearchAt(now: number, airAt?: number) {
   return airAt === undefined ? now : Math.max(now, airAt + AIRED_SEARCHES[0]);
 }
-export function nextEpisodeSearchAt(input: { now: number; misses: number; airAt?: number }) {
-  const { now, misses, airAt } = input, second = airAt === undefined ? undefined : airAt + AIRED_SEARCHES[1];
-  return second !== undefined && second > now ? second : now + missBackoff(misses);
+// `lastAiredAt`: for a season, when its last episode aired (an episode's own air time otherwise).
+export function nextEpisodeSearchAt(input: { now: number; misses: number; airAt?: number; lastAiredAt?: number }) {
+  const { now, misses, airAt } = input, aired = input.lastAiredAt ?? airAt;
+  const next = airAt === undefined ? undefined : AIRED_SEARCHES.map(after => airAt + after).find(at => at > now);
+  return next ?? now + missBackoff(misses, aired !== undefined && aired <= now - LONG_OUT);
 }

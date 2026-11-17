@@ -1,4 +1,4 @@
-"""Shows once they're tk.box's (tkbox_shows): seasons go from Plex only, and Sonarr is never asked.
+"""Shows are tk.box's: seasons go from Plex only.
 
 Run from the repository root: py -3 -m unittest discover -s apps/cleanup/tests"""
 
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from purge_support import actions  # noqa: E402
-from purge_support.config import ConfigError, Settings  # noqa: E402
+from purge_support.config import Settings  # noqa: E402
 
 ENV = {"PLEX_TOKEN": "token"}
 NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
@@ -31,17 +31,12 @@ class Season:
         self.deleted = True
 
 
-class NoSonarr:
-    def __getattr__(self, name):
-        raise AssertionError(f"Sonarr was asked: {name}")
-
-
 def report():
     return SimpleNamespace(planned=0, deleted=0, protected=0, kept=0, failed=0, evaluation_complete=True, items=[],
                            delete_summary={}, season_summary={})
 
 
-class TkboxShowsTest(unittest.TestCase):
+class ShowsTest(unittest.TestCase):
     def setUp(self):
         due = SimpleNamespace(name="Unwatched", reason="never watched", deletion_date=NOW - timedelta(days=1))
         self.patched = {name: getattr(actions, name) for name in ("rule_for_requests", "season_added_at", "held_until")}
@@ -53,21 +48,13 @@ class TkboxShowsTest(unittest.TestCase):
         for name, value in self.patched.items():
             setattr(actions, name, value)
 
-    def test_config(self):
-        self.assertTrue(Settings.from_config(config(tkbox_shows=True), ENV).tkbox_shows)
-        self.assertFalse(Settings.from_config(config(), ENV).tkbox_shows)
-        # Sonarr's options can't be on with tk.box's shows.
-        with self.assertRaises(ConfigError):
-            Settings.from_config(config(tkbox_shows=True, delete_from_sonarr=True), ENV)
-
     def test_seasons_go_from_plex_only(self):
-        settings = Settings.from_config(config(tkbox_shows=True, dry_run=False), ENV)
+        settings = Settings.from_config(config(dry_run=False), ENV)
         seasons = [Season(1), Season(2), Season(3)]
         show = SimpleNamespace(title="Severance", seasons=lambda: seasons, librarySectionTitle="TV")
         history = SimpleNamespace(watch_status=lambda *args: None)
         result = report()
-        # No Sonarr series at all: tk.box's shows don't need one.
-        self.assertTrue(actions.process_seasons(show, [], None, settings, NoSonarr(), history, NOW, result, 95396))
+        self.assertTrue(actions.process_seasons(show, [], settings, history, NOW, result, 95396))
         self.assertEqual([s.deleted for s in seasons], [True, True, False], "the latest season is protected")
         self.assertEqual(result.deleted, 2)
         self.assertEqual([(i["key"], i["status"]) for i in result.items if i["status"] == "deleted"], [("tv:95396:1", "deleted"), ("tv:95396:2", "deleted")])

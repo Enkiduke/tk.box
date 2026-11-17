@@ -8,7 +8,7 @@ export const artworkMigrations: Migration[] = [
         CREATE TABLE artwork_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, args TEXT NOT NULL, actor TEXT NOT NULL,
           status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','canceled')), created_at INTEGER NOT NULL,
           started_at INTEGER, finished_at INTEGER, exit_code INTEGER, output TEXT NOT NULL DEFAULT '');` },
-  // Collections (custom and seasonal definitions, franchise sync and Radarr), and small values the artwork schedules
+  // Collections (custom and seasonal definitions, franchise sync and acquiring), and small values the artwork schedules
   // keep between runs (last runs, the newly-added watermark).
   { name: 'collections-state', legacy: 18, up: `CREATE TABLE artwork_collections(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
         CREATE TABLE artwork_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);` }

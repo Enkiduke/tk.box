@@ -77,23 +77,6 @@ def protected_collections(item, leaving_soon_name, kinds=frozenset(COLLECTION_KI
                   and (tkbox or {}).get((library, collection_key(title)), "other") in kinds)
 
 
-def matching_arr_tags(item, tag_names, exempt_names):
-    if item is None or tag_names is None:
-        raise ApiError("Arr item or tag cache unavailable for exemption check")
-    tags = item.get("tags")
-    if not isinstance(tags, list):
-        raise ApiError("Arr item has no valid tag list for exemption check")
-    matches = set()
-    for tag_id in tags:
-        try:
-            name = tag_names[positive_id(tag_id)]
-        except (KeyError, ValueError, TypeError):
-            raise ApiError("Arr item contains an unknown or invalid tag") from None
-        if name.casefold() in exempt_names:
-            matches.add(name)
-    return sorted(matches)
-
-
 def season_added_at(season):
     episodes = season.episodes()
     if not episodes:

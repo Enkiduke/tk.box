@@ -7,11 +7,11 @@ import {SourceCell,sourceLabel} from './movie-source.js';
 import {CountBar,Dash,FavoriteStar,Loaded,Panel,Pill,SelectCell,Segmented,Table,TitleCell,Toolbar,WhenDay,gb,matches,usePaged,useRefresh,selectColumn,useSelection,useSorted,type Tone} from './manage-ui.js';
 
 // Admin › Manage › Shows (docs/PHASE-2.md, docs/UI.md): every show in the library, like Movies. A show opens as a
-// dialog (show-dialog.tsx). Shows come in through requests once fulfil.show is tkbox, or the Sonarr import.
+// dialog (show-dialog.tsx). Shows come in through requests, or the one-time import.
 
 const filters=[['all','All'],['missing','Missing'],['cutoff','Below cutoff'],['airing','Airing'],['kept','Favorites'],['paused','Failing'],['unmonitored','Unmonitored']] as const;
 type Filter=typeof filters[number][0];
-const sources=[['all','Any source'],['request','Requests'],['sonarr','Sonarr']] as const;
+const sources=[['all','Any source'],['request','Requests'],['imported','Imported']] as const;
 type SourceFilter=typeof sources[number][0];
 const ended=(s:ShowRow)=>s.status==='Ended'||s.status==='Canceled';
 const shown=(s:ShowRow,f:Filter)=>f==='all'||(f==='missing'?s.missing>0:f==='cutoff'?s.cutoff>0:f==='airing'?!ended(s):f==='kept'?s.keep:f==='paused'?s.paused:!s.monitored);

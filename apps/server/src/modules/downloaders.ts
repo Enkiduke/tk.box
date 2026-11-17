@@ -27,6 +27,8 @@ export const downloadersModule = defineModule({
         view: () => downloaders.view(),
         test: (name: DownloaderName) => downloaders.test(name),
         remove: (grab: GrabRef, options?: RemoveOptions) => downloaders.remove(grab, options),
+        checkTorrents: () => downloaders.checkTorrents(),
+        reannounce: (infoHash: string) => downloaders.reannounce(infoHash),
       }
     };
   }

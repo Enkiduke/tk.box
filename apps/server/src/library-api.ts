@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
+import { RECHECK } from './services/download-health.js';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview,
-  LibraryBulkResult, PickProfile, PickRules, ShowList, ShowTitleView, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
+  LibraryBulkResult, PickProfile, PickRules, ShowList, ShowTitleView, TitleRequest, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import { EARLY_COPIES, LADDER, isQuality, qualityOf, type Quality } from './lib/quality.js';
@@ -87,15 +88,18 @@ const tryInput = z.object({ release: z.string().trim().min(1).max(300), runtime:
 const root = z.string().trim().min(1).max(300).refine(p => isAbsolute(p) && !p.split(/[\\/]/).includes('..'), 'Use a full path');
 export const settingsInput = z.object({
   expectedRevision: z.number().int().nonnegative(),
-  roots: z.object({ movie: root }).strict().optional(),
-  earlyCopies: z.boolean().optional(),
+  roots: z.object({ movie: root.optional(), show: root.optional() }).strict().optional(),
   protocol: z.enum(['usenet-first', 'torrent-first']).optional(),
+  rssMinutes: z.number().int().min(5).max(1440).optional(),
   defaultProfile: z.number().int().positive().optional(),
   // Validated again by librarySettings, which holds the IPTorrents floor (ratio 1, 14 days).
   seeding: z.object({ ratio: z.number().max(100), minDays: z.number().max(3650), maxDays: z.number().max(3650) }).strict()
     .refine(s => s.minDays <= s.maxDays, 'The minimum days must not be over the maximum.').optional(),
+  budget: z.object({ movie: z.number().int().min(5).max(240), episode: z.number().int().min(5).max(240) }).strict().optional(),
 }).strict();
 
+// How long Queue says a download was swapped in for a slow one.
+const SWAPPED_SHOWN = 10 * 60000;
 const previewInput = z.object({ release: z.string().trim().min(1).max(300), tmdbId: z.number().int().positive().max(99999999).optional() }).strict();
 // The name a release would get, from what its name says (an import reads the audio, HDR and codec from ffprobe instead).
 export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>, input: z.infer<typeof previewInput>): NamingPreview {
@@ -122,18 +126,20 @@ export type LibrarySources = {
   requesters?: () => Map<number, { name: string; at: number; status: string }[]>;
   showRequesters?: () => Map<number, { name: string; at: number; status: string }[]>;
   collections?: () => Map<number, string[]>;
+  // Every request for one title, newest first (its dialog's Requests tab).
+  history?: (kind: 'movie' | 'show', tmdbId: number) => TitleRequest[];
 };
 type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'> };
-// A movie's source: a request first, then collections, then the cutover from Radarr. A show's: a request, else the
-// Sonarr import (step 6).
+// A movie's source: a request first, then collections, then the one-time import. A show's: a request, else the
+// one-time import.
 export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'movie' | 'show' }, requests: Map<number, { name: string; at: number; status: string }[]>,
   collections: Map<number, string[]>): MovieSource {
   const asked = requests.get(title.tmdbId);
   if (asked?.length) return { kind: 'request', requests: asked };
-  if (title.kind === 'show') return title.addedBy === 'cutover' || title.addedBy === 'sonarr' ? { kind: 'sonarr' } : { kind: 'other', by: title.addedBy };
+  if (title.kind === 'show') return title.addedBy === 'cutover' ? { kind: 'imported' } : { kind: 'other', by: title.addedBy };
   const owners = collections.get(title.tmdbId);
   if (owners?.length || title.addedBy === 'collections') return { kind: 'collection', collections: owners ?? [] };
-  if (title.addedBy === 'cutover') return { kind: 'radarr' };
+  if (title.addedBy === 'cutover') return { kind: 'imported' };
   return { kind: 'other', by: title.addedBy };
 }
 
@@ -168,7 +174,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   const subjectOf = (key: string): number | undefined => {
     const [kind, raw] = key.split(':'), n = Number(raw);
     if (!Number.isInteger(n)) return undefined;
-    return kind === 'movie' || kind === 'show' ? n : kind === 'grab' ? store.grab(n)?.titleId : kind === 'file' ? store.file(n)?.titleId : undefined;
+    return kind === 'movie' || kind === 'show' ? n : kind === 'grab' || kind === 'swap' ? store.grab(n)?.titleId : kind === 'file' ? store.file(n)?.titleId : undefined;
   };
   const pickRules = (): PickRules => {
     const formats = store.formats();
@@ -184,7 +190,8 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     return { kind: 'show', id: title.id, tmdbId: title.tmdbId, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
       ...(title.released.status ? { status: title.released.status } : {}), profileId: title.profileId, keep: title.keep, monitor: title.monitor, monitored: title.monitor !== 'none',
       paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}), wanted: { missing, cutoff }, seasons, files,
-      grabs: store.grabsFor(title.id, 50).map(grabView), profiles: store.profiles(), source: showSourcesNow()(title), addedAt: title.addedAt };
+      grabs: store.grabsFor(title.id, 50).map(grabView), profiles: store.profiles(), source: showSourcesNow()(title), addedAt: title.addedAt,
+      requests: sources.history?.('show', title.tmdbId) ?? [] };
   };
   const titleView = async (titleId: number): Promise<TitleView> => {
     const title = store.title(titleId);
@@ -193,9 +200,10 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     if (title.kind === 'show') return showView(title);
     const search = store.search(title.id, 'movie'), wanted = await library.titleWanted(title);
     return { kind: 'movie', id: title.id, tmdbId: title.tmdbId, ...(title.imdbId ? { imdbId: title.imdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
-      profileId: title.profileId, keep: title.keep, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
+      profileId: title.profileId, keep: title.keep, earlyCopies: title.earlyCopies, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
       wanted, released: title.released, ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}) } : {}), misses: search?.misses ?? 0,
-      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt } satisfies LibraryTitleView;
+      files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt,
+      requests: sources.history?.('movie', title.tmdbId) ?? [] } satisfies LibraryTitleView;
   };
 
   const seedingView = (g: Grab): DownloadsSeeding => {
@@ -226,7 +234,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   // Everything the downloaders hold, live, each matched to its tk.box grab and who asked for it; then the grabs under
   // way that no downloader lists (sending, or importing after SABnzbd let go).
   const sourceWord = (s: MovieSource): string | undefined => s.kind === 'request' ? `${s.requests[0]!.name}${s.requests.length > 1 ? ` +${s.requests.length - 1}` : ''}`
-    : s.kind === 'collection' ? 'Collections' : s.kind === 'radarr' ? 'Radarr' : s.kind === 'sonarr' ? 'Sonarr' : s.by || undefined;
+    : s.kind === 'collection' ? 'Collections' : s.kind === 'imported' ? 'Imported' : s.by || undefined;
   const grabStates: Partial<Record<DownloadsGrab['state'], [ClientState, string?]>> = { sending: ['queued', 'Sending'], downloading: ['downloading'], unpacking: ['unpacking'], importing: ['importing'] };
   app.get('/api/v1/admin/library/downloads', admin, async () => {
     clearNames();
@@ -234,8 +242,11 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     const grabs = store.grabsByDownload(live.items.map(i => i.id)), movies = sourcesNow(), shows = showSourcesNow();
     const about = (g: Grab) => {
       const t = store.title(g.titleId), seeding = g.state === 'seeding' ? seedingView(g).removeAt : undefined;
+      const health = g.state !== 'downloading' ? {} : { ...(g.strikes && !g.onlySource ? { strikes: g.strikes } : {}),
+        ...(g.onlySource ? { onlySource: true, nextCheckAt: (g.swapCheckedAt ?? g.onlySourceAt ?? Date.now()) + RECHECK } : {}),
+        ...(g.swappedFrom !== undefined && g.sentAt !== undefined && Date.now() - g.sentAt < SWAPPED_SHOWN ? { swapped: true } : {}) };
       return { grab: { id: g.id, titleId: g.titleId, ...nameOf(g.titleId), ...episodesOf(g.titleId, g.episodes), quality: g.quality, state: g.state, upgrade: g.upgrade, indexer: g.indexer,
-        ...(seeding !== undefined ? { removeAt: seeding } : {}) }, ...(t && sourceWord((t.kind === 'show' ? shows : movies)(t)) ? { requestedBy: sourceWord((t.kind === 'show' ? shows : movies)(t))! } : {}) };
+        ...(seeding !== undefined ? { removeAt: seeding } : {}), ...health }, ...(t && sourceWord((t.kind === 'show' ? shows : movies)(t)) ? { requestedBy: sourceWord((t.kind === 'show' ? shows : movies)(t))! } : {}) };
     };
     const items: DownloadItem[] = live.items.map(i => {
       const g = grabs.get(i.id), mine = g && g.downloader === i.downloader ? g : undefined;
@@ -278,15 +289,17 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   app.get('/api/v1/admin/library/titles/:id', admin, async request => titleView(id.parse(request.params).id));
   app.put('/api/v1/admin/library/titles/:id', admin, async request => {
     const { id: titleId } = id.parse(request.params);
-    const { profileId, keep, monitored } = z.object({ profileId: z.number().int().positive().optional(), keep: z.boolean().optional(), monitored: z.boolean().optional() })
-      .strict().parse(request.body);
+    const { profileId, keep, monitored, earlyCopies } = z.object({ profileId: z.number().int().positive().optional(), keep: z.boolean().optional(), monitored: z.boolean().optional(),
+      earlyCopies: z.boolean().optional() }).strict().parse(request.body);
     const title = store.title(titleId);
     requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
-    if (profileId !== undefined) { requireThat(store.profile(profileId), 'PROFILE_NOT_FOUND', 'No such profile.', 404); store.setProfile(titleId, profileId); }
+    if (profileId !== undefined) { requireThat(store.profile(profileId), 'PROFILE_NOT_FOUND', 'No such profile.', 404); library.setProfile(titleId, profileId); }
     if (keep !== undefined) library.keep(titleId, keep);
     if (monitored !== undefined) library.setMonitored(titleId, monitored);
-    if (profileId !== undefined || keep !== undefined)
-      store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}) });
+    if (earlyCopies !== undefined) library.setEarlyCopies(titleId, earlyCopies);
+    if (profileId !== undefined || keep !== undefined || earlyCopies !== undefined)
+      store.audit('library_title_changed', { title: titleId, by: actor(request), ...(profileId !== undefined ? { profileId } : {}), ...(keep !== undefined ? { keep } : {}),
+        ...(earlyCopies !== undefined ? { earlyCopies } : {}) });
     return titleView(titleId);
   });
   // Quick edit: the same changes to many movies or shows at once.
@@ -401,7 +414,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     return {
       parsed: parsedFacts(parsed), formats: formats.filter(f => formatMatches(f, { parsed, ...(quality ? { quality } : {}) })).map(f => f.name),
       profiles: store.profileRows().map(p => {
-        const d = decide(candidate, want, { profile: p.value, formats, settings: { earlyCopies: settings.earlyCopies, protocol: settings.protocol, properDays: settings.properDays }, now });
+        const d = decide(candidate, want, { profile: p.value, formats, settings: { earlyCopies: true, protocol: settings.protocol, properDays: settings.properDays }, now });
         return { id: p.id, name: p.name, ...(d.quality ? { quality: d.quality } : {}), ...(d.tier !== undefined ? { tier: d.tier } : {}),
           preferred: d.tier !== undefined && d.tier < p.value.preferred, score: d.score, accepted: d.accepted, scoreParts: d.scoreParts, rejections: d.rejections };
       }),
@@ -413,7 +426,10 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
     const { expectedRevision, roots, ...patch } = settingsInput.parse(request.body);
     if (patch.defaultProfile !== undefined) requireThat(store.profile(patch.defaultProfile), 'PROFILE_NOT_FOUND', 'No such profile.', 404);
     const current = store.settings();
-    const saved = store.updateSettings(actor(request), expectedRevision, { ...patch, ...(roots ? { roots: { ...current.roots, movie: roots.movie.replace(/[\\/]+$/, '') } } : {}) });
+    // A root's new value applies to titles added from now on; each title keeps the root it was added under.
+    const trim = (path: string) => path.replace(/[\\/]+$/, '');
+    const saved = store.updateSettings(actor(request), expectedRevision, { ...patch, ...(roots ? { roots: { movie: trim(roots.movie ?? current.roots.movie),
+      show: trim(roots.show ?? current.roots.show) } } : {}) });
     requireThat(saved, 'REVISION_CONFLICT', 'Library settings changed. Reload and retry.', 409);
     return settingsView();
   });

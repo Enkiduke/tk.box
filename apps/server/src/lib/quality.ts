@@ -1,7 +1,7 @@
 import type { ParsedRelease } from './release-name.js';
 
 // The quality ladder, lowest first (docs/ARR-REPLACEMENT.md, "Quality ladder"; docs/PROFILES.md). Its order is fixed;
-// profiles say which rungs they take and in what order. The names match Radarr's {Quality Full}. Unknown is a release
+// profiles say which rungs they take and in what order. The names are the library's {Quality Full}. Unknown is a release
 // whose name doesn't say its quality; only a profile that lists it takes one.
 export const LADDER = [
   'Unknown', 'CAM', 'TELESYNC', 'TELECINE', 'SCREENER',
@@ -19,7 +19,7 @@ export const isQuality = (name: string): name is Quality => (LADDER as readonly 
 export const rank = (quality: Quality) => LADDER.indexOf(quality);
 
 // The rung a parsed release sits on. Undefined when the name doesn't say enough (a WEB-DL with no resolution); never
-// Unknown, which is the pick's to give. HDTV with no resolution is SD TV; 576p WEB goes on the 480p rungs, as in Radarr.
+// Unknown, which is the pick's to give. HDTV with no resolution is SD TV; 576p WEB goes on the 480p rungs.
 export function qualityOf(parsed: Pick<ParsedRelease, 'source' | 'resolution' | 'remux'>): Quality | undefined {
   const { source, resolution, remux } = parsed;
   if (source === 'CAM' || source === 'TELESYNC' || source === 'TELECINE' || source === 'SCREENER' || source === 'DVD') return source;

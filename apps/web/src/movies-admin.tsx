@@ -12,7 +12,7 @@ import {ACTIONS,Dash,FavoriteStar,IconAction,Loaded,Panel,Pill,RowActions,Select
 
 const filters=[['all','All'],['file','Has file'],['nofile','No file'],['cutoff','Below cutoff'],['kept','Favorites'],['paused','Failing'],['unmonitored','Unmonitored']] as const;
 type Filter=typeof filters[number][0];
-const sources=[['all','Any source'],['request','Requests'],['collection','Collections'],['radarr','Radarr']] as const;
+const sources=[['all','Any source'],['request','Requests'],['collection','Collections'],['imported','Imported']] as const;
 type SourceFilter=typeof sources[number][0];
 const movieSorts={title:(m:MovieRow)=>m.title,quality:(m:MovieRow)=>qualityRank(m.quality),size:(m:MovieRow)=>m.size,profile:(m:MovieRow)=>m.profile,
   status:(m:MovieRow)=>status(m).label,release:(m:MovieRow)=>m.release?.day,source:(m:MovieRow)=>sourceLabel(m.source)};

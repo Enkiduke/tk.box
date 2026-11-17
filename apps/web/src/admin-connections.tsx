@@ -9,7 +9,6 @@ import {toast} from './toasts.js';
 
 type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
 type ArtworkKeysView={revision:number;keysSet:Record<KeyName,boolean>};
-type ArrView=Record<'sonarr',{revision:number;url:string;keySet:boolean}>;
 type KeysView={plex:boolean;thesportsdb:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
 type FeedHealth={state:'idle'|'waiting'|'working'|'warning'|'backoff';lastSuccess:number|null;lastChecked:number|null;failedRequests:number;retryAt:number|null};
@@ -132,7 +131,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const sports=useApi<SportsHealth>('/admin/connections/sports');
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
   const artwork=useApi<ArtworkKeysView>('/admin/connections/artwork');
-  const arr=useApi<ArrView>('/admin/arr');
   const indexers=useApi<IndexerView[]>('/admin/indexers');
   const downloaders=useApi<DownloaderView[]>('/admin/downloaders');
 
@@ -152,21 +150,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       invalidate(name==='plex'?'/admin/connections/plex':'/admin/connections/sports');
       if(name==='plex')invalidate('/admin/cleanup/users');
     },
-  }));
-  const arrApps:Connection[]=([
-    ['sonarr','Sonarr','TV air dates in Calendar and episode management in Clean Up.','http://sonarr:8989'],
-  ] as const).map(([id,name,description,placeholder])=>({
-    name,description,keyHint:`${name} › Settings › General`,
-    health:arr.data?.[id].url&&arr.data[id].keySet?serviceStatus(id):undefined,
-    ...readSettings(arr,data=>({
-      keySaved:data[id].keySet,
-      address:{value:data[id].url,placeholder,hint:'Leave blank to disable this connection.'},
-      save:async ({address,key})=>{
-        await api(`/admin/arr/${id}`,'PUT',{expectedRevision:data[id].revision,url:address,...(key?{key}:{})});
-        invalidate('/admin/arr');invalidate('/admin/cleanup');invalidate('/admin/artwork/collections');invalidate('/calendar');
-        invalidate('/admin/connections/services');
-      },
-    })),
   }));
   const nzbgeek=indexers.data?.find(item=>item.name==='nzbgeek');
   const sabnzbd=downloaders.data?.find(item=>item.name==='sabnzbd');
@@ -214,11 +197,8 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
         ...keySettings('plex'),
       },
     ]},
-    {id:'downloads',title:'Downloads & Clean Up',icon:'download',connections:[
-      ...arrApps,
-    ]},
     {id:'indexers',title:'Indexers & downloaders',icon:'search',connections:searchConnections},
-    {id:'metadata',title:'Metadata & artwork',icon:'image',connections:artworkProviders.map(([id,name,description,keyHint])=>({
+    {id:'metadata',title:'Metadata & artwork',icon:'image',connections:[...artworkProviders.map(([id,name,description,keyHint]):Connection=>({
       name,description,keyHint,
       health:artwork.data?.keysSet[id]?serviceStatus(id):undefined,
       ...readSettings(artwork,({revision,keysSet})=>({
@@ -231,7 +211,11 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
           invalidate('/admin/connections/services');
         },
       })),
-    }))},
+    })),
+      // No key: TVmaze is free (data CC BY-SA, credited here).
+      {name:'TVmaze',description:'Episode air times. Data from tvmaze.com.',builtIn:true,
+        health:serviceStatus('tvmaze')},
+    ]},
     {id:'live-events',title:'Live Events',icon:'star',connections:[
       {
         name:'ESPN',description:'Scores and schedules for Live Events.',builtIn:true,
@@ -254,7 +238,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   }));
   const refresh=()=>{
     plex.reload();sports.reload();services.reload();indexers.reload();downloaders.reload();
-    for(const view of [serviceKeys,artwork,arr])if(view.error)view.reload();
+    for(const view of [serviceKeys,artwork])if(view.error)view.reload();
   };
   const refreshingStatus=plex.loading||sports.loading||services.loading||indexers.loading||downloaders.loading;
   return <>

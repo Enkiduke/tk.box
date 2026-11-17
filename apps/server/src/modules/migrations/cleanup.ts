@@ -1,4 +1,5 @@
 import type { Migration } from '../../persistence/migrate.js';
+import { cleanupSettings } from '../../persistence/cleanup-store.js';
 
 // CleanupStore created these on every start before migrations were per module, so they keep IF NOT EXISTS.
 export const cleanupMigrations: Migration[] = [
@@ -7,10 +8,20 @@ export const cleanupMigrations: Migration[] = [
         created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, exit_code INTEGER, output TEXT);` },
   // Remove from Seerr went with Seerr: tk.box marks a deleted title's requests removed itself.
   { name: 'drop-seerr', up: `UPDATE cleanup_config SET value=json_remove(value,'$.deleteFromSeerr') WHERE name='settings'` },
-  // Watch dates saved from Tautulli before it was removed; each run takes the later of these and tk.box's history.
+  // Watch dates saved from the old watch-history service before it was removed; each run takes the later of these and tk.box's history.
   // Account '' is anyone.
   { name: 'watch-snapshot', up: `CREATE TABLE cleanup_watch_snapshot(scope TEXT NOT NULL CHECK(scope IN ('movie','show','season')), rating_key TEXT NOT NULL,
         account TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(scope, rating_key, account)) WITHOUT ROWID` },
-  // Tautulli was Clean Up's own connection; tk.box's history and the saved dates replace it.
-  { name: 'drop-tautulli', up: `DELETE FROM cleanup_config WHERE name='connections'` }
+  // The old watch-history service was Clean Up's own connection; tk.box's history and the saved dates replace it.
+  // (Renamed from its first name, so it runs once more on databases that had it; there is nothing left to delete.)
+  { name: 'drop-watch-service', up: `DELETE FROM cleanup_config WHERE name='connections'` },
+  // Shows are tk.box's (phase 2 step 7): settings saved with options for services tk.box no longer uses lose them,
+  // keeping only the options Clean Up has. Keep is the library's flag.
+  { name: 'drop-show-service', up: db => {
+    const row = db.prepare("SELECT value FROM cleanup_config WHERE name='settings'").get() as { value: string } | undefined;
+    if (!row) return;
+    const known = new Set(cleanupSettings.keyof().options as string[]);
+    const saved = Object.fromEntries(Object.entries(JSON.parse(row.value) as Record<string, unknown>).filter(([key]) => known.has(key)));
+    db.prepare("UPDATE cleanup_config SET value=? WHERE name='settings'").run(JSON.stringify(saved));
+  } }
 ];

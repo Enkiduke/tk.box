@@ -5,7 +5,7 @@ import {loadConfig} from '../apps/server/src/config.js';
 import {syncPreview} from './preview-sync.js';
 
 // npm run preview:plex: the server's data on your own Plex connection, read-only and frozen (TKBOX_PREVIEW): nothing is
-// written to Plex, Sonarr, the downloaders or the library files, no background work runs, and indexers and IPTV
+// written to Plex, the downloaders or the library files, no background work runs, and indexers and IPTV
 // sources aren't fetched. It first copies the server's state down (npm run preview:sync); `-- --keep` starts on the
 // copy already here instead, and `-- --port=3014` serves on another port (so a second preview can run beside yours).
 // If the copy fails and an earlier one exists, it starts on that and says so.

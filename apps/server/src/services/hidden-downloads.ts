@@ -20,7 +20,7 @@ export function hiddenDownloads(journal: unknown, definitions: Record<string, un
 }
 
 // Which collections downloaded each movie, by TMDb ID, from the collections engine's journals: tk.box's
-// (collections-tkbox.json) and the one from when Collections added through Radarr (collections-state.json). Each names
+// (collections-tkbox.json) and the older one from before tk.box added them itself (collections-state.json). Each names
 // the collections as "library:key"; they're shown by the name a collection has now, or the key when it's gone.
 export function collectionsByMovie(journals: unknown[], definitions: Record<string, unknown>[] | null) {
   const names = new Map((definitions ?? []).filter(d => typeof d.name === 'string' && typeof d.library === 'string')

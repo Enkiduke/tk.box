@@ -1,15 +1,14 @@
 import { AppError } from '../errors.js';
 import { movieReleaseDate } from '../lib/release-day.js';
-import { FulfilError, type FulfilKind, type FulfilProgress, type FulfilTarget, type Fulfiller, type QueueState } from './arr-fulfiller.js';
+import { FulfilError, type FulfilKind, type FulfilProgress, type FulfilTarget, type Fulfiller, type QueueState } from './fulfiller.js';
 import { isOut, scopeName } from '../services/wanted.js';
 import type { Library } from '../services/library.js';
 import type { LibraryStore, LibraryTitle } from '../persistence/library-store.js';
 import type { RequestRelease } from '../../../../packages/contracts/src/index.js';
 
-// Requests fulfilled by tk.box's own library (docs/ARR-REPLACEMENT.md), behind the same Fulfiller as Sonarr: movies
-// always, shows once `fulfil.show` is `tkbox` (requests choose). Ids are library_titles ids. Keep is the title's own
-// flag, offered as one tag.
-export const KEEP_TAG = -1;
+// Requests fulfilled by tk.box's own library (docs/ARR-REPLACEMENT.md), movies and shows. Ids are library_titles ids.
+// Keep and a movie's Early copies are the title's own flags, each offered as one tag.
+export const KEEP_TAG = -1, EARLY_COPIES_TAG = -2;
 type Episode = Extract<RequestRelease, { kind: 'episode' }>;
 
 export class LibraryFulfiller implements Fulfiller {
@@ -17,7 +16,7 @@ export class LibraryFulfiller implements Fulfiller {
 
   async add(target: FulfilTarget) {
     const common = { tmdbId: target.tmdbId, by: target.requestedBy ?? 'requests', ...(target.profileId ? { profileId: target.profileId } : {}),
-      keep: target.tags.includes(KEEP_TAG), search: target.search };
+      keep: target.tags.includes(KEEP_TAG), ...(target.kind === 'movie' && target.tags.includes(EARLY_COPIES_TAG) ? { earlyCopies: true } : {}), search: target.search };
     try {
       const title = target.kind === 'movie' ? await this.library.add(common)
         : await this.library.addShow({ ...common, seasons: target.seasons, monitorFuture: target.monitorFuture });
@@ -46,7 +45,7 @@ export class LibraryFulfiller implements Fulfiller {
     const waiting = !isOut(title.released, now);
     return { ...(at ? { at } : {}), ...((date || waiting) && { release: { kind: 'movie', ...(date ? { date } : {}), ...(waiting ? { waitingForRelease: true as const } : {}) } }) };
   }
-  // As Sonarr's: among the asked seasons' episodes with no file, the last search of their scopes, and the latest to
+  // Among the asked seasons' episodes with no file, the last search of their scopes, and the latest to
   // have aired (else the next to air).
   private showProgress(title: LibraryTitle, seasons: readonly number[], now: number): FulfilProgress {
     if (!seasons.length) return {};
@@ -75,30 +74,5 @@ export class LibraryFulfiller implements Fulfiller {
     const first = this.store.settings().defaultProfile, profiles = this.store.profiles();
     return { connected: true, tkbox: true, profiles: [...profiles.filter(p => p.id === first), ...profiles.filter(p => p.id !== first)], rootFolders: [], tags: [] };
   }
-  async tagId() { return KEEP_TAG; }
-}
-
-// One Fulfiller in front of two: each call goes to the one `choose` names for its kind (movies to the library, shows
-// by `fulfil.show`).
-export function fulfillerByKind(choose: (kind: FulfilKind) => Fulfiller): Fulfiller {
-  return {
-    add: target => choose(target.kind).add(target),
-    // Each kind's own queue: movies from the movie fulfiller, series from the show one.
-    queue: async () => {
-      const movie = choose('movie'), show = choose('show');
-      if (movie === show) return movie.queue();
-      const [m, s] = await Promise.all([movie.queue(), show.queue()]);
-      return { movies: m.movies, series: s.series };
-    },
-    find: (kind, tmdbId, tvdbId) => choose(kind).find(kind, tmdbId, tvdbId),
-    exists: (kind, id) => choose(kind).exists(kind, id),
-    progress: (kind, id, seasons, now) => choose(kind).progress(kind, id, seasons, now),
-    unmonitor: (kind, id, seasons) => choose(kind).unmonitor(kind, id, seasons),
-    options: kind => choose(kind).options(kind),
-    tagId: async (kind, label) => {
-      const f = choose(kind);
-      if (!f.tagId) throw new AppError('REQUESTS_UNAVAILABLE', 'Favorite isn’t available here.', 409);
-      return f.tagId(kind, label);
-    },
-  };
+  async tagId(_kind: FulfilKind, label: string) { return label === 'Early copies' ? EARLY_COPIES_TAG : KEEP_TAG; }
 }

@@ -3,23 +3,24 @@ import { libraryMigrations } from './migrations/library.js';
 import { AppError, preview } from '../errors.js';
 import { every, errorDetail } from '../lib/every.js';
 import { LibraryStore } from '../persistence/library-store.js';
-import { Library, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
+import { Library, SWEEP_EVERY, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
 import { LibraryImporter, ffprobe } from '../services/library-import.js';
 import { RequestAvailability } from '../services/request-availability.js';
 import { LibraryFulfiller } from '../providers/library-fulfiller.js';
 import { registerLibraryAdmin, type LibrarySources } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
+import { Tvmaze } from '../providers/tvmaze.js';
 
-const SWEEP_MINUTES = 30, CHECK_MS = 30000, SEEDING_MINUTES = 60;
+const SWEEP_MINUTES = SWEEP_EVERY / 60000, CHECK_MS = 30000, SEEDING_MINUTES = 60;
 
-type Deps = { queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>; sources?: LibrarySources };
+type Deps = { queue: QueueApi; indexers: IndexersApi & { feedEvery?: (minutes: () => number) => void }; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>; sources?: LibrarySources };
 
 // tk.box's own library (docs/ARR-REPLACEMENT.md, phase 1b): movies, from adding one to importing it. Its work runs on
 // the queue (search, send, unpack, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes, the
 // download check (SABnzbd and qBittorrent) every 30 s while grabs are under way, and the seeding check hourly, all in
 // Admin › Schedule with Run now. Admin › Downloads reads and changes it
-// through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for movies.
+// through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for movies and shows.
 export const libraryModule = defineModule({
   name: 'library',
   access: 'admin',
@@ -38,8 +39,10 @@ export const libraryModule = defineModule({
     };
     const warn = (message: string, detail?: Record<string, unknown>) => log.warn(message, detail);
     const importer = new LibraryImporter(store, ffprobe(config.FFPROBE_PATH), undefined, warn);
+    // Episodes' exact air times (Admin › Connections › TVmaze); the preview, frozen, keeps what it has.
+    const tvmaze = preview() ? undefined : new Tvmaze();
     const library = new Library({
-      store, queue, indexers, downloaders, titles, plex: holds, importer,
+      store, queue, indexers, downloaders, titles, plex: holds, importer, ...(tvmaze ? { airings: tvmaze.airings.bind(tvmaze) } : {}),
       scan: async folder => {
         const grant = await background.grant();
         if (!grant) throw new AppError('NO_PLEX_TOKEN', 'No Plex admin token in Admin › Connections.', 409);
@@ -49,6 +52,7 @@ export const libraryModule = defineModule({
       log: (message, detail) => log.info(message, detail),
     });
     library.register();
+    indexers.feedEvery?.(() => store.settings().rssMinutes);
     registerLibraryAdmin(routes, { store, library, queue, titles, downloaders, ...(sources ? { sources } : {}) });
     bus.on('plex.library.changed', () => availability.soon());
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
@@ -83,10 +87,6 @@ export const libraryModule = defineModule({
     return {
       api: {
         fulfiller, store,
-        // Shows are tk.box's (fulfil.show), for requests, the calendar and Clean Up.
-        showsHere: () => library.showsHere(),
-        // The Sonarr import (modules/cutover.ts).
-        cutover: { tmdbShow: library.tmdbShow.bind(library), tmdbByTvdb: library.tmdbByTvdb.bind(library), spreadSearches: library.spreadSearches.bind(library) },
         forgetSeason: library.forgetSeason.bind(library),
         // Collections' seasonal downloads add through here, as requests do.
         add: library.add.bind(library),

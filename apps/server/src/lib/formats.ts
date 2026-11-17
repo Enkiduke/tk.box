@@ -3,8 +3,7 @@ import type { Quality } from './quality.js';
 
 // Formats (docs/PROFILES.md, "The model"): named tests on a release, defined once and scored by each profile. Pure.
 //
-// A format matches when every required condition holds and, if it has others, at least one of them does (Radarr's
-// custom-format rule). A negated condition holds when its test fails. A format with no conditions matches nothing.
+// A format matches when every required condition holds and, if it has others, at least one of them does. A negated condition holds when its test fails. A format with no conditions matches nothing.
 
 export const FORMAT_FIELDS = ['quality', 'resolution', 'source', 'remux', 'codec', 'hdr', 'audio', 'atmos', 'service', 'group', 'edition', 'language', 'flag', 'title'] as const;
 export type FormatField = typeof FORMAT_FIELDS[number];

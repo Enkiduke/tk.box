@@ -15,7 +15,7 @@ A self-hosted media app for your Plex server and IPTV channels. One web UI for w
 - **Plex sign-in.** Your friends and Plex Home members sign in with their own Plex accounts and see the libraries you share with them.
 - **Library.** Home, Movies and TV Shows with filters, sorting, collections and resume.
 - **Playback.** Direct Play when the browser can play the file, otherwise Plex transcodes it.
-- **Explore.** Browse Plex Discover and TMDB. Search, manage your Plex watchlist, request titles (sent to Radarr and Sonarr), and discover subscription streaming catalogs and Plex-based recommendations.
+- **Explore.** Browse Plex Discover and TMDB. Search, manage your Plex watchlist, request titles (downloaded by tk.box's own library), and discover subscription streaming catalogs and Plex-based recommendations.
 - **Live TV.** M3U/XMLTV sources with a guide and favorites, and live sports events with their own channels.
 - **Plex Channels.** Looping channels made from your movies, shows and collections, with Pause and Go Live.
 - **Admin.**
@@ -76,7 +76,7 @@ python -m venv .venv
 
 On Windows the pip path is `.venv\Scripts\pip`. Then enter that environment's `python` in the setup screen's Python field, or set `PYTHON_PATH` in `.env`.
 
-Radarr, Sonarr and the artwork providers are set up later in **Admin › Connections**.
+The indexers, downloaders and artwork providers are set up later in **Admin › Connections**.
 
 ## Development
 
@@ -89,7 +89,7 @@ npm test
 
 `npm run doctor` checks your configuration and FFmpeg. `npm run build && npm run preview:ui` serves a UI preview with made-up data at `http://127.0.0.1:3011/__preview`.
 
-Run `npm run preview:plex` and open [the local Plex preview](http://localhost:3012) to test the current UI against the Plex server configured in your local `.env`. The preview builds its own web assets and takes a one-time snapshot of your local tk.box database into `.local/plex-preview`, so it starts with the same connection settings and TMDB key. Sign in to Plex in the preview window. Any tk.box settings you change stay in the preview copy. Plex watch history and watchlist writes, Seerr requests, artwork uploads, and Radarr/Sonarr changes are blocked. Seerr browsing uses its configured API key. Playback can still use Plex streaming and transcoding resources. Press Ctrl+C to stop the preview.
+Run `npm run preview:plex` and open [the local Plex preview](http://localhost:3012) to test the current UI against the Plex server configured in your local `.env`. The preview builds its own web assets and takes a one-time snapshot of your local tk.box database into `.local/plex-preview`, so it starts with the same connection settings and TMDB key. Sign in to Plex in the preview window. Any tk.box settings you change stay in the preview copy. Plex watch history and watchlist writes, artwork uploads, downloads and library file changes are blocked. Playback can still use Plex streaming and transcoding resources. Press Ctrl+C to stop the preview.
 
 The Plex preview disables scheduled and manual channel health checks. Live TV can still connect to a channel you choose to play.
 

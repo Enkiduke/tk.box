@@ -5,6 +5,7 @@ import { prepared } from '../persistence/statements.js';
 import { AppError, requireWritable } from '../errors.js';
 import { DownloaderError, Sabnzbd, liveJobs, statuses, type DownloadStatus } from '../providers/sabnzbd.js';
 import { Qbittorrent, liveTorrents, torrentStatuses } from '../providers/qbittorrent.js';
+import type { ClientCheck } from '../providers/download-status.js';
 import type { ClientItem, DownloaderLive } from '../../../../packages/contracts/src/downloads.js';
 
 // The downloaders (docs/ARR-REPLACEMENT.md, "Clients"): their addresses, sealed secrets and categories. SABnzbd for
@@ -167,6 +168,17 @@ export class Downloaders {
       ...(qbit ? [read('qbittorrent', async () => liveTorrents(await qbit.client.mainData(), Object.values(qbit.settings.categories)))] : []),
     ]);
     return { clients: reads.map(r => r.summary), items: reads.flatMap(r => r.items) };
+  }
+
+  // qBittorrent's connection and speed-limit mode, and a reannounce (docs/STALLS.md, "Making sure it's a dud").
+  async checkTorrents(): Promise<ClientCheck> {
+    const { client } = this.required('qbittorrent') as { client: Qbittorrent };
+    try { return await client.check(); } catch (e) { this.failure(e); }
+  }
+  async reannounce(infoHash: string) {
+    requireWritable();
+    const { client } = this.required('qbittorrent') as { client: Qbittorrent };
+    try { await client.reannounce(infoHash); } catch (e) { this.failure(e); }
   }
 
   // SABnzbd: the job and its folder are deleted (after import, or for a cancelled grab). qBittorrent: the torrent goes,

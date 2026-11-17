@@ -11,16 +11,15 @@ import {CleanupStatus} from './cleanup-status.js';
 import {toast} from './toasts.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
-// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Movies are tk.box's
-// own; Sonarr is connected in Admin › Connections.
+// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Movies and shows are
+// tk.box's own.
 type Library={key:string;title:string;type:string};
 type Engine={ready:boolean;version?:string;error?:string};
-type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;deleteFromSonarr:boolean;
-  daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptArrTags:string[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
+type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;
+  daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
-type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];connected:Record<'sonarr',boolean>;schedule:ScheduleState;busy:boolean};
+type Overview={settings:Settings&{revision:number};libraries:Library[];engine:Engine;missing:string[];schedule:ScheduleState;busy:boolean};
 const tabs=[['status','Status'],['schedules','Schedules'],['settings','Settings']] as const;
-const connections=<a href="#admin?section=connections&category=downloads">Admin › Connections</a>;
 
 export function CleanupAdmin() {
   const overview=useApi<Overview>('/admin/cleanup'),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'status')(remembered('cleanupTab','status')));
@@ -53,7 +52,6 @@ function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
   const [confirm,setConfirm]=useState(false),mutation=useMutation(()=>{invalidate('/admin/cleanup/jobs');changed();});
   const start=(preview:boolean)=>void mutation.run(async()=>openConsole(await api<Job>('/admin/cleanup/jobs','POST',{preview})));
   const off=!data.engine.ready||data.missing.length>0||mutation.busy,real=!data.settings.dryRun;
-  const also=data.settings.deleteFromSonarr?['Sonarr']:[];
   return <>
     <SectionHead title="Clean Up">
       <button className="primary" disabled={off} title="Lists what is due. Changes nothing." onClick={()=>start(true)}>Preview</button>
@@ -61,7 +59,7 @@ function RunActions({data,changed}:{data:Overview;changed:()=>void}) {
     </SectionHead>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     {confirm&&<Modal title="Delete what is due?" onClose={()=>setConfirm(false)}>
-      <p>Every title whose time is up is deleted from Plex with its files{also.length?`, and from ${also.length>1?`${also.slice(0,-1).join(', ')} and ${also.at(-1)}`:also[0]}`:''}. This can’t be undone. Run a preview first to see the list.</p>
+      <p>Every title whose time is up is deleted from Plex with its files. This can’t be undone. Run a preview first to see the list.</p>
       <div className="button-row"><button className="primary" onClick={()=>{setConfirm(false);start(false);}}>Delete</button><button onClick={()=>setConfirm(false)}>Cancel</button></div>
     </Modal>}
   </>;
@@ -81,7 +79,6 @@ function CleanupSchedules({data,changed}:{data:Overview;changed:()=>void}) {
   </form>;
 }
 
-const list=(text:string)=>[...new Set(text.split(',').map(t=>t.trim()).filter(Boolean))];
 type CollectionKind='franchise'|'streaming'|'custom'|'seasonal'|'other';
 const collectionKinds:[CollectionKind,string][]=[['franchise','Franchise'],['streaming','Streaming'],['custom','Custom'],['seasonal','Seasonal'],['other','Other Plex collections']];
 type RetentionField='daysAfterWatched'|'daysAfterUnwatched'|'daysAfterAnyWatchExempt'|'daysAfterExemptWatch';
@@ -134,17 +131,16 @@ function RetentionUsers({selected,onChange}:{selected:number[];onChange:(ids:num
   </div>;
 }
 function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
-  const {revision:_,...saved}=data.settings,[draft,setDraft]=useState<Settings>(saved),[tags,setTags]=useState(saved.exemptArrTags.join(', '));
+  const {revision:_,...saved}=data.settings,[draft,setDraft]=useState<Settings>(saved);
   const mutation=useMutation(changed);
-  useEffect(()=>{const {revision:_,...value}=data.settings;setDraft(value);setTags(value.exemptArrTags.join(', '));},[data.settings.revision]);
+  useEffect(()=>{const {revision:_,...value}=data.settings;setDraft(value);},[data.settings.revision]);
   const set=(patch:Partial<Settings>)=>{setDraft(d=>({...d,...patch}));};
-  const movies=data.libraries.filter(l=>l.type==='movie'),shows=data.libraries.filter(l=>l.type==='show'),{connected}=data;
+  const movies=data.libraries.filter(l=>l.type==='movie'),shows=data.libraries.filter(l=>l.type==='show');
   const toggle=(field:'movieLibraries'|'tvLibraries',key:string,on:boolean)=>set({[field]:on?[...draft[field],key]:draft[field].filter(k=>k!==key)});
   const library=(field:'movieLibraries'|'tvLibraries')=>(l:Library)=><label key={l.key} className="checkbox-label"><input type="checkbox" checked={draft[field].includes(l.key)} onChange={e=>toggle(field,l.key,e.target.checked)}/>{l.title}</label>;
   const rule=(field:RetentionField,audience:string,title:string,anchor:string)=><RetentionRow audience={audience} title={title} anchor={anchor} value={draft[field]} onChange={days=>set({[field]:days})}/>;
-  const needs=(on:boolean,name:string)=>on?undefined:<>Connect {name} in {connections} first.</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/cleanup/settings','PUT',{expectedRevision:data.settings.revision,...draft,exemptArrTags:list(tags)});toast.success('Clean Up settings saved');
+    await api('/admin/cleanup/settings','PUT',{expectedRevision:data.settings.revision,...draft});toast.success('Clean Up settings saved');
   });
   return <form className="form-stack cleanup-settings" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Run mode" className={draft.dryRun?'':'danger-zone'}>
@@ -172,22 +168,18 @@ function CleanupSettings({data,changed}:{data:Overview;changed:()=>void}) {
       <details className="cleanup-help"><summary>What counts as watched?</summary><p>A play tk.box saw counts, in its own player or Plex’s apps, as does the saved watch history. A partial play counts. A show or season does not need to be finished. Set a timer to 0 days to make it due as soon as its condition applies. Due titles are removed on the next cleanup run that deletes files.</p></details>
     </Card>
     <Card title="Always keep" description="These protections override the retention rules for a title and all its seasons.">
-      <label>Protected Sonarr tags<input value={tags} placeholder="e.g. keep, favorite" onChange={e=>{setTags(e.target.value);}}/><small>Shows only; movies use Keep. Separate tags with commas.</small></label>
       <Switch label="Keep titles in Plex collections" description={`Never “${draft.leavingSoon.name}”, your Leaving Soon collection.`} checked={draft.exemptIfInCollection} onChange={v=>set({exemptIfInCollection:v})}/>
       {draft.exemptIfInCollection&&<fieldset className="form-stack"><legend>Collections that protect</legend>
         {collectionKinds.map(([kind,label])=><label key={kind} className="checkbox-label"><input type="checkbox" checked={draft.collectionKinds[kind]} onChange={e=>set({collectionKinds:{...draft.collectionKinds,[kind]:e.target.checked}})}/>{label}</label>)}
       </fieldset>}
     </Card>
     <Card title="TV seasons" description="Use the same retention timers for individual seasons or for the whole show.">
-      <Switch label="Clean up individual seasons" description="Requires Sonarr and Delete from Sonarr below. When off, the whole show is evaluated together." checked={draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,enabled:v}})}/>
+      <Switch label="Clean up individual seasons" description="When off, the whole show is evaluated together." checked={draft.seasons.enabled} onChange={v=>set({seasons:{...draft.seasons,enabled:v}})}/>
       {draft.seasons.enabled&&<div className="cleanup-season-options">
         <Switch label="Keep the latest season" description="Protects the highest numbered season currently in Plex." checked={draft.seasons.protectLatest} onChange={v=>set({seasons:{...draft.seasons,protectLatest:v}})}/>
         <Switch label="Keep specials" description="Protects season 0 during individual-season cleanup." checked={draft.seasons.protectSpecials} onChange={v=>set({seasons:{...draft.seasons,protectSpecials:v}})}/>
         <details className="cleanup-help"><summary>Season timers and single-season shows</summary><p>Season watches are checked separately. For timers based on when content was added, the newest episode’s added date is used.</p><p>A show with only season 1, with or without specials, is evaluated as a whole show. The two season protections above do not apply to that whole-show deletion. A lone later season keeps its season protections.</p></details>
       </div>}
-    </Card>
-    <Card title="Also remove from connected apps" description="A run that deletes always removes due content from Plex with its files. These options control the other apps. Plex must allow media deletion.">
-      <Switch label="Delete from Sonarr" description={needs(connected.sonarr,'Sonarr')??'Removes whole shows, or unmonitors episodes and removes their files when cleaning up individual seasons.'} checked={draft.deleteFromSonarr} onChange={v=>set({deleteFromSonarr:v})}/>
     </Card>
     <Card title="Leaving Soon collection" description="Show whole titles approaching their deadline in a Plex collection. This does not add extra time before deletion.">
       <Switch label="Maintain a Leaving Soon collection" description="Updated only during runs with Preview only off. Individual seasons appear in Status, but are not added to the collection." checked={draft.leavingSoon.enabled} onChange={v=>set({leavingSoon:{...draft.leavingSoon,enabled:v}})}/>

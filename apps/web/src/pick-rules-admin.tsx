@@ -3,13 +3,13 @@ import type {FormatCondition,FormatInput,FormatView,LibrarySettingsView,PickProf
 import {api} from './api.js';
 import {useApiAll} from './hooks.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
-import {SectionHead,Switch,plural,useDragOrder,moveTo} from './settings-ui.js';
+import {SectionHead,plural,useDragOrder,moveTo} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {ACTIONS,Dash,Field,FieldError,IconAction,Panel,Pill,RowActions,SaveBar,Segmented,Table,Tabs,Tag,changed,matches,useSave,useSorted} from './manage-ui.js';
 
 // Admin › Manage › Quality (docs/PROFILES.md, "The page"; docs/UI.md): the profiles (tiers, scores, upgrades, sizes),
-// the formats they score, and Try a release. Early copies, the protocol order and the default profile sit with the
-// profiles.
+// the formats they score, and Try a release. The protocol order and the default profile sit with the profiles; Early
+// copies is each movie's own (its dialog, or a request's options).
 
 type Tab='profiles'|'formats'|'try';
 const MB=1024**2,GB=1024**3;
@@ -69,7 +69,7 @@ function ProfileList({rules,defaultProfile,open}:{rules:PickRules;defaultProfile
 }
 
 function Choosing({settings,profiles}:{settings:LibrarySettingsView;profiles:PickProfileView[]}) {
-  const start={earlyCopies:settings.earlyCopies,protocol:settings.protocol,defaultProfile:settings.defaultProfile};
+  const start={protocol:settings.protocol,defaultProfile:settings.defaultProfile};
   const [draft,setDraft]=useState(start),save=useSave(changed);
   const dirty=JSON.stringify(draft)!==JSON.stringify(start);
   const submit=()=>void save.run(async()=>{await api('/admin/library/settings','PUT',{expectedRevision:settings.revision,...draft});toast.success('Saved');});
@@ -78,7 +78,6 @@ function Choosing({settings,profiles}:{settings:LibrarySettingsView;profiles:Pic
     <Field label="Default profile" hint="New requests and titles"><select value={draft.defaultProfile} onChange={e=>setDraft(d=>({...d,defaultProfile:Number(e.target.value)}))}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
     <Field label="Protocol" hint="Asked first"><Segmented label="Protocol" value={draft.protocol} onChange={protocol=>setDraft(d=>({...d,protocol}))}
       options={[['usenet-first','Usenet first'],['torrent-first','Torrents first']] as const}/></Field>
-    <Field label="Early copies" hint="Before the home release"><Switch label="" ariaLabel="Early copies" checked={draft.earlyCopies} onChange={earlyCopies=>setDraft(d=>({...d,earlyCopies}))}/></Field>
   </Panel></form>;
 }
 

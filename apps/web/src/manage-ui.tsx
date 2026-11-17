@@ -12,7 +12,7 @@ const MINUTE=60000,HOUR=3600000,DAY=86400000,GB=1024**3;
 export const changed=()=>invalidate('/admin/library');
 // A movie or show opens as a dialog over the page you're on: the same address with `title` (and `pane`, and for a
 // show's Interactive search the `scope`, S02 or S02E05) added.
-export type TitlePane='overview'|'files'|'grabs'|'search';
+export type TitlePane='overview'|'files'|'grabs'|'requests'|'search';
 export function movieHref(id:number,pane?:Exclude<TitlePane,'overview'>,scope?:string) {
   const query=new URLSearchParams(window.location.hash.split('?')[1]??'');
   query.set('title',String(id));

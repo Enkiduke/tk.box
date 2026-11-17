@@ -1,6 +1,6 @@
 import type { Migration } from '../../persistence/migrate.js';
 
-// Requests made in tk.box (docs/REQUESTS.md). A row is its own outbox: `queued` until Radarr or Sonarr took it, then
+// Requests made in tk.box (docs/REQUESTS.md). A row is its own outbox: `queued` until the library took it, then
 // the sweep moves it on. Several rows may name one title (other people, other seasons).
 export const requestsMigrations: Migration[] = [
   { name: 'requests', up: `

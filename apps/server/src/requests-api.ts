@@ -5,30 +5,29 @@ import { authorize, viewer } from './modules/access.js';
 import { requireThat } from './errors.js';
 import { requestSettings, requestStatuses, type RequestStore } from './persistence/requests-store.js';
 import { requestItem, type Requests } from './services/requests.js';
-import type { Fulfiller } from './providers/arr-fulfiller.js';
+import type { Fulfiller } from './providers/fulfiller.js';
 
 const kind = z.enum(['movie', 'show']);
 const id = z.object({ id: z.coerce.number().int().positive() }).strict();
-// `keep` adds Clean Up's first protected tag to the request's tags, so no Clean Up run deletes the title.
+// `keep` marks the title Favorite in the library, so no Clean Up run deletes it; `earlyCopies` turns on a movie's Early copies.
 const override = { profileId: z.number().int().positive().optional(), rootFolder: z.string().trim().min(1).max(300).optional(), tags: z.array(z.number().int().nonnegative()).max(50).optional(),
-  keep: z.boolean().optional() };
+  keep: z.boolean().optional(), earlyCopies: z.boolean().optional() };
 
 // Requests: any viewer may request, see everyone's (not removed ones) and cancel their own; Admin › Requests lists, removes and retries every one,
-// and sets where show requests go in Sonarr. Only administrators may pick a profile (4K is a profile), folder or tags.
+// and sets their defaults. Only administrators may pick a profile (4K is a profile), folder or tags.
 export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller) {
   app.post('/api/v1/requests', { config: { access: 'viewer', rateLimit: { max: 20, timeWindow: 60000 } } }, async request => {
     const input = z.object({ kind, tmdb: z.number().int().positive(), seasons: z.array(z.number().int().positive()).min(1).max(100).optional(), ...override }).strict().parse(request.body);
-    const { kind: media, tmdb, seasons, profileId, rootFolder, keep } = input;
+    const { kind: media, tmdb, seasons, profileId, rootFolder, keep } = input, earlyCopies = media === 'movie' && !!input.earlyCopies;
     let { tags } = input;
-    const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep;
+    const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep || earlyCopies;
     const { grant } = extras ? await authorize(request, 'admin') : viewer(request);
-    if (keep) {
-      // tk.box's own library keeps a movie by its own flag; Sonarr a show by Clean Up's protected tag.
-      const label = media === 'movie' ? 'Keep' : requests.keepTag();
-      requireThat(label, 'CLEANUP_NO_TAG', 'Add a protected Sonarr tag in Clean Up › Settings first.', 409);
-      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', 'Favorite isn’t available here.', 409);
-      const keepId = await fulfiller.tagId(media, label);
-      tags = [...new Set([...(tags ?? store.settings()[media].tags), keepId])];
+    // The library keeps a title, and takes a movie's early copies, by its own flags, each offered as one tag.
+    for (const [on, label] of [[!!keep, 'Keep'], [earlyCopies, 'Early copies']] as const) {
+      if (!on) continue;
+      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', `${label === 'Keep' ? 'Favorite' : label} isn’t available here.`, 409);
+      const tagId = await fulfiller.tagId(media, label);
+      tags = [...new Set([...(tags ?? store.settings()[media].tags), tagId])];
     }
     const row = await requests.create({ accountId: grant.accountId, name: grant.name ?? 'Plex user' }, { kind: media, tmdb, ...(seasons ? { seasons } : {}) },
       extras ? { ...(profileId !== undefined ? { profileId } : {}), ...(rootFolder !== undefined ? { rootFolder } : {}), ...(tags !== undefined ? { tags } : {}) } : undefined);
@@ -73,12 +72,11 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   app.post('/api/v1/admin/requests/:id/retry', { config: { access: 'admin' } }, async request => requestItem(await requests.retry(id.parse(request.params).id)));
   // Also on the Requests site, for its administrators' Request with options….
   app.get('/api/v1/admin/requests/options', { config: { access: 'admin', portal: 'admin' } }, async request => {
-    const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId, rootFolder, tags } = store.settings()[media];
-    const keepTag = media === 'movie' ? 'Keep' : requests.keepTag(), options = await fulfiller.options(media);
-    // On tk.box a profile saved for Radarr means nothing: its default profile (listed first) stands in.
-    const defaults = options.tkbox ? { profileId: options.profiles.some(p => p.id === profileId) ? profileId : options.profiles[0]?.id ?? 0, rootFolder: '', tags: [] }
-      : { profileId, rootFolder, tags };
-    return { ...options, defaults, ...(keepTag ? { keepTag } : {}) } satisfies RequestOptions;
+    const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId } = store.settings()[media];
+    const options = await fulfiller.options(media);
+    // A profile saved that the library doesn't have means nothing: its default profile (listed first) stands in.
+    const defaults = { profileId: options.profiles.some(p => p.id === profileId) ? profileId : options.profiles[0]?.id ?? 0, rootFolder: '', tags: [] };
+    return { ...options, defaults, keepTag: 'Keep' } satisfies RequestOptions;
   });
   app.get('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async () => store.settings() satisfies RequestSettings);
   app.put('/api/v1/admin/requests/settings', { config: { access: 'admin' } }, async request => {

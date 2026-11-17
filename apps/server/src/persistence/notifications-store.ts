@@ -8,7 +8,7 @@ export type NotificationTarget = string;
 export const ADMINS: NotificationTarget = 'admins';
 export type NewNotification = {
   to: NotificationTarget; kind: string; tone: NotificationTone; title: string; detail?: string; link?: string;
-  // A condition's id ('connection.sonarr', 'job.artwork.run'). While one with this key is open, posting it again
+  // A condition's id ('connection.tmdb', 'job.artwork.run'). While one with this key is open, posting it again
   // updates that row (and shows it as unread again if what it says changed) instead of adding another.
   key?: string;
 };

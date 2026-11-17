@@ -214,8 +214,8 @@ tr.ui-release-detail td{height:auto;padding:0;background:var(--surface-2);white-
 .ui-source>svg{color:var(--tone)}
 .ui-source>div{min-width:0}
 .ui-source>div>span{display:block;font-weight:600;font-size:13px}
-.ui-source.request{--tone:var(--ui-active)}.ui-source.collection{--tone:#c49cff}.ui-source.radarr{--tone:var(--dim)}
-.ui-source.radarr>div>span{color:var(--muted);font-weight:500}
+.ui-source.request{--tone:var(--ui-active)}.ui-source.collection{--tone:#c49cff}.ui-source.imported{--tone:var(--dim)}
+.ui-source.imported>div>span{color:var(--muted);font-weight:500}
 span.ui-source{display:inline-flex;gap:8px;font-size:13px;color:var(--muted)}
 span.ui-source strong{color:var(--text);font-weight:600}
 .ui-movie-source{margin-top:8px}
@@ -254,3 +254,13 @@ span.ui-source strong{color:var(--text);font-weight:600}
 .ui-selbar select{width:auto}
 .ui-selbar .icon-button{padding:9px;border-radius:6px;color:var(--muted)}
 .ui-selbar .icon-button:hover{color:var(--text);background:var(--surface-3)}
+
+/* A title dialog's settings strip: Monitored, Profile, Favorite, then its searches on the right */
+.ui-movie-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ui-movie-control{display:inline-flex;flex-direction:row;align-items:center;gap:10px;height:36px;padding:0 10px 0 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:13px;font-weight:600;cursor:pointer}
+.ui-movie-control:hover{border-color:var(--line-strong)}
+.ui-movie-control:focus-within{border-color:var(--accent)}
+.ui-movie-control select{height:34px;min-width:120px;margin-right:-10px;padding-left:4px;border:0;background-color:transparent;color:var(--text);font-size:13px;font-weight:600}
+.ui-movie-control select:focus{outline:0;box-shadow:none}
+.ui-movie-actions{display:flex;gap:8px;margin-left:auto}
+.ui-movie-actions button{height:36px;font-size:13px}

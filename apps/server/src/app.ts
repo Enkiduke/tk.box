@@ -31,7 +31,6 @@ import { watchHistoryModule } from './modules/watch-history.js';
 import { activityModule } from './modules/activity.js';
 import { artworkModule } from './modules/artwork.js';
 import { cleanupModule } from './modules/cleanup.js';
-import { arrModule } from './modules/arr.js';
 import { requestsModule } from './modules/requests.js';
 import { clientEventsModule } from './modules/client-events.js';
 import { notificationsModule } from './modules/notifications.js';
@@ -39,7 +38,6 @@ import { queueModule } from './modules/queue.js';
 import { indexersModule } from './modules/indexers.js';
 import { downloadersModule } from './modules/downloaders.js';
 import { libraryModule } from './modules/library.js';
-import { cutoverModule } from './modules/cutover.js';
 import type { LibrarySources } from './library-api.js';
 import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
@@ -190,21 +188,20 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const downloaders = await mountModule(app, ctx, downloadersModule, undefined);
   // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
   const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length;
-  // Sonarr, read by requests, Clean Up and the calendar for shows (until phase 2).
-  const arr = await mountModule(app, ctx, arrModule, undefined);
   // Collections' seasonal downloads go to tk.box's library (collections.acquire on the bus).
   const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb}), tmdbTitles = artwork.titles;
   await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
-  // tk.box's own library for movies. Requests send movies to it, and shows to Sonarr.
+  // tk.box's own library for movies and shows. Requests send both to it.
   // Why each movie is there (Admin › Manage › Movies): its requesters, filled in once requests mounts, and collections.
   const librarySources: LibrarySources = {collections: () => artwork.engine.collectionMovies()};
   const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles, sources: librarySources});
-  const requestsApi = await mountModule(app, ctx, requestsModule, {arr, titles: tmdbTitles, site, library}), {requests} = requestsApi;
+  const requestsApi = await mountModule(app, ctx, requestsModule, {titles: tmdbTitles, site, library}), {requests} = requestsApi;
   librarySources.requesters = () => requestsApi.store.requesters('movie');
   librarySources.showRequesters = () => requestsApi.store.requesters('show');
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, arr, requests, watches: latestWatches, identity, library});
-  // The Sonarr import and Switch (phase 2 step 6), after requests and Clean Up, whose requests and tags it reads.
-  await mountModule(app, ctx, cutoverModule, {library, requests: requestsApi, arr, cleanup});
+  librarySources.history = (kind, tmdbId) => requestsApi.store.history(kind, tmdbId).map(r => ({ id: r.id, name: r.accountName, at: r.createdAt, status: r.status,
+    statusAt: r.statusAt, ...(r.seasons.length ? { seasons: r.seasons.map(s => s.season) } : {}), ...(r.availableAt ? { availableAt: r.availableAt } : {}),
+    ...(r.removedAt ? { removedAt: r.removedAt } : {}), ...(r.removedBy ? { removedBy: r.removedBy === 'arr' || r.removedBy === 'cleanup' ? r.removedBy : r.removedBy === r.accountId ? 'requester' : 'admin' } : {}), ...(r.lastError && r.status === 'failed' ? { error: r.lastError } : {}) }));
+  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, requests, watches: latestWatches, identity, library});
   // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
   const watches = (account: string) => {
     const server = config.PLEX_MACHINE_ID;
@@ -213,11 +210,11 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   };
   await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, watches, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
-  await mountModule(app, ctx, calendarModule, {sonarr: () => arr.connection('sonarr'), titles: tmdbTitles, library});
+  await mountModule(app, ctx, calendarModule, {titles: tmdbTitles, library});
   await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   // Admins' system alerts. Admin › Connections checks through it, so its result updates the alerts too.
-  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(cleanup.services, () => artwork.store.keys(), exploreTransports,
-    {showsHere: library.showsHere, downloaders})});
+  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(() => artwork.store.keys(), exploreTransports,
+    {downloaders}, {tvmaze: true})});
   await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(), checkConnections: alerts.checkConnections});
   await mountModule(app, ctx, jobsModule, undefined);
   await mountModule(app, ctx, webModule, undefined);

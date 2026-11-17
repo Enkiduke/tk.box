@@ -25,8 +25,10 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
   left out, or folded into the title's second line.
 - Row actions are icon buttons on the right, shown on hover or focus (`RowActions`). Each has a tooltip.
 - A row opens its thing when its title is clicked. A movie or show opens as a dialog over the page you're on
-  (`MovieDialog`, `&title=<id>`, `&pane=search` for its Interactive search tab, `&scope=S02` or `S02E05` for a show's),
-  never a page of its own, so the list stays as you left it. A show's seasons are rows that open to their episodes.
+  (`MovieDialog`, `&title=<id>`, `&pane=files|grabs|requests|search` for a tab, `&scope=S02` or `S02E05` for a show's
+  search), never a page of its own, so the list stays as you left it. Its head holds the facts and the settings strip
+  (`TitleControls`: Monitored, Profile, Favorite, the searches); the tabs hold one table each (a show's Seasons first,
+  a movie's Files). A show's seasons are rows that open to their episodes.
 - A show's grab or file names its episodes in a tag: `S02` for a whole season, `S02E05`, `S02E05–E07`.
 - Every list table sorts by clicking a header (`useSorted`): once by that column, again reversed, a third time back
   to the table's own order. Sizes, qualities, scores and times start biggest or newest first; quality sorts by the

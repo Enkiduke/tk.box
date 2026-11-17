@@ -1,20 +1,19 @@
 import type { ExploreSeason, RequestArtwork, RequestItem, RequestLabel, RequestTiming } from '../../../../packages/contracts/src/index.js';
 import { readOnly, requireThat, requireWritable } from '../errors.js';
 import { TtlCache } from '../lib/ttl-cache.js';
-import { FulfilError, type Fulfiller, type FulfilProgress, type QueueState } from '../providers/arr-fulfiller.js';
-import type { ArrService } from '../providers/arr-tags.js';
+import { FulfilError, type Fulfiller, type FulfilProgress, type QueueState } from '../providers/fulfiller.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { tmdbImage } from '../providers/explore-images.js';
 import { openStatuses, type RequestKind, type RequestRow, type RequestStatus, type RequestStore } from '../persistence/requests-store.js';
 import type { RequestAvailability } from './request-availability.js';
 
 // Requests (docs/REQUESTS.md): every allowed viewer may request, and every request is approved as it is made. A request
-// is saved first, then sent to tk.box's library (movies) or Sonarr (shows); one that couldn't be sent stays queued and
+// is saved first, then sent to tk.box's library; one that couldn't be sent stays queued and
 // the sweep tries again (1 minute, 5, 30, then 2 hours), and after the fifth failure, or one refused outright, it has
-// failed. Statuses come from Plex (available, partial) and the library's grabs or Sonarr's queue (downloading).
+// failed. Statuses come from Plex (available, partial) and the library's grabs (downloading).
 const BACKOFF = [60000, 5 * 60000, 30 * 60000, 2 * 3600000];
 const MAX_ATTEMPTS = BACKOFF.length + 1;
-// How often each sent title is checked for having been deleted from the library or Sonarr.
+// How often each sent title is checked for having been deleted from the library.
 const EXISTS_MS = 3600000;
 export type Requester = { accountId: string; name: string };
 export type RequestInput = { kind: RequestKind; tmdb: number; seasons?: number[] };
@@ -28,8 +27,6 @@ type TmdbTitle = { title?: string; name?: string; release_date?: string; first_a
   seasons?: { season_number?: number; name?: string; episode_count?: number; air_date?: string | null }[] };
 
 export class Requests {
-  // Clean Up's first protected tag (set by the cleanup module): a request's Keep tags the title with it.
-  keepTag: () => string | undefined = () => undefined;
   private labelCache?: Map<string, RequestLabel>;
   private keyCache?: Map<string, number>;
   private checked = new Map<number, number>();
@@ -37,16 +34,11 @@ export class Requests {
   // Told after every change to a row: made, sent, moved on, cancelled.
   changed?: (change: RequestChange) => void;
   constructor(private store: RequestStore, private fulfiller: Fulfiller, private availability: RequestAvailability, private tmdb: Pick<TmdbTitles, 'get'>,
-    private sonarr: () => ArrService, private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
+    private log: (message: string, detail: object) => void = () => {}, private now = Date.now) {
     availability.changed = () => { this.labelCache = undefined; this.keyCache = undefined; };
   }
-  // Whether tk.box's library takes shows (`fulfil.show`); the module sets it.
-  showsHere: () => boolean = () => false;
-  // Movies are tk.box's own library's; shows are too once switched, else they need Sonarr connected.
-  connected(kind: RequestKind) {
-    if (kind === 'movie' || this.showsHere()) return true;
-    const c = this.sonarr(); return !!(c.url && c.key);
-  }
+  // Requests can always be made: tk.box's library takes both kinds (Explore asks per kind).
+  connected(_kind: RequestKind) { return true; }
   private emit(row: Pick<RequestRow, 'id' | 'kind' | 'tmdbId' | 'accountId'>, status: RequestStatus, made = false) {
     this.labelCache = undefined;
     this.changed?.({ id: row.id, kind: row.kind, tmdb: row.tmdbId, ...(row.accountId ? { accountId: row.accountId } : {}), status, ...(made ? { made: true as const } : {}) });
@@ -153,7 +145,6 @@ export class Requests {
 
   async create(by: Requester, input: RequestInput, override?: Override) {
     requireWritable();
-    requireThat(this.connected(input.kind), 'REQUESTS_NOT_CONNECTED', 'Show requests need Sonarr connected in Admin › Connections.', 409);
     if (!this.availability.ready()) await this.availability.rebuild();
     const raw = await this.tmdbTitle(input.kind, input.tmdb);
     requireThat(raw, 'NOT_FOUND', 'TMDB does not know this title.', 404);
@@ -184,7 +175,7 @@ export class Requests {
     return this.store.get(row.id)!;
   }
 
-  // One attempt at handing the row to the library (movies) or Sonarr (shows).
+  // One attempt at handing the row to the library.
   private async send(row: RequestRow) {
     if (readOnly() || row.status !== 'queued') return;
     const settings = this.store.settings();
@@ -204,7 +195,7 @@ export class Requests {
     }
   }
 
-  // Cancel (the requester, while nothing is downloading yet) or remove (an administrator, any time). The library or Sonarr
+  // Cancel (the requester, while nothing is downloading yet) or remove (an administrator, any time). The library
   // stops watching what no other request still needs; nothing is deleted there.
   async cancel(id: number, by: { accountId: string; admin: boolean }) {
     const row = this.store.get(id);
@@ -232,7 +223,7 @@ export class Requests {
     return this.store.get(id)!;
   }
 
-  // Each minute while any request is open: send what's due, then move each row on from Plex and the library or Sonarr.
+  // Each minute while any request is open: send what's due, then move each row on from Plex and the library.
   async sweep() {
     const open = this.store.open();
     if (!open.length) return;
@@ -256,7 +247,7 @@ export class Requests {
       if (next === 'partial') return;
     }
     if (!row.arrId && row.seerrId && row.status !== 'queued' && this.due(row.id, now)) {
-      // Imported from Seerr, so never sent by tk.box: find it in the library or Sonarr to follow its downloads.
+      // Imported from Seerr, so never sent by tk.box: find it in the library to follow its downloads.
       this.checked.set(row.id, now);
       const arrId = await this.fulfiller.find(row.kind, row.tmdbId, row.tvdbId).catch(() => undefined);
       if (arrId) { this.store.setArrId(row.id, arrId); row = { ...row, arrId }; }
@@ -282,5 +273,5 @@ export function requestItem(row: RequestRow): RequestItem {
     seen: row.seen, seasons: row.seasons.map(s => ({ season: s.season, available: !!s.availableAt })), accountName: row.accountName,
     ...(row.lastError && (row.status === 'failed' || row.status === 'queued') ? { error: row.lastError } : {}), ...(row.removedBy ? { removedBy: removedBy(row) } : {}) };
 }
-// Who removed it, without naming an administrator's account: the requester, an administrator, Clean Up, or the library or Sonarr.
+// Who removed it, without naming an administrator's account: the requester, an administrator, Clean Up, or the library.
 const removedBy = (row: RequestRow) => row.removedBy === 'arr' || row.removedBy === 'cleanup' ? row.removedBy : row.removedBy === row.accountId ? 'requester' : 'admin';

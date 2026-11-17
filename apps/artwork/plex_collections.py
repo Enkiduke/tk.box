@@ -858,7 +858,7 @@ def seasonal_tkbox(artwork, definitions, items, apply, today):
     the collections that wanted it. Once every one of them lets it go (a seasonal one's
     season ended, or it left a rotating one's list, not while watched, nor when the list came back less than half as
     long), it goes in `remove_ids`: tk.box deletes it with its files, but only one it added for collections and that
-    nobody has requested or kept since. An old Radarr journal (collections-state.json) is left as it is."""
+    nobody has requested or kept since. An older journal (collections-state.json) is left as it is."""
     state_path = artwork.base / "collections-tkbox.json"
     try:
         state = json.loads(state_path.read_bytes()) if state_path.exists() else {"version": 1, "movies": {}, "lists": {}}

@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
 import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore, CleanupWatch } from '../persistence/cleanup-store.js';
-import { tagArrTitle } from '../providers/arr-tags.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
@@ -15,12 +14,10 @@ import { every, errorDetail, type Repeating } from '../lib/every.js';
 import type { CleanupRequest } from './requests.js';
 
 // Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
-// a time. tk.box writes the script's JSON config from its settings and passes the Plex token and service keys in the
+// a time. tk.box writes the script's JSON config from its settings and passes the Plex token in the
 // environment for that run only; they are redacted from the job output. The daily schedule reads Plex with the Plex
 // admin token, like Artwork's, and waits while there is no working one.
 type Paths = { python: string; script: string; poster: string; dataDir: string; plexUrl: string };
-// Sonarr, for shows. Movies are tk.box's own.
-export type CleanupServices = { sonarr: { url: string; key?: string } };
 // Each title the last finished run looked at (Clean Up › Status); the script writes it with --status. `deletion_date` is
 // the rule's own date and `held_until` a later one an administrator's hold keeps it until. `key` names its hold and
 // `rating_key` its Plex item, for the poster.
@@ -87,43 +84,34 @@ export function cleanupWatches(serverId: string, rows: CleanupWatch[], users: Se
     [key, { any: iso(e.any), users: Object.fromEntries(Object.entries(e.users).map(([user, at]) => [user, iso(at)])) }]));
   return { server_id: serverId, movie: out('movie'), show: out('show'), season: out('season') };
 }
-// Movies are tk.box's own: a run deletes them from Plex only (tk.box then forgets them), and a movie is kept by the
-// library's Keep (library_titles.keep), sent as each of its requests' `keep`. `kept` holds those movies' TMDB ids.
-// `shows`, once shows are tk.box's too (fulfil.show): the same for shows, whole or season by season, with no Sonarr.
-export type CleanupMovies = { kept: Set<number>; shows?: { kept: Set<number> } };
+// Movies and shows are tk.box's own: a run deletes them from Plex only (tk.box then forgets them; a show whole or
+// season by season), and a title is kept by the library's Keep (library_titles.keep), sent as each of its requests'
+// `keep`. `kept` holds those movies' TMDB ids, `shows.kept` those shows'.
+export type CleanupMovies = { kept: Set<number>; shows: { kept: Set<number> } };
 // The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, services: CleanupServices, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = [], watches?: CleanupWatches,
-  movies: CleanupMovies = { kept: new Set() }) {
+export function cleanupConfig(settings: CleanupSettings, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = [], watches?: CleanupWatches,
+  movies: CleanupMovies = { kept: new Set(), shows: { kept: new Set() } }) {
   return {
-    plex: { url: paths.plexUrl }, sonarr: { url: services.sonarr.url },
+    plex: { url: paths.plexUrl },
     movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
-    delete_from_sonarr: settings.deleteFromSonarr && !movies.shows,
-    // Shows are tk.box's: kept by `keep`, deleted (whole or by season) through Plex only; Sonarr isn't asked.
-    tkbox_shows: !!movies.shows,
     days_after_watched: settings.daysAfterWatched, days_after_unwatched: settings.daysAfterUnwatched,
     days_after_any_watch_exempt: settings.daysAfterAnyWatchExempt, days_after_exempt_watch: settings.daysAfterExemptWatch,
-    exempt_user_ids: settings.exemptUserIds, exempt_arr_tags: movies.shows ? [] : settings.exemptArrTags, exempt_if_in_collection: settings.exemptIfInCollection,
+    exempt_user_ids: settings.exemptUserIds, exempt_if_in_collection: settings.exemptIfInCollection,
     protecting_collection_kinds: Object.entries(settings.collectionKinds).filter(([, on]) => on).map(([kind]) => kind), tkbox_collections: collections,
     enable_season_retention: settings.seasons.enabled, protect_latest_season: settings.seasons.protectLatest, protect_specials_season: settings.seasons.protectSpecials,
     create_leaving_soon_collection: settings.leavingSoon.enabled, leaving_soon_name: settings.leavingSoon.name, leaving_soon_days: settings.leavingSoon.days,
     leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
     holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()])),
     // The titles a run looks at: tk.box's requests now on the server.
-    requests: requests.map(r => (r.kind === 'movie' ? movies.kept : movies.shows?.kept)?.has(r.tmdb) ? { ...r, keep: true } : r),
+    requests: requests.map(r => (r.kind === 'movie' ? movies.kept : movies.shows.kept).has(r.tmdb) ? { ...r, keep: true } : r),
     // Each title's latest watches; the script refuses to run without them.
     ...(watches ? { watches } : {})
   };
 }
-// What has to be set before a run can start, in the words the page shows. The script checks all of it again. Once
-// shows are tk.box's (`tkboxShows`), nothing needs Sonarr.
-export function cleanupMissing(settings: CleanupSettings, services: CleanupServices, tkboxShows = false) {
-  const sonarr = !!(services.sonarr.url && services.sonarr.key), missing: string[] = [];
-  const movies = settings.movieLibraries.length > 0, tv = settings.tvLibraries.length > 0;
-  if (!movies && !tv) missing.push('Choose at least one movie or TV library.');
-  if (tkboxShows) return missing;
-  if (settings.deleteFromSonarr && !sonarr) missing.push('Delete from Sonarr needs Sonarr connected in Admin › Connections.');
-  if (tv && settings.seasons.enabled && !settings.deleteFromSonarr) missing.push('Season-by-season clean up needs Delete from Sonarr turned on.');
-  if (settings.exemptArrTags.length && tv && !sonarr) missing.push('Protecting by Sonarr tags needs Sonarr connected in Admin › Connections.');
+// What has to be set before a run can start, in the words the page shows. The script checks it again.
+export function cleanupMissing(settings: CleanupSettings) {
+  const missing: string[] = [];
+  if (!settings.movieLibraries.length && !settings.tvLibraries.length) missing.push('Choose at least one movie or TV library.');
   return missing;
 }
 // Only what Python needs, plus this run's credentials; never the server's own environment.
@@ -153,20 +141,19 @@ export class CleanupEngine {
   // Told the whole titles a real run deleted, so their requests are removed, and the seasons it deleted (tk.box's
   // shows: the library forgets them).
   deleted?: (titles: { kind: 'movie' | 'show'; tmdb: number }[], seasons: { tmdb: number; season: number }[]) => void;
-  // Movies (and shows, once they're tk.box's) are kept by the library's own flag (`keep` returns false when the
-  // library doesn't have the title).
-  movies: () => CleanupMovies & { keep(tmdbId: number, kind?: 'movie' | 'show'): boolean } = () => ({ kept: new Set(), keep: () => false });
+  // Movies and shows are kept by the library's own flag (`keep` returns false when the library doesn't have the title).
+  movies: () => CleanupMovies & { keep(tmdbId: number, kind?: 'movie' | 'show'): boolean } = () => ({ kept: new Set(), shows: { kept: new Set() }, keep: () => false });
   // This Plex server's id, and its watches (the saved snapshot and tk.box's history), read as each run starts.
   serverId: () => string | undefined = () => undefined;
   watches: (serverId: string) => CleanupWatch[] = () => [];
-  constructor(private store: CleanupStore, readonly paths: Paths, private services: () => CleanupServices, private adminGrant: () => Promise<PlexGrant | undefined>,
+  constructor(private store: CleanupStore, readonly paths: Paths, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
     store.abandonJobs();
   }
   // Watch history is kept per Plex server, so a run needs this one's id.
   missing() {
-    const missing = cleanupMissing(this.store.settings(), this.services(), !!this.movies().shows);
+    const missing = cleanupMissing(this.store.settings());
     if (!this.serverId()) missing.push('Set PLEX_MACHINE_ID: watch history is kept per Plex server.');
     return missing;
   }
@@ -204,8 +191,7 @@ export class CleanupEngine {
     return { ...job, output: undefined, lines: live.lines.slice(from), next: live.dropped + live.lines.length };
   }
   titles(): CleanupTitles { return withKept(withHolds(this.lastRun(), this.store.holds(), this.store.settings().leavingSoon.days), this.store.kept()); }
-  // Keep: a movie by the library's own Keep; the whole show (from any of its seasons) by the library's too once shows
-  // are tk.box's, else by Sonarr's first protected tag.
+  // Keep: a movie, or the whole show (from any of its seasons), by the library's own Keep.
   async keep(actor: string, key: string) {
     const item = this.titles().items.find(i => i.key === key);
     if (!item?.key || !waiting.has(item.status)) throw new AppError('CLEANUP_NOT_KEEPABLE', 'Only titles waiting to leave can be kept. Run a preview to refresh the list.', 409);
@@ -215,17 +201,9 @@ export class CleanupEngine {
       this.store.setKept(actor, titleKey(item.key), 'Keep');
       return { tag: 'Keep', ...this.titles() };
     }
-    if (movies.shows) {
-      if (!movies.keep(Number(wholeId), 'show')) throw new AppError('CLEANUP_NOT_IN_LIBRARY', 'tk.box’s library doesn’t have this show, so it can’t be kept there.', 409);
-      this.store.setKept(actor, titleKey(item.key), 'Keep');
-      return { tag: 'Keep', ...this.titles() };
-    }
-    const tag = this.store.settings().exemptArrTags[0];
-    if (!tag) throw new AppError('CLEANUP_NO_TAG', 'Add a protected Sonarr tag in Clean Up › Settings first.', 409);
-    const whole = titleKey(item.key);
-    await tagArrTitle(this.services().sonarr, Number(wholeId), tag);
-    this.store.setKept(actor, whole, tag);
-    return { tag, ...this.titles() };
+    if (!movies.keep(Number(wholeId), 'show')) throw new AppError('CLEANUP_NOT_IN_LIBRARY', 'tk.box’s library doesn’t have this show, so it can’t be kept there.', 409);
+    this.store.setKept(actor, titleKey(item.key), 'Keep');
+    return { tag: 'Keep', ...this.titles() };
   }
   // Holds take effect at the next run; a run already going keeps the holds it started with.
   hold(actor: string, key: string, action: { action: 'reset' } | { action: 'clear' }) {
@@ -276,8 +254,8 @@ export class CleanupEngine {
   private async next() {
     if (this.current) return;
     const job = this.queue.shift(); if (!job) return;
-    const services = this.services(), settings = this.store.settings();
-    const secrets = { PLEX_TOKEN: job.token, SONARR_API_KEY: services.sonarr.key };
+    const settings = this.store.settings();
+    const secrets = { PLEX_TOKEN: job.token };
     const running: Running = this.current = { id: job.id, lines: [], dropped: 0, canceled: false, secrets: Object.values(secrets).filter((v): v is string => !!v) };
     const say = (line: string) => { running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
     let code: number | null = null;
@@ -287,7 +265,7 @@ export class CleanupEngine {
       const engine = await this.status();
       if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
       const requests = this.requests();
-      const file = this.writeConfig(settings, services, requests);
+      const file = this.writeConfig(settings, requests);
       say(`> purge_requests ${job.args.join(' ')}`.trim());
       if (!requests.length) say('No available or partially available requests in tk.box. Check Admin › Requests for the request inventory.');
       const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -305,14 +283,14 @@ export class CleanupEngine {
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // Written whole and then moved into place, so the script never reads a half-written config.
-  private writeConfig(settings: CleanupSettings, services: CleanupServices, requests: CleanupRequest[]) {
+  private writeConfig(settings: CleanupSettings, requests: CleanupRequest[]) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
     const serverId = this.serverId();
     const users = new Set([...settings.exemptUserIds, ...requests.flatMap(r => r.requester_plex_id === null ? [] : [r.requester_plex_id])].map(String));
     const watches = serverId ? cleanupWatches(serverId, this.watches(serverId), users) : undefined;
     const { kept, shows } = this.movies();
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, services, this.paths, this.store.holds(), this.collections(), requests, watches, { kept, ...(shows ? { shows } : {}) }), null, 2), { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, this.paths, this.store.holds(), this.collections(), requests, watches, { kept, shows }), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

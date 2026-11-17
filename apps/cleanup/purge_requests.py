@@ -1,7 +1,7 @@
 """Purge available requests according to watch history and retention policy.
 
 tk.box runs this as ``python purge_requests.py <config.json> [--dry-run]`` (Admin > Server > Clean Up). The config is
-written by tk.box from its settings and holds tk.box's available requests; its watch history; the Plex token and the service keys arrive in
+written by tk.box from its settings and holds tk.box's available requests; its watch history; the Plex token arrives in
 the environment. ``--dry-run`` previews a run whatever the config says. Output goes to stdout, which tk.box keeps with the job.
 """
 
@@ -14,13 +14,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
 from plexapi.server import PlexServer
 
 from purge_support.actions import delete_whole_item, process_seasons
-from purge_support.api import ApiError, ArrClient, HttpClient, positive_id
+from purge_support.api import ApiError, positive_id
 from purge_support.config import ConfigError, Settings
-from purge_support.plex import find_plex_item, matching_arr_tags, protected_collections, update_plex_collection
+from purge_support.plex import find_plex_item, protected_collections, update_plex_collection
 from purge_support.policy import (MissingAddedAtError, days_remaining, held_until, hold_key, leaving_soon, parse_added_at,
                                   plex_datetime, rule_for_requests)
 from purge_support.reporting import RunReport, add_entry, add_status, log_report, write_status
@@ -77,20 +76,7 @@ def media_title_and_year(record):
     return record.get("title") or "Unknown Title", year if isinstance(year, int) and not isinstance(year, bool) else None
 
 
-def load_arr_data(client, needed, tags_needed):
-    if not needed:
-        return {}, {}
-    try:
-        library = client.library()
-        tags = client.tags() if tags_needed else {}
-        return library, tags
-    except ApiError as exc:
-        logger.error("%s cache unavailable: %s", client.name, exc)
-        return None, None
-
-
-def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
-                          arr_data, now, report, processed_keys, context):
+def process_request_group(key, raw_requests, *, settings, plex, history, now, report, processed_keys, context):
     """`context` collects the title and Plex item as they are found, for the status entry of a failed evaluation."""
     requests_group = parse_requests(raw_requests)
     media_type, tmdb_id = key
@@ -122,24 +108,13 @@ def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
     kind = "movie" if media_type == "movie" else "show"
     logger.info("Processing '%s' for request IDs %s", item.title, [request.request_id for request in requests_group])
 
-    # Movies are tk.box's own (kept by its Keep, deleted from Plex only); shows are Sonarr's, or tk.box's too
-    # (tkbox_shows), then handled as movies are.
-    library, tags = arr_data.get(media_type, ({}, {}))
-    arr_item = library.get(tvdb_id) if library is not None and media_type == "tv" else None
-    if (media_type == "movie" or settings.tkbox_shows) and any(request.media.get("keep") for request in requests_group):
+    # Movies and shows are tk.box's own: kept by its Keep, deleted from Plex only.
+    if any(request.media.get("keep") for request in requests_group):
         logger.info("Keeping '%s': kept in tk.box", item.title)
         report.protected += 1
         report.settled.add(str(item.ratingKey))
         add_status(report, item, kind, "protected", reason="Kept in tk.box", key=hold)
         return
-    if settings.exempt_arr_tags and media_type == "tv":
-        matches = matching_arr_tags(arr_item, tags, settings.exempt_arr_tags)
-        if matches:
-            logger.info("Keeping '%s': protected by Arr tags %s", item.title, ", ".join(matches))
-            report.protected += 1
-            report.settled.add(str(item.ratingKey))
-            add_status(report, item, kind, "protected", reason=f"Tagged {', '.join(matches)}", key=hold)
-            return
     if settings.exempt_if_in_collection:
         collections = protected_collections(item, settings.leaving_soon_name, settings.protecting_collection_kinds,
                                            settings.tkbox_collections)
@@ -150,7 +125,7 @@ def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
             add_status(report, item, kind, "protected", reason=f"In {', '.join(collections)}", key=hold)
             return
     if media_type == "tv" and settings.enable_season_retention:
-        if process_seasons(item, requests_group, arr_item, settings, sonarr, history, now, report, tmdb_id):
+        if process_seasons(item, requests_group, settings, history, now, report, tmdb_id):
             # Season by season, the show itself never belongs in the collection.
             report.settled.add(str(item.ratingKey))
             return
@@ -165,7 +140,7 @@ def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
     if now >= due_at:
         logger.warning("DELETE Candidate: '%s'. %s: %s", item.title, rule.name, rule.reason)
         add_entry(report.delete_summary, item, f"{item.title} [{rule.name}]")
-        delete_whole_item(item, media_type, arr_item, settings, sonarr, report)
+        delete_whole_item(item, settings, report)
         add_status(report, item, kind, "due" if settings.dry_run else "deleted", rule=rule, key=hold)
     else:
         report.kept += 1
@@ -183,7 +158,7 @@ def process_request_group(key, raw_requests, *, settings, plex, sonarr, history,
             logger.info("Keeping '%s' until %s (%s)", item.title, due_at.isoformat(), rule.name)
 
 
-def run(settings, plex, sonarr, history, now=None):
+def run(settings, plex, history, now=None):
     """Run with injectable integrations so regression tests never contact live services."""
     now = now or datetime.now(timezone.utc)
     report = RunReport()
@@ -198,11 +173,6 @@ def run(settings, plex, sonarr, history, now=None):
     report.processed = len(requests_data)
     groups = group_requests(requests_data)
     logger.info("Processing %s requests across %s media items", len(requests_data), len(groups))
-    arr_data = {
-        "tv": load_arr_data(sonarr, not settings.tkbox_shows and any(key[0] == "tv" for key in groups) and bool(settings.tv_libraries) and
-                            (settings.delete_from_sonarr or bool(settings.exempt_arr_tags) or settings.enable_season_retention),
-                            bool(settings.exempt_arr_tags)),
-    }
     processed_keys = set()
     for key, raw_requests in groups.items():
         context = {}
@@ -211,8 +181,7 @@ def run(settings, plex, sonarr, history, now=None):
             add_status(report, context.get("item"), "movie" if key[0] == "movie" else "show", "error",
                        title=context.get("title") or f"TMDB {key[1]}", reason=reason, key=hold_key(*key))
         try:
-            process_request_group(key, raw_requests, settings=settings, plex=plex,
-                                  sonarr=sonarr, history=history, arr_data=arr_data,
+            process_request_group(key, raw_requests, settings=settings, plex=plex, history=history,
                                   now=now, report=report, processed_keys=processed_keys, context=context)
         except MissingAddedAtError as exc:
             logger.warning("Skipping %s TMDB=%s (request IDs %s): %s; retaining media",
@@ -259,15 +228,13 @@ def main(argv=None):
         return 1
     logger.info("Starting purge (%s)", "DRY RUN: nothing is deleted" if settings.dry_run else "deleting for real")
     try:
-        with requests.Session() as session:
-            http = HttpClient(session, settings.timeout)
-            plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
-            try:
-                history = ConfigHistory(settings.watches, settings.exempt_user_ids, getattr(plex, "machineIdentifier", ""))
-            except ConfigError as exc:
-                logger.error("Cannot start purge: %s", exc)
-                return 1
-            report = run(settings, plex, ArrClient(http, settings.sonarr, "Sonarr"), history)
+        plex = PlexServer(settings.plex.url, settings.plex.key, timeout=settings.http_timeout_seconds)
+        try:
+            history = ConfigHistory(settings.watches, settings.exempt_user_ids, getattr(plex, "machineIdentifier", ""))
+        except ConfigError as exc:
+            logger.error("Cannot start purge: %s", exc)
+            return 1
+        report = run(settings, plex, history)
         if args.status:
             write_status(report, args.status, settings.dry_run)
         return 1 if report.failed or report.skipped_missing_added_at else 0

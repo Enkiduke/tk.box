@@ -280,7 +280,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
     </section>
     {initial.error && <ErrorNotice message={initial.error.message} retry={initial.reload}/>}
     {failed.length > 0 && <ErrorNotice message={`Could not load the calendar from ${failed.join(' and ')}.`} retry={initial.reload}/>}
-    {disconnected.length > 0 && <p className="muted">{disconnected.join(' and ')} {disconnected.length === 1 ? 'is' : 'are'} disconnected. An admin can connect {disconnected.length === 1 ? 'it' : 'them'} in Admin › Connections › Downloads &amp; Clean Up.</p>}
+    {disconnected.length > 0 && <p className="muted">{disconnected.join(' and ')} {disconnected.length === 1 ? 'is' : 'are'} disconnected. An admin can check {disconnected.length === 1 ? 'it' : 'them'} in Admin.</p>}
     {initial.data?.plexUnavailable && <ErrorNotice message="Some Plex availability could not be checked." retry={initial.reload}/>}
     {!initial.data && initial.loading && <Loading/>}
     {ready && <>

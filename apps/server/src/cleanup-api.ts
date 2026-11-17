@@ -1,19 +1,18 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import {CleanupStore,cleanupSettings,holdKey} from './persistence/cleanup-store.js';
-import type {CleanupEngine,CleanupServices} from './services/cleanup-engine.js';
+import type {CleanupEngine} from './services/cleanup-engine.js';
 import {viewer} from './modules/access.js';
 
 // Admin › Server › Clean Up: the purge script's settings and its jobs. Administrators only (the cleanup module's default access). A job runs with the Plex token of the administrator
 // who started it.
 const revision=z.number().int().nonnegative();
 
-export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:CleanupEngine,services:()=>CleanupServices) {
+export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:CleanupEngine) {
   app.get('/api/v1/admin/cleanup',async request=>{
-    const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query),s=services();
-    const set=(c:{url:string;key?:string})=>!!(c.url&&c.key);
+    const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
     return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(!!query.recheck),missing:engine.missing(),
-      connected:{sonarr:set(s.sonarr)},schedule:engine.scheduleState(),busy:engine.pending()};
+      schedule:engine.scheduleState(),busy:engine.pending()};
   });
   app.put('/api/v1/admin/cleanup/settings',async request=>{
     const {grant}=viewer(request),{expectedRevision,...value}=cleanupSettings.extend({expectedRevision:revision}).strict().parse(request.body);
@@ -27,7 +26,7 @@ export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:Cl
       z.object({key:holdKey,action:z.literal('clear')}).strict()]).parse(request.body);
     return engine.hold(grant.accountId,body.key,body);
   });
-  // Keep: a movie by the library's Keep, a show by Sonarr's first protected tag, so no run deletes it.
+  // Keep: a movie or show by the library's Keep, so no run deletes it.
   app.post('/api/v1/admin/cleanup/keep',async request=>{
     const {grant}=viewer(request),{key}=z.object({key:holdKey}).strict().parse(request.body);
     return engine.keep(grant.accountId,key);

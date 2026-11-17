@@ -29,12 +29,12 @@ export async function holdTitle(item:{key:string;title:string},body:HoldAction) 
   } catch(error) {toast.error(`${item.title}: ${(error as Error).message}`);}
   invalidate(PATH);void loadLeaving();
 }
-// Keep sets the movie's Keep in tk.box's library, or tags the whole show in Sonarr (from any of its seasons) with the first protected tag.
+// Keep sets the movie's Keep in tk.box's library, or the whole show's (from any of its seasons).
 export async function keepTitle(item:{key:string;title:string}) {
   const show=item.key.startsWith('tv:'),name=show?item.title.split(' - ')[0]!:item.title;
   try {
-    const {tag}=await api<{tag:string}>('/admin/cleanup/keep','POST',{key:item.key});
-    toast.success(show?`${name}: favorited, tagged “${tag}” in Sonarr`:`${name}: favorited`);
+    await api('/admin/cleanup/keep','POST',{key:item.key});
+    toast.success(`${name}: favorited`);
   } catch(error) {toast.error(`${name}: ${(error as Error).message}`);}
   invalidate(PATH);void loadLeaving();
 }

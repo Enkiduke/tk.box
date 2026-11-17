@@ -8,9 +8,9 @@ import {toast} from './toasts.js';
 
 export const statusNames:Record<ExploreStatus,string>={available:'Available',partial:'Partly available',downloading:'Downloading',requested:'Requested'};
 const plural=(n:number,word:string)=>`${n} ${word}${n===1?'':'s'}`;
-// An administrator's request options: the quality profile (which is also how 4K is chosen) and Keep (Clean Up's
-// protected tag). Root folder and tags come from Admin › Requests.
-export type RequestExtras={profileId?:number;keep?:boolean};
+// An administrator's request options: the quality profile (which is also how 4K is chosen), Favorite (the
+// library's Keep, so Clean Up never removes it) and, for a movie, Early copies.
+export type RequestExtras={profileId?:number;keep?:boolean;earlyCopies?:boolean};
 
 // The options in Request's ▾ menu, read when it first opens; Request itself sends them.
 export function RequestOptionsPanel({kind,extras,setExtras}:{kind:ExploreItem['kind'];extras:RequestExtras;setExtras:(update:(current:RequestExtras)=>RequestExtras)=>void}) {
@@ -18,15 +18,16 @@ export function RequestOptionsPanel({kind,extras,setExtras}:{kind:ExploreItem['k
   useEffect(()=>{if(o)setExtras(x=>x.profileId?x:{...x,profileId:o.defaults.profileId||o.profiles[0]?.id});},[o]);
   if(options.error)return <ErrorNotice message={options.error.message} retry={options.reload}/>;
   if(!o)return <Loading/>;
-  if(!o.connected)return <p className="muted small">Sonarr isn’t connected.</p>;
   return <div className="request-options">
     {o.profiles.length>0&&<label className="request-field"><span className="request-label">Quality profile</span>
       <select value={extras.profileId} onChange={e=>setExtras(x=>({...x,profileId:Number(e.target.value)}))}>{o.profiles.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===o.defaults.profileId?' (Default)':''}</option>)}</select></label>}
-    <label className="request-keep" title={o.tkbox?'Clean Up never removes it':o.keepTag?`Tags it “${o.keepTag}” so Clean Up never removes it`:'Add a protected tag in Clean Up › Settings first'}>
-      <strong>Favorite</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} disabled={!o.keepTag} onChange={e=>setExtras(x=>({...x,keep:e.target.checked}))}/></label>
+    <label className="request-keep" title="Clean Up never removes it">
+      <strong>Favorite</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.keep} onChange={e=>setExtras(x=>({...x,keep:e.target.checked}))}/></label>
+    {kind==='movie'&&<label className="request-keep" title="Take cams and telesyncs from the cinema release until a better copy is out">
+      <strong>Early copies</strong><input type="checkbox" role="switch" className="switch" checked={!!extras.earlyCopies} onChange={e=>setExtras(x=>({...x,earlyCopies:e.target.checked}))}/></label>}
   </div>;
 }
-export const extrasBody=(extras?:RequestExtras)=>extras?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{})}:{};
+export const extrasBody=(extras?:RequestExtras)=>extras?{...(extras.profileId?{profileId:extras.profileId}:{}),...(extras.keep?{keep:true}:{}),...(extras.earlyCopies?{earlyCopies:true}:{})}:{};
 
 // The request window, for a show's seasons, with any options chosen in Request's menu. Every request is approved as it is made.
 export function RequestDialog({item,request,extras,onClose,onDone}:{item:ExploreItem;request:NonNullable<ExploreDetails['request']>;extras?:RequestExtras;onClose:()=>void;onDone:(message:string)=>void}) {

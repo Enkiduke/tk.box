@@ -18,7 +18,7 @@ import {toast} from './toasts.js';
 
 // Explore: titles beyond this server, from Plex Discover (watchlist and Discover shelves) and TMDB, on one page:
 // every source's rows in turn, one search across them all, and filters that narrow both.
-// A title's dialog opens this server's copy when there is one, requests it (tk.box's library or Sonarr), or watchlists it on Plex.
+// A title's dialog opens this server's copy when there is one, requests it (tk.box's library), or watchlists it on Plex.
 const names:Record<ExploreSource,string>={plex:'Plex',tmdb:'TMDB'};
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
 const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');

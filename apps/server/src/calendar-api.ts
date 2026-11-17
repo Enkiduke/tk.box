@@ -1,12 +1,9 @@
-import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { CalendarEntry, CalendarPage } from '../../../packages/contracts/src/index.js';
-import type { ArrService } from './providers/arr-tags.js';
 import type { PlexAdapter } from './providers/plex.js';
 import { imagePath, tmdbImage } from './providers/explore-images.js';
 import type { LibraryTitle } from './persistence/library-store.js';
-import { remoteJson } from './providers/remote-json.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import { requireThat } from './errors.js';
 import { viewer } from './modules/access.js';
@@ -16,60 +13,16 @@ import { movieReleaseDate, releaseDay } from './lib/release-day.js';
 const day = z.iso.date();
 const query = z.object({from: day, to: day, zone: z.string().min(1).max(100).default('UTC'), account: z.string().optional()}).strict();
 const dayMs = 86_400_000;
-const id = z.number().int().positive().optional().catch(undefined);
-const images = z.array(z.object({coverType: z.string(), remoteUrl: z.string().nullish(), url: z.string().nullish()})).optional().catch(undefined);
-const info = z.object({
-  title: z.string().trim().min(1).max(500), year: z.number().int().positive().optional().catch(undefined),
-  overview: z.string().max(20_000).optional().catch(undefined), tmdbId: id, tvdbId: id,
-  imdbId: z.string().regex(/^tt\d{1,12}$/).optional().catch(undefined),
-  remotePoster: z.string().optional().catch(undefined),
-  images,
-});
-const episode = z.object({
-  title: z.string().trim().max(500).optional().catch(undefined), seasonNumber: z.number().int().nonnegative(),
-  episodeNumber: z.number().int().nonnegative(), airDate: z.unknown().optional(), airDateUtc: z.unknown().optional(),
-  hasFile: z.boolean().optional(), series: info, images,
-});
 type Scheduled = CalendarEntry & { hasFile?: boolean };
 
-function cover(art: z.infer<typeof images>, types: string[]) {
-  return types.flatMap(type => (art ?? []).filter(image => image.coverType.toLowerCase() === type)
-    .flatMap(image => imagePath(image.remoteUrl ?? undefined) ?? imagePath(image.url ?? undefined) ?? []))[0];
-}
-
-function titleFields(value: z.infer<typeof info>) {
-  const ids = {tmdb: value.tmdbId, tvdb: value.tvdbId, imdb: value.imdbId};
-  return {title: value.title, year: value.year, summary: value.overview, ids,
-    posterUrl: imagePath(value.remotePoster) ?? cover(value.images, ['poster']),
-    backdropUrl: cover(value.images, ['fanart', 'backdrop', 'banner'])};
-}
-
-function episodeEntry(raw: unknown): Scheduled[] {
-  const result = episode.safeParse(raw);
-  if (!result.success) return [];
-  const {series, seasonNumber, episodeNumber, title, airDate, airDateUtc, hasFile} = result.data;
-  const seriesKey = series.tvdbId ? `tvdb:${series.tvdbId}` : series.tmdbId ? `tmdb:${series.tmdbId}` : series.imdbId;
-  if (!seriesKey) return [];
-  const timed = z.iso.datetime({offset: true}).safeParse(airDateUtc);
-  const airTime = timed.success && releaseDay(timed.data) ? new Date(timed.data) : undefined;
-  const release = releaseDay(airDate) ?? (airTime && releaseDay(airTime.toISOString()));
-  if (!release) return [];
-  return [{...titleFields(series), key: `episode:${seriesKey}:${seasonNumber}:${episodeNumber}`, kind: 'episode',
-    day: release, airTime: airTime?.toISOString(), season: seasonNumber, episode: episodeNumber,
-    episodeLabel: episodeNumber === 1 && seasonNumber > 0 ? seasonNumber === 1 ? 'series-premiere' : 'season-premiere' : undefined,
-    stillUrl: cover(result.data.images, ['screenshot', 'still', 'thumb']),
-    episodeTitle: title && !/^tba$/i.test(title) ? title : undefined, hasFile}];
-}
-
 // The calendar's movies are the library's, on the day its TMDB dates give (digital, else physical, else theatrical).
-// The picture and summary are TMDB's, from the details the library already reads (cached). Shows are Sonarr's until
-// `fulfil.show` is tkbox (`showsHere`); then they're the library's too, on TMDB's air date (TMDB has no air time).
+// The picture and summary are TMDB's, from the details the library already reads (cached). Shows are the library's
+// too, on TMDB's air date (TMDB has no air time).
 export type CalendarEpisode = { show: LibraryTitle; season: number; episode: number; name?: string; airDate: string; hasFile: boolean };
 export type CalendarLibrary = {
-  store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[]; calendarEpisodes?(from: string, to: string): CalendarEpisode[] };
-  showsHere?(): boolean;
+  store: { calendarMovies(): (LibraryTitle & { hasFile: boolean })[]; calendarEpisodes(from: string, to: string): CalendarEpisode[] };
 };
-// The same keys and labels as Sonarr's entries, so a viewer's Plex match and the season finales work alike.
+// Keys by TVDB id (else TMDB), so a viewer's Plex match and the season finales find them.
 export function libraryEpisodeEntries(episodes: CalendarEpisode[]): Scheduled[] {
   return episodes.map(({show, season, episode, name, airDate, hasFile}) => ({
     key: `episode:${show.tvdbId ? `tvdb:${show.tvdbId}` : `tmdb:${show.tmdbId}`}:${season}:${episode}`, kind: 'episode' as const,
@@ -86,8 +39,7 @@ export function libraryMovieEntries(movies: (LibraryTitle & { hasFile: boolean }
   });
 }
 
-export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, sonarr: () => ArrService,
-  transport: typeof fetch = fetch, tmdb?: Pick<TmdbTitles, 'episodeFinales' | 'get'>, library?: CalendarLibrary) {
+export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, 'calendarMedia'>, tmdb?: Pick<TmdbTitles, 'episodeFinales' | 'get'>, library?: CalendarLibrary) {
   const pictures = async (entries: Scheduled[]) => {
     if (!tmdb) return;
     const pending = entries.values();
@@ -103,21 +55,6 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
       }
     }));
   };
-  // Provider schedules are shared. Plex matches are cached separately by the viewer's grant.
-  const cache = new TtlCache<Promise<Scheduled[]>>(100);
-  const read = (connection: ArrService, start: string, end: string) => {
-    const key = createHash('sha256').update(JSON.stringify([connection.url, connection.key, start, end])).digest('hex');
-    return cache.remember(key, 5 * 60_000, () => {
-      const url = new URL(`${connection.url.replace(/\/+$/, '')}/api/v3/calendar`);
-      url.search = new URLSearchParams({start, end, unmonitored: 'true', includeSeries: 'true', includeEpisodeImages: 'true'}).toString();
-      const rows = remoteJson(url, {headers: {'X-Api-Key': connection.key!}}, 'Sonarr', transport, 10_000, 16 * 1024 * 1024).then(response => {
-        requireThat(response.status === 200 && Array.isArray(response.data), 'CALENDAR_UNAVAILABLE', 'Sonarr could not load its calendar.', 502);
-        return response.data.flatMap(episodeEntry);
-      });
-      return rows;
-    });
-  };
-
   app.get('/api/v1/calendar', {config: {access: 'viewer', rateLimit: {max: 60, timeWindow: 60_000}}}, async (request, reply): Promise<CalendarPage> => {
     const {grant} = viewer(request);
     reply.header('Cache-Control', 'private, no-store');
@@ -127,11 +64,9 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
     let localDay: Intl.DateTimeFormat;
     try { localDay = new Intl.DateTimeFormat('sv-SE', {timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit'}); }
     catch { requireThat(false, 'INVALID_CALENDAR_ZONE', 'Invalid calendar time zone.'); }
-    // Sonarr returns UTC timestamps. Pad the upstream window for viewers on either side of UTC and apply exact local bounds below.
+    // Pad the window for viewers on either side of UTC and apply exact local bounds below.
     const upstreamStart = new Date(start - dayMs).toISOString(), upstreamEnd = new Date(end + dayMs).toISOString();
-    // Sonarr is left out once the library has the shows.
-    const libraryShows = !!library?.showsHere?.() && !!library.store.calendarEpisodes;
-    const sources: CalendarPage['sources'] = {Library: library ? 'ready' : 'disconnected', ...(libraryShows ? {} : {Sonarr: 'disconnected' as const})};
+    const sources: CalendarPage['sources'] = {Library: library ? 'ready' : 'disconnected'};
     const movies = async () => {
       if (!library) return [];
       const rows = libraryMovieEntries(library.store.calendarMovies(), upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10));
@@ -139,21 +74,10 @@ export function registerCalendar(app: FastifyInstance, plex: Pick<PlexAdapter, '
       return rows;
     };
     const shows = async () => {
-      if (library && libraryShows) {
-        const rows = libraryEpisodeEntries(library.store.calendarEpisodes!(upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10)));
-        await pictures(rows);
-        return rows;
-      }
-      const connection = sonarr();
-      if (!connection.url || !connection.key) return [];
-      try {
-        const rows = await read(connection, upstreamStart, upstreamEnd);
-        sources.Sonarr = 'ready';
-        return rows;
-      } catch {
-        sources.Sonarr = 'unavailable';
-        return [];
-      }
+      if (!library) return [];
+      const rows = libraryEpisodeEntries(library.store.calendarEpisodes(upstreamStart.slice(0, 10), upstreamEnd.slice(0, 10)));
+      await pictures(rows);
+      return rows;
     };
     const feeds = await Promise.all([movies(), shows()]);
     const unique = new Map<string, Scheduled>();

@@ -156,21 +156,31 @@ export function decide(release: Candidate, want: Want, ctx: PickContext): Decisi
   }
   const scoreText = `score ${score > 0 ? '+' : ''}${score}${matched.length ? ` (${matched.join(', ')})` : ''}`;
   const reasons = rejects.length ? rejects.map(r => `rejected: ${r}`)
-    : [`accepted: ${quality}, ${scoreText}`, ...(upgradeReason ? [upgradeReason] : [])];
+    : [`accepted: ${quality}, ${scoreText}`, ...(upgradeReason ? [upgradeReason] : []), ...(fewSeeders(release) ? [`few seeders (${release.seeders}): ranked last in its tier`] : [])];
   return { release, parsed, ...(quality ? { quality } : {}), ...(tier >= 0 ? { tier } : {}), ...(limits ? { sizeTarget: limits.target } : {}),
     score, labels, accepted: !rejects.length, upgrade: !rejects.length && upgrade, reasons,
     scoreParts: parts, rejections: rejects, ...(!rejects.length && upgradeReason ? { upgradeReason } : {}) };
 }
 
-// Best first: the profile's tier, then protocol by the setting, then score, then size closest to the middle of the
-// tier's range, then seeders (torrents) or grabs (Usenet), then the newest.
+// Swarm sizes (docs/STALLS.md, "Pick fast releases"): within a tier, a torrent known to have under FEW_SEEDERS ranks
+// after every other release; at HEALTHY_SEEDERS or more it beats a smaller swarm before size is weighed. A better tier
+// still wins whatever its seeders. Unknown counts and Usenet are never few.
+export const FEW_SEEDERS = 5, HEALTHY_SEEDERS = 20;
+type Swarm = Pick<Partial<Candidate>, 'protocol' | 'seeders'>;
+export const fewSeeders = (r: Swarm) => r.protocol === 'torrent' && r.seeders !== undefined && r.seeders < FEW_SEEDERS;
+const healthy = (r: Swarm) => r.protocol !== 'torrent' || r.seeders === undefined || r.seeders >= HEALTHY_SEEDERS;
+
+// Best first: the profile's tier, then few seeders last, then protocol by the setting, then score, then a healthy
+// swarm, then size closest to the middle of the tier's range, then seeders (torrents) or grabs (Usenet), then the newest.
 type RankedRelease = Pick<Decision, 'tier' | 'sizeTarget'> & { score?: number; release: Pick<Partial<Candidate>, 'protocol' | 'size' | 'seeders' | 'grabs' | 'publishedAt'> };
 export function compareDecisions(a: RankedRelease, b: RankedRelease, ctx: PickContext): number {
   const byTier = a.tier! - b.tier!;
   if (byTier) return byTier;
+  if (fewSeeders(a.release) !== fewSeeders(b.release)) return fewSeeders(a.release) ? 1 : -1;
   const first: Protocol = ctx.settings.protocol === 'torrent-first' ? 'torrent' : 'usenet';
   if (a.release.protocol && b.release.protocol && a.release.protocol !== b.release.protocol) return a.release.protocol === first ? -1 : 1;
   if (a.score !== undefined && b.score !== undefined && a.score !== b.score) return b.score - a.score;
+  if (healthy(a.release) !== healthy(b.release)) return healthy(a.release) ? -1 : 1;
   const distance = (d: RankedRelease) => d.release.size === undefined || d.sizeTarget === undefined ? Number.MAX_SAFE_INTEGER : Math.abs(d.release.size - d.sizeTarget);
   if (distance(a) !== distance(b)) return distance(a) - distance(b);
   const popularity = (d: RankedRelease) => (d.release.protocol === 'torrent' ? d.release.seeders : d.release.grabs) ?? 0;

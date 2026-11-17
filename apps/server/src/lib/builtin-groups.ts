@@ -1,4 +1,4 @@
-// Group lists for the built-in formats (docs/PROFILES.md, "The five profiles"), taken once from Radarr and Sonarr's
+// Group lists for the built-in formats (docs/PROFILES.md, "The five profiles"), taken once from the
 // Dictionarry formats on 2026-11-15. They are ordinary formats after that: edit them in Admin, nothing syncs them.
 
 // Consistent WEB-DL groups (Dictionarry WEB-DL tiers 1–3).
@@ -22,7 +22,7 @@ export const TOP_UHD_GROUPS: readonly string[] = [
   'PTer', 'TnP',
 ];
 
-// Small, good x265 encodes (the High Efficiency profile in Sonarr, and Dictionarry 1080p Compact tiers 1–2).
+// Small, good x265 encodes (Dictionarry's High Efficiency and 1080p Compact tiers 1–2).
 export const EFFICIENT_GROUPS: readonly string[] = [
   'PSA', 'ELiTE', 'MeGusta', 'QxR', 'afm72', 'Bandi', 'Bluespots', 'Celdra', 'FreetheFish', 'Garshasp', 'Ghost',
   'Ime', 'Kappa', 'Langbard', 'LION', 'Panda', 'MONOLITH', 'Natty', 'r00t', 'RCVR', 'RZeroX', 'SAMPA', 'Silence',

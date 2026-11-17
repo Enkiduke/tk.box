@@ -5,12 +5,12 @@ import { isQuality, type Quality } from '../lib/quality.js';
 import type { Format } from '../lib/formats.js';
 import type { QualityProfile } from '../lib/profiles.js';
 import { MOVIES_ROOT, SHOWS_ROOT } from '../lib/naming.js';
-import type { BlockedRelease, Protocol } from '../lib/pick-rules.js';
+import type { BlockedRelease, Candidate, Protocol } from '../lib/pick-rules.js';
 
 // The library module's rows (docs/ARR-REPLACEMENT.md, "Data model" › library). SQL for the library lives here only.
 
-// Radarr's and Sonarr's formats as text, for the record (the library's files are named by them). lib/naming.ts
-// reproduces them.
+// The naming formats as text, for the record (the library's files are named by them). lib/naming.ts reproduces
+// them.
 const NAMING = {
   movieFolder: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}',
   movieFile: '{Movie CleanTitle} {(Release Year)} {tmdb-{TmdbId}} {edition-{Edition Tags}} {[Custom Formats]}{[Quality Full]}{[MediaInfo 3D]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[Mediainfo VideoCodec]}{-Release Group}',
@@ -22,22 +22,20 @@ const NAMING = {
 export const librarySettings = z.object({
   roots: z.object({ movie: z.string().min(1), show: z.string().min(1) }).strict(),
   naming: z.object({ movieFolder: z.string(), movieFile: z.string(), seriesFolder: z.string(), seasonFolder: z.string(), episodeFile: z.string() }).strict(),
-  earlyCopies: z.boolean(),
   protocol: z.enum(['usenet-first', 'torrent-first']),
   rssMinutes: z.number().int().min(5).max(1440),
   seeding: z.object({ ratio: z.number().min(1), minDays: z.number().min(14), maxDays: z.number().min(14) }).strict(),
-  stalledHours: z.number().min(1).max(168),
+  // The download budget (docs/STALLS.md): the projected minutes left a download may have before it counts as slow. A
+  // season pack gets three episodes' worth.
+  budget: z.object({ movie: z.number().int().min(5).max(240), episode: z.number().int().min(5).max(240) }).strict(),
   maxFailures: z.number().int().min(1).max(50),
   properDays: z.number().int().min(0).max(60),
   defaultProfile: z.number().int().positive(),
-  // Who fulfils shows (Sonarr until phase 2). Movies are always tk.box's.
-  fulfil: z.object({ show: z.enum(['sonarr', 'tkbox']) }).strict(),
 }).strict();
 export type LibrarySettings = z.infer<typeof librarySettings>;
 export const defaultLibrarySettings = (defaultProfile: number): LibrarySettings => ({
-  roots: { movie: MOVIES_ROOT, show: SHOWS_ROOT }, naming: { ...NAMING }, earlyCopies: false, protocol: 'usenet-first', rssMinutes: 15,
-  seeding: { ratio: 2, minDays: 14, maxDays: 28 }, stalledHours: 6, maxFailures: 5, properDays: 7, defaultProfile,
-  fulfil: { show: 'sonarr' },
+  roots: { movie: MOVIES_ROOT, show: SHOWS_ROOT }, naming: { ...NAMING }, protocol: 'usenet-first', rssMinutes: 15,
+  seeding: { ratio: 2, minDays: 14, maxDays: 28 }, budget: { movie: 30, episode: 15 }, maxFailures: 5, properDays: 7, defaultProfile,
 });
 
 // library_titles.released: for a movie TMDB's days (YYYY-MM-DD); for a show TMDB's status ("Returning Series", "Ended").
@@ -49,6 +47,8 @@ export type LibraryTitle = {
   released: Released; paused: boolean; pausedReason?: string; addedAt: number; addedBy: string; refreshedAt?: number;
   // TMDB's runtime in minutes, for the size limits.
   runtime?: number;
+  // A movie's Early copies: cams and telesyncs are taken until a better copy is out, and it's searched from its cinema release.
+  earlyCopies: boolean;
 };
 export type FileMedia = { durationSec?: number; videoCodec?: string; dynamicRange?: string; audioCodec?: string; audioChannels?: string; copied?: boolean };
 export type LibraryFileRow = { id: number; titleId: number; path: string; size: number; quality: Quality; proper: boolean; score: number;
@@ -63,8 +63,15 @@ export type Grab = {
   sentAt?: number; finishedAt?: number; importedAt?: number; removedAt?: number;
   // Torrents: when progress last moved, and the seeding figures qBittorrent last gave (and when).
   progressAt?: number; ratio?: number; seedingSeconds?: number; seedingCheckedAt?: number;
+  // Download health (docs/STALLS.md): its strikes; the next best releases from the search that picked it; the grab it
+  // was swapped in for; and, once out with nothing better, Only source (why, since when, and the last look for better).
+  strikes: number; runners: RunnerUp[]; swappedFrom?: number; onlySource?: OutKind; onlySourceAt?: number; swapCheckedAt?: number;
 };
-export type GrabEventKind = GrabState | 'grabbed' | 'retried';
+// A release kept on a grab in case it has to be swapped: as the indexer found it, with its link.
+export type RunnerUp = Candidate & { link: string; categories?: number[] };
+// Why a download is out: a confirmed dud (dead after a reannounce, or no complete copy in the swarm) or just slow.
+export type OutKind = 'dud' | 'slow';
+export type GrabEventKind = GrabState | 'grabbed' | 'retried' | 'only-source';
 export type GrabEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: Grab };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
 // A show's seasons (season 0, specials, is never stored) and episodes. `airAt`: when it counts as aired.
@@ -73,13 +80,14 @@ export type EpisodeRow = { season: number; episode: number; name?: string; airDa
 
 type TitleRaw = { id: number; kind: 'movie' | 'show'; tmdb_id: number; tvdb_id: number | null; imdb_id: string | null; title: string; year: number | null; aliases: string;
   monitor: Monitor; monitor_from: number | null; profile_id: number; root: string; folder: string | null; keep: number; released: string | null; paused: number;
-  paused_reason: string | null; added_at: number; added_by: string; refreshed_at: number | null; runtime: number | null };
+  paused_reason: string | null; added_at: number; added_by: string; refreshed_at: number | null; runtime: number | null; early_copies: number };
 type FileRaw = { id: number; title_id: number; path: string; size: number; quality: string; proper: number; score: number; release_name: string | null;
   release_group: string | null; media: string; grab_id: number | null; imported_at: number };
 type GrabRaw = { id: number; title_id: number; episodes: string; release_name: string; indexer: string; guid: string; protocol: Protocol; size: number | null; quality: string; score: number;
   upgrade: number; downloader: string; download_id: string | null; state: GrabState; progress: number | null; error: string | null; content_path: string | null;
   sent_at: number | null; finished_at: number | null; imported_at: number | null; removed_at: number | null;
-  progress_at: number | null; ratio: number | null; seeding_seconds: number | null; seeding_checked_at: number | null };
+  progress_at: number | null; ratio: number | null; seeding_seconds: number | null; seeding_checked_at: number | null;
+  strikes: number; runners: string | null; swapped_from: number | null; only_source: OutKind | null; only_source_at: number | null; swap_checked_at: number | null };
 
 const json = <T>(text: string | null, fallback: T): T => { try { return text ? JSON.parse(text) as T : fallback; } catch { return fallback; } };
 const quality = (text: string): Quality => isQuality(text) ? text : 'DVD';
@@ -89,7 +97,7 @@ const title = (r: TitleRaw): LibraryTitle => ({
   id: r.id, kind: r.kind, tmdbId: r.tmdb_id, ...opt('tvdbId', r.tvdb_id), ...opt('imdbId', r.imdb_id), title: r.title, ...opt('year', r.year),
   aliases: json<string[]>(r.aliases, []), monitor: r.monitor, ...opt('monitorFrom', r.monitor_from), profileId: r.profile_id, root: r.root, ...opt('folder', r.folder),
   keep: !!r.keep, released: json<Released>(r.released, {}), paused: !!r.paused, ...opt('pausedReason', r.paused_reason), addedAt: r.added_at, addedBy: r.added_by,
-  ...opt('refreshedAt', r.refreshed_at), ...opt('runtime', r.runtime),
+  ...opt('refreshedAt', r.refreshed_at), ...opt('runtime', r.runtime), earlyCopies: !!r.early_copies,
 });
 const file = (r: FileRaw): LibraryFileRow => ({
   id: r.id, titleId: r.title_id, path: r.path, size: r.size, quality: quality(r.quality), proper: !!r.proper, score: r.score, ...opt('releaseName', r.release_name),
@@ -101,6 +109,8 @@ const grab = (r: GrabRaw): Grab => ({
   ...opt('error', r.error), ...opt('contentPath', r.content_path), ...opt('sentAt', r.sent_at), ...opt('finishedAt', r.finished_at),
   ...opt('importedAt', r.imported_at), ...opt('removedAt', r.removed_at), ...opt('progressAt', r.progress_at), ...opt('ratio', r.ratio),
   ...opt('seedingSeconds', r.seeding_seconds), ...opt('seedingCheckedAt', r.seeding_checked_at),
+  strikes: r.strikes ?? 0, runners: json<RunnerUp[]>(r.runners, []), ...opt('swappedFrom', r.swapped_from), ...opt('onlySource', r.only_source),
+  ...opt('onlySourceAt', r.only_source_at), ...opt('swapCheckedAt', r.swap_checked_at),
 });
 const OPEN = `state IN ('sending','downloading','unpacking','importing','seeding')`;
 // Under way: open but not yet imported. A seeding torrent's title is in the library, so it may be searched and upgraded.
@@ -109,9 +119,9 @@ const ACTIVE = `state IN ('sending','downloading','unpacking','importing')`;
 const scopeOf = (season: number) => `S${String(season).padStart(2, '0')}`;
 
 export type NewTitle = { kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; monitorFrom?: number; imdbId?: string; title: string; year?: number; aliases: string[]; monitor: Monitor; profileId: number;
-  root: string; keep: boolean; released: Released; addedBy: string; runtime?: number };
+  root: string; keep: boolean; released: Released; addedBy: string; runtime?: number; earlyCopies?: boolean };
 export type NewGrab = { titleId: number; episodes?: EpisodeRef[]; releaseName: string; indexer: string; guid: string; protocol: Protocol; size?: number; quality: Quality; score: number;
-  upgrade: boolean; downloader: string };
+  upgrade: boolean; downloader: string; runners?: RunnerUp[]; swappedFrom?: number };
 export type NewFile = { titleId: number; path: string; size: number; quality: Quality; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;
   media: FileMedia; grabId?: number };
 
@@ -139,41 +149,6 @@ export class LibraryStore {
   audit(event: string, detail: Record<string, unknown>) {
     prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run('library', event, this.now(), JSON.stringify(detail));
   }
-
-  // Who fulfils shows: the Sonarr import's Switch and Switch back (the settings PUT doesn't take it).
-  setFulfil(actor: string, to: 'sonarr' | 'tkbox') {
-    this.db.transaction(() => {
-      const { revision, ...current } = this.settings();
-      const next = librarySettings.parse({ ...current, fulfil: { ...current.fulfil, show: to } });
-      prepared(this.db, 'UPDATE library_settings SET revision = revision + 1, value = ? WHERE id = 1').run(JSON.stringify(next));
-      prepared(this.db, 'INSERT INTO audit(actor, event, at, detail) VALUES(?, ?, ?, ?)').run(actor, 'library_fulfil_changed', this.now(), JSON.stringify({ kind: 'show', to, revision }));
-    })();
-  }
-
-  // ---- The Sonarr import (phase 2 step 6) ----
-
-  // Sonarr's series id of each imported show, by that id.
-  cutoverIds() {
-    return new Map((prepared(this.db, 'SELECT sonarr_id, title_id FROM show_cutover').all() as { sonarr_id: number; title_id: number }[]).map(r => [r.sonarr_id, r.title_id]));
-  }
-  setCutoverId(sonarrId: number, titleId: number) {
-    prepared(this.db, 'INSERT INTO show_cutover(sonarr_id, title_id) VALUES(?, ?) ON CONFLICT(sonarr_id) DO UPDATE SET title_id = excluded.title_id').run(sonarrId, titleId);
-  }
-  cutoverState() {
-    const r = prepared(this.db, 'SELECT * FROM show_cutover_state WHERE id = 1').get() as
-      { imported_at: number | null; summary: string | null; switched_at: number | null; switched_back_at: number | null } | undefined;
-    return { ...opt('importedAt', r?.imported_at), ...opt('summary', r?.summary ? JSON.parse(r.summary) as Record<string, number> : undefined),
-      ...opt('switchedAt', r?.switched_at), ...opt('switchedBackAt', r?.switched_back_at) };
-  }
-  setCutoverState(fields: { importedAt?: number; summary?: Record<string, number>; switchedAt?: number; switchedBackAt?: number }) {
-    prepared(this.db, `INSERT INTO show_cutover_state(id, imported_at, summary, switched_at, switched_back_at) VALUES(1, @importedAt, @summary, @switchedAt, @switchedBackAt)
-      ON CONFLICT(id) DO UPDATE SET imported_at = COALESCE(excluded.imported_at, imported_at), summary = COALESCE(excluded.summary, summary),
-        switched_at = COALESCE(excluded.switched_at, switched_at), switched_back_at = COALESCE(excluded.switched_back_at, switched_back_at)`)
-      .run({ importedAt: fields.importedAt ?? null, summary: fields.summary ? JSON.stringify(fields.summary) : null, switchedAt: fields.switchedAt ?? null,
-        switchedBackAt: fields.switchedBackAt ?? null });
-  }
-  // A built-in profile's id by its key (standard, lite, any…).
-  builtInProfile(key: string) { return (prepared(this.db, 'SELECT id FROM pick_profiles WHERE built_in = ?').get(key) as { id: number } | undefined)?.id; }
 
   // ---- Profiles and formats (docs/PROFILES.md) ----
 
@@ -242,9 +217,9 @@ export class LibraryStore {
   // Monitored, unpaused movies: the ones the sweep and RSS look at.
   activeMovies() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'movie' AND monitor != 'none' AND paused = 0 ORDER BY id`).all() as TitleRaw[]).map(title); }
   insertTitle(t: NewTitle) {
-    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, tvdb_id, imdb_id, title, year, aliases, monitor, monitor_from, profile_id, root, keep, released, added_at, added_by, refreshed_at, runtime)
-      VALUES(@kind, @tmdbId, @tvdbId, @imdbId, @title, @year, @aliases, @monitor, @monitorFrom, @profileId, @root, @keep, @released, @now, @addedBy, @now, @runtime)`)
-      .run({ ...t, tvdbId: t.tvdbId ?? null, monitorFrom: t.monitorFrom ?? null, imdbId: t.imdbId ?? null, year: t.year ?? null, runtime: t.runtime ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
+    const id = Number(prepared(this.db, `INSERT INTO library_titles(kind, tmdb_id, tvdb_id, imdb_id, title, year, aliases, monitor, monitor_from, profile_id, root, keep, released, added_at, added_by, refreshed_at, runtime, early_copies)
+      VALUES(@kind, @tmdbId, @tvdbId, @imdbId, @title, @year, @aliases, @monitor, @monitorFrom, @profileId, @root, @keep, @released, @now, @addedBy, @now, @runtime, @earlyCopies)`)
+      .run({ ...t, tvdbId: t.tvdbId ?? null, monitorFrom: t.monitorFrom ?? null, imdbId: t.imdbId ?? null, year: t.year ?? null, runtime: t.runtime ?? null, aliases: JSON.stringify(t.aliases), keep: t.keep ? 1 : 0, earlyCopies: t.earlyCopies ? 1 : 0, released: JSON.stringify(t.released), now: this.now() }).lastInsertRowid);
     return this.title(id)!;
   }
   // TMDB's facts, from add or refresh-title.
@@ -318,6 +293,7 @@ export class LibraryStore {
     })();
   }
   setKeep(id: number, keep: boolean) { prepared(this.db, 'UPDATE library_titles SET keep = ? WHERE id = ?').run(keep ? 1 : 0, id); }
+  setEarlyCopies(id: number, on: boolean) { prepared(this.db, 'UPDATE library_titles SET early_copies = ? WHERE id = ?').run(on ? 1 : 0, id); }
   setPaused(id: number, reason: string | null) { prepared(this.db, 'UPDATE library_titles SET paused = ?, paused_reason = ? WHERE id = ?').run(reason === null ? 0 : 1, reason, id); }
   setAddedBy(id: number, by: string) { prepared(this.db, 'UPDATE library_titles SET added_by = ? WHERE id = ?').run(by, id); }
   setFolder(id: number, folder: string) { prepared(this.db, 'UPDATE library_titles SET folder = ? WHERE id = ? AND folder IS NULL').run(folder, id); }
@@ -405,16 +381,18 @@ export class LibraryStore {
   insertGrab(g: NewGrab, note?: string) {
     return this.db.transaction(() => {
       if (g.episodes?.length ? this.grabbingEpisodes(g.titleId).some(([s, e]) => g.episodes!.some(([s2, e2]) => s === s2 && e === e2)) : this.openGrabFor(g.titleId)) return undefined;
-      const id = Number(prepared(this.db, `INSERT INTO grabs(title_id, episodes, release_name, indexer, guid, protocol, size, quality, score, upgrade, downloader, state)
-        VALUES(@titleId, @episodes, @releaseName, @indexer, @guid, @protocol, @size, @quality, @score, @upgrade, @downloader, 'sending')`)
-        .run({ ...g, episodes: JSON.stringify(g.episodes ?? []), size: g.size ?? null, upgrade: g.upgrade ? 1 : 0 }).lastInsertRowid);
+      const id = Number(prepared(this.db, `INSERT INTO grabs(title_id, episodes, release_name, indexer, guid, protocol, size, quality, score, upgrade, downloader, state, runners, swapped_from)
+        VALUES(@titleId, @episodes, @releaseName, @indexer, @guid, @protocol, @size, @quality, @score, @upgrade, @downloader, 'sending', @runners, @swappedFrom)`)
+        .run({ ...g, episodes: JSON.stringify(g.episodes ?? []), size: g.size ?? null, upgrade: g.upgrade ? 1 : 0,
+          runners: g.runners?.length ? JSON.stringify(g.runners) : null, swappedFrom: g.swappedFrom ?? null }).lastInsertRowid);
       this.grabEvent(id, 'grabbed', note);
       return this.grab(id)!;
     })();
   }
   // A change of state is a step in Downloads › History; `note` says more than the state (the error, by default).
   updateGrab(id: number, fields: Partial<{ state: GrabState; downloadId: string; progress: number | null; error: string | null; contentPath: string;
-    sentAt: number; finishedAt: number; importedAt: number; removedAt: number; progressAt: number; ratio: number; seedingSeconds: number; seedingCheckedAt: number }>,
+    sentAt: number; finishedAt: number; importedAt: number; removedAt: number; progressAt: number; ratio: number; seedingSeconds: number; seedingCheckedAt: number;
+    strikes: number; runners: RunnerUp[]; onlySource: OutKind | null; onlySourceAt: number | null; swapCheckedAt: number }>,
     note?: string) {
     if (fields.state) {
       const was = (prepared(this.db, 'SELECT state FROM grabs WHERE id = ?').get(id) as { state: GrabState } | undefined)?.state;
@@ -422,36 +400,46 @@ export class LibraryStore {
     }
     const columns: Record<string, string> = { state: 'state', downloadId: 'download_id', progress: 'progress', error: 'error', contentPath: 'content_path',
       sentAt: 'sent_at', finishedAt: 'finished_at', importedAt: 'imported_at', removedAt: 'removed_at', progressAt: 'progress_at', ratio: 'ratio',
-      seedingSeconds: 'seeding_seconds', seedingCheckedAt: 'seeding_checked_at' };
+      seedingSeconds: 'seeding_seconds', seedingCheckedAt: 'seeding_checked_at', strikes: 'strikes', runners: 'runners', onlySource: 'only_source',
+      onlySourceAt: 'only_source_at', swapCheckedAt: 'swap_checked_at' };
     const keys = Object.keys(fields).filter(k => k in columns).sort();
     if (!keys.length) return;
     prepared(this.db, `UPDATE grabs SET ${keys.map(k => `${columns[k]} = @${k}`).join(', ')} WHERE id = @id`)
-      .run({ ...Object.fromEntries(keys.map(k => [k, (fields as Record<string, unknown>)[k] ?? null])), id });
+      .run({ ...Object.fromEntries(keys.map(k => [k, k === 'runners' ? JSON.stringify(fields.runners ?? []) : (fields as Record<string, unknown>)[k] ?? null])), id });
   }
   // The grab's last sent time, for PROPER/REPACK within properDays.
   grabbedAt(grabId: number | undefined) { return grabId === undefined ? undefined : this.grab(grabId)?.sentAt; }
 
+  // Failed releases, and skipped ones until their time is up.
   blocklist(titleId: number): BlockedRelease[] {
-    return (prepared(this.db, 'SELECT release_name, indexer, guid, info_hash FROM blocklist WHERE title_id = ? OR title_id IS NULL').all(titleId) as
+    return (prepared(this.db, 'SELECT release_name, indexer, guid, info_hash FROM blocklist WHERE (title_id = ? OR title_id IS NULL) AND (until IS NULL OR until > ?)').all(titleId, this.now()) as
       { release_name: string; indexer: string | null; guid: string | null; info_hash: string | null }[])
       .map(r => ({ name: r.release_name, ...opt('indexer', r.indexer), ...opt('guid', r.guid), ...opt('infoHash', r.info_hash) }));
   }
-  block(entry: { titleId: number; releaseName: string; indexer: string; guid: string; infoHash?: string; reason: string }) {
-    prepared(this.db, 'INSERT INTO blocklist(title_id, release_name, indexer, guid, info_hash, reason, at) VALUES(?, ?, ?, ?, ?, ?, ?)')
-      .run(entry.titleId, entry.releaseName, entry.indexer, entry.guid, entry.infoHash ?? null, entry.reason, this.now());
+  // `until`: a skip (docs/STALLS.md, "Skip, not blocklist"), which picks ignore until then and which never counts
+  // toward pausing; without it a failure, for good.
+  block(entry: { titleId: number; releaseName: string; indexer: string; guid: string; infoHash?: string; reason: string; until?: number }) {
+    prepared(this.db, 'INSERT INTO blocklist(title_id, release_name, indexer, guid, info_hash, reason, at, kind, until) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(entry.titleId, entry.releaseName, entry.indexer, entry.guid, entry.infoHash ?? null, entry.reason, this.now(), entry.until === undefined ? 'failed' : 'skipped', entry.until ?? null);
   }
+  // Skips whose time is up (the sweep).
+  pruneSkips() { return prepared(this.db, `DELETE FROM blocklist WHERE kind = 'skipped' AND until <= ?`).run(this.now()).changes; }
   // When an admin last unpaused the title: its failures count from then.
   resumedAt(titleId: number) {
     return (prepared(this.db, `SELECT MAX(at) AS at FROM audit WHERE actor = 'library' AND event = 'library_resumed' AND json_extract(detail, '$.title') = ?`).get(titleId) as { at: number | null }).at ?? undefined;
   }
   // Failures counted toward pausing: blocklisted releases since the title's last import (or ever).
   failuresSince(titleId: number, since: number) {
-    return (prepared(this.db, 'SELECT COUNT(*) AS n FROM blocklist WHERE title_id = ? AND at >= ?').get(titleId, since) as { n: number }).n;
+    return (prepared(this.db, `SELECT COUNT(*) AS n FROM blocklist WHERE title_id = ? AND at >= ? AND kind = 'failed'`).get(titleId, since) as { n: number }).n;
   }
 
   search(titleId: number, scope: string) {
     const r = prepared(this.db, 'SELECT * FROM searches WHERE title_id = ? AND scope = ?').get(titleId, scope) as { title_id: number; scope: string; last_at: number; misses: number; next_at: number } | undefined;
     return r ? { titleId: r.title_id, scope: r.scope, lastAt: r.last_at, misses: r.misses, nextAt: r.next_at } satisfies SearchRow : undefined;
+  }
+  // A title's searches start their misses over, each due by `dueBy` (a show's; a movie's is timed by the library).
+  resetSearches(titleId: number, dueBy: number) {
+    prepared(this.db, 'UPDATE searches SET misses = 0, next_at = MIN(next_at, ?) WHERE title_id = ?').run(dueBy, titleId);
   }
   setSearch(row: SearchRow) {
     prepared(this.db, `INSERT INTO searches(title_id, scope, last_at, misses, next_at) VALUES(?, ?, ?, ?, ?)

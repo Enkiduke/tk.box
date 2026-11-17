@@ -5,11 +5,10 @@ import { viewer } from './access.js';
 import { preview, requireThat } from '../errors.js';
 import { cleanupMigrations } from './migrations/cleanup.js';
 import { CleanupStore } from '../persistence/cleanup-store.js';
-import { CleanupEngine, cleanupCollections, type CleanupServices } from '../services/cleanup-engine.js';
+import { CleanupEngine, cleanupCollections } from '../services/cleanup-engine.js';
 import { registerCleanup } from '../cleanup-api.js';
 import type { ArtworkStore } from '../persistence/artwork-store.js';
 import type { ArtworkEngine } from '../services/artwork-engine.js';
-import type { ArrService } from '../providers/arr-tags.js';
 import type { Requests } from '../services/requests.js';
 import type { CleanupWatch } from '../persistence/cleanup-store.js';
 import type { IdentityService } from '../services/identity.js';
@@ -17,20 +16,18 @@ import type { IdentityService } from '../services/identity.js';
 type Deps = {
   // The collections artwork keeps are never purged.
   artwork: { store: ArtworkStore; engine: ArtworkEngine };
-  // Sonarr, for shows.
-  arr: { connection: (name: 'sonarr') => ArrService };
   // tk.box's requests: the titles a run looks at, and those to mark removed once it deleted them.
-  requests: Pick<Requests, 'forCleanup' | 'removedByCleanup' | 'keepTag'>;
+  requests: Pick<Requests, 'forCleanup' | 'removedByCleanup'>;
   // Watch history: each account's latest watch of each title on a Plex server.
   watches: (serverId: string) => CleanupWatch[];
   identity: Pick<IdentityService, 'accountToken'>;
-  // tk.box's library: a movie a run deleted is forgotten there (library.title.removed, which requests hear), instead of
-  // being marked removed here. Movies are kept by library_titles.keep. Once shows are tk.box's (`showsHere`), the same
-  // for shows, and a deleted season is forgotten (`forgetSeason`, which also stops following it).
+  // tk.box's library: a title a run deleted is forgotten there (library.title.removed, which requests hear), instead
+  // of being marked removed here, and a deleted season is forgotten (`forgetSeason`, which also stops following it).
+  // Titles are kept by library_titles.keep.
   library: {
     store: { titleByTmdb(kind: 'movie' | 'show', tmdbId: number): { id: number } | undefined; keptMovies(): Set<number>; keptShows(): Set<number> };
     forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void;
-    showsHere(): boolean; forgetSeason(titleId: number, season: number): Promise<void> };
+    forgetSeason(titleId: number, season: number): Promise<void> };
 };
 
 // Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
@@ -39,14 +36,11 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, arr, watches, identity, library }: Deps) {
+  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, watches, identity, library }: Deps) {
     const store = new CleanupStore(db, vault);
-    const services = (): CleanupServices => {
-      return { sonarr: arr.connection('sonarr') };
-    };
     const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
-      dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, services, () => background.grant(), (message, detail) => log.info(message, detail));
-    registerCleanup(routes, store, engine, services);
+      dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, () => background.grant(), (message, detail) => log.info(message, detail));
+    registerCleanup(routes, store, engine);
     routes.get('/api/v1/admin/cleanup/users', async (req): Promise<CleanupUsersView> => {
       const { hash, grant } = viewer(req);
       const isOwner = grant.accountId === config.PLEX_OWNER_ACCOUNT_ID;
@@ -73,17 +67,15 @@ export const cleanupModule = defineModule({
     engine.serverId = () => config.PLEX_MACHINE_ID;
     engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
     engine.deleted = (titles, seasons) => {
-      const shows = library.showsHere();
-      const ours = titles.filter(t => (t.kind === 'movie' || shows) && library.store.titleByTmdb(t.kind, t.tmdb));
+      const ours = titles.filter(t => library.store.titleByTmdb(t.kind, t.tmdb));
       for (const t of ours) library.forget(library.store.titleByTmdb(t.kind, t.tmdb)!.id, 'cleanup');
       requests.removedByCleanup(titles.filter(t => !ours.includes(t)));
-      if (shows) for (const { tmdb, season } of seasons) {
+      for (const { tmdb, season } of seasons) {
         const show = library.store.titleByTmdb('show', tmdb);
         if (show) void library.forgetSeason(show.id, season).catch(e => log.warn('clean up: the library could not forget a season', { tmdb, season, error: (e as Error).message }));
       }
     };
-    requests.keepTag = () => store.settings().exemptArrTags[0];
-    engine.movies = () => ({ kept: library.store.keptMovies(), ...(library.showsHere() ? { shows: { kept: library.store.keptShows() } } : {}),
+    engine.movies = () => ({ kept: library.store.keptMovies(), shows: { kept: library.store.keptShows() },
       keep: (tmdbId, kind = 'movie') => { const t = library.store.titleByTmdb(kind, tmdbId); if (t) library.keep(t.id, true); return !!t; } });
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
@@ -91,7 +83,7 @@ export const cleanupModule = defineModule({
       run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
       // The saved watch history, for Explore's suggestions.
-      api: { services, keepTags: () => store.settings().exemptArrTags, watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
+      api: { watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
       start() { if (!preview()) engine.start(); },
       stop() { engine.close(); }
     };

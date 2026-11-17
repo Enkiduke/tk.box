@@ -38,7 +38,7 @@ export type ParsedRelease = {
   languages: string[];
   threeD: boolean;
   obfuscated: boolean;
-  // Ids written into the name ({tmdb-44115}, tt0111161), as Radarr's and Sonarr's own file names carry them.
+  // Ids written into the name ({tmdb-44115}, tt0111161), as the library's own file names carry them.
   ids: { tmdb?: number; imdb?: string };
 };
 
@@ -80,7 +80,7 @@ const languageOf = (token: string, anyCase = false) => anyCase || sceneCase(toke
 // Trailing words a title without a year sheds: editions, languages and flags written before the first stop token.
 const TITLE_TAIL = /^(?:EXTENDED|UNRATED|THEATRICAL|REMASTERED|IMAX|UNCUT|DC|CUT|EDITION|DIRECTORS?|DIRECTOR'?S|LIMITED|FESTIVAL|STV|READNFO)$/i;
 
-// Re-posters' and indexers' suffixes after the real group (Radarr strips the same ones).
+// Re-posters' and indexers' suffixes after the real group.
 const REPOST = /-(?:Obfuscated|Scrambled|postbot|xpost|AsRequested|AlternativeToRequested|Rakuv\w*|WhiteRev|BUYMORE|NZBGeek|Chamele0n|GEROV|iNC0GNiTO|4P|4Planet|RP|Rakuvfinhel|NZBgeek)$/i;
 // Site tags in brackets at the very end ([rarbg], [TGx], [eztv]).
 const SITE_TAG = /\s*\[(?:rarbg|rartv|eztv(?:\.re)?|ettv|TGx|EtHD|PublicHD|ion10|N1C|TGx)\]\s*$/i;

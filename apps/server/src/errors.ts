@@ -1,7 +1,7 @@
 export class AppError extends Error {
   constructor(public code: string, message: string, public status = 400, public retryable = false) { super(message); }
 }
-// TKBOX_READ_ONLY=1 (npm run dev:readonly): nothing tk.box does may change Plex, Sonarr or library files.
+// TKBOX_READ_ONLY=1 (npm run dev:readonly): nothing tk.box does may change Plex or library files.
 export const readOnly = () => process.env.TKBOX_READ_ONLY === '1';
 // TKBOX_PREVIEW=1 (npm run preview:plex): read-only, and frozen. No background work runs (schedules, sweeps, the queue,
 // the RSS feed, IPTV refreshes) and indexers are never asked, so a snapshot of the server stays as it was and its API

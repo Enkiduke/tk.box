@@ -23,7 +23,11 @@ const slots = (json: unknown, list: 'queue' | 'history') => {
 const POST = new Set(['queued', 'quickcheck', 'verifying', 'repairing', 'fetching', 'extracting', 'moving', 'running', 'checking']);
 
 // mode=queue: every job still downloading (or paused, or waiting), with its progress.
+// Waiting on SABnzbd itself, not on the servers: its own queue order, a pause, the propagation delay, a quick check.
+const QUEUE_WAITING = new Set(['queued', 'paused', 'propagating', 'checking']);
 export function queueStatuses(json: unknown, categories: readonly string[]): DownloadStatus[] {
+  const queue = json && typeof json === 'object' ? (json as Json).queue : undefined;
+  const paused = !!queue && typeof queue === 'object' && ((queue as Json).paused === true || (text((queue as Json).status) ?? '').toLowerCase() === 'paused');
   return slots(json, 'queue').flatMap(slot => {
     const id = text(slot.nzo_id), category = text(slot.cat) ?? '';
     if (!id || !categories.includes(category)) return [];
@@ -32,7 +36,9 @@ export function queueStatuses(json: unknown, categories: readonly string[]): Dow
     const progress = percent !== undefined ? clamp(percent / 100) : mb && left !== undefined ? clamp(1 - left / mb) : undefined;
     const state: DownloadState = ['extracting', 'moving', 'running', 'verifying', 'repairing', 'quickcheck'].includes(status) ? 'unpacking' : 'downloading';
     return [{ downloader: 'sabnzbd' as const, downloadId: id, name: text(slot.filename) ?? id, category, state,
-      ...(progress !== undefined ? { progress } : {}), ...(mb !== undefined ? { size: Math.round(mb * 1024 * 1024) } : {}) }];
+      ...(progress !== undefined ? { progress } : {}), ...(mb !== undefined ? { size: Math.round(mb * 1024 * 1024) } : {}),
+      ...(left !== undefined ? { left: Math.round(left * 1024 * 1024) } : {}), ...(status ? { stage: status } : {}),
+      ...(paused || QUEUE_WAITING.has(status) ? { waiting: true } : {}) }];
   });
 }
 

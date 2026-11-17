@@ -207,8 +207,9 @@ export class ArtworkStore {
     value.franchise = { ...collectionDefaults.franchise, ...value.franchise };
     value.schedules = value.schedules ? { custom: toScheduled(value.schedules.custom), all: toScheduled(value.schedules.all), added: toScheduled(value.schedules.added) } as ArtworkCollections['schedules'] : collectionDefaults.schedules;
     value.automatic ??= [];
-    // Collections saved with Radarr's download settings (gone with Radarr) read without them.
-    delete (value as Partial<{ radarr: unknown }>).radarr;
+    // Collections saved with options for services tk.box no longer uses read without them.
+    const known = new Set(Object.keys(collectionDefaults));
+    for (const key of Object.keys(value)) if (!known.has(key)) delete (value as Record<string, unknown>)[key];
     return { revision: row?.revision ?? 0, value };
   }
   collections() { const { revision, value } = this.storedCollections(); return { revision, ...value }; }

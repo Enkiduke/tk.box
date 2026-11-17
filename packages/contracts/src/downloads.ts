@@ -10,7 +10,7 @@ export type DownloadsGrab = {
 };
 // Admin › Downloads › History: one step of one grab, newest first. `kind` is the state it moved to, or grabbed / retried;
 // `note` says more (the error, where it was imported, why it was removed, "By hand").
-export type GrabEventKind = GrabState | 'grabbed' | 'retried';
+export type GrabEventKind = GrabState | 'grabbed' | 'retried' | 'only-source';
 export type DownloadsEvent = { id: number; at: number; kind: GrabEventKind; note?: string; grab: DownloadsGrab };
 export type DownloadsHistory = { events: DownloadsEvent[] };
 export type DownloadsJobState = 'queued' | 'running' | 'failed';
@@ -36,7 +36,10 @@ export type ClientItem = {
 };
 export type DownloadItem = ClientItem & {
   key: string;
-  grab?: { id: number; titleId: number; title: string; year?: number; episodes?: string; quality: string; state: GrabState; upgrade: boolean; indexer: string; removeAt?: number };
+  grab?: { id: number; titleId: number; title: string; year?: number; episodes?: string; quality: string; state: GrabState; upgrade: boolean; indexer: string; removeAt?: number;
+    // Download health (docs/STALLS.md): its strikes; Only source (nothing faster yet) with the next look for one; and
+    // swapped in for a slow download in the last few minutes.
+    strikes?: number; onlySource?: boolean; nextCheckAt?: number; swapped?: boolean };
   requestedBy?: string;
 };
 // A downloader's own figures: speeds, free space where it saves (bytes), whether it is paused as a whole.
@@ -58,17 +61,16 @@ export type MovieRow = { id: number; tmdbId: number; title: string; year?: numbe
   // The movie's next release still to come (in cinemas, digital, physical), so unreleased ones show when they land.
   release?: { kind: 'theatrical' | 'digital' | 'physical'; day: string } };
 // Why a movie is in the library. A request wins (requesting a movie hands it to the requester); then the collections
-// that downloaded it; then Radarr, for movies the cutover imported with no request or collection behind them.
+// that downloaded it; then the one-time import, for titles it brought in with no request or collection behind them.
 export type MovieSource =
   | { kind: 'request'; requests: { name: string; at: number; status: string }[] }
   | { kind: 'collection'; collections: string[] }
-  | { kind: 'radarr' }
-  | { kind: 'sonarr' }
+  | { kind: 'imported' }
   | { kind: 'other'; by: string };
 export type MovieList = { items: MovieRow[] };
 // Admin › Manage › Shows: every show in the library. `have` episodes with a file of `total` (aired and monitored, or
 // with a file); `missing` and `cutoff` count wanted episodes as if unpaused; `size` the files'; `status` TMDB's;
-// `nextAir` the next episode to air: its day and which it is; `grabbing` a download under way. Its source is a request or Sonarr.
+// `nextAir` the next episode to air: its day and which it is; `grabbing` a download under way. Its source is a request or the import.
 export type ShowRow = { id: number; tmdbId: number; tvdbId?: number; title: string; year?: number; status?: string; seasons: number; have: number; total: number;
   missing: number; cutoff: number; size: number; profileId: number; profile: string; keep: boolean; paused: boolean; monitored: boolean; grabbing: boolean;
   nextAir?: { day: string; season: number; episode: number }; addedAt: number; source: MovieSource };
@@ -81,13 +83,17 @@ export type LibraryBulkResult = { changed: number; searched: number; skipped: { 
 // `episodes`: a show's file in a word (S02E05, S02E05–E06).
 export type LibraryFileView = { id: number; episodes?: string; path: string; size: number; quality: string; proper: boolean; score: number; releaseName?: string; releaseGroup?: string;
   importedAt: number; media: { durationSec?: number; videoCodec?: string; dynamicRange?: string; audioCodec?: string; audioChannels?: string; copied?: boolean } };
+// A title's dialog's Requests tab: every request for it, newest first, failed and removed ones too. `seasons` a
+// show request's chosen seasons; `removedBy` who took it back; `error` the last failed attempt's.
+export type TitleRequest = { id: number; name: string; at: number; status: string; statusAt: number; seasons?: number[]; availableAt?: number;
+  removedAt?: number; removedBy?: 'requester' | 'admin' | 'cleanup' | 'arr'; error?: string };
 export type LibraryTitleView = {
-  kind: 'movie'; id: number; tmdbId: number; imdbId?: string; title: string; year?: number; profileId: number; keep: boolean; monitored: boolean;
+  kind: 'movie'; id: number; tmdbId: number; imdbId?: string; title: string; year?: number; profileId: number; keep: boolean; earlyCopies: boolean; monitored: boolean;
   paused: boolean; pausedReason?: string; wanted: { wanted: boolean; why: string };
   released: { theatrical?: string; digital?: string; physical?: string };
   nextAt?: number; lastAt?: number; misses: number;
   files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[];
-  source: MovieSource; addedAt: number;
+  source: MovieSource; addedAt: number; requests: TitleRequest[];
 };
 // A show's episode in its dialog: `monitored` with its season; `wanted` as if unpaused; `grab` one under way; the
 // times are its own search's (S02E05).
@@ -99,6 +105,7 @@ export type ShowTitleView = {
   kind: 'show'; id: number; tmdbId: number; tvdbId?: number; title: string; year?: number; status?: string; profileId: number; keep: boolean;
   monitor: string; monitored: boolean; paused: boolean; pausedReason?: string; wanted: { missing: number; cutoff: number };
   seasons: ShowSeasonView[]; files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[]; source: MovieSource; addedAt: number;
+  requests: TitleRequest[];
 };
 // What /admin/library/titles/:id answers: a movie or a show.
 export type TitleView = LibraryTitleView | ShowTitleView;
@@ -153,26 +160,13 @@ export type TryRelease = {
 export type LibrarySettingsView = {
   revision: number; roots: { movie: string; show: string };
   naming: { movieFolder: string; movieFile: string; seriesFolder: string; seasonFolder: string; episodeFile: string };
-  earlyCopies: boolean; protocol: 'usenet-first' | 'torrent-first'; defaultProfile: number; fulfil: { show: 'sonarr' | 'tkbox' };
+  protocol: 'usenet-first' | 'torrent-first'; defaultProfile: number;
+  // How often the indexers' new-release feeds are read, in minutes (5 to 1440).
+  rssMinutes: number;
   // When a seeding torrent is removed; `seedingFloor` is IPTorrents' minimum, which the settings can't go below.
   seeding: { ratio: number; minDays: number; maxDays: number }; seedingFloor: { ratio: number; days: number };
+  // The download budget: the projected minutes left before a download counts as slow (a season pack: 3 episodes).
+  budget: { movie: number; episode: number };
 };
 export type NamingPreview = { quality?: string; folder: string; file: string; path: string };
 
-// Admin › Downloads › Sonarr import (docs/PHASE-2.md, step 6). A blocking problem (Sonarr's naming differs from
-// tk.box's) stops the import; the rest are series or files left out, or names tk.box would make differently.
-export type CutoverProblemKind = 'naming' | 'no-tmdb' | 'duplicate' | 'outside-root' | 'folder-name' | 'file-name' | 'quality' | 'episode' | 'profile';
-export type CutoverProblem = { kind: CutoverProblemKind; blocking: boolean; title?: string; detail: string };
-export type CutoverSummary = {
-  series: number; importable: number; monitored: number; episodes: number; files: number; keep: number; specials: number; problems: number;
-  // Series by the profile they get.
-  profiles: Record<string, number>;
-  // Sonarr's roots that are tk.box's show root under another name.
-  sameRoots: string[];
-  added?: number; updated?: number;
-};
-export type CutoverPlan = { summary: CutoverSummary; problems: CutoverProblem[]; namingOk: boolean };
-// A dry run or import runs in the background (reading Sonarr and TMDB takes minutes); the page polls the view.
-export type CutoverRun = { kind: 'dry-run' | 'import'; startedAt: number; finishedAt?: number; plan?: CutoverPlan; error?: string };
-export type CutoverView = { fulfil: 'sonarr' | 'tkbox'; imported: number; importedAt?: number; summary?: Record<string, number>; switchedAt?: number; switchedBackAt?: number;
-  run?: CutoverRun; requests?: { moved: number; resent: number; cleared: number }; searches?: number };

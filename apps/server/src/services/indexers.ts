@@ -68,6 +68,9 @@ export type NzbFile = { name: string; bytes: Buffer; infoHash?: string };
 
 type Row = { name: IndexerName; enabled: number; sealed_secret: string | null; settings: string; last_ok_at: number | null; last_error: string | null; paused_until: number | null };
 const HOUR = 3600000, DAY = 24 * HOUR, SEEN_DAYS = 14;
+// NZBGeek's feed is read a page of 100 at a time, back to the newest release seen before, at most this many pages a
+// poll: a busy quarter hour costs a few more calls instead of losing releases.
+const FEED_PAGE = 100, FEED_PAGES = 5;
 const secretContext = (name: IndexerName) => `indexers:${name}-secret`;
 export const nextHour = (now: number) => Math.floor(now / HOUR) * HOUR + HOUR;
 const nextDay = (now: number) => Math.floor(now / DAY) * DAY + DAY;
@@ -341,12 +344,13 @@ export class Indexers {
     return () => { this.listeners.delete(listener); };
   }
 
-  // The new-release feed of each enabled indexer: NZBGeek's t=search&cat=2000,5000&limit=100 (newest first), and
-  // IPTorrents' personal RSS address. Items already in rss_seen are skipped; the new ones go to the listeners, then are
-  // recorded as seen. Seen rows older than 14 days go first.
+  // The new-release feed of each enabled indexer: NZBGeek's t=search&cat=2000,5000 (newest first), paged back to a
+  // release seen before, and IPTorrents' personal RSS address (one page). Items already in rss_seen are skipped; the
+  // new ones go to the listeners, then are recorded as seen. Seen rows older than 14 days go first. `gap`: the poll
+  // didn't reach back to what the last one saw, so releases in between may have been missed (a search finds them).
   async poll(signal?: AbortSignal) {
     requireLive('The RSS feed');
-    const results: { indexer: IndexerName; fresh: number; error?: string }[] = [];
+    const results: { indexer: IndexerName; fresh: number; error?: string; pages?: number; gap?: true }[] = [];
     this.pruneSeen();
     for (const row of this.feedRows()) {
       const settings = this.settingsOf(row), report: IndexerReport = { indexer: row.name, searched: [] };
@@ -363,19 +367,35 @@ export class Indexers {
           results.push({ indexer: row.name, fresh: 0, error: message });
           continue;
         }
-        await this.hand(row.name, items.map(item => this.torrentRelease(item)), results);
+        const releases = items.map(item => this.torrentRelease(item));
+        const gap = releases.length > 0 && this.hasSeen(row.name) && !releases.some(r => this.seen(row.name, r.guid));
+        await this.hand(row.name, releases, results, gap ? { gap } : {});
         continue;
       }
       const cat = [...new Set([...settings.categories.movies, ...settings.categories.tv].map(c => Math.floor(c / 1000) * 1000))].join(',');
-      const items = await this.call(row, { t: 'search', cat, limit: '100' }, report, signal);
-      if (!items) { results.push({ indexer: row.name, fresh: 0, ...(report.error ? { error: report.error } : {}) }); continue; }
-      await this.hand(row.name, items.map(item => this.release(row.name, item)), results);
+      // A first poll (nothing seen yet) takes one page: there is nothing to reach back to.
+      const first = !this.hasSeen(row.name), releases: Release[] = [];
+      let pages = 0, reached = first, failed = false;
+      while (pages < FEED_PAGES) {
+        const items = await this.call(row, { t: 'search', cat, offset: String(pages * FEED_PAGE), limit: String(FEED_PAGE) }, report, signal);
+        if (!items) { failed = true; break; }
+        pages++;
+        const page = items.map(item => this.release(row.name, item));
+        releases.push(...page);
+        if (first || page.length < FEED_PAGE || page.some(r => this.seen(row.name, r.guid))) { reached = true; break; }
+      }
+      if (failed && !releases.length) { results.push({ indexer: row.name, fresh: 0, ...(report.error ? { error: report.error } : {}) }); continue; }
+      const gap = !reached && !failed;
+      if (gap) this.log('indexer feed gap', { indexer: row.name, pages, detail: `${pages * FEED_PAGE} new releases since the last poll; older ones may have been missed. Searches still find them.` });
+      await this.hand(row.name, releases, results, { pages, ...(gap ? { gap } : {}) });
     }
     return results;
   }
+  private seen(name: IndexerName, guid: string) { return !!prepared(this.db, 'SELECT 1 FROM rss_seen WHERE indexer = ? AND guid = ?').get(name, guid); }
+  private hasSeen(name: IndexerName) { return !!prepared(this.db, 'SELECT 1 FROM rss_seen WHERE indexer = ? LIMIT 1').get(name); }
 
   // The releases not seen before go to the listeners, then are recorded as seen.
-  private async hand(name: IndexerName, releases: Release[], results: { indexer: IndexerName; fresh: number }[]) {
+  private async hand(name: IndexerName, releases: Release[], results: { indexer: IndexerName; fresh: number; pages?: number; gap?: true }[], extra: { pages?: number; gap?: true } = {}) {
     const seen = prepared(this.db, 'SELECT 1 FROM rss_seen WHERE indexer = ? AND guid = ?');
     const fresh = releases.filter((r, i) => !seen.get(name, r.guid) && releases.findIndex(o => o.guid === r.guid) === i);
     for (const listener of [...this.listeners]) {
@@ -385,7 +405,7 @@ export class Indexers {
     this.db.transaction(() => {
       for (const release of fresh) prepared(this.db, 'INSERT OR IGNORE INTO rss_seen(indexer, guid, at) VALUES(?, ?, ?)').run(name, release.guid, now);
     })();
-    results.push({ indexer: name, fresh: fresh.length });
+    results.push({ indexer: name, fresh: fresh.length, ...extra });
   }
 
   pruneSeen() { return prepared(this.db, 'DELETE FROM rss_seen WHERE at < ?').run(this.now() - SEEN_DAYS * DAY).changes; }

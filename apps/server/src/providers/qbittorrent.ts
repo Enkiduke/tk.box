@@ -1,5 +1,5 @@
 import { DownloaderError } from './sabnzbd.js';
-import type { DownloadStatus } from './download-status.js';
+import type { ClientCheck, DownloadStatus } from './download-status.js';
 import type { ClientItem, ClientState, ClientSummary } from '../../../../packages/contracts/src/downloads.js';
 
 // qBittorrent's WebUI API v2 (docs/ARR-REPLACEMENT.md, "Clients" › qBittorrent): authenticated by its API key, add a .torrent in tk-movies or tk-tv tagged tk.box, set its share limits as a backstop,
@@ -11,6 +11,7 @@ const SEEDING = new Set(['uploading', 'stalledUP', 'pausedUP', 'stoppedUP', 'que
 // Waiting on qBittorrent itself, not on peers: the no-progress clock doesn't run.
 const WAITING = new Set(['queuedDL', 'pausedDL', 'stoppedDL', 'checkingDL', 'checkingUP', 'checkingResumeData', 'moving', 'allocating']);
 const BROKEN = new Set(['error', 'missingFiles']);
+const METADATA = new Set(['metaDL', 'forcedMetaDL']);
 
 type Json = Record<string, unknown>;
 const text = (v: unknown) => typeof v === 'string' ? v : undefined;
@@ -25,9 +26,13 @@ export function torrentStatuses(json: unknown, categories: readonly string[]): D
     if (!hash || !categories.includes(category)) return [];
     const progress = Math.min(1, Math.max(0, num(row.progress) ?? 0)), size = num(row.size) ?? num(row.total_size);
     const contentPath = text(row.content_path), ratio = num(row.ratio), seeding = num(row.seeding_time);
+    const left = num(row.amount_left), seeds = num(row.num_seeds), swarm = num(row.num_complete), availability = num(row.availability);
     const base: DownloadStatus = { downloader: 'qbittorrent', downloadId: hash, name: text(row.name) ?? hash, category, state: 'downloading', progress, torrentState: state,
       ...(size !== undefined && size > 0 ? { size } : {}), ...(contentPath ? { storage: contentPath } : {}),
-      ...(ratio !== undefined ? { ratio: Math.max(0, ratio) } : {}), ...(seeding !== undefined ? { seedingSeconds: seeding } : {}) };
+      ...(ratio !== undefined ? { ratio: Math.max(0, ratio) } : {}), ...(seeding !== undefined ? { seedingSeconds: seeding } : {}),
+      ...(left !== undefined && left >= 0 ? { left } : {}), ...(seeds !== undefined && seeds >= 0 ? { seeds } : {}), ...(swarm !== undefined && swarm >= 0 ? { swarmSeeds: swarm } : {}),
+      // -1: not known yet.
+      ...(availability !== undefined && availability >= 0 ? { availability } : {}), ...(METADATA.has(state) ? { metadata: true } : {}) };
     if (BROKEN.has(state)) return [{ ...base, state: 'failed', error: state === 'missingFiles' ? 'qBittorrent lost the torrent’s files.' : 'qBittorrent reports an error for the torrent.' }];
     if (SEEDING.has(state) && progress >= 1) return [{ ...base, state: 'importing' }];
     return [{ ...base, ...(WAITING.has(state) ? { waiting: true } : {}) }];
@@ -77,8 +82,9 @@ export function liveTorrents(json: unknown, categories: readonly string[]): { su
   return { summary: { name: 'qbittorrent', down: num(server.dl_info_speed) ?? 0, up: num(server.up_info_speed) ?? 0, ...(free !== undefined ? { free } : {}) }, items };
 }
 
-// The no-progress clock (the stalled rule): it starts again whenever progress moves or qBittorrent itself holds the
-// torrent (queued, paused, checking). `progressAt` is when progress last moved (the send, at first).
+// The no-progress clock: it starts again whenever progress moves or qBittorrent itself holds the torrent (queued,
+// paused, checking). `progressAt` is when progress last moved (the send, at first); an Only source download that
+// hasn't moved for two hours fails (docs/STALLS.md, "Ceiling").
 export function stallClock(previous: { progress?: number; progressAt?: number }, status: Pick<DownloadStatus, 'progress' | 'waiting'>, now: number) {
   const moved = (status.progress ?? 0) > (previous.progress ?? 0) + 1e-6;
   const progressAt = status.waiting || moved || previous.progressAt === undefined ? now : previous.progressAt;
@@ -122,6 +128,19 @@ export class Qbittorrent {
   info() { return this.json(`torrents/info?tag=${encodeURIComponent(TAG)}`); }
   // Every torrent and the transfer figures, for Admin's live queue.
   mainData() { return this.json('sync/maindata'); }
+
+  // Whether qBittorrent is connected and its alternative speed limits are off (docs/STALLS.md, "Making sure it's a
+  // dud"): two small calls, made only when a download looks dead or slow. Firewalled still downloads, so it counts
+  // as connected.
+  async check(): Promise<ClientCheck> {
+    const [transfer, mode] = await Promise.all([this.json('transfer/info'), this.call('transfer/speedLimitsMode')]);
+    const status = transfer && typeof transfer === 'object' ? text((transfer as Json).connection_status) : undefined;
+    return { connected: status !== 'disconnected', throttled: mode.trim() === '1' };
+  }
+  // Asks the trackers for fresh peers now, rather than at the tracker's next interval.
+  async reannounce(infoHash: string) {
+    await this.call('torrents/reannounce', { body: new URLSearchParams({ hashes: infoHash }) });
+  }
 
   // The category is made first when qBittorrent doesn't have it (with qBittorrent's default save path).
   private async ensureCategory(category: string) {
