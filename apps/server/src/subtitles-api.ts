@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { SubtitleLists, SubtitleVideo, SubtitlesTest, SubtitlesView } from '../../../packages/contracts/src/subtitles.js';
+import type { SubtitleLists, SubtitleMissing, SubtitleVideo, SubtitlesTest, SubtitlesView } from '../../../packages/contracts/src/subtitles.js';
 import { connectionActor, viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
 import type { LibraryStore } from './persistence/library-store.js';
@@ -76,12 +76,20 @@ export function registerSubtitlesAdmin(app: FastifyInstance, deps: { store: Subt
       throw e;
     }
   });
-  app.get('/api/v1/admin/subtitles/videos', async (): Promise<SubtitleLists> => ({
-    found: store.recent().map(r => ({ ...video(r.path), ...r })),
-    jobs: store.jobs().map(({ error, ...j }) => ({ ...video(j.path), ...j, ...(error ? { error } : {}) })),
-    skipped: store.skips(200).map(s => ({ ...video(s.path), ...s })),
-    missing: store.missing().map(m => ({ ...video(m.path), at: m.at })),
-  }));
+  // Every video without English, once: checked and missing it, the worker's open or failed jobs, and the skipped.
+  app.get('/api/v1/admin/subtitles/videos', async (): Promise<SubtitleLists> => {
+    const rows = new Map<string, SubtitleMissing>();
+    const row = (path: string, at: number) => {
+      const r = rows.get(path) ?? { ...video(path), at };
+      r.at = Math.max(r.at, at);
+      rows.set(path, r);
+      return r;
+    };
+    for (const m of store.missing()) row(m.path, m.at);
+    for (const j of store.jobs(100000)) row(j.path, j.createdAt).job = { state: j.state, notBefore: j.notBefore, attempts: j.attempts, ...(j.error ? { error: j.error } : {}) };
+    for (const s of store.skips(100000)) row(s.path, s.at).skipped = s.reason;
+    return { missing: [...rows.values()] };
+  });
   // The accounting, once: every library file not known to have English is checked (sidecar or embedded track), and
   // those without are listed as missing. Nothing is searched or downloaded.
   app.post('/api/v1/admin/subtitles/check', async () => ({ queued: finder.checkLibrary() }));

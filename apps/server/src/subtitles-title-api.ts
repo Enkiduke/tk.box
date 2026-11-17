@@ -23,6 +23,8 @@ export function registerTitleSubtitles(app: FastifyInstance, deps: { db: Db; lib
           ...(english.hash_match !== null ? { hashMatch: english.hash_match === 1 } : {}) };
         continue;
       }
+      const skip = prepared(db, 'SELECT reason, at FROM subtitle_skips WHERE path = ?').get(f.path) as { reason: string; at: number } | undefined;
+      if (skip) { files[f.id] = { state: 'skipped', reason: skip.reason, at: skip.at }; continue; }
       const job = prepared(db, "SELECT state, not_before AS notBefore, attempts, error FROM subtitle_jobs WHERE path = ? AND language = 'en'").get(f.path) as
         { state: SubtitleJobState; notBefore: number; attempts: number; error: string | null } | undefined;
       const missing = prepared(db, 'SELECT at FROM subtitle_missing WHERE path = ?').get(f.path) as { at: number } | undefined;
@@ -32,8 +34,7 @@ export function registerTitleSubtitles(app: FastifyInstance, deps: { db: Db; lib
           ...(open ? { job: { state: open.state, notBefore: open.notBefore, attempts: open.attempts, ...(open.error ? { error: open.error } : {}) } } : {}) };
         continue;
       }
-      const skip = prepared(db, 'SELECT reason, at FROM subtitle_skips WHERE path = ?').get(f.path) as { reason: string; at: number } | undefined;
-      files[f.id] = skip ? { state: 'skipped', reason: skip.reason, at: skip.at } : { state: 'unchecked' };
+      files[f.id] = { state: 'unchecked' };
     }
     return { files };
   });

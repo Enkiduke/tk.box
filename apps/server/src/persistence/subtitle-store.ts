@@ -198,12 +198,7 @@ export class SubtitleStore {
     for (const r of prepared(this.db, 'SELECT source, count(*) AS n FROM subtitle_files GROUP BY source').all() as { source: SubtitleSource; n: number }[]) counts[r.source] = r.n;
     return counts;
   }
-  // Admin › Downloads › Subtitles: the latest recorded videos, and the open or failed jobs, newest first.
-  recent(limit = 100000) {
-    return (prepared(this.db, 'SELECT * FROM subtitle_files ORDER BY at DESC LIMIT ?').all(limit) as FileRow[]).map(row => ({
-      path: row.path, source: row.source, at: row.at, ...(row.subtitle_path ? { subtitlePath: row.subtitle_path } : {}), ...(row.hash_match !== null ? { hashMatch: row.hash_match === 1 } : {}),
-    }));
-  }
+  // Admin › Downloads › Subtitles: the open or failed jobs, newest first.
   jobs(limit = 200) {
     return prepared(this.db, `SELECT path, state, not_before AS notBefore, attempts, error, created_at AS createdAt FROM subtitle_jobs
       WHERE state IN ('waiting','queued','claimed','failed') ORDER BY created_at DESC LIMIT ?`).all(limit) as

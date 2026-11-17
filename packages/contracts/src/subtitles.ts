@@ -46,11 +46,14 @@ export type SubtitleVideo = {
   // A show's file: the episodes it holds (S01E02, S01E02–E03).
   episodes?: string;
 };
-export type SubtitleFound = SubtitleVideo & { source: SubtitleSource; at: number; subtitlePath?: string; hashMatch?: boolean };
-export type SubtitleJob = SubtitleVideo & { state: SubtitleJobState; notBefore: number; attempts: number; error?: string; createdAt: number };
-export type SubtitleSkip = SubtitleVideo & { reason: string; at: number };
-export type SubtitleMissing = SubtitleVideo & { at: number };
-export type SubtitleLists = { found: SubtitleFound[]; missing: SubtitleMissing[]; jobs: SubtitleJob[]; skipped: SubtitleSkip[] };
+// A video without English: checked and missing it, with the worker's job when OpenSubtitles had nothing, or skipped
+// (the finder gave up on it). `at` is when that last changed.
+export type SubtitleMissing = SubtitleVideo & {
+  at: number;
+  job?: { state: SubtitleJobState; notBefore: number; attempts: number; error?: string };
+  skipped?: string;
+};
+export type SubtitleLists = { missing: SubtitleMissing[] };
 
 // A title's files in its Admin dialog (GET /api/v1/admin/subtitles/title/:id), by library file id: English and where it
 // came from; checked and missing it, with the worker's job if there is one; given up on; or not checked yet.

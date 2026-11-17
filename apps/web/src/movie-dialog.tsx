@@ -145,14 +145,14 @@ function SubtitleCell({s,video,now}:{s:TitleSubtitle;video:string;now:number}) {
   if(s.state==='english'){
     const [label,hint]=sourceNames[s.source],name=s.subtitlePath&&subtitleName(s.subtitlePath,video);
     const match=s.source==='opensubtitles'&&s.hashMatch!==undefined?`, ${s.hashMatch?'matched to this exact file':'matched by name'}`:'';
-    return <><Pill tone="ok" title={`${hint}${match}`}>{label}</Pill>{name?<small className="ui-mono" title={s.subtitlePath}>{name}</small>:<small>In the file</small>}</>;
+    return <><Pill tone="ok" title={`${hint}${match}`}>{label}</Pill>{name&&<small className="ui-mono" title={s.subtitlePath}>{name}</small>}</>;
   }
   if(s.state==='missing'){
     const job=s.job&&subtitleJobs[s.job.state];
     return <>{job?<Pill tone={job[1]}>{job[0]}</Pill>:<Pill tone="wait">Missing</Pill>}
       {s.job?.error?<small className="bad" title={s.job.error}>{s.job.error}</small>
         :s.job?.state==='waiting'?<small>Again <When at={s.job.notBefore} now={now}/></small>
-        :s.job?<small>For the worker</small>:<small>No English</small>}</>;
+        :s.job?<small>For the worker</small>:null}</>;
   }
   if(s.state==='skipped')return <><Pill tone="bad">Skipped</Pill><small className="bad" title={s.reason}>{s.reason}</small></>;
   return <Pill tone="off">Not checked</Pill>;

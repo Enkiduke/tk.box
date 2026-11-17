@@ -1,5 +1,5 @@
 import {useState,type ReactNode} from 'react';
-import type {SubtitleFound,SubtitleJob,SubtitleMissing,SubtitleJobState,SubtitleLists,SubtitleSkip,SubtitleSource,SubtitleVideo,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
+import type {SubtitleMissing,SubtitleJobState,SubtitleLists,SubtitleSource,SubtitleVideo,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
 import {api} from './api.js';
 import {invalidate,link,useApi} from './hooks.js';
 import {ErrorNotice} from './components.js';
@@ -11,9 +11,8 @@ import {ACTIONS,Field,FieldError,IconAction,Loaded,Panel,Pill,RowActions,SaveBar
 // done, one list at a time.
 
 const changed=()=>invalidate('/admin/subtitles');
-type View='settings'|'found'|'missing'|'jobs'|'skipped';
-const sourceNames:Record<SubtitleSource,string>={opensubtitles:'OpenSubtitles',whisper:'Whisper',embedded:'In the file',sidecar:'Already there'};
-const sourceTones:Record<SubtitleSource,Tone>={opensubtitles:'ok',whisper:'ok',embedded:'off',sidecar:'off'};
+type View='settings'|'missing';
+const sourceNames:Record<SubtitleSource,string>={opensubtitles:'OpenSubtitles',whisper:'Whisper',embedded:'Embedded',sidecar:'Sidecar'};
 const jobNames:Record<SubtitleJobState,[string,Tone]>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],done:['Done','ok'],failed:['Failed','bad'],cancelled:['Cancelled','off']};
 const count=(n:number)=>n.toLocaleString();
 
@@ -23,13 +22,10 @@ export function SubtitlesPage() {
   const [tab,setTab]=useState<View>('settings');
   const s=view.data,l=lists.data;
   const tabs=<Tabs label="Subtitles" value={tab} onChange={setTab} tabs={[{id:'settings',label:'Settings'},
-    {id:'found',label:'Have English',...(l?{count:l.found.length}:{})},
-    {id:'missing',label:'Missing',...(l?{count:l.missing.length}:{})},
-    {id:'jobs',label:'For the worker',...(s?{count:s.jobs.waiting+s.jobs.queued+s.jobs.claimed+s.jobs.failed,...(s.jobs.failed?{tone:'bad' as const}:{})}:{})},
-    {id:'skipped',label:'Skipped',...(s?{count:s.skipped,...(s.skipped?{tone:'bad' as const}:{})}:{})}]}/>;
+    {id:'missing',label:'Missing',...(l?{count:l.missing.length,...(l.missing.some(r=>r.skipped||r.job?.state==='failed')?{tone:'bad' as const}:{})}:{})}]}/>;
   return <><SectionHead title="Subtitles"/>{tabs}
     {tab==='settings'?<Loaded view={view}>{v=><><Status view={v}/><Settings key={`s${v.revision}`} view={v}/></>}</Loaded>
-      :<Loaded view={lists}>{d=>tab==='found'?<Found rows={d.found}/>:tab==='missing'?<Missing rows={d.missing}/>:tab==='jobs'?<Jobs rows={d.jobs}/>:<Skipped rows={d.skipped}/>}</Loaded>}
+      :<Loaded view={lists}>{d=><Missing rows={d.missing}/>}</Loaded>}
   </>;
 }
 
@@ -40,8 +36,8 @@ function Status({view}:{view:SubtitlesView}) {
   <Panel flush title="Status" actions={<button type="button" disabled={mutation.busy||view.checking>0} onClick={check}>{view.checking?`Checking… ${count(view.checking)} left`:'Check library'}</button>}>
     {view.blocked&&<Field label="Stopped"><span className="danger-text">{view.blocked}</span></Field>}
     <Field label="Today">{count(view.today)} of {count(view.dailyCap)} downloads</Field>
-    <Field label="Library">{count(a.total)} files · {count(a.english)} with English · {a.missing?<span className="danger-text">{count(a.missing)} missing</span>:'0 missing'}{a.unchecked?` · ${count(a.unchecked)} not checked`:''}</Field>
-    <Field label="English from">{(Object.keys(sourceNames) as SubtitleSource[]).map(k=>`${sourceNames[k]} ${count(s[k])}`).join(' · ')}</Field>
+    <Field label="Library">{count(a.total)} files · {count(a.english)} subtitled · {a.missing?<span className="danger-text">{count(a.missing)} missing</span>:'0 missing'}{a.unchecked?` · ${count(a.unchecked)} not checked`:''}</Field>
+    <Field label="Sources">{(Object.keys(sourceNames) as SubtitleSource[]).map(k=>`${sourceNames[k]} ${count(s[k])}`).join(' · ')}</Field>
   </Panel></>;
 }
 
@@ -82,55 +78,28 @@ function VideoCell({video,sub}:{video:SubtitleVideo;sub?:ReactNode}) {
   return <TitleCell id={video.titleId} title={video.title} year={video.year} tags={video.episodes&&<Tag>{video.episodes}</Tag>} sub={sub??<span title={video.path}>{file}</span>}/>;
 }
 
-const foundSorts={title:(r:SubtitleFound)=>r.title??r.path,source:(r:SubtitleFound)=>sourceNames[r.source],at:(r:SubtitleFound)=>r.at};
-function Found({rows:all}:{rows:SubtitleFound[]}) {
-  const {rows:sorted,sort,onSort}=useSorted(all,foundSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
-  return <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing checked yet':undefined}
-    columns={[{label:'Title',sort:'title'},{label:'Match',width:110},{label:'Checked',width:110,sort:'at',desc:true},{label:'English from',width:150,sort:'source'}]}>
-    {rows.map(r=><tr key={r.path}>
-      <td><VideoCell video={r} sub={r.subtitlePath?<span title={r.subtitlePath}>{r.subtitlePath.split(/[\\/]/).pop()}</span>:undefined}/></td>
-      <td>{r.source==='opensubtitles'?r.hashMatch?'This file':'Same title':<span className="ui-dash">—</span>}</td>
-      <td><When at={r.at} now={now}/></td>
-      <td><Pill tone={sourceTones[r.source]}>{sourceNames[r.source]}</Pill></td>
-    </tr>)}
-  </Table></Panel>;
+// What's happening to a video without English: skipped (given up on), the worker's job, or only checked.
+const jobRank:Record<SubtitleJobState,number>={failed:1,claimed:2,queued:3,waiting:4,done:5,cancelled:5};
+function statusOf(r:SubtitleMissing):[string,Tone,number] {
+  if(r.skipped!==undefined)return ['Skipped','bad',0];
+  if(r.job){const [word,tone]=jobNames[r.job.state];return [word,tone,jobRank[r.job.state]];}
+  return ['Missing','wait',6];
 }
-
-const missingSorts={title:(r:SubtitleMissing)=>r.title??r.path,at:(r:SubtitleMissing)=>r.at};
+const missingSorts={title:(r:SubtitleMissing)=>r.title??r.path,status:(r:SubtitleMissing)=>statusOf(r)[2],at:(r:SubtitleMissing)=>r.at};
 function Missing({rows:all}:{rows:SubtitleMissing[]}) {
-  const {rows:sorted,sort,onSort}=useSorted(all,missingSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
-  return <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing missing':undefined}
-    columns={[{label:'Title',sort:'title'},{label:'Checked',width:110,sort:'at',desc:true}]}>
-    {rows.map(r=><tr key={r.path}><td><VideoCell video={r}/></td><td><When at={r.at} now={now}/></td></tr>)}
-  </Table></Panel>;
-}
-
-const jobSorts={title:(r:SubtitleJob)=>r.title??r.path,next:(r:SubtitleJob)=>r.notBefore,state:(r:SubtitleJob)=>r.state,at:(r:SubtitleJob)=>r.createdAt};
-function Jobs({rows:all}:{rows:SubtitleJob[]}) {
-  const {rows:sorted,sort,onSort}=useSorted(all,jobSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
-  return <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing for the worker':undefined}
-    columns={[{label:'Title',sort:'title'},{label:'Added',width:110,sort:'at',desc:true},{label:'Next',width:110,sort:'next'},{label:'Status',width:130,sort:'state'}]}>
-    {rows.map(r=>{const [word,tone]=jobNames[r.state];return <tr key={r.path}>
-      <td><VideoCell video={r} sub={r.error?<span className="danger-text" title={r.error}>{r.error}</span>:undefined}/></td>
-      <td><When at={r.createdAt} now={now}/></td>
-      <td>{r.state==='waiting'?<When at={r.notBefore} now={now} due="Due"/>:<span className="ui-dash">—</span>}</td>
-      <td><Pill tone={tone}>{word}</Pill></td>
-    </tr>;})}
-  </Table></Panel>;
-}
-
-const skipSorts={title:(r:SubtitleSkip)=>r.title??r.path,at:(r:SubtitleSkip)=>r.at};
-function Skipped({rows:all}:{rows:SubtitleSkip[]}) {
   const mutation=useMutation(()=>{changed();});
-  const {rows:sorted,sort,onSort}=useSorted(all,skipSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
-  const retry=(r:SubtitleSkip)=>void mutation.run(async()=>{await api('/admin/subtitles/retry','POST',{path:r.path});toast.info(`Looking again for ${r.title??'that file'}`);});
+  const {rows:sorted,sort,onSort}=useSorted(all,missingSorts),{rows,more}=usePaged(sorted,`${sort?.key}|${sort?.dir}`),now=Date.now();
+  const retry=(r:SubtitleMissing)=>void mutation.run(async()=>{await api('/admin/subtitles/retry','POST',{path:r.path});toast.info(`Looking again for ${r.title??'that file'}`);});
   return <>{mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing skipped':undefined}
-      columns={[{label:'Title',sort:'title'},{label:'Skipped',width:110,sort:'at',desc:true},ACTIONS]}>
-      {rows.map(r=><tr key={r.path}>
-        <td><VideoCell video={r} sub={<span className="danger-text" title={r.reason}>{r.reason}</span>}/></td>
+    <Panel flush><Table posters more={more} sort={sort} onSort={onSort} empty={!all.length?'Nothing missing':undefined}
+      columns={[{label:'Title',sort:'title'},{label:'Since',width:110,sort:'at',desc:true},{label:'Status',width:130,sort:'status'},ACTIONS]}>
+      {rows.map(r=>{const [word,tone]=statusOf(r),error=r.skipped??r.job?.error;return <tr key={r.path}>
+        <td><VideoCell video={r} sub={error?<span className="danger-text" title={error}>{error}</span>
+          :r.job?.state==='waiting'?<>Again <When at={r.job.notBefore} now={now} due="now"/></>:r.job?'For the worker':undefined}/></td>
         <td><When at={r.at} now={now}/></td>
-        <td><RowActions><IconAction icon="search" label={`Look again for ${r.title??r.path}`} disabled={mutation.busy||r.titleId===undefined} onClick={()=>retry(r)}/></RowActions></td>
-      </tr>)}
+        <td><Pill tone={tone}>{word}</Pill></td>
+        <td><RowActions>{r.skipped!==undefined&&<IconAction icon="search" label={`Look again for ${r.title??r.path}`} disabled={mutation.busy||r.titleId===undefined} onClick={()=>retry(r)}/>}</RowActions></td>
+      </tr>;})}
     </Table></Panel></>;
 }
+
