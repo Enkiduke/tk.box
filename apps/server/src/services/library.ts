@@ -10,7 +10,7 @@ import { bettersLibrary, compareDecisions, decide, fewSeeders, pick,type Decisio
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
-import { airedAt, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
+import { airedAt, beforeCinemas, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
   showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
 import { findVideos, type LibraryImporter, type ShowImport } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
@@ -598,6 +598,13 @@ export class Library {
     this.store.pruneSkips();
     for (const title of this.store.dueMovies(now)) {
       if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) continue;
+      // Not in cinemas yet (a search scheduled under older timing rules): move it to when it may search, not now.
+      if (beforeCinemas(title.released, now) !== undefined) {
+        const last = this.store.search(title.id, 'movie'), file = this.store.files(title.id)[0];
+        this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: last?.lastAt ?? 0, misses: last?.misses ?? 0,
+          nextAt: firstSearchAt({ now, released: title.released, earlyCopies: title.earlyCopies, ...(file ? { file } : {}) }) });
+        continue;
+      }
       if (this.queueSearch(title.id, undefined, undefined, undefined, true).added) searched++;
     }
     // Shows look ahead to the next sweep, so a new episode's search starts on time (15 minutes after it airs).

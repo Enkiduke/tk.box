@@ -57,14 +57,15 @@ export function isOut(released: Released, now: number) {
 export type TimingInput = { now: number; released: Released; earlyCopies: boolean; file?: { quality: Quality } };
 
 // Never before the cinema release: nothing worth having is out sooner, Early copies or not.
-const beforeCinemas = (released: Released, now: number) => { const at = dayStart(released.theatrical); return at !== undefined && at > now ? at : undefined; };
+export const beforeCinemas = (released: Released, now: number) => { const at = dayStart(released.theatrical); return at !== undefined && at > now ? at : undefined; };
 
 // On request or add: at once when the movie is out. Not out: from its cinema release with Early copies on, else from
-// its home release, with RSS only until then.
+// its home release (with no home date yet, a week on but not before cinemas), with RSS only until then.
 export function firstSearchAt(input: TimingInput): number {
   if (isOut(input.released, input.now)) return input.now;
-  if (input.earlyCopies) return beforeCinemas(input.released, input.now) ?? input.now;
-  return homeRelease(input.released) ?? input.now + MISS_BACKOFF_DAYS[3] * DAY;
+  const cinemas = beforeCinemas(input.released, input.now);
+  if (input.earlyCopies) return cinemas ?? input.now;
+  return homeRelease(input.released) ?? Math.max(input.now + MISS_BACKOFF_DAYS[3] * DAY, cinemas ?? 0);
 }
 
 // After a search that found nothing to grab (`misses` counts it). The backoff, then:
