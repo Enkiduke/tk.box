@@ -1,12 +1,14 @@
 import {useState} from 'react';
 import type {ConnectionTest,DownloaderView,IndexerView} from '../../../packages/contracts/src/downloads.js';
+import type {SubtitlesTest,SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
 import {api} from './api.js';
 import {invalidate} from './hooks.js';
 import {ErrorNotice} from './components.js';
 import {Switch,plural,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 
-// The editors for tk.box's own indexers and downloaders, opened from Admin › Connections › Indexers & downloaders.
+// The editors for tk.box's own indexers, downloaders and OpenSubtitles, opened from Admin › Connections › Indexers &
+// downloaders.
 
 const numbers=(text:string)=>text.split(/[\s,]+/).filter(Boolean).map(Number);
 const validNumbers=(text:string)=>numbers(text).every(n=>Number.isInteger(n)&&n>0);
@@ -151,4 +153,40 @@ export function SabnzbdEditor({downloader,onClose}:{downloader:DownloaderView;on
       <button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button>
     </div>
   </form>;
+}
+
+// OpenSubtitles.com's login (docs/PHASE-4.md): API key, username and password. Switching subtitles on, the daily cap
+// and the hearing-impaired preference are on Admin › Downloads › Subtitles.
+export function OpenSubtitlesEditor({view,onClose}:{view:SubtitlesView;onClose:()=>void}) {
+  const [key,setKey]=useState(''),[username,setUsername]=useState(view.login.username??''),[password,setPassword]=useState('');
+  const mutation=useMutation(()=>invalidate('/admin/subtitles'));
+  const save=async()=>{
+    const ok=await mutation.run(async()=>{
+      await api('/admin/subtitles/login','PUT',{expectedRevision:view.revision,...(key.trim()?{apiKey:key.trim()}:{}),
+        ...(username.trim()!==(view.login.username??'')?{username:username.trim()}:{}),...(password?{password}:{})});
+    });
+    if(ok){toast.success('OpenSubtitles saved');onClose();}
+  };
+  const saved=(set:boolean)=>set?'Saved. Enter a new value to replace it.':'';
+  return <form className="form-stack" onSubmit={e=>{e.preventDefault();void save();}}>
+    <label>API key<input type="password" autoComplete="off" spellCheck={false} maxLength={200} value={key} placeholder={saved(view.login.apiKey)} onChange={e=>setKey(e.target.value)}/></label>
+    <div className="form-columns">
+      <label>Username<input autoComplete="off" spellCheck={false} maxLength={200} value={username} onChange={e=>setUsername(e.target.value)}/></label>
+      <label>Password<input type="password" autoComplete="new-password" maxLength={200} value={password} placeholder={saved(view.login.password)} onChange={e=>setPassword(e.target.value)}/></label>
+    </div>
+    {mutation.error&&<ErrorNotice message={mutation.error}/>}
+    <div className="button-row">
+      <button className="primary" disabled={mutation.busy}>{mutation.busy?'Saving…':'Save settings'}</button>
+      <SubtitlesTestButton disabled={!view.login.apiKey||!view.login.username||!view.login.password}/>
+      <button type="button" disabled={mutation.busy} onClick={onClose}>Cancel</button>
+    </div>
+  </form>;
+}
+function SubtitlesTestButton({disabled}:{disabled?:boolean}) {
+  const [busy,setBusy]=useState(false);
+  const run=async()=>{setBusy(true);try{
+    const r=await api<SubtitlesTest>('/admin/subtitles/test','POST');
+    toast.success(`Signed in${r.level?` · ${r.level}`:''}${r.allowedDownloads!==undefined?` · ${r.allowedDownloads} downloads a day`:''}`);
+  }catch(e){toast.error((e as Error).message);}finally{setBusy(false);invalidate('/admin/subtitles');}};
+  return <button type="button" disabled={busy||disabled} onClick={()=>void run()}>{busy?'Testing…':'Test'}</button>;
 }

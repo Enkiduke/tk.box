@@ -332,6 +332,9 @@ export class LibraryStore {
   }
   file(id: number) { const r = prepared(this.db, 'SELECT * FROM library_files WHERE id = ?').get(id) as FileRaw | undefined; return r ? file(r) : undefined; }
   deleteFile(id: number) { prepared(this.db, 'DELETE FROM library_files WHERE id = ?').run(id); }
+  // For subtitle-finder: a file by its path, and every file's path (to forget subtitles of files gone).
+  fileByPath(path: string) { const r = prepared(this.db, 'SELECT * FROM library_files WHERE path = ?').get(path) as FileRaw | undefined; return r ? file(r) : undefined; }
+  filePaths() { return new Set((prepared(this.db, 'SELECT path FROM library_files').all() as { path: string }[]).map(r => r.path)); }
 
   grab(id: number) { const r = prepared(this.db, 'SELECT * FROM grabs WHERE id = ?').get(id) as GrabRaw | undefined; return r ? grab(r) : undefined; }
   openGrabs() { return (prepared(this.db, `SELECT * FROM grabs WHERE ${OPEN} ORDER BY id`).all() as GrabRaw[]).map(grab); }

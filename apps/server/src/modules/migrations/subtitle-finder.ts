@@ -22,5 +22,9 @@ export const subtitleFinderMigrations: Migration[] = [
     CREATE INDEX subtitle_jobs_due ON subtitle_jobs(state, not_before);
     CREATE TABLE subtitle_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
     INSERT INTO subtitle_settings(id, revision, value) VALUES(1, 1, '{}');
-    CREATE TABLE subtitle_usage(day TEXT PRIMARY KEY, downloads INTEGER NOT NULL DEFAULT 0);` }
+    CREATE TABLE subtitle_usage(day TEXT PRIMARY KEY, downloads INTEGER NOT NULL DEFAULT 0);` },
+  // Videos the finder gave up on (ffprobe or the download failed through every try), so the backfill doesn't take them
+  // again. Retry in Admin › Downloads › Subtitles clears one.
+  { name: 'subtitle-skips', up: `
+    CREATE TABLE subtitle_skips(path TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);` }
 ];

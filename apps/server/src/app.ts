@@ -38,6 +38,7 @@ import { queueModule } from './modules/queue.js';
 import { indexersModule } from './modules/indexers.js';
 import { downloadersModule } from './modules/downloaders.js';
 import { libraryModule } from './modules/library.js';
+import { subtitleFinderModule } from './modules/subtitle-finder.js';
 import type { LibrarySources } from './library-api.js';
 import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
@@ -195,6 +196,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // Why each movie is there (Admin › Manage › Movies): its requesters, filled in once requests mounts, and collections.
   const librarySources: LibrarySources = {collections: () => artwork.engine.collectionMovies()};
   const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles, sources: librarySources});
+  await mountModule(app, ctx, subtitleFinderModule, {queue, library});
   const requestsApi = await mountModule(app, ctx, requestsModule, {titles: tmdbTitles, site, library}), {requests} = requestsApi;
   librarySources.requesters = () => requestsApi.store.requesters('movie');
   librarySources.showRequesters = () => requestsApi.store.requesters('show');

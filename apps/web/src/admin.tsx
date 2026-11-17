@@ -23,6 +23,7 @@ import {ShowsPage} from './shows-admin.js';
 import type {TitlePane} from './manage-ui.js';
 import {PickRulesPage} from './pick-rules-admin.js';
 import {LibrarySettingsPage} from './library-settings-admin.js';
+import {SubtitlesPage} from './subtitles-admin.js';
 import './admin.css';
 
 export {ConnectionsRecovery} from './admin-connections.js';
@@ -33,7 +34,7 @@ export {ConnectionsRecovery} from './admin-connections.js';
 // imported file. Application: what viewers get in tk.box. Server: who uses it, what it connects to, and its jobs.
 const groups=[
   ['Manage',[['movies','Movies','movies'],['shows','Shows','shows'],['channels','Channels','shows'],['iptv','IPTV','live'],['collections','Collections','collection'],['artwork','Artwork','image'],['cleanup','Clean Up','trash']]],
-  ['Downloads',[['requests','Requests','download'],['wanted','Wanted','search'],['queue','Queue','queue'],['download-history','History','history'],['rules','Quality','filter'],['download-settings','Settings','gear']]],
+  ['Downloads',[['requests','Requests','download'],['wanted','Wanted','search'],['queue','Queue','queue'],['download-history','History','history'],['rules','Quality','filter'],['subtitles','Subtitles','captions'],['download-settings','Settings','gear']]],
   ['Application',[['explore','Explore','explore'],['playback','Playback','speed']]],
   ['Server',[['activity','Activity','play'],['users','Users','users'],['connections','Connections','key'],['schedule','Schedule','clock']]]
 ] as const;
@@ -89,7 +90,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<IptvPage params={params}/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='queue'?<DownloadsPage params={params}/>:current==='download-history'?<DownloadHistoryPage/>:current==='wanted'?<WantedPage/>:current==='movies'?<MoviesPage/>:current==='shows'?<ShowsPage/>:current==='rules'?<PickRulesPage/>:current==='download-settings'?<LibrarySettingsPage/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin/>:current==='requests'?<RequestsAdmin/>:current==='queue'?<DownloadsPage params={params}/>:current==='download-history'?<DownloadHistoryPage/>:current==='wanted'?<WantedPage/>:current==='movies'?<MoviesPage/>:current==='shows'?<ShowsPage/>:current==='rules'?<PickRulesPage/>:current==='download-settings'?<LibrarySettingsPage/>:current==='subtitles'?<SubtitlesPage/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
     </div>
     {Number(title)>0&&<MovieDialog key={title} id={Number(title)} pane={(panes.has(params.get('pane')??'')?params.get('pane'):'overview') as TitlePane}
       scope={params.get('scope')??undefined} setPane={(pane,scope)=>replaceRoute(withMovie(params,title!,pane,scope))}

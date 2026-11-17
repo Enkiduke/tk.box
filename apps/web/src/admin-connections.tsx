@@ -1,7 +1,8 @@
 import {useState,type ReactNode} from 'react';
 import type {DownloaderView,IndexerView} from '../../../packages/contracts/src/downloads.js';
 import {ApiClientError,api} from './api.js';
-import {IptorrentsEditor,NzbGeekEditor,QbittorrentEditor,SabnzbdEditor} from './download-connections.js';
+import {IptorrentsEditor,NzbGeekEditor,OpenSubtitlesEditor,QbittorrentEditor,SabnzbdEditor} from './download-connections.js';
+import type {SubtitlesView} from '../../../packages/contracts/src/subtitles.js';
 import {invalidate,link,useApi} from './hooks.js';
 import {ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {date,SectionHead,useMutation} from './settings-ui.js';
@@ -133,6 +134,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const artwork=useApi<ArtworkKeysView>('/admin/connections/artwork');
   const indexers=useApi<IndexerView[]>('/admin/indexers');
   const downloaders=useApi<DownloaderView[]>('/admin/downloaders');
+  const subtitles=useApi<SubtitlesView>('/admin/subtitles');
 
   const serviceStatus=(id:string)=>readHealth(services,results=>{
     const result=results[id];
@@ -155,6 +157,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const sabnzbd=downloaders.data?.find(item=>item.name==='sabnzbd');
   const iptorrents=indexers.data?.find(item=>item.name==='iptorrents');
   const qbittorrent=downloaders.data?.find(item=>item.name==='qbittorrent');
+  const subtitleView=subtitles.data;
   const nzbgeekStatus=(item:IndexerView):HealthStatus=>
     !item.secretSet?{label:'Not set up'}
     :!item.enabled?{label:'Off'}
@@ -186,6 +189,13 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       health:readHealth(downloaders,()=>qbittorrent?.url?{label:'Set up'}:{label:'Not set up'}),
       ...readSettings(downloaders,()=>({keySaved:!!qbittorrent?.secretSet,address:{value:qbittorrent?.url??'',placeholder:'http://127.0.0.1:8080'}})),
       ...(qbittorrent?{editor:(close:()=>void)=><QbittorrentEditor downloader={qbittorrent} onClose={close}/>}:{}),
+    },
+    {
+      name:'OpenSubtitles',description:'English subtitles for movies and shows.',
+      health:readHealth(subtitles,s=>!s.login.apiKey||!s.login.username||!s.login.password?{label:'Not set up'}
+        :s.blocked?{label:'Needs attention',tone:'warning',detail:s.blocked}:!s.enabled?{label:'Off'}:{label:'Set up',tone:'success'}),
+      ...readSettings(subtitles,s=>({keySaved:s.login.apiKey&&s.login.password})),
+      ...(subtitleView?{editor:(close:()=>void)=><OpenSubtitlesEditor view={subtitleView} onClose={close}/>}:{}),
     },
   ];
   const groups:{id:string;title:string;icon:string;connections:Connection[]}[]=[
@@ -237,10 +247,10 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     return status.tone==='warning'?[{id,name:connection.name,label:status.label,detail:status.detail}]:[];
   }));
   const refresh=()=>{
-    plex.reload();sports.reload();services.reload();indexers.reload();downloaders.reload();
+    plex.reload();sports.reload();services.reload();indexers.reload();downloaders.reload();subtitles.reload();
     for(const view of [serviceKeys,artwork])if(view.error)view.reload();
   };
-  const refreshingStatus=plex.loading||sports.loading||services.loading||indexers.loading||downloaders.loading;
+  const refreshingStatus=plex.loading||sports.loading||services.loading||indexers.loading||downloaders.loading||subtitles.loading;
   return <>
     <SectionHead title="Connections" description="Manage connected services and see their latest status.">
       <button type="button" disabled={refreshingStatus} onClick={refresh}><Icon name="restart" size={15}/>{refreshingStatus?'Refreshing…':'Refresh status'}</button>
