@@ -1,7 +1,7 @@
 import type { Migration } from '../../persistence/migrate.js';
 
 // Requests made in tk.box (docs/REQUESTS.md). A row is its own outbox: `queued` until the library took it, then
-// the sweep moves it on. Several rows may name one title (other people, other seasons).
+// its status follows the library and Plex. Several rows may name one title (other people, other seasons).
 export const requestsMigrations: Migration[] = [
   { name: 'requests', up: `
     CREATE TABLE requests(
@@ -32,5 +32,16 @@ export const requestsMigrations: Migration[] = [
     CREATE TABLE requests_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);` },
   // Admin › Requests › Requests site: its port (none: off) and public address.
   { name: 'requests_site', up: `
-    CREATE TABLE requests_site(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, port INTEGER, public_url TEXT);` }
+    CREATE TABLE requests_site(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, port INTEGER, public_url TEXT);` },
+  // Phase D (docs/SINGLE-SOURCE.md): `arr_id` was always a library_titles id, and `removed_by='arr'` meant removed in
+  // the library. Keep (tag -1) and a movie's Early copies (tag -2) become the request's own flags, out of its tags.
+  { name: 'title-id', up: `
+    ALTER TABLE requests RENAME COLUMN arr_id TO title_id;
+    UPDATE requests SET removed_by='library' WHERE removed_by='arr';
+    ALTER TABLE requests ADD COLUMN keep INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE requests ADD COLUMN early_copies INTEGER NOT NULL DEFAULT 0;
+    UPDATE requests SET keep=1 WHERE EXISTS (SELECT 1 FROM json_each(requests.tags) WHERE value=-1);
+    UPDATE requests SET early_copies=1 WHERE kind='movie' AND EXISTS (SELECT 1 FROM json_each(requests.tags) WHERE value=-2);
+    UPDATE requests SET tags=(SELECT json_group_array(value) FROM json_each(requests.tags) WHERE value >= 0) WHERE EXISTS (SELECT 1 FROM json_each(requests.tags) WHERE value < 0);
+    CREATE INDEX requests_title_id ON requests(title_id) WHERE title_id IS NOT NULL;` }
 ];

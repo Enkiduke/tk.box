@@ -124,7 +124,7 @@ export function FilesTable({titleId,files,path,now}:{titleId:number;files:Librar
     {rows.map(f=><tr key={f.id}><td><span className="ui-mono" title={f.path}>{f.path.split('/').pop()}</span><small title={f.path}>{f.path}</small></td>
       {episodes&&<td>{f.episodes??<Dash/>}</td>}
       <td>{f.quality}{f.proper&&<small>Proper</small>}</td><td className="num">{gb(f.size)}</td>
-      {subtitles&&<td><SubtitleCell s={subtitles[f.id]??{state:'unchecked'}} video={f.path} now={now}/></td>}
+      {subtitles&&<td><SubtitleCell s={subtitles[f.id]??{state:'unchecked'}} video={f.path}/></td>}
       <td><When at={f.importedAt} now={now}/></td>
       <td><RowActions><IconAction icon="trash" label="Delete this file" onClick={()=>setDeleting(f)}/></RowActions></td></tr>)}
     {deleting&&<DeleteFile file={deleting} path={path} onDone={()=>setDeleting(undefined)}/>}
@@ -134,14 +134,14 @@ export function FilesTable({titleId,files,path,now}:{titleId:number;files:Librar
 // English (green, named by where it came from), missing or the worker's job (amber; red when failed), not checked (grey).
 const sourceNames:Record<SubtitleSource,[string,string]>={sidecar:['Sidecar','An English subtitle file was beside it'],embedded:['Embedded','An English text track inside the file'],
   opensubtitles:['OpenSubtitles','Downloaded from OpenSubtitles'],whisper:['Whisper','Made by the PC worker']};
-const subtitleJobs:Partial<Record<SubtitleJobState,[string,Tone]>>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],failed:['Failed','bad']};
+const subtitleJobs:Partial<Record<SubtitleJobState,[string,Tone]>>={queued:['Queued','wait'],claimed:['Running','active'],failed:['Failed','bad']};
 const subtitleRank=(s?:TitleSubtitle)=>!s||s.state==='unchecked'?undefined:s.state==='english'?0:s.state==='missing'?1:2;
 // A subtitle named after its video shows only what it adds (.en.srt); the full path is on hover.
 function subtitleName(path:string,video:string) {
   const name=path.split('/').pop()??path,base=(video.split('/').pop()??video).replace(/\.[^.]+$/,'');
   return name.startsWith(`${base}.`)?name.slice(base.length):name;
 }
-function SubtitleCell({s,video,now}:{s:TitleSubtitle;video:string;now:number}) {
+function SubtitleCell({s,video}:{s:TitleSubtitle;video:string}) {
   if(s.state==='english'){
     const [label,hint]=sourceNames[s.source],name=s.subtitlePath&&subtitleName(s.subtitlePath,video);
     const match=s.source==='opensubtitles'&&s.hashMatch!==undefined?`, ${s.hashMatch?'matched to this exact file':'matched by name'}`:'';
@@ -151,7 +151,6 @@ function SubtitleCell({s,video,now}:{s:TitleSubtitle;video:string;now:number}) {
     const job=s.job&&subtitleJobs[s.job.state];
     return <>{job?<Pill tone={job[1]}>{job[0]}</Pill>:<Pill tone="wait">Missing</Pill>}
       {s.job?.error?<small className="bad" title={s.job.error}>{s.job.error}</small>
-        :s.job?.state==='waiting'?<small>Again <When at={s.job.notBefore} now={now}/></small>
         :s.job?<small>For the worker</small>:null}</>;
   }
   if(s.state==='skipped')return <><Pill tone="bad">Skipped</Pill><small className="bad" title={s.reason}>{s.reason}</small></>;

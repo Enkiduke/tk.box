@@ -1,10 +1,11 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
-import type {PlexAdapter,PlexGrant} from './providers/plex.js';
+import {viewerCopies,type PlexAdapter,type PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
 import type {Requests} from './services/requests.js';
+import type {PlexIndex} from './services/plex-index.js';
 import {ExploreImages} from './providers/explore-images.js';
 import {ExploreStore,exploreLayoutInput,exploreRankingInput,exploreRankingOptionsInput,tmdbRowOrder} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
@@ -87,14 +88,17 @@ export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)
 
 // Explore: rows, search and details from Plex Discover and TMDB, with tk.box's request labels, and the Plex watchlist.
 // Requests themselves are the requests module's routes.
-// One watch on this server (tk.box's history, the saved watch history), by its rating key.
-export type ServerWatch={kind:'movie'|'show';ratingKey:string;at:number;plays?:number;title?:string|null;year?:number|null};
+// One watch on this server (tk.box's history, the saved watch history), by its rating key, with the TMDB id history
+// saved for it.
+export type ServerWatch={kind:'movie'|'show';ratingKey:string;tmdb?:number;at:number;plays?:number;title?:string|null;year?:number|null};
+// `plexTitles`: the title identity (the Plex index), for watches without a TMDB id and the server's copy of a title.
 export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:ExploreStore,accountToken:(hash:string)=>string,tmdbClient:TmdbTitles,
-  requests:Pick<Requests,'labels'|'connected'|'titleState'|'plexKey'>&Partial<Pick<Requests,'tmdbForKey'>>,transports:{images?:typeof fetch}={},watches:(account:string)=>ServerWatch[]=()=>[]) {
+  requests:Pick<Requests,'labels'|'connected'|'titleState'>,transports:{images?:typeof fetch}={},watches:(account:string)=>ServerWatch[]=()=>[],
+  plexTitles:Pick<PlexIndex,'resolve'>={resolve:()=>undefined}) {
   const discover=new PlexDiscover(plex),images=new ExploreImages(transports.images),cache=new ExploreCache();
   // Suggestions leave out what is on the server or has a request label.
-  const history=(account:string)=>watches(account).flatMap(({kind,ratingKey,at,plays,title,year}):WatchedTitle[]=>{
-    const tmdbId=requests.tmdbForKey?.(kind,ratingKey);
+  const history=(account:string)=>watches(account).flatMap(({kind,ratingKey,tmdb,at,plays,title,year}):WatchedTitle[]=>{
+    const found=tmdb?undefined:plexTitles.resolve({ratingKey}),tmdbId=tmdb??(found?.kind===kind&&found.season===undefined?found.tmdb:undefined);
     return tmdbId?[{kind,tmdbId,at,...(plays?{plays}:{}),...(title?{title}:{}),...(year?{year}:{})}]:[];
   });
   const tmdb=new TmdbExplore(tmdbClient),personal=new ExploreRecommendations(plex,tmdb,{history,excluded:()=>requests.labels()}),titleDiscovery=new TmdbTitleDiscovery(tmdbClient,tmdb),people=new TmdbPeople(tmdbClient);
@@ -127,7 +131,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
       const row=parsed.data,def=tmdbRows[row];
       const {page:at,provider,providers,region,...query}=tmdbPage.parse(request.query);
       requireThat(def.streaming||(provider===undefined&&providers===undefined&&region===undefined),'INVALID_REQUEST','This row has no streaming selector.',400);
-      requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+      requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Admin › Connections.',409);
       const filter=exploreFilter(query);
       if (def.personal) {
         const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,layout.ranking))[row];
@@ -206,7 +210,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const input=z.object({id:z.coerce.number().int().positive().optional(),name:z.string().trim().min(1).max(200).optional(),
       kind:kind.optional(),tmdb:z.coerce.number().int().positive().optional()}).strict().parse(request.query);
     await viewer(request);
-    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Admin › Connections.',409);
     requireThat(input.id||input.name,'INVALID_REQUEST','Choose a person.',400);
     const id=input.id??await titleDiscovery.personId(input.name!,input.kind==='show'?'tv':input.kind,input.tmdb);
     const person=id?await people.details(id,labelItems):undefined;
@@ -247,7 +251,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const {row,settings}=z.object({row:tmdbRow,settings:exploreRankingOptionsInput}).strict().parse(request.body);
     const query=streamingQuery.parse(request.query), def=tmdbRows[row];
     requireThat(def.streaming||!Object.keys(query).length,'INVALID_REQUEST','This row has no streaming selector.',400);
-    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Artwork › Settings.',409);
+    requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Admin › Connections.',409);
     const current=store.layout().ranking, draft={...current,...exploreRankingInput.parse({[row]:settings})};
     const streaming=def.streaming?await streamingScope(query):undefined;
     const read=async (ranking:typeof current,isPreview:boolean)=>{
@@ -307,12 +311,14 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const item:ExploreItem={...(base??{key:`${input.kind}:${merged.tmdb?`tmdb:${merged.tmdb}`:'unknown'}`,source:'plex',kind:input.kind,title:input.title,...(input.year?{year:input.year}:{})}),ids:merged};
     const status=merged.tmdb?requests.labels().get(`${input.kind}:tmdb:${merged.tmdb}`):undefined;
     if(status)item.status=status;
-    const guids=[merged.plexGuid,merged.imdb&&`imdb://${merged.imdb}`,merged.tmdb&&`tmdb://${merged.tmdb}`,merged.tvdb&&`tvdb://${merged.tvdb}`].filter((g):g is string=>!!g);
-    const matchedLibraryId=library?undefined:await plex.libraryMatch(grant,input.kind,input.title||item.title,guids).catch(()=>undefined);
-    let libraryId=matchedLibraryId;
-    // The request index knows the server's rating key even when the title is named differently on the server.
-    const ratingKey=!library&&merged.tmdb?requests.plexKey(input.kind,merged.tmdb,merged.tvdb):undefined;
-    if(!libraryId&&ratingKey&&/^\d+$/.test(ratingKey))libraryId=await plex.catalogItem(grant,ratingKey).then(found=>found.id,()=>undefined);
+    // The server's copy, from the title identity, opened with the viewer's own grant: a library they can't see gives none.
+    const resolved=library?undefined:merged.tmdb?plexTitles.resolve({kind:input.kind,tmdb:merged.tmdb,tvdb:merged.tvdb}):input.kind==='show'&&merged.tvdb?plexTitles.resolve({tvdb:merged.tvdb}):undefined;
+    let libraryId:string|undefined;
+    for(const ratingKey of resolved?.copies?viewerCopies(grant,resolved.copies):[]){
+      libraryId=/^\d+$/.test(ratingKey)?await plex.catalogItem(grant,ratingKey).then(found=>found.id,()=>undefined):undefined;
+      if(libraryId)break;
+    }
+    const matchedLibraryId=libraryId;
     const genres=tmdbInfo?.genres.length?tmdbInfo.genres:meta?.Genre?.flatMap(g=>g.tag?[g.tag]:[])??[];
     const cast=tmdbInfo?.cast.length?tmdbInfo.cast:meta?.Role?.flatMap(r=>r.tag?[r.tag]:[]).slice(0,8)??[];
     const contentRating=tmdbInfo?.contentRating??meta?.contentRating,tagline=tmdbInfo?.tagline??meta?.tagline,network=tmdbInfo?.network??meta?.studio;

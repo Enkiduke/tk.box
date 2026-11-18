@@ -14,32 +14,27 @@ import { SubtitleWorkerService, ffmpegAudio } from '../services/subtitle-worker.
 import { ffprobe } from '../services/library-import.js';
 import { join } from 'node:path';
 import type { QueueApi } from '../services/queue.js';
-import type { LibraryStore } from '../persistence/library-store.js';
+import type { LibraryFiles } from '../services/library.js';
 
 const HOUR_MS = 3600000, BACKFILL_MINUTES = 10;
 
 // English subtitles from OpenSubtitles.com, replacing Bazarr (docs/PHASE-4.md). Each file the library imports is
 // looked at (`find-subtitles` on the queue). Hourly: subtitles of videos the library no longer has are forgotten (with
-// the sidecars tk.box wrote), and videos whose 3-day grace is over are looked at again. Off until it's switched on in
-// Admin › Downloads › Subtitles (step 4). Every 10 minutes the backfill queues the next 50 library files not yet
-// dealt with (once the last 50 have run, while there's room under the cap); daily, Whisper subtitles a month old are
+// the sidecars tk.box wrote). Off until it's switched on in Admin › Downloads › Subtitles (step 4). Every 10 minutes
+// the backfill queues the next 50 library files not yet dealt with (once the last 50 have run, while there's room under
+// the cap); daily, Whisper subtitles that are due (daily while the release is new, monthly until it's a year old) are
 // looked for again on OpenSubtitles.
 export const subtitleFinderModule = defineModule({
   name: 'subtitle-finder',
   access: 'admin',
   migrations: subtitleFinderMigrations,
-  setup(routes, { config, db, vault, plex, bus, background, jobs, log }, { queue, library }: { queue: QueueApi; library: { store: LibraryStore } }) {
+  setup(routes, { config, db, vault, plex, bus, plexOwner, jobs, log }, { queue, library }: { queue: QueueApi; library: { files: LibraryFiles } }) {
     const store = new SubtitleStore(db, vault);
-    const scan = async (folder: string) => {
-      const grant = await background.grant();
-      if (!grant) throw new AppError('NO_PLEX_TOKEN', 'No Plex admin token in Admin › Connections.', 409);
-      return plex.scanFolder(grant.serverToken, folder);
-    };
     const finder = new SubtitleFinder({
-      store, library: library.store, queue,
+      store, library: library.files, queue,
       probe: probeSubtitles(config.FFPROBE_PATH),
       client: login => new OpenSubtitles(login),
-      scan,
+      scan: folder => plexOwner.scanFolder(folder),
       log: (message, detail) => log.info(message, detail),
     });
     finder.register();
@@ -47,20 +42,24 @@ export const subtitleFinderModule = defineModule({
     const probe = ffprobe(config.FFPROBE_PATH);
     const workers = new SubtitleWorkerStore(db);
     const worker = new SubtitleWorkerService({
-      workers, store, library: library.store, audioDir: join(config.CACHE_DIR, 'subtitle-worker'),
+      workers, store, library: library.files, audioDir: join(config.CACHE_DIR, 'subtitle-worker'),
       makeAudio: ffmpegAudio(config.FFMPEG_PATH), probeDuration: async path => (await probe(path)).durationSec,
-      scan,
+      scan: folder => plexOwner.scanFolder(folder),
       log: (message, detail) => log.info(message, detail),
     });
     registerSubtitleWorker(routes, worker);
     registerSubtitleWorkersAdmin(routes, workers);
-    registerSubtitlesAdmin(routes, { store, finder, library: library.store });
-    registerTitleSubtitles(routes, { db, library: library.store });
+    registerSubtitlesAdmin(routes, { store, finder, library: library.files });
+    registerTitleSubtitles(routes, { store, library: library.files });
     bus.on('library.file.imported', ({ path }) => {
       if (preview()) return;
       void finder.imported(path).catch(e => log.warn('subtitles: an imported file could not be queued', { path, ...errorDetail(e) }));
     });
-    const tidyNow = () => jobs.track('subtitles.tidy', async () => ({ forgotten: await finder.reconcile(), due: finder.due(), leasesExpired: await worker.sweep() }));
+    bus.on('library.title.changed', ({ paths }) => {
+      if (!paths?.length || preview()) return;
+      void finder.gone(paths).catch(e => log.warn('subtitles: a deleted file’s subtitles could not be forgotten', errorDetail(e)));
+    });
+    const tidyNow = () => jobs.track('subtitles.tidy', async () => ({ forgotten: await finder.reconcile(), leasesExpired: await worker.sweep() }));
     jobs.add({ id: 'subtitles.tidy', label: 'Tidy subtitles', area: 'Subtitles', section: 'queue',
       schedule: () => ({ enabled: store.settings().enabled, schedule: { kind: 'every', minutes: 60 } }), status: () => jobs.tracked('subtitles.tidy'), run: tidyNow });
     const backfillNow = () => jobs.track('subtitles.backfill', async () => ({ queued: finder.backfill(), ...finder.progress() }));

@@ -2,11 +2,13 @@ import { AppError } from '../errors.js';
 import { remoteJson } from '../providers/remote-json.js';
 import type { Meta } from './artwork-files.js';
 import { TtlCache } from '../lib/ttl-cache.js';
+import type { TmdbTitles } from '../providers/tmdb-titles.js';
 
 // The pictures TMDb, Fanart.tv, TVDB and Plex offer for one title (posters, logos or backdrops), as the title editor lists
 // them. The title's IDs come from its .artwork.json, so looking only needs Plex for Plex's own pictures. The providers are
-// asked side by side and their answers kept for a day; each one that fails becomes a note, not an error.
-const TMDB = 'https://api.themoviedb.org/3', FANART = 'https://webservice.fanart.tv/v3', TVDB = 'https://api4.thetvdb.com/v4';
+// asked side by side and their answers kept for a day; each one that fails becomes a note, not an error. TMDb is asked
+// through the shared client (ctx.tmdb), which keeps its own answers and its key from Admin › Connections.
+const FANART = 'https://webservice.fanart.tv/v3', TVDB = 'https://api4.thetvdb.com/v4';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/original';
 const ROUTES = '/api/v1/admin/artwork';
 const DAY_MS = 86400000, MAX_CACHED = 400;
@@ -17,7 +19,7 @@ type Art = { url: string; thumb?: string; language?: string | null; text: boolea
 type Row = [string, Art];
 type Json = Record<string, unknown>;
 export type Picture = { provider: string; url: string | null; plex: string | null; view: string; thumb: string; language: string | null; text: boolean | null; width: number; height: number };
-export type Keys = { tmdb?: string; tvdb?: string; fanart?: string };
+export type Keys = { tvdb?: string; fanart?: string };
 // Plex's JSON answer for a path on the administrator's server (status 404 and the like come back, not thrown).
 export type PlexJson = (path: string, params?: Record<string, string | number>) => Promise<{ status: number; data: unknown }>;
 type Item = { type: 'movie' | 'tv' | 'collection'; tmdb?: number; tvdb?: number; imdb?: string; key?: string; season: number | null };
@@ -42,7 +44,7 @@ function tvdbRows(artwork: Json[], types: Json[], kind: string): Art[] {
 export class ArtworkPictures {
   private cache = new TtlCache<Promise<unknown>>(MAX_CACHED, () => this.now());
   private tvdbToken?: { key: string; token: Promise<string> };
-  constructor(private keys: () => Keys, private language: () => string, private transport: typeof fetch = fetch, private now = Date.now) {}
+  constructor(private keys: () => Keys, private titles: Pick<TmdbTitles, 'get' | 'configured'>, private language: () => string, private transport: typeof fetch = fetch, private now = Date.now) {}
 
   // A provider's JSON, kept a day; asked once however many requests want it at the same time.
   private json(id: string, load: () => Promise<unknown>) {
@@ -54,12 +56,9 @@ export class ArtworkPictures {
     if (response.status >= 400) throw new AppError('CATALOG_UNAVAILABLE', response.status === 401 ? `${service} refused the API key` : `${service} answered ${response.status}`, 502);
     return (response.data ?? {}) as Json;
   }
-  private tmdb(path: string, params: Record<string, string> = {}) {
-    const key = this.keys().tmdb!, url = new URL(TMDB + path);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const id = `tmdb ${url}`;
-    url.searchParams.set('api_key', key);
-    return this.json(id, () => this.get('TMDb', url)) as Promise<Json>;
+  // TMDb's answer, {} where it has none (404).
+  private async tmdb(path: string, params: Record<string, string> = {}) {
+    return (await this.titles.get(path, params) ?? {}) as Json;
   }
   private fanart(path: string) {
     return this.json(`fanart ${path}`, () => this.get('Fanart.tv', new URL(FANART + path), { 'api-key': this.keys().fanart! })) as Promise<Json>;
@@ -87,7 +86,7 @@ export class ArtworkPictures {
   // TMDb's details of the title (with its images and other IDs); undefined without a key or an ID.
   private async details(item: Item) {
     const lang = this.language();
-    if (!item.tmdb || !this.keys().tmdb) return undefined;
+    if (!item.tmdb || !this.titles.configured()) return undefined;
     if (item.type === 'collection') return this.tmdb(`/collection/${item.tmdb}/images`, { include_image_language: `${lang},en,null` }).then(images => ({ images }));
     const data = await this.tmdb(`/${item.type}/${item.tmdb}`, { append_to_response: 'images,external_ids', include_image_language: `${lang},en,null` });
     const external = (data.external_ids ?? {}) as Json;
@@ -96,7 +95,7 @@ export class ArtworkPictures {
   }
   // The TMDb ID of a title that only has an IMDb or TVDB one.
   private async identify(item: Item) {
-    if (item.tmdb || !this.keys().tmdb) return;
+    if (item.tmdb || !this.titles.configured()) return;
     for (const [id, source] of [[item.imdb, 'imdb_id'], [item.type === 'tv' ? item.tvdb : undefined, 'tvdb_id']] as const) {
       if (!id) continue;
       const found = await this.tmdb(`/find/${id}`, { external_source: source }), matches = list(found[item.type === 'movie' ? 'movie_results' : 'tv_results']);

@@ -93,7 +93,7 @@ export type LibraryFileView = { id: number; episodes?: string; path: string; siz
 // A title's dialog's Requests tab: every request for it, newest first, failed and removed ones too. `seasons` a
 // show request's chosen seasons; `removedBy` who took it back; `error` the last failed attempt's.
 export type TitleRequest = { id: number; name: string; at: number; status: string; statusAt: number; seasons?: number[]; availableAt?: number;
-  removedAt?: number; removedBy?: 'requester' | 'admin' | 'cleanup' | 'arr'; error?: string };
+  removedAt?: number; removedBy?: 'requester' | 'admin' | 'cleanup' | 'library'; error?: string };
 export type LibraryTitleView = {
   kind: 'movie'; id: number; tmdbId: number; imdbId?: string; title: string; year?: number; profileId: number; keep: boolean; earlyCopies: boolean; monitored: boolean;
   paused: boolean; pausedReason?: string; wanted: { wanted: boolean; why: string };
@@ -107,12 +107,16 @@ export type PlexKey = { server: string; key: string };
 // A show's episode in its dialog: `monitored` with its season; `wanted` as if unpaused; `grab` one under way; the
 // times are its own search's (S02E05).
 export type ShowEpisodeView = { episode: number; name?: string; airDate?: string; aired: boolean; monitored: boolean;
-  file?: { id: number; quality: string; size: number }; wanted?: 'missing' | 'cutoff'; grab?: GrabState; nextAt?: number; lastAt?: number };
+  // `plex`: no tk.box file, but Plex holds it (it counts as had and isn't searched).
+  file?: { id: number; quality: string; size: number }; plex?: true; wanted?: 'missing' | 'cutoff'; grab?: GrabState; nextAt?: number; lastAt?: number };
 // A season: its switch, its pack search's times (S02), its episodes.
-export type ShowSeasonView = { season: number; monitored: boolean; nextAt?: number; lastAt?: number; episodes: ShowEpisodeView[] };
+// `have` of `total`, and `size`: counted as for the whole show (ShowTitleView).
+export type ShowSeasonView = { season: number; monitored: boolean; nextAt?: number; lastAt?: number; have: number; total: number; size: number; episodes: ShowEpisodeView[] };
 export type ShowTitleView = {
   kind: 'show'; id: number; tmdbId: number; tvdbId?: number; title: string; year?: number; status?: string; profileId: number; keep: boolean;
   monitor: string; monitored: boolean; paused: boolean; pausedReason?: string; wanted: { missing: number; cutoff: number };
+  // As Admin › Shows counts them (ShowRow): episodes had of those that count, the files' size, the next to air.
+  have: number; total: number; size: number; nextAir?: { day: string; season: number; episode: number };
   seasons: ShowSeasonView[]; files: LibraryFileView[]; grabs: DownloadsGrab[]; profiles: { id: number; name: string }[]; source: MovieSource; addedAt: number;
   requests: TitleRequest[]; plex?: PlexKey;
 };

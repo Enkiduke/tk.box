@@ -5,8 +5,8 @@ import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { prepared } from './statements.js';
 
-// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py), its saved watch
-// history and its job history. The script reads none of this directly: before each run tk.box writes its JSON config
+// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py) and its job history.
+// Who watched what is watch history's. The script reads none of this directly: before each run tk.box writes its JSON config
 // (cleanupConfig). The titles come from tk.box's requests.
 const libraryId = z.string().regex(/^\d{1,10}$/);
 const days = z.number().int().min(0).max(3650);
@@ -39,9 +39,6 @@ const defaults: CleanupSettings = { movieLibraries: [], tvLibraries: [], dryRun:
 export const holdKey = z.string().regex(/^(?:movie|tv):\d{1,10}(?::\d{1,4})?$/);
 export type CleanupHold = { until: number; by: string; at: number };
 export type CleanupKept = { tag: string; by: string; at: number };
-// A watch date, by scope and Plex rating key; account is a Plex account id, or '' for anyone.
-export type CleanupWatch = { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number };
-export type CleanupWatchSnapshot = { at: number; by: string; serverId: string; checked: number; watches: number };
 export type CleanupJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 const job = (r: Record<string, unknown>) => ({ id: r.id as number, label: r.label as string, args: JSON.parse(r.args as string) as string[], script: 'cleanup' as const, actor: r.actor as string,
   status: r.status as CleanupJobStatus, createdAt: r.created_at as number, startedAt: r.started_at as number | null, finishedAt: r.finished_at as number | null, exitCode: r.exit_code as number | null });
@@ -96,26 +93,6 @@ export class CleanupStore {
     this.db.transaction(() => {
       this.setState('kept', { ...this.kept(), [key]: { tag, by: actor, at: now } });
       prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_title_kept', now, JSON.stringify({ key, tag }));
-    })();
-  }
-  // Watch dates saved from the old watch-history service before it was removed, for one Plex server. Saving again keeps the later date of each.
-  watchSnapshot() { return this.state<CleanupWatchSnapshot>('watch-snapshot'); }
-  watchSnapshotRows(serverId: string): CleanupWatch[] {
-    if (this.watchSnapshot()?.serverId !== serverId) return [];
-    return prepared(this.db, 'SELECT scope,rating_key AS ratingKey,account,at FROM cleanup_watch_snapshot').all() as CleanupWatch[];
-  }
-  saveWatchSnapshot(actor: string, serverId: string, checked: number, rows: CleanupWatch[], now = Date.now()) {
-    return this.db.transaction(() => {
-      const saved = this.watchSnapshot();
-      if (saved && saved.serverId !== serverId) prepared(this.db, 'DELETE FROM cleanup_watch_snapshot').run();
-      const write = prepared(this.db, `INSERT INTO cleanup_watch_snapshot(scope,rating_key,account,at) VALUES(?,?,?,?)
-        ON CONFLICT(scope,rating_key,account) DO UPDATE SET at=MAX(at,excluded.at)`);
-      for (const r of rows) write.run(r.scope, r.ratingKey, r.account, r.at);
-      const watches = (prepared(this.db, "SELECT COUNT(*) AS n FROM cleanup_watch_snapshot WHERE account=''").get() as { n: number }).n;
-      const info: CleanupWatchSnapshot = { at: now, by: actor, serverId, checked, watches };
-      this.setState('watch-snapshot', info);
-      prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, 'cleanup_watch_snapshot_saved', now, JSON.stringify({ checked, watches }));
-      return info;
     })();
   }
   state<T>(name: string) { return this.row<T>(`state:${name}`)?.value; }

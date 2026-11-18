@@ -19,7 +19,7 @@ type LayoutType='movie'|'tv'|'custom'|'collection'|'streaming'|'chart';
 type Schedules={scrub:Scheduled;added:Scheduled};
 type Settings={revision:number;libraries:string[];upload:boolean;uploadLogo:boolean;includeSeasons:boolean;includeEpisodes:boolean;includeCollections:boolean;
   missingArt:'stock'|'skip';quality:number;workers:number;language:string;completionLabel:string;defaultLayout:string;layoutByLibrary:Record<string,string>;layoutByType:Partial<Record<LayoutType,string>>;
-  schedules:Schedules;keysSet:Record<string,boolean>};
+  schedules:Schedules};
 type Overview={settings:Settings;layouts:LayoutEntry[];libraries:Library[];engine:Engine;queue:{running:number|null;queued:number};schedules:Record<keyof Schedules,ScheduleState>};
 const tabs=[['titles','Titles'],['layouts','Layouts'],['schedules','Schedules'],['settings','Settings']] as const;
 
@@ -72,8 +72,8 @@ function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
 }
 
 function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
-  const {revision:_,keysSet:___,schedules:__,...saved}=data.settings,[draft,setDraft]=useState(saved),mutation=useMutation(changed);
-  useEffect(()=>{const {revision:_,keysSet:__,schedules:___,...value}=data.settings;setDraft(value);},[data.settings.revision]);
+  const {revision:_,schedules:__,...saved}=data.settings,[draft,setDraft]=useState(saved),mutation=useMutation(changed);
+  useEffect(()=>{const {revision:_,schedules:___,...value}=data.settings;setDraft(value);},[data.settings.revision]);
   const set=(patch:Partial<typeof draft>)=>{setDraft(d=>({...d,...patch}));};
   const toggleLibrary=(key:string,on:boolean)=>{const layoutByLibrary={...draft.layoutByLibrary};if(!on)delete layoutByLibrary[key];set({libraries:on?[...draft.libraries,key]:draft.libraries.filter(k=>k!==key),layoutByLibrary});};
   const libraryLayout=(key:string,layout:string)=>{const layoutByLibrary={...draft.layoutByLibrary};if(layout)layoutByLibrary[key]=layout;else delete layoutByLibrary[key];set({layoutByLibrary});};
@@ -81,7 +81,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
   const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/admin/connections/artwork');invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
+    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Libraries">
@@ -128,8 +128,8 @@ function ArtworkSchedules({data,changed}:{data:Overview;changed:()=>void}) {
   const [draft,setDraft]=useState(data.settings.schedules),mutation=useMutation(changed);
   useEffect(()=>setDraft(data.settings.schedules),[data.settings.revision]);
   const save=()=>void mutation.run(async()=>{
-    const {revision,keysSet:_,...saved}=data.settings;
-    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});invalidate('/admin/connections/artwork');toast.success('Schedules saved');
+    const {revision,...saved}=data.settings;
+    await api('/admin/artwork/settings','PUT',{expectedRevision:revision,...saved,schedules:draft});toast.success('Schedules saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <SchedulesCard schedules={draft} states={data.schedules} set={value=>{setDraft(value);}}/>

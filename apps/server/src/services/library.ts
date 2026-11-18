@@ -1,5 +1,5 @@
 import { dirname, win32 } from 'node:path';
-import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, LibraryBulkEdit, LibraryBulkResult, MovieSource, ShowRow, ShowSeasonView, WantedItem } from '../../../../packages/contracts/src/downloads.js';
+import type { ClientItem, DownloaderLive, InteractiveCurrentRelease, InteractiveSearch, LibraryBulkEdit, LibraryBulkResult, MovieSource, ShowEpisodeView, ShowRow, ShowSeasonView, WantedItem } from '../../../../packages/contracts/src/downloads.js';
 import * as fs from 'node:fs/promises';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import { scoreFormats } from '../lib/formats.js';
@@ -10,7 +10,7 @@ import { bettersLibrary, compareDecisions, decide, fewSeeders, pick,type Decisio
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
-import { airedAt, beforeCinemas, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
+import { beforeCinemas, episodeAiredAt, have as haveOf, type Have, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
   showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
 import { findVideos, type LibraryImporter, type ShowImport } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
@@ -23,9 +23,11 @@ import { withAirTimes, type TvmazeAiring } from '../providers/tvmaze.js';
 import type { EpisodeRef, Grab, LibraryFileRow, LibrarySettings, LibraryStore, LibraryTitle, OutKind, Released, RunnerUp } from '../persistence/library-store.js';
 import { CEILING, DEAD_CEILING, POST_LIMIT, PRE_DOWNLOAD_LIMIT, RECHECK, SKIP_FOR, VERDICT_POLLS, WARM_UP, budgetMs, judge, likelyFaster, newWatch, noCompleteCopy, stageClock, strike,
   swapTierLimit, type Watch } from './download-health.js';
-import type { BusEvents } from '../modules/bus.js';
+import type { BusEvents, TitleChange } from '../modules/bus.js';
+import { movieReleaseDate } from '../lib/release-day.js';
+import type { RequestRelease } from '../../../../packages/contracts/src/index.js';
 
-// The library for movies (docs/ARR-REPLACEMENT.md, phases 1 and 3): adding a title, wanted, searching (on add, the
+// The library for movies and shows (docs/ARR-REPLACEMENT.md, phases 1 to 3): adding a title, wanted, searching (on add, the
 // 30-minute sweep with its backoff, RSS), grabbing, following SABnzbd and qBittorrent, unpacking, importing, seeding,
 // and the failure rules. Usenet comes first: IPTorrents is searched when NZBGeek has nothing, or nothing at the
 // cutoff. Every step that talks to something outside runs on the queue: search, send, unpack, import, refresh-title
@@ -50,8 +52,27 @@ export const defaultUnpacker: Unpacker = {
   unpack: (archives, dest, signal) => unpack(archives, dest, signal),
   clear: dest => fs.rm(dest, { recursive: true, force: true }),
 };
-// What Plex holds, by TMDB id (the owner's grant). `ready` reads it when it hasn't been yet; false when it can't.
-export type PlexHolds = { has(tmdbId: number): boolean; ready(): Promise<boolean> };
+// What Plex holds (the plex-index module, the owner's grant): a movie, a show's seasons, and the episodes of a show
+// the library follows (`season:episode`). `ready` reads it when it hasn't been yet; false when it can't.
+export type PlexHolds = { has(tmdbId: number): boolean; ready(): Promise<boolean>; showSeasons?(tmdbId: number, tvdbId?: number): { has(season: number): boolean; readonly size: number } | undefined;
+  showEpisodes?(tmdbId: number, tvdbId?: number): ReadonlySet<string> | undefined };
+// What the library is after and has for a title (library.state), for other modules. `have` (services/wanted.ts): a
+// tk.box file, else Plex holding it, else none. A show's `have` is per season below, counting episodes by that rule;
+// its own is the best of them. `total` counts the episodes had or aired and monitored (showCounts), as Admin › Shows does.
+export type SeasonState = { season: number; monitored: boolean; have: number; total: number; plex: boolean; downloading: boolean };
+export type TitleState = { titleId: number; kind: 'movie' | 'show'; tmdbId: number; tvdbId?: number; monitored: boolean; paused: boolean; keep: boolean;
+  addedBy: string; have: 'file' | 'plex' | 'none'; wanted: boolean; downloading: boolean; seasons?: SeasonState[] };
+// A requested title's last search and release day (library.progress, a request's timing).
+export type TitleProgress = { at?: number; release?: RequestRelease };
+type EpisodeRelease = Extract<RequestRelease, { kind: 'episode' }>;
+// The library's files, as the library module hands them to subtitles.
+export type LibraryFiles = Pick<LibraryStore, 'fileByPath' | 'filePaths' | 'hasFile' | 'files' | 'fileEpisodes' | 'title' | 'episodes'>;
+// The calendar's rows (library.calendar): movies monitored or with a file, and episodes airing in the range whose show,
+// season and episode are all monitored, or with a file.
+// The calendar's movies and episodes (library.calendar), each with what tk.box has of it (`have`, services/wanted.ts).
+export type CalendarMovie = LibraryTitle & { have: Have };
+export type CalendarEpisode = { show: LibraryTitle; season: number; episode: number; name?: string; airDate: string; airTime?: number; have: Have };
+export type LibraryCalendar = { movies: CalendarMovie[]; episodes: CalendarEpisode[] };
 // `earlyCopies`: a movie's own switch (a request's, or an admin's); shows ignore it.
 export type AddMovie = { tmdbId: number; by: string; profileId?: number; keep?: boolean; earlyCopies?: boolean; search: boolean };
 // A show as a request asks for it: its seasons, and whether new ones are followed too ("watch new seasons").
@@ -173,6 +194,12 @@ export class Library {
     this.deps.emit('notification.post', { to: 'admins', kind: 'library', tone: 'error', title, detail: detail.slice(0, 500), key });
   }
   private resolve(key: string) { this.deps.emit('notification.resolve', { to: 'admins', key }); }
+  // What the library is after or has changed for a title (library.title.changed): requests, subtitles, open pages and
+  // Plex's metadata cache hear it.
+  private changed(title: LibraryTitle, change: TitleChange, extra: { by?: string; paths?: readonly string[] } = {}) {
+    this.deps.emit('library.title.changed', { titleId: title.id, kind: title.kind, tmdbId: title.tmdbId, change, ...(extra.by ? { by: extra.by } : {}),
+      ...(extra.paths?.length ? { paths: [...new Set(extra.paths)] } : {}) });
+  }
   private grabChanged(grab: Pick<Grab, 'id' | 'titleId'>) {
     const g = this.store.grab(grab.id);
     if (g) this.deps.emit('library.grab.changed', { grabId: g.id, titleId: g.titleId, state: g.state });
@@ -199,9 +226,9 @@ export class Library {
     const listed = await Promise.all(seasons.map(n => this.deps.titles.get(`/tv/${tmdbId}/season/${n}`, {}, HOUR) as Promise<TmdbSeason | undefined>));
     const episodes: EpisodeFact[] = listed.flatMap((season, i) => (season?.episodes ?? []).flatMap(e => {
       if (typeof e.episode_number !== 'number') return [];
-      const airDate = e.air_date || undefined, airAt = airedAt(airDate);
+      const airDate = e.air_date || undefined;
       return [{ season: seasons[i]!, episode: e.episode_number, ...(e.name ? { name: e.name } : {}), ...(airDate ? { airDate } : {}),
-        ...(airAt !== undefined ? { airAt } : {}), ...(e.runtime ? { runtime: e.runtime } : {}) }];
+        ...(e.runtime ? { runtime: e.runtime } : {}) }];
     }));
     const year = yearOf(show.first_air_date), tvdbId = show.external_ids?.tvdb_id || undefined, imdbId = show.external_ids?.imdb_id || undefined;
     const runtime = show.episode_run_time?.find(m => m > 0) ?? episodes.find(e => e.runtime)?.runtime;
@@ -211,7 +238,10 @@ export class Library {
       facts: { title: show.name, ...(year ? { year } : {}), ...(tvdbId ? { tvdbId } : {}), ...(imdbId ? { imdbId } : {}),
         aliases: aliasesOf(show.name, [show.original_name, ...(show.alternative_titles?.results ?? []).map(t => t.title)]),
         released: show.status ? { status: show.status } : {}, ...(runtime ? { runtime } : {}) },
-      seasons, episodes: airings.length ? withAirTimes(episodes, airings) : episodes,
+      seasons, episodes: (airings.length ? withAirTimes(episodes, airings) : episodes).map(e => {
+        const airAt = episodeAiredAt(e);
+        return airAt === undefined ? e : { ...e, airAt };
+      }),
     };
   }
 
@@ -234,6 +264,7 @@ export class Library {
     const settings = this.store.settings(), facts = await this.tmdb(input.tmdbId);
     const profileId = input.profileId && this.store.profile(input.profileId) ? input.profileId : settings.defaultProfile;
     let title = this.store.titleByTmdb('movie', input.tmdbId);
+    const existed = !!title;
     if (title) {
       this.store.setMonitor(title.id, 'all');
       // Requested now: it no longer belongs to the collection that added it, which won't delete it when it lets go.
@@ -254,6 +285,7 @@ export class Library {
     const last = this.store.search(title.id, 'movie');
     this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: last?.lastAt ?? 0, misses: 0, nextAt: at });
     if (input.search && at <= now) this.queueSearch(title.id, undefined, undefined, undefined, true);
+    this.changed(title, existed ? 'monitor' : 'added', { by: input.by });
     return title;
   }
 
@@ -267,6 +299,7 @@ export class Library {
     const profileId = input.profileId && this.store.profile(input.profileId) ? input.profileId : settings.defaultProfile;
     const chosen = [...new Set(input.seasons.filter(n => n > 0))], now = this.now();
     let title = this.store.titleByTmdb('show', input.tmdbId);
+    const existed = !!title;
     if (!title) {
       const every = tmdb.seasons.length > 0 && tmdb.seasons.every(n => chosen.includes(n));
       const monitor = input.monitorFuture ? every ? 'all' as const : 'future' as const : 'manual' as const;
@@ -289,6 +322,7 @@ export class Library {
     }
     title = this.store.title(title.id)!;
     if (input.search) for (const scope of this.scopesOf(title).filter(s => chosen.includes(s.season))) this.queueSearch(title.id, undefined, undefined, scope.scope, true);
+    this.changed(title, existed ? 'monitor' : 'added', { by: input.by });
     return title;
   }
   // Stops following these seasons of a show (their requests were cancelled), and their queued searches.
@@ -297,6 +331,7 @@ export class Library {
     if (title?.kind !== 'show' || !seasons.length) return;
     this.store.followSeasons(titleId, seasons, false);
     this.cancelSearches(titleId, seasons);
+    this.changed(title, 'monitor');
   }
   private cancelSearches(titleId: number, seasons: readonly number[]) {
     for (const season of seasons) {
@@ -313,6 +348,7 @@ export class Library {
     const paths = this.store.forgetSeason(titleId, season);
     this.cancelSearches(titleId, [season]);
     this.deps.log('library: forgot a season Clean Up deleted', { title: titleId, season, files: paths.length });
+    this.changed(title, 'file', { by: 'cleanup', paths });
   }
   private async cancelGrab(grab: Grab, reason: string) {
     this.store.updateGrab(grab.id, { state: 'cancelled', error: reason, finishedAt: this.now() });
@@ -324,7 +360,11 @@ export class Library {
   }
 
   // Stops watching it (a request was cancelled).
-  unmonitor(titleId: number) { this.store.unfollow(titleId); this.deps.queue.cancel('search', `movie:${titleId}`); }
+  unmonitor(titleId: number) {
+    this.store.unfollow(titleId); this.deps.queue.cancel('search', `movie:${titleId}`);
+    const title = this.store.title(titleId);
+    if (title) this.changed(title, 'monitor');
+  }
   // The Monitored switch. Off: nothing is searched for, grabbed from RSS or upgraded, and searches queued are
   // cancelled; it keeps its files. On: the follow mode it had comes back (a movie All, a show Manual if it had none),
   // with its seasons' and episodes' own switches as they were.
@@ -339,6 +379,7 @@ export class Library {
       else this.deps.queue.cancel('search', `movie:${titleId}`);
     }
     this.store.audit('library_monitored', { title: titleId, on });
+    this.changed(title, 'monitor');
   }
   keep(titleId: number, keep: boolean) { this.store.setKeep(titleId, keep); }
   // A title's profile, and its searches started over: the new one may take what the old one didn't.
@@ -397,13 +438,15 @@ export class Library {
     return { changed, searched, skipped };
   }
   // Clean Up or an admin removed it: the title, its files' records and its grabs go (the files are already gone).
-  forget(titleId: number, by: 'cleanup' | 'admin' | 'collections') {
+  // `gone`: its files already deleted (their records with them).
+  forget(titleId: number, by: 'cleanup' | 'admin' | 'collections', gone: readonly string[] = []) {
     const title = this.store.title(titleId);
     if (!title) return;
+    const paths = [...gone, ...this.store.files(titleId).map(f => f.path)];
     if (title.kind === 'show') this.cancelSearches(titleId, this.store.seasons(titleId).map(s => s.season));
     else this.deps.queue.cancel('search', `movie:${titleId}`);
     this.store.deleteTitle(titleId);
-    this.deps.emit('library.title.removed', { titleId, kind: title.kind, tmdbId: title.tmdbId, by });
+    this.changed(title, 'removed', { by, paths });
   }
   // A seasonal or rotating collection let the movie go: deleted with its files, but only one the library added for
   // collections that nobody has requested (which hands it over) or kept since. A download under way is cancelled.
@@ -417,7 +460,7 @@ export class Library {
     const grab = this.store.openGrabFor(title.id);
     if (grab) await this.cancelGrab(grab, 'Its collection let it go.');
     const { folder, removed } = await this.deps.importer.deleteFiles(title);
-    this.forget(title.id, 'collections');
+    this.forget(title.id, 'collections', removed);
     this.deps.log('library: removed a movie its collection let go', { title: title.id, tmdb: title.tmdbId, files: removed });
     if (folder && removed.length) await this.deps.scan(folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder, error: errorText(e) }));
     return true;
@@ -432,6 +475,7 @@ export class Library {
     requireThat(result, 'NOT_FOUND', 'No such file for this title.', 404);
     this.store.audit('library_file_deleted', { title: title.id, file: fileId, onDisk: result.deleted });
     this.deps.log('library: an admin deleted a file', { title: title.id, file: fileId, onDisk: result.deleted });
+    this.changed(title, 'file', { by: 'admin', paths: [result.path] });
     if (result.folder) await this.deps.scan(result.folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder: result.folder, error: errorText(e) }));
     return { deleted: result.deleted };
   }
@@ -443,7 +487,7 @@ export class Library {
     requireThat(title, 'NOT_FOUND', 'No such title in the library.', 404);
     for (const grab of this.store.activeGrabs().filter(g => g.titleId === titleId)) await this.cancelGrab(grab, 'An admin deleted the title.');
     const { folder, removed } = files ? await this.deps.importer.deleteTitleFolder(title) : { folder: undefined, removed: [] as string[] };
-    this.forget(title.id, 'admin');
+    this.forget(title.id, 'admin', removed);
     this.store.audit('library_title_deleted', { title: title.id, kind: title.kind, tmdb: title.tmdbId, name: title.title, files: removed.length });
     this.deps.log('library: an admin deleted a title', { title: title.id, tmdb: title.tmdbId, files: removed.length });
     if (folder && removed.length) await this.deps.scan(folder).catch(e => this.deps.log('library: Plex wasn’t told about the removal', { folder, error: errorText(e) }));
@@ -487,10 +531,13 @@ export class Library {
 
   // ---- Shows ----
 
-  // A show's episodes with their files (tk.box's records), and what to search now.
+  // A show's episodes with their files (tk.box's records) and whether Plex holds each, and what to search now.
   private showState(title: LibraryTitle) {
-    const files = this.store.episodeFiles(title.id);
-    const episodes = this.store.episodes(title.id).map(e => { const file = files.get(`${e.season}:${e.episode}`); return { ...e, ...(file ? { file } : {}) }; });
+    const files = this.store.episodeFiles(title.id), plex = this.deps.plex.showEpisodes?.(title.tmdbId, title.tvdbId);
+    const episodes = this.store.episodes(title.id).map(e => {
+      const key = `${e.season}:${e.episode}`, file = files.get(key);
+      return { ...e, ...(file ? { file } : {}), ...(plex?.has(key) ? { inPlex: true } : {}) };
+    });
     return { seasons: this.store.seasons(title.id), episodes, files };
   }
   // `at`: as it will be then (the sweep looks ahead to its next run).
@@ -1066,6 +1113,8 @@ export class Library {
       for (const f of files) byFolder.set(dirname(f.path), [...byFolder.get(dirname(f.path)) ?? [], f.fileId]);
       for (const ids of byFolder.values()) this.deps.queue.enqueue('plex-scan', `file:${ids[0]}`, { fileId: ids[0]!, ...(ids.length > 1 ? { fileIds: ids } : {}) });
       this.grabChanged(grab);
+      // An upgrade: the files it replaced are gone.
+      if (result.replaced.length) this.changed(title, 'file', { paths: result.replaced });
       return done();
     } catch (e) {
       // Disk full, permission denied and the like: the grab stays importing and the queue tries again.
@@ -1232,16 +1281,7 @@ export class Library {
   showList(sourceOf: (title: LibraryTitle) => MovieSource): ShowRow[] {
     const names = new Map(this.store.profiles().map(p => [p.id, p.name])), grabbing = this.store.grabbingTitles();
     return this.store.allShows().map(t => {
-      let have = 0, total = 0, missing = 0, cutoff = 0, size = 0;
-      const sizes = new Set<number>(), seasons = this.showDetail(t);
-      for (const s of seasons) for (const e of s.episodes) {
-        if (e.file) { have++; if (!sizes.has(e.file.id)) { sizes.add(e.file.id); size += e.file.size; } }
-        if (e.file || (e.aired && e.monitored)) total++;
-        if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
-      }
-      const today = new Date(this.now()).toISOString().slice(0, 10);
-      const nextAir = seasons.flatMap(s => s.episodes.filter(e => !e.aired && e.airDate && e.airDate >= today).map(e => ({ day: e.airDate!, season: s.season, episode: e.episode })))
-        .sort((a, b) => a.day.localeCompare(b.day) || a.season - b.season || a.episode - b.episode)[0];
+      const seasons = this.showDetail(t), { have, total, missing, cutoff, size, nextAir } = showCounts(seasons, this.now());
       return { id: t.id, tmdbId: t.tmdbId, ...(t.tvdbId ? { tvdbId: t.tvdbId } : {}), title: t.title, ...(t.year ? { year: t.year } : {}),
         ...(t.released.status ? { status: t.released.status } : {}), seasons: seasons.length, have, total, missing, cutoff, size, profileId: t.profileId,
         profile: names.get(t.profileId) ?? 'Default', keep: t.keep, paused: t.paused, monitored: t.monitor !== 'none', grabbing: grabbing.has(t.id),
@@ -1254,13 +1294,16 @@ export class Library {
     const state = this.showState(title), profile = this.profile(title), now = this.now(), busy = new Map<string, Grab['state']>();
     for (const g of this.store.activeGrabs()) if (g.titleId === title.id) for (const [s, e] of g.episodes) busy.set(`${s}:${e}`, g.state);
     const times = (scope: string) => { const r = this.store.search(title.id, scope); return r ? { nextAt: r.nextAt, ...(r.lastAt ? { lastAt: r.lastAt } : {}) } : {}; };
-    return state.seasons.map(season => ({ season: season.season, monitored: season.monitored, ...times(scopeName(season.season)),
-      episodes: state.episodes.filter(e => e.season === season.season).map(e => {
+    return state.seasons.map(season => {
+      const episodes: ShowEpisodeView[] = state.episodes.filter(e => e.season === season.season).map(e => {
         const w = episodeWanted({ monitor: title.monitor, paused: false }, season.monitored, e, profile, now), grab = busy.get(`${e.season}:${e.episode}`);
         return { episode: e.episode, ...(e.name ? { name: e.name } : {}), ...(e.airDate ? { airDate: e.airDate } : {}), aired: e.airAt !== undefined && e.airAt <= now,
-          monitored: title.monitor !== 'none' && season.monitored && e.monitored, ...(e.file ? { file: { id: e.file.id, quality: e.file.quality, size: e.file.size } } : {}),
+          monitored: title.monitor !== 'none' && season.monitored && e.monitored, ...(e.file ? { file: { id: e.file.id, quality: e.file.quality, size: e.file.size } } : e.inPlex ? { plex: true } : {}),
           ...(w.wanted ? { wanted: w.why } : {}), ...(grab ? { grab } : {}), ...times(scopeName(e.season, e.episode)) };
-      }) }));
+      });
+      const { have, total, size } = episodeCounts(episodes);
+      return { season: season.season, monitored: season.monitored, ...times(scopeName(season.season)), have, total, size, episodes };
+    });
   }
   // A season's switch in Admin: it and its episodes on or off. Switching one on in a show followed by nothing makes it
   // Manual, so the switch means something; the sweep searches what turns wanted.
@@ -1270,8 +1313,93 @@ export class Library {
     this.store.followSeasons(titleId, [season], on);
     if (on && title.monitor === 'none') this.store.setFollow(titleId, 'manual', null);
     this.store.audit('library_season_monitored', { title: titleId, season, on });
+    this.changed(title, 'monitor');
   }
   async titleWanted(title: LibraryTitle) { await this.deps.plex.ready(); return this.wanted(title); }
+
+  // ---- What the library has and is after, for other modules ----
+
+  state(kind: 'movie' | 'show', tmdbId: number): TitleState | undefined {
+    const title = this.store.titleByTmdb(kind, tmdbId);
+    return title ? this.stateOf(title, this.store.grabbingTitles()) : undefined;
+  }
+  states(): TitleState[] {
+    const grabbing = this.store.grabbingTitles();
+    return this.store.allTitles().map(t => this.stateOf(t, grabbing));
+  }
+  // The calendar's titles: what the library follows (a show's season and episode too), and anything it has (a file, or
+  // on Plex) whether followed or not. Movies are every one (the calendar picks the day); episodes airing from `from` to `to`.
+  calendar(from: string, to: string): LibraryCalendar {
+    const movies = this.store.calendarMovies().flatMap(({ hasFile, ...m }) => {
+      const had = haveOf({ file: hasFile, inPlex: this.deps.plex.has(m.tmdbId) });
+      return m.monitor !== 'none' || had !== 'none' ? [{ ...m, have: had }] : [];
+    });
+    const onPlex = new Map<number, ReadonlySet<string> | undefined>();
+    const episodes = this.store.calendarEpisodes(from, to).flatMap(({ hasFile, followed, ...e }) => {
+      if (!onPlex.has(e.show.id)) onPlex.set(e.show.id, this.deps.plex.showEpisodes?.(e.show.tmdbId, e.show.tvdbId));
+      const had = haveOf({ file: hasFile, inPlex: !!onPlex.get(e.show.id)?.has(`${e.season}:${e.episode}`) });
+      return followed || had !== 'none' ? [{ ...e, have: had }] : [];
+    });
+    return { movies, episodes };
+  }
+  // The pick profiles, the default first (a request's Advanced).
+  profiles() {
+    const first = this.store.settings().defaultProfile, profiles = this.store.profiles().map(p => ({ id: p.id, name: p.name }));
+    return [...profiles.filter(p => p.id === first), ...profiles.filter(p => p.id !== first)];
+  }
+  // How a requested title is getting on (a request's timing): its last search, and its release day (a movie's), or
+  // among the asked seasons' episodes with no file, the latest to have aired (else the next to air).
+  progress(titleId: number, seasons: readonly number[]): TitleProgress {
+    const title = this.store.title(titleId);
+    if (!title) return {};
+    return title.kind === 'movie' ? this.movieProgress(title) : this.showProgress(title, seasons);
+  }
+  private movieProgress(title: LibraryTitle): TitleProgress {
+    const at = this.store.search(title.id, 'movie')?.lastAt || undefined;
+    const { theatrical, digital, physical } = title.released;
+    const date = movieReleaseDate({ inCinemas: theatrical, digitalRelease: digital, physicalRelease: physical });
+    const waiting = !isOut(title.released, this.now());
+    return { ...(at ? { at } : {}), ...((date || waiting) && { release: { kind: 'movie', ...(date ? { date } : {}), ...(waiting ? { waitingForRelease: true as const } : {}) } }) };
+  }
+  private showProgress(title: LibraryTitle, seasons: readonly number[]): TitleProgress {
+    if (!seasons.length) return {};
+    const files = this.store.episodeFiles(title.id), now = this.now();
+    const missing = this.store.episodes(title.id).filter(e => seasons.includes(e.season) && !files.has(`${e.season}:${e.episode}`));
+    let at: number | undefined, latestAired: EpisodeRelease | undefined, nextToAir: EpisodeRelease | undefined;
+    const searched = (scope: string) => { const last = this.store.search(title.id, scope)?.lastAt; if (last && (at === undefined || last > at)) at = last; };
+    for (const season of new Set(missing.map(e => e.season))) searched(scopeName(season));
+    for (const e of missing) {
+      searched(scopeName(e.season, e.episode));
+      if (!e.airDate) continue;
+      const aired = e.airAt !== undefined && e.airAt <= now;
+      const airing: EpisodeRelease = { kind: 'episode', day: e.airDate, aired, season: e.season, episode: e.episode };
+      if (aired && (!latestAired || e.airDate > latestAired.day)) latestAired = airing;
+      if (!aired && (!nextToAir || e.airDate < nextToAir.day)) nextToAir = airing;
+    }
+    const release = latestAired ?? nextToAir;
+    return { ...(at ? { at } : {}), ...(release ? { release } : {}) };
+  }
+  private stateOf(title: LibraryTitle, grabbing: ReadonlySet<number>): TitleState {
+    const base = { titleId: title.id, kind: title.kind, tmdbId: title.tmdbId, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), monitored: title.monitor !== 'none',
+      paused: title.paused, keep: title.keep, addedBy: title.addedBy, downloading: grabbing.has(title.id) };
+    if (title.kind === 'movie') {
+      const file = this.store.files(title.id)[0];
+      return { ...base, have: file ? 'file' : this.deps.plex.has(title.tmdbId) ? 'plex' : 'none', wanted: this.wanted(title).wanted };
+    }
+    const state = this.showState(title), now = this.now(), plex = this.deps.plex.showSeasons?.(title.tmdbId, title.tvdbId), busy = this.store.grabbingEpisodes(title.id);
+    const seasons = state.seasons.map(season => {
+      let have = 0, total = 0;
+      for (const e of state.episodes) if (e.season === season.season) {
+        const had = haveOf(e) !== 'none';
+        if (had) have++;
+        if (had || (e.airAt !== undefined && e.airAt <= now && title.monitor !== 'none' && season.monitored && e.monitored)) total++;
+      }
+      return { season: season.season, monitored: title.monitor !== 'none' && season.monitored, have, total, plex: !!plex?.has(season.season),
+        downloading: busy.some(([s]) => s === season.season) };
+    });
+    const have = state.episodes.some(e => e.file) ? 'file' as const : state.episodes.some(e => e.inPlex) || seasons.some(s => s.plex) || (plex && !state.seasons.length && plex.size) ? 'plex' as const : 'none' as const;
+    return { ...base, have, wanted: base.monitored && !title.paused && this.scopesOf(title, state).length > 0, seasons };
+  }
 
   private movie(titleId: number) {
     const title = this.store.title(titleId);
@@ -1469,4 +1597,26 @@ export class Library {
     catch (e) { return fail(errorText(e), e instanceof AppError && e.code === 'NOT_FOUND'); }
     return done();
   }
+}
+
+// A show's counts, from its dialog's seasons (Admin › Shows and the show dialog): episodes had (a file, or on Plex) of
+// those that count (had, or aired and monitored), wanted ones, the files' size, and the next episode to air.
+export function showCounts(seasons: readonly ShowSeasonView[], now: number) {
+  const today = new Date(now).toISOString().slice(0, 10), { have, total, missing, cutoff, size } = episodeCounts(seasons.flatMap(s => s.episodes));
+  const nextAir = seasons.flatMap(s => s.episodes.filter(e => !e.aired && e.airDate && e.airDate >= today).map(e => ({ day: e.airDate!, season: s.season, episode: e.episode })))
+    .sort((a, b) => a.day.localeCompare(b.day) || a.season - b.season || a.episode - b.episode)[0];
+  return { have, total, missing, cutoff, size, ...(nextAir ? { nextAir } : {}) };
+}
+// The same counts for a list of episodes (a season, or a whole show); a file holding several episodes counts its size once.
+export function episodeCounts(episodes: readonly ShowEpisodeView[]) {
+  let have = 0, total = 0, missing = 0, cutoff = 0, size = 0;
+  const sizes = new Set<number>();
+  for (const e of episodes) {
+    const had = !!(e.file || e.plex);
+    if (had) have++;
+    if (e.file && !sizes.has(e.file.id)) { sizes.add(e.file.id); size += e.file.size; }
+    if (had || (e.aired && e.monitored)) total++;
+    if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
+  }
+  return { have, total, missing, cutoff, size };
 }

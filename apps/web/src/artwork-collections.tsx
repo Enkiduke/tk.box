@@ -342,7 +342,7 @@ function EditDefinition({value,libraries,onClose,save,remove,check,found}:{value
             {shown.length>0&&<button type="button" onClick={()=>drop(shown)}>Remove all</button>}</div>}
         </div>
         {refreshed?<p className="muted small">These come from the list and are refreshed on every run; ones you remove stay out.</p>:<>
-          {!tmdbConfigured&&<p className="muted small">Add a TMDb key in Artwork › Settings to search for titles and see their posters.</p>}
+          {!tmdbConfigured&&<p className="muted small">Add a TMDb key in Admin › Connections to search for titles and see their posters.</p>}
           <TitleSearch type={d.type} members={members} add={m=>add([m])}/>
           {paste!==undefined&&<div className="collection-editor-paste">
             <textarea rows={4} autoFocus placeholder={'One per line: tmdb:948, imdb:tt0077651, plex:12345, or Halloween | 1978'} value={paste} onChange={e=>setPaste(e.target.value)}/>
@@ -419,7 +419,7 @@ function ListChoice({source,type,rows=[],change,details}:{source:Source;type:'mo
           change={off=>filter({languages:off.length?languages.filter(o=>!off.includes(o.value)).map(o=>o.value):undefined})}/>
       </div>
       <p className="muted small">Filters go first, then the sort, then the collection size. Titles you already have count toward it; the ones left out are greyed at the end.</p>
-      {details===false&&(active>0||!!source.sort)&&<p className="danger small">Sorting and filtering need a TMDb key (Artwork › Settings).</p>}
+      {details===false&&(active>0||!!source.sort)&&<p className="danger small">Sorting and filtering need a TMDb key (Admin › Connections).</p>}
     </div>
   </details>;
 }

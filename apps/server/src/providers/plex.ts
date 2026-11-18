@@ -12,8 +12,13 @@ import { readPlexUsers } from './plex-users.js';
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
 export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
 // Plex dates are seconds since 1970.
-export type PlexAvailability = {titles:{kind:'movie'|'show';ratingKey:string;tmdbId?:number;tvdbId?:number;addedAt?:number}[];seasons:{showKey:string;season:number;addedAt?:number}[];complete:boolean};
+export type PlexAvailability = {titles:{kind:'movie'|'show';ratingKey:string;section?:string;tmdbId?:number;tvdbId?:number;addedAt?:number}[];seasons:{showKey:string;season:number;addedAt?:number}[];complete:boolean};
 export type ExploreLocalWatch = ExploreWatchedTitle & {lastViewedAt:number};
+// One of Plex's copies of a title (the Plex index's `copies`), and the library it is in.
+export type PlexCopy = {ratingKey:string;section?:string};
+// The rating keys of the copies in libraries the viewer can see (a copy with no known library is left to Plex to check).
+export const viewerCopies = (grant:Pick<PlexGrant,'libraries'>,copies:readonly PlexCopy[]) =>
+  copies.filter(c=>!c.section||grant.libraries.some(l=>l.key===c.section)).map(c=>c.ratingKey);
 const communityItem = z.object({id:z.string(),guid:z.string().nullish(),type:z.string()});
 const communityHistory = z.object({data:z.object({user:z.object({watchHistory:z.object({
   nodes:z.array(z.object({metadataItem:communityItem.extend({grandparent:communityItem.nullish()}).nullish()}).nullable()),
@@ -119,7 +124,7 @@ export type ChannelRoot = { id: string; type: 'movie' | 'show' | 'season' | 'epi
 export type ChannelMedia = { mediaId: string; kind: 'movie' | 'episode'; title: string; showTitle?: string; showId?: string; seasonId?: string; season?: number; episode?: number; year?: number; date?: string; durationMs: number;
   video?: { codec?: string; width?: number; height?: number; container?: string } };
 // `name` is the Plex account's display name, for Admin › Activity.
-export type PlexGrant = { accountId: string; name?: string; role: 'admin' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
+export type PlexGrant = { accountId: string; name?: string; role: 'owner' | 'viewer'; serverToken: string; libraries: { key: string; title: string; type: string }[] };
 type CalendarMedia = {id: string; showId?: string; posterUrl?: string; backdropUrl?: string; season?: number; episode?: number};
 
 // Cache keys name a viewer's server token by digest, never the token itself.
@@ -244,7 +249,7 @@ export class PlexAdapter {
   async authorize(accountToken: string): Promise<PlexGrant> {
     const { accountId, name, isOwner, serverToken } = await this.accountAccess(accountToken);
     const libraries = await this.serverAccess(serverToken);
-    return { accountId, ...(name ? { name } : {}), role: isOwner ? 'admin' : 'viewer', serverToken, libraries };
+    return { accountId, ...(name ? { name } : {}), role: isOwner ? 'owner' : 'viewer', serverToken, libraries };
   }
   async plexUsers(accountToken: string) {
     try {
@@ -331,34 +336,21 @@ export class PlexAdapter {
     }
     return ids.flatMap(id=>found.get(id)??[]);
   }
-  // This server's copy of a title the viewer can open: titles with that name whose guid (plex://, imdb://, tmdb://, tvdb://) matches.
-  async libraryMatch(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]) {
-    return (await this.libraryMatches(grant, kind, title, guids, false))[0];
-  }
-  private async libraryMatches(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[], strict: boolean) {
-    if (!guids.length || !title.trim()) return [];
-    const matches = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({ ratingKey: plexId, guid: z.string().optional(), Guid: z.array(z.object({ id: z.string() })).optional() })).default([]) }) });
-    const found = await Promise.all(grant.libraries.filter(l => l.type === kind).map(async library => {
-      const url = new URL(`/library/sections/${library.key}/all`, this.config.PLEX_URL);
-      for (const [key, value] of Object.entries({ type: kind === 'movie' ? '1' : '2', title: title.trim().slice(0, 100), includeGuids: '1', 'X-Plex-Container-Start': '0', 'X-Plex-Container-Size': '50' })) url.searchParams.set(key, value);
-      const items = await this.json(url, grant.serverToken).then(data => matches.parse(data).MediaContainer.Metadata, error => {
-        if (strict) throw error;
-        return [];
-      });
-      return items.filter(item => (item.guid && guids.includes(item.guid)) || item.Guid?.some(g => guids.includes(g.id))).map(item => item.ratingKey);
-    }));
-    return [...new Set(found.flat())];
-  }
-  // Calendar checks titles with a downloaded file using the viewer's own Plex grant.
-  calendarMedia(grant: PlexGrant, kind: 'movie' | 'show', title: string, guids: string[]): Promise<CalendarMedia[]> {
-    const scope = grant.libraries.filter(library => library.type === kind).map(library => library.key).sort().join(',');
-    return this.remembered<CalendarMedia[]>(`calendar:${tokenScope(grant)}:${kind}:${scope}:${JSON.stringify([title, guids])}`, async () => {
-      const ids = await this.libraryMatches(grant, kind, title, guids, true);
+  // The Calendar's copies of a title on this server (from the title identity), read with the viewer's own Plex grant:
+  // only copies in the viewer's libraries are read, and one gone from Plex gives none. A show's episodes come from
+  // every copy the viewer can see.
+  calendarMedia(grant: PlexGrant, kind: 'movie' | 'show', copies: readonly PlexCopy[]): Promise<CalendarMedia[]> {
+    const ids = viewerCopies(grant, copies);
+    if (!ids.length) return Promise.resolve([]);
+    return this.remembered<CalendarMedia[]>(`calendar:${tokenScope(grant)}:${kind}:${ids.join(',')}`, async () => {
       const media: CalendarMedia[] = [];
       for (const id of ids) {
-        const {node, section} = await this.catalogNode(grant, id);
-        if (node.type !== kind) continue;
-        const {posterUrl, backdropUrl} = catalogDto(node, section);
+        const found = await this.catalogNode(grant, id).catch(error => {
+          if (error instanceof AppError && (error.status === 403 || error.status === 404)) return undefined;
+          throw error;
+        });
+        if (!found || found.node.type !== kind) continue;
+        const {node, section} = found, {posterUrl, backdropUrl} = catalogDto(node, section);
         if (kind === 'movie') return [{id, posterUrl, backdropUrl}];
         const episodes = await this.leaves(grant, `/library/metadata/${id}/allLeaves`, section);
         for (const episode of episodes) {
@@ -576,11 +568,25 @@ export class PlexAdapter {
             continue;
           }
           const {tmdbId,tvdbId}=catalogDto(node,job.library.key);
-          if(node.type==='movie'||node.type==='show')result.titles.push({kind:node.type,ratingKey:node.ratingKey,...(tmdbId?{tmdbId}:{}),...(tvdbId?{tvdbId}:{}),...(node.addedAt?{addedAt:node.addedAt}:{})});
+          if(node.type==='movie'||node.type==='show')result.titles.push({kind:node.type,ratingKey:node.ratingKey,section:job.library.key,...(tmdbId?{tmdbId}:{}),...(tvdbId?{tvdbId}:{}),...(node.addedAt?{addedAt:node.addedAt}:{})});
         }
       }
     }
     return result;
+  }
+  // The episodes Plex has of one show (the Plex index reads the library's followed shows), as season and episode numbers with their rating keys.
+  async showEpisodes(grant:PlexGrant,ratingKey:string):Promise<{season:number;episode:number;ratingKey:string}[]> {
+    const out:{season:number;episode:number;ratingKey:string}[]=[];
+    for(let offset=0;offset<20000;){
+      const url=new URL(`/library/metadata/${encodeURIComponent(ratingKey)}/allLeaves`,this.config.PLEX_URL);
+      for(const [key,value] of Object.entries({excludeElements:'Media,Role,Director,Writer,Country,Guid,Collection,Producer,Genre,Similar,Field,Image',
+        'X-Plex-Container-Start':String(offset),'X-Plex-Container-Size':'1000'}))url.searchParams.set(key,value);
+      const page=leafContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
+      for(const leaf of page.Metadata)if(leaf.type==='episode'&&leaf.parentIndex!==undefined&&leaf.index!==undefined)out.push({season:leaf.parentIndex,episode:leaf.index,ratingKey:leaf.ratingKey});
+      offset+=page.Metadata.length;
+      if(page.Metadata.length<1000||(page.totalSize!==undefined&&offset>=page.totalSize))break;
+    }
+    return out;
   }
   // Date Viewed is Plex's watch state for the token making the request. Query episodes in TV libraries
   // so a recently watched episode can seed its series even when the series is still in progress.

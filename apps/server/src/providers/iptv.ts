@@ -144,8 +144,7 @@ export function mappingCandidates(channel: M3uChannel, sourceChannels: M3uChanne
   const uniqueXml = xml.channels.filter(c => counts.get(c.id) === 1);
   return { exactId: exactGuideId(channel, sourceChannels, xml), suggestions: uniqueXml.filter(c => normalized(c.name) === normalized(channel.name)).map(c => ({ xmlId: c.id, reason: 'normalized_name', applied: false as const })) };
 }
-export function approveMapping(input: { role: 'admin' | 'viewer'; accountId: string; sourceId: string; feedId: string; channelId: string; xmlId: string; expectedRevision: number }, current: GuideMapping | undefined, scope: {sourceId: string; feedId: string}, xml: XmlSnapshot): GuideMapping {
-  requireThat(input.role === 'admin', 'FORBIDDEN', 'Administrator access required.', 403);
+export function approveMapping(input: { accountId: string; sourceId: string; feedId: string; channelId: string; xmlId: string; expectedRevision: number }, current: GuideMapping | undefined, scope: {sourceId: string; feedId: string}, xml: XmlSnapshot): GuideMapping {
   requireThat(input.sourceId === scope.sourceId && input.feedId === scope.feedId, 'MAPPING_SCOPE', 'Cross-source guide mapping is not permitted.');
   requireThat(!current || (current.sourceId === input.sourceId && current.feedId === input.feedId && current.channelId === input.channelId), 'MAPPING_SCOPE', 'Existing mapping belongs to a different source/channel.');
   requireThat((current?.revision ?? 0) === input.expectedRevision, 'REVISION_CONFLICT', 'Mapping changed.', 409);

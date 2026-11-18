@@ -8,6 +8,7 @@ import { openMigratedDatabase } from '../apps/server/src/modules/migrations/inde
 import {IptvStore} from '../apps/server/src/persistence/iptv-store.js';
 import {ArtworkStore} from '../apps/server/src/persistence/artwork-store.js';
 import {Vault} from '../apps/server/src/security/vault.js';
+import {ServiceKeys} from '../apps/server/src/persistence/service-keys.js';
 import {PlexAdapter} from '../apps/server/src/providers/plex.js';
 import {IdentityService} from '../apps/server/src/services/identity.js';
 import {fakePlex} from '../tests/fixtures.js';
@@ -132,9 +133,8 @@ for(const c of store.visible().slice(0,3))store.favorite('1',c.id,true);
 // Waits for channel checks: nothing here is listed until a channel plays.
 const pending=store.create('1',{kind:'m3u',name:'Awaiting checks preview'});
 store.ingest('1',pending.id,0,Buffer.from('#EXTM3U\n'+['Culture One','Culture Two','Arts Daily 24/7','Encore'].map((name,i)=>`#EXTINF:-1 tvg-id="pending${i}" group-title="${i<2?'Culture':'Arts'}",${name}\nhttps://fixture.invalid/pending${i}`).join('\n')));
-const artworkStore=new ArtworkStore(db,vault,'apps/artwork/defaults.json');
-const {revision:artworkRevision,...artworkSettings}=artworkStore.settings();
-await artworkStore.update('1',artworkRevision,{...artworkSettings,tmdbKey:'fixture-tmdb-key'},async()=>{});
+new ArtworkStore(db,vault,'apps/artwork/defaults.json');
+new ServiceKeys(db,vault).update('1',{tmdb:'fixture-tmdb-key'});
 let failedPage=false;
 const streamingServices=['Netflix','Amazon Prime Video','Disney Plus','Hulu','HBO Max','Apple TV','Paramount Plus Essential','Peacock Premium','MGM Plus','Discovery Plus'];
 const tmdb=(async(input:string|URL|Request)=>{

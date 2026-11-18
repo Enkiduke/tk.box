@@ -19,14 +19,18 @@ export type ActivitySource = {
   describe: (s: ActivityStream, now: number, title: (mediaId: string | undefined) => Promise<Title | undefined> | undefined) => ActivityDetail | Promise<ActivityDetail>;
   stop: (s: { id: string; hash: string }) => void;
 };
-export type ActivityApi = { activity: Activity; source: (kind: StreamKind, source: ActivitySource) => void };
-type Deps = { history: PlaybackHistory; plexSessions: (grant: PlexGrant) => Promise<PlexSession[]> };
+// `streaming`: how many streams are playing, in tk.box or any Plex app (anyone streaming holds back Artwork's nightly
+// full collections run).
+export type ActivityApi = { activity: Activity; source: (kind: StreamKind, source: ActivitySource) => void; streaming: (grant: PlexGrant) => Promise<number> };
+// `monitor`: Plex's own apps' sessions (watch history's Plex playback monitor).
+type Deps = { history: PlaybackHistory; monitor: { sessions(grant: PlexGrant): Promise<PlexSession[]> } };
 
 // Admin › Activity: who is watching what, how it is delivered, and a way to end a stream. Playback
 // modules report their sessions to `activity` and register a source for each kind they deliver.
 export const activityModule = defineModule({
   name: 'activity',
-  setup(routes, { plex, bus }, { history, plexSessions }: Deps) {
+  setup(routes, { plex, bus }, { history, monitor }: Deps) {
+    const plexSessions = (grant: PlexGrant) => monitor.sessions(grant);
     const activity = new Activity(), sources = new Map<StreamKind, ActivitySource>();
     bus.on('session.signed-out', ({ hash }) => activity.closeWhere(s => s.hash === hash));
     // Titles are read with the administrator's grant, which reaches every library; a failed lookup just shows no title.
@@ -76,7 +80,8 @@ export const activityModule = defineModule({
       source(kind, source) {
         if (sources.has(kind)) throw new Error(`Activity source ${kind} is already registered.`);
         sources.set(kind, source);
-      }
+      },
+      streaming: async grant => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length,
     };
     return { api };
   }

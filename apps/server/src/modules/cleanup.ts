@@ -10,7 +10,7 @@ import { registerCleanup } from '../cleanup-api.js';
 import type { ArtworkStore } from '../persistence/artwork-store.js';
 import type { ArtworkEngine } from '../services/artwork-engine.js';
 import type { Requests } from '../services/requests.js';
-import type { CleanupWatch } from '../persistence/cleanup-store.js';
+import type { CleanupWatch } from '../services/cleanup-engine.js';
 import type { IdentityService } from '../services/identity.js';
 
 type Deps = {
@@ -18,14 +18,14 @@ type Deps = {
   artwork: { store: ArtworkStore; engine: ArtworkEngine };
   // tk.box's requests: the titles a run looks at, and those to mark removed once it deleted them.
   requests: Pick<Requests, 'forCleanup' | 'removedByCleanup'>;
-  // Watch history: each account's latest watch of each title on a Plex server.
-  watches: (serverId: string) => CleanupWatch[];
+  // Watch history: each account's latest watch of each title and season on a Plex server, the saved dates included.
+  watchHistory: { watches(serverId: string): CleanupWatch[] };
   identity: Pick<IdentityService, 'accountToken'>;
-  // tk.box's library: a title a run deleted is forgotten there (library.title.removed, which requests hear), instead
+  // tk.box's library: a title a run deleted is forgotten there (library.title.changed, which requests hear), instead
   // of being marked removed here, and a deleted season is forgotten (`forgetSeason`, which also stops following it).
-  // Titles are kept by library_titles.keep.
+  // Titles are kept by the library's Keep.
   library: {
-    store: { titleByTmdb(kind: 'movie' | 'show', tmdbId: number): { id: number } | undefined; keptMovies(): Set<number>; keptShows(): Set<number> };
+    titleId(kind: 'movie' | 'show', tmdbId: number): number | undefined; kept(kind: 'movie' | 'show'): Set<number>;
     forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void;
     forgetSeason(titleId: number, season: number): Promise<void> };
 };
@@ -36,16 +36,16 @@ export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, background, jobs, log, plex, serviceKeys }, { artwork, requests, watches, identity, library }: Deps) {
+  setup(routes, { config, db, vault, bus, plexOwner, jobs, log, plex, serviceKeys }, { artwork, requests, watchHistory, identity, library }: Deps) {
     const store = new CleanupStore(db, vault);
     const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
-      dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, () => background.grant(), (message, detail) => log.info(message, detail));
+      dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, () => plexOwner.grant(), (message, detail) => log.info(message, detail));
     registerCleanup(routes, store, engine);
     routes.get('/api/v1/admin/cleanup/users', async (req): Promise<CleanupUsersView> => {
       const { hash, grant } = viewer(req);
       const isOwner = grant.accountId === config.PLEX_OWNER_ACCOUNT_ID;
       const token = isOwner ? identity.accountToken(hash) : serviceKeys.get('plex');
-      const owner = isOwner ? grant : await background.grant();
+      const owner = isOwner ? grant : await plexOwner.grant();
       requireThat(token && owner && (isOwner || token === serviceKeys.get('plex')), 'PLEX_ADMIN_TOKEN_REQUIRED',
         'Connect a working Plex admin token in Admin › Connections to load Plex users.', 503);
 
@@ -65,25 +65,24 @@ export const cleanupModule = defineModule({
     engine.finished = () => bus.emit('library.edited', { by: 'cleanup' });
     engine.requests = () => requests.forCleanup();
     engine.serverId = () => config.PLEX_MACHINE_ID;
-    engine.watches = serverId => [...store.watchSnapshotRows(serverId), ...watches(serverId)];
+    engine.watches = serverId => watchHistory.watches(serverId);
     engine.deleted = (titles, seasons) => {
-      const ours = titles.filter(t => library.store.titleByTmdb(t.kind, t.tmdb));
-      for (const t of ours) library.forget(library.store.titleByTmdb(t.kind, t.tmdb)!.id, 'cleanup');
-      requests.removedByCleanup(titles.filter(t => !ours.includes(t)));
+      const ours = titles.flatMap(t => { const id = library.titleId(t.kind, t.tmdb); return id === undefined ? [] : [{ t, id }]; });
+      for (const { id } of ours) library.forget(id, 'cleanup');
+      requests.removedByCleanup(titles.filter(t => !ours.some(o => o.t === t)));
       for (const { tmdb, season } of seasons) {
-        const show = library.store.titleByTmdb('show', tmdb);
-        if (show) void library.forgetSeason(show.id, season).catch(e => log.warn('clean up: the library could not forget a season', { tmdb, season, error: (e as Error).message }));
+        const show = library.titleId('show', tmdb);
+        if (show !== undefined) void library.forgetSeason(show, season).catch(e => log.warn('clean up: the library could not forget a season', { tmdb, season, error: (e as Error).message }));
       }
     };
-    engine.movies = () => ({ kept: library.store.keptMovies(), shows: { kept: library.store.keptShows() },
-      keep: (tmdbId, kind = 'movie') => { const t = library.store.titleByTmdb(kind, tmdbId); if (t) library.keep(t.id, true); return !!t; } });
+    engine.movies = () => ({ kept: library.kept('movie'), shows: { kept: library.kept('show') },
+      keep: (tmdbId, kind = 'movie') => { const id = library.titleId(kind, tmdbId); if (id !== undefined) library.keep(id, true); return id !== undefined; } });
     engine.collections = () => cleanupCollections(artwork.engine.keptCollections().collections, artwork.store.collections().definitions);
     jobs.add({ id: 'cleanup.run', label: 'Clean up', area: 'Clean Up', section: 'cleanup', schedule: () => store.settings().schedule,
       status: () => { const { lastRun, note } = engine.scheduleState(); return { lastRun, note, running: engine.pending(), waiting: note?.startsWith('Waiting'), failed: note?.startsWith('Skipped') }; },
       run: by => engine.runNow(by.actor, by.grant.serverToken) });
     return {
-      // The saved watch history, for Explore's suggestions.
-      api: { watchSnapshot: (serverId: string) => store.watchSnapshotRows(serverId) },
+      api: {},
       start() { if (!preview()) engine.start(); },
       stop() { engine.close(); }
     };

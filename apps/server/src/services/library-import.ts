@@ -174,7 +174,7 @@ export class LibraryImporter {
     this.store.deleteFile(file.id);
     const parent = path.slice(0, path.lastIndexOf('/'));
     if (inside && parent !== folder) try { if (!(await this.ops.readdir(parent)).length) await this.ops.rmdir(parent); } catch (e) { if (errno(e) !== 'ENOENT') throw e; }
-    return { folder: inside ? folder : undefined, deleted: inside };
+    return { folder: inside ? folder : undefined, deleted: inside, path: file.path };
   }
 
   // An admin deleted the title: its whole folder under its root goes (season folders, subtitles, everything in it), and

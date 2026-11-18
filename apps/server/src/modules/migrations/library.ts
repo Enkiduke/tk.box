@@ -4,6 +4,7 @@ import type { Format } from '../../lib/formats.js';
 import { fromLegacy } from '../../lib/profiles.js';
 import { BUILTIN_FORMATS, BUILTIN_PROFILES, builtInProfile } from '../../lib/builtin-profiles.js';
 import { defaultLibrarySettings } from '../../persistence/library-store.js';
+import { episodeAiredAt } from '../../services/wanted.js';
 
 // Titles, files, grabs, the blocklist, search backoff, pick profiles, score rules and the library settings
 // (docs/ARR-REPLACEMENT.md, "Data model" › library). The tables are the plan's, as written. The seed is the default
@@ -207,5 +208,19 @@ export const libraryMigrations: Migration[] = [
     if (!row) return;
     const { stalledHours: _, ...value } = JSON.parse(row.value) as { stalledHours?: number };
     db.prepare('UPDATE library_settings SET revision=revision+1, value=? WHERE id=1').run(JSON.stringify({ ...value, budget: { movie: 30, episode: 15 } }));
+  } },
+  // An episode's exact air time from TVmaze, for the calendar (air_at falls back to a guess from the day when TVmaze
+  // has none). An air_at that isn't the guess (the air date plus 32 hours, services/wanted.ts) was TVmaze's, so it's
+  // copied now; the rest fill in as each show refreshes.
+  { name: 'episode-air-time', up: `ALTER TABLE library_episodes ADD COLUMN air_time INTEGER;
+    UPDATE library_episodes SET air_time = air_at WHERE air_at IS NOT NULL AND air_date IS NOT NULL
+      AND unixepoch(air_date) IS NOT NULL AND air_at != unixepoch(air_date) * 1000 + 32 * 3600000;` },
+  // air_at is what episodeAiredAt (services/wanted.ts) gives from air_date and air_time, and nothing else decides it:
+  // TVmaze's time now reaches air_at only through that function. Every stored air_at is recomputed through it once.
+  { name: 'episode-aired-at', up: db => {
+    const rows = db.prepare('SELECT title_id, season, episode, air_date, air_time FROM library_episodes').all() as
+      { title_id: number; season: number; episode: number; air_date: string | null; air_time: number | null }[];
+    const set = db.prepare('UPDATE library_episodes SET air_at = ? WHERE title_id = ? AND season = ? AND episode = ?');
+    for (const r of rows) set.run(episodeAiredAt({ airDate: r.air_date ?? undefined, airTime: r.air_time ?? undefined }) ?? null, r.title_id, r.season, r.episode);
   } },
 ];

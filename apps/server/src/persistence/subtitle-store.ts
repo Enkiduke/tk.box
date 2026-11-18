@@ -3,17 +3,19 @@ import type { Db } from './database.js';
 import { prepared } from './statements.js';
 import type { Vault } from '../security/vault.js';
 import type { Login } from '../providers/opensubtitles.js';
+import type { SubtitleJobState, TitleSubtitle } from '../../../../packages/contracts/src/subtitles.js';
 
 // subtitle-finder's tables (modules/migrations/subtitle-finder.ts; docs/PHASE-4.md).
 
-const DAY_MS = 86400000, RECENT_DAYS = 30;
+const HOUR_MS = 3600000, DAY_MS = 24 * HOUR_MS, RECENT_MS = 30 * DAY_MS, SETTLED_MS = 365 * DAY_MS;
 const SECRET_CONTEXT = 'subtitle-finder:opensubtitles';
+// A job a title's dialog shows on a missing file: still to run, or failed.
+const TITLE_OPEN: readonly SubtitleJobState[] = ['queued', 'claimed', 'failed'];
 
 export const subtitleSettings = z.object({
   enabled: z.boolean().default(false),
   // VIP allows 1000 a day; 900 leaves headroom.
   dailyCap: z.number().int().min(0).max(5000).default(900),
-  graceDays: z.number().int().min(0).max(30).default(3),
   preferHearingImpaired: z.boolean().default(false),
   // {apiKey, username, password}, sealed with the vault.
   sealed: z.string().optional(),
@@ -21,21 +23,24 @@ export const subtitleSettings = z.object({
 export type SubtitleSettings = z.infer<typeof subtitleSettings>;
 export type SubtitleSource = 'embedded' | 'sidecar' | 'opensubtitles' | 'whisper';
 export type SubtitleFile = { path: string; language: string; source: SubtitleSource; subtitlePath?: string; osFileId?: number; hashMatch?: boolean; at: number };
-export type JobState = 'waiting' | 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled';
+export type JobState = 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled';
+// A job that stops the search for its video: with the worker, or failed there.
+const OPEN = "('queued','claimed','failed')";
 
 // The UTC day a download counts on, as YYYY-MM-DD.
 export const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 // The start of the next UTC day, when an over-cap job may try again.
 export const nextUtcDay = (at: number) => Math.floor(at / DAY_MS) * DAY_MS + DAY_MS;
 
-// What happens when OpenSubtitles has nothing (ARR-REPLACEMENT.md, step 6): a release under 30 days old that hasn't
-// waited yet waits graceDays and tries once more ('waiting'); otherwise it goes to the PC worker ('queued').
-// `releasedAt` is the movie's home release or the episode's air date; unknown counts as old.
-export function afterNothingFound(input: { now: number; releasedAt?: number; waited: boolean; graceDays: number }): { state: 'waiting' | 'queued'; notBefore: number } {
-  const recent = input.releasedAt !== undefined && input.now - input.releasedAt < RECENT_DAYS * DAY_MS;
-  return recent && !input.waited && input.graceDays > 0
-    ? { state: 'waiting', notBefore: input.now + input.graceDays * DAY_MS }
-    : { state: 'queued', notBefore: input.now };
+// Whether a Whisper subtitle is due another look on OpenSubtitles: daily while the release is under 30 days old (when
+// community subtitles turn up), monthly until it's a year old, then never: an old title with nothing by then keeps
+// Whisper's. `releasedAt` is the movie's home release or the episode's air date; unknown counts as old. A "day" is 20
+// hours, so the daily retry doesn't miss one for the minutes the last look took.
+export function whisperRecheckDue(input: { now: number; lastAt: number; releasedAt?: number }) {
+  if (input.releasedAt === undefined) return false;
+  const age = input.now - input.releasedAt;
+  if (age >= SETTLED_MS) return false;
+  return input.now - input.lastAt >= (age < RECENT_MS ? 20 * HOUR_MS : RECENT_MS);
 }
 
 type FileRow = { path: string; language: string; source: SubtitleSource; subtitle_path: string | null; os_file_id: number | null; hash_match: number | null; at: number };
@@ -147,28 +152,29 @@ export class SubtitleStore {
     })();
   }
 
-  // ---- jobs (the grace, then the PC worker) ----
+  // ---- jobs for the PC worker ----
 
   job(path: string, language = 'en') {
     return prepared(this.db, 'SELECT id, state, not_before AS notBefore, attempts FROM subtitle_jobs WHERE path = ? AND language = ?').get(path, language) as
       { id: number; state: JobState; notBefore: number; attempts: number } | undefined;
   }
-  // OpenSubtitles had nothing: the job waits out the grace or is queued for the worker (afterNothingFound).
-  nothingFound(path: string, releasedAt: number | undefined, language = 'en') {
-    const now = this.now(), existing = this.job(path, language);
-    const next = afterNothingFound({ now, ...(releasedAt !== undefined ? { releasedAt } : {}), waited: existing !== undefined, graceDays: this.settings().graceDays });
-    prepared(this.db, `INSERT INTO subtitle_jobs(path, language, state, not_before, created_at) VALUES(?, ?, ?, ?, ?)
-      ON CONFLICT(path, language) DO UPDATE SET state = excluded.state, not_before = excluded.not_before, error = NULL, done_at = NULL`)
-      .run(path, language, next.state, next.notBefore, now);
-    return next;
+  // Whether the video is with the worker or failed there (a done or cancelled job was for a file since replaced).
+  openJob(path: string, language = 'en') { const job = this.job(path, language); return job && OPEN.includes(`'${job.state}'`) ? job : undefined; }
+  // OpenSubtitles had nothing: the video is queued for the worker at once.
+  nothingFound(path: string, language = 'en') {
+    const now = this.now();
+    prepared(this.db, `INSERT INTO subtitle_jobs(path, language, state, not_before, created_at) VALUES(?, ?, 'queued', ?, ?)
+      ON CONFLICT(path, language) DO UPDATE SET state = 'queued', not_before = excluded.not_before, created_at = excluded.created_at, attempts = 0,
+      worker_id = NULL, lease_until = NULL, error = NULL, done_at = NULL`)
+      .run(path, language, now, now);
   }
   // Every video with a row or an open job, for forgetting the ones the library no longer has.
   knownPaths() {
-    return (prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_missing UNION SELECT path FROM subtitle_jobs WHERE state IN ('waiting','queued','claimed')`).all() as { path: string }[]).map(r => r.path);
+    return (prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_missing UNION SELECT path FROM subtitle_jobs WHERE state IN ('queued','claimed')`).all() as { path: string }[]).map(r => r.path);
   }
-  // Every video the finder has dealt with or is dealing with: recorded, any job but a cancelled one, or skipped.
+  // Every video the finder has dealt with or is dealing with: recorded, with the worker or failed there, or skipped.
   handledPaths() {
-    return new Set((prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_jobs WHERE state != 'cancelled'
+    return new Set((prepared(this.db, `SELECT path FROM subtitle_files UNION SELECT path FROM subtitle_jobs WHERE state IN ${OPEN}
       UNION SELECT path FROM subtitle_skips`).all() as { path: string }[]).map(r => r.path));
   }
   skip(path: string, reason: string) {
@@ -178,6 +184,23 @@ export class SubtitleStore {
   markMissing(path: string) {
     prepared(this.db, 'INSERT INTO subtitle_missing(path, at) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET at = excluded.at').run(path, this.now());
   }
+  // What one file has in English, for its title's Admin dialog: English subtitles, a skip, missing (with its job), or
+  // not yet checked.
+  titleState(path: string): TitleSubtitle {
+    const english = prepared(this.db, "SELECT source, subtitle_path, hash_match, at FROM subtitle_files WHERE path = ? AND language = 'en'").get(path) as
+      { source: SubtitleSource; subtitle_path: string | null; hash_match: number | null; at: number } | undefined;
+    if (english) return { state: 'english', source: english.source, at: english.at, ...(english.subtitle_path ? { subtitlePath: english.subtitle_path } : {}),
+      ...(english.hash_match !== null ? { hashMatch: english.hash_match === 1 } : {}) };
+    const skip = prepared(this.db, 'SELECT reason, at FROM subtitle_skips WHERE path = ?').get(path) as { reason: string; at: number } | undefined;
+    if (skip) return { state: 'skipped', reason: skip.reason, at: skip.at };
+    const job = prepared(this.db, "SELECT state, not_before AS notBefore, attempts, error FROM subtitle_jobs WHERE path = ? AND language = 'en'").get(path) as
+      { state: SubtitleJobState; notBefore: number; attempts: number; error: string | null } | undefined;
+    const missing = prepared(this.db, 'SELECT at FROM subtitle_missing WHERE path = ?').get(path) as { at: number } | undefined;
+    const open = job && TITLE_OPEN.includes(job.state) ? job : undefined;
+    if (missing || open) return { state: 'missing', ...(missing ? { at: missing.at } : {}),
+      ...(open ? { job: { state: open.state, notBefore: open.notBefore, attempts: open.attempts, ...(open.error ? { error: open.error } : {}) } } : {}) };
+    return { state: 'unchecked' };
+  }
   missingPaths() { return new Set((prepared(this.db, 'SELECT path FROM subtitle_missing').all() as { path: string }[]).map(r => r.path)); }
   missing() { return prepared(this.db, 'SELECT path, at FROM subtitle_missing ORDER BY path').all() as { path: string; at: number }[]; }
   englishPaths() { return new Set((prepared(this.db, "SELECT path FROM subtitle_files WHERE language = 'en'").all() as { path: string }[]).map(r => r.path)); }
@@ -186,11 +209,11 @@ export class SubtitleStore {
   skips(limit = 100) {
     return prepared(this.db, 'SELECT path, reason, at FROM subtitle_skips ORDER BY at DESC LIMIT ?').all(limit) as { path: string; reason: string; at: number }[];
   }
-  // Whisper subtitles not looked at on OpenSubtitles since `before`, oldest first: the monthly retry's.
-  whisperDue(before: number, limit: number) {
-    return (prepared(this.db, `SELECT path FROM subtitle_files WHERE source = 'whisper' AND at <= ? ORDER BY at LIMIT ?`).all(before, limit) as { path: string }[]).map(r => r.path);
+  // Whisper subtitles and when each was last looked for on OpenSubtitles, longest ago first (whisperRecheckDue).
+  whisperFiles() {
+    return prepared(this.db, `SELECT path, at FROM subtitle_files WHERE source = 'whisper' ORDER BY at`).all() as { path: string; at: number }[];
   }
-  // OpenSubtitles still had nothing for a Whisper subtitle: it's looked at again a month from now.
+  // OpenSubtitles still had nothing for a Whisper subtitle: the next look counts from now.
   touch(path: string, language = 'en') { prepared(this.db, 'UPDATE subtitle_files SET at = ? WHERE path = ? AND language = ?').run(this.now(), path, language); }
   // How many recorded videos each source accounts for.
   sources(): Record<SubtitleSource, number> {
@@ -201,16 +224,12 @@ export class SubtitleStore {
   // Admin › Downloads › Subtitles: the open or failed jobs, newest first.
   jobs(limit = 200) {
     return prepared(this.db, `SELECT path, state, not_before AS notBefore, attempts, error, created_at AS createdAt FROM subtitle_jobs
-      WHERE state IN ('waiting','queued','claimed','failed') ORDER BY created_at DESC LIMIT ?`).all(limit) as
+      WHERE state IN ${OPEN} ORDER BY created_at DESC LIMIT ?`).all(limit) as
       { path: string; state: JobState; notBefore: number; attempts: number; error: string | null; createdAt: number }[];
   }
-  // Videos whose grace is over, to look for again.
-  dueWaiting(now = this.now()) {
-    return (prepared(this.db, `SELECT path FROM subtitle_jobs WHERE state = 'waiting' AND not_before <= ? ORDER BY not_before`).all(now) as { path: string }[]).map(r => r.path);
-  }
   counts(): Record<JobState, number> {
-    const counts: Record<JobState, number> = { waiting: 0, queued: 0, claimed: 0, done: 0, failed: 0, cancelled: 0 };
-    for (const r of prepared(this.db, 'SELECT state, count(*) AS n FROM subtitle_jobs GROUP BY state').all() as { state: JobState; n: number }[]) counts[r.state] = r.n;
+    const counts: Record<JobState, number> = { queued: 0, claimed: 0, done: 0, failed: 0, cancelled: 0 };
+    for (const r of prepared(this.db, 'SELECT state, count(*) AS n FROM subtitle_jobs GROUP BY state').all() as { state: JobState; n: number }[]) if (r.state in counts) counts[r.state] = r.n;
     return counts;
   }
 }

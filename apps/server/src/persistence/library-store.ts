@@ -75,9 +75,10 @@ export type GrabEventKind = GrabState | 'grabbed' | 'retried' | 'only-source';
 export type GrabStep = { id: number; at: number; kind: GrabEventKind; note?: string };
 export type GrabEvent = GrabStep & { grab: Grab };
 export type SearchRow = { titleId: number; scope: string; lastAt: number; misses: number; nextAt: number };
-// A show's seasons (season 0, specials, is never stored) and episodes. `airAt`: when it counts as aired.
+// A show's seasons (season 0, specials, is never stored) and episodes. `airAt`: when it counts as aired; `airTime`:
+// when it airs, exactly, where TVmaze knows.
 export type SeasonRow = { season: number; monitored: boolean };
-export type EpisodeRow = { season: number; episode: number; name?: string; airDate?: string; airAt?: number; runtime?: number; monitored: boolean };
+export type EpisodeRow = { season: number; episode: number; name?: string; airDate?: string; airAt?: number; airTime?: number; runtime?: number; monitored: boolean };
 
 type TitleRaw = { id: number; kind: 'movie' | 'show'; tmdb_id: number; tvdb_id: number | null; imdb_id: string | null; title: string; year: number | null; aliases: string;
   monitor: Monitor; monitor_from: number | null; profile_id: number; root: string; folder: string | null; keep: number; released: string | null; paused: number;
@@ -191,6 +192,8 @@ export class LibraryStore {
       WHERE t.kind = 'movie' ORDER BY t.title COLLATE NOCASE, t.id`).all() as (TitleRaw & { file_quality: string | null; file_size: number | null; grab_state: GrabState | null })[])
       .map(r => ({ ...title(r), ...opt('fileQuality', r.file_quality === null ? null : quality(r.file_quality)), ...opt('fileSize', r.file_size), ...opt('grab', r.grab_state) }));
   }
+  // Every title, for library.states.
+  allTitles() { return (prepared(this.db, 'SELECT * FROM library_titles ORDER BY id').all() as TitleRaw[]).map(title); }
   // Every show in the library (Admin › Manage › Shows), and the ones tk.box watches (Wanted).
   allShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }
   monitoredShows() { return (prepared(this.db, `SELECT * FROM library_titles WHERE kind = 'show' AND monitor != 'none' ORDER BY title COLLATE NOCASE, id`).all() as TitleRaw[]).map(title); }
@@ -206,7 +209,7 @@ export class LibraryStore {
   grabsFor(titleId: number, limit = 50) { return (prepared(this.db, 'SELECT * FROM grabs WHERE title_id = ? ORDER BY id DESC LIMIT ?').all(titleId, limit) as GrabRaw[]).map(grab); }
   // Finished grabs, newest first: imported, done and cancelled (history), or failed.
   finishedGrabs(failed: boolean, limit: number) {
-    return (prepared(this.db, `SELECT * FROM grabs WHERE ${failed ? "state = 'failed'" : `state NOT IN ('failed','sending','downloading','unpacking','importing','seeding')`}
+    return (prepared(this.db, `SELECT * FROM grabs WHERE ${failed ? "state = 'failed'" : `state != 'failed' AND NOT ${OPEN}`}
       ORDER BY COALESCE(finished_at, imported_at, sent_at, 0) DESC, id DESC LIMIT ?`).all(limit) as GrabRaw[]).map(grab);
   }
 
@@ -269,8 +272,8 @@ export class LibraryStore {
   }
   episodes(titleId: number): EpisodeRow[] {
     return (prepared(this.db, 'SELECT * FROM library_episodes WHERE title_id = ? ORDER BY season, episode').all(titleId) as
-      { season: number; episode: number; name: string | null; air_date: string | null; air_at: number | null; runtime: number | null; monitored: number }[])
-      .map(r => ({ season: r.season, episode: r.episode, ...opt('name', r.name), ...opt('airDate', r.air_date), ...opt('airAt', r.air_at), ...opt('runtime', r.runtime),
+      { season: number; episode: number; name: string | null; air_date: string | null; air_at: number | null; air_time: number | null; runtime: number | null; monitored: number }[])
+      .map(r => ({ season: r.season, episode: r.episode, ...opt('name', r.name), ...opt('airDate', r.air_date), ...opt('airAt', r.air_at), ...opt('airTime', r.air_time), ...opt('runtime', r.runtime),
         monitored: !!r.monitored }));
   }
   // A show's seasons and episodes as TMDB now lists them (refresh-title). Ones TMDB dropped go, unless a file is mapped
@@ -279,12 +282,12 @@ export class LibraryStore {
     this.db.transaction(() => {
       const season = prepared(this.db, `INSERT INTO library_seasons(title_id, season, monitored) VALUES(?, ?, ?)
         ON CONFLICT(title_id, season) DO UPDATE SET monitored = excluded.monitored`);
-      const episode = prepared(this.db, `INSERT INTO library_episodes(title_id, season, episode, name, air_date, air_at, runtime, monitored) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(title_id, season, episode) DO UPDATE SET name = excluded.name, air_date = excluded.air_date, air_at = excluded.air_at, runtime = excluded.runtime,
+      const episode = prepared(this.db, `INSERT INTO library_episodes(title_id, season, episode, name, air_date, air_at, air_time, runtime, monitored) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(title_id, season, episode) DO UPDATE SET name = excluded.name, air_date = excluded.air_date, air_at = excluded.air_at, air_time = excluded.air_time, runtime = excluded.runtime,
           monitored = excluded.monitored`);
       const keepSeasons = seasons.filter(s => s.season > 0), keepEpisodes = episodes.filter(e => e.season > 0);
       for (const s of keepSeasons) season.run(titleId, s.season, s.monitored ? 1 : 0);
-      for (const e of keepEpisodes) episode.run(titleId, e.season, e.episode, e.name ?? null, e.airDate ?? null, e.airAt ?? null, e.runtime ?? null, e.monitored ? 1 : 0);
+      for (const e of keepEpisodes) episode.run(titleId, e.season, e.episode, e.name ?? null, e.airDate ?? null, e.airAt ?? null, e.airTime ?? null, e.runtime ?? null, e.monitored ? 1 : 0);
       prepared(this.db, `DELETE FROM library_episodes WHERE title_id = ? AND (season, episode) NOT IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))
         AND NOT EXISTS (SELECT 1 FROM library_file_episodes f WHERE f.title_id = library_episodes.title_id AND f.season = library_episodes.season AND f.episode = library_episodes.episode)`)
         .run(titleId, JSON.stringify(keepEpisodes.map(e => [e.season, e.episode])));
@@ -334,6 +337,7 @@ export class LibraryStore {
   deleteFile(id: number) { prepared(this.db, 'DELETE FROM library_files WHERE id = ?').run(id); }
   // For subtitle-finder: a file by its path, and every file's path (to forget subtitles of files gone).
   fileByPath(path: string) { const r = prepared(this.db, 'SELECT * FROM library_files WHERE path = ?').get(path) as FileRaw | undefined; return r ? file(r) : undefined; }
+  hasFile(path: string) { return !!prepared(this.db, 'SELECT 1 FROM library_files WHERE path = ?').get(path); }
   filePaths() { return new Set((prepared(this.db, 'SELECT path FROM library_files').all() as { path: string }[]).map(r => r.path)); }
 
   grab(id: number) { const r = prepared(this.db, 'SELECT * FROM grabs WHERE id = ?').get(id) as GrabRaw | undefined; return r ? grab(r) : undefined; }
@@ -359,18 +363,7 @@ export class LibraryStore {
   grabbingEpisodes(titleId: number): EpisodeRef[] {
     return (prepared(this.db, `SELECT episodes FROM grabs WHERE title_id = ? AND ${ACTIVE}`).all(titleId) as { episodes: string }[]).flatMap(r => json<EpisodeRef[]>(r.episodes, []));
   }
-  // Titles with a grab under way (LibraryFulfiller.queue).
-  // Shows' seasons with a grab under way, by title (requests' "downloading").
-  grabbingSeasons() {
-    const bySeason = new Map<number, Set<number>>();
-    for (const r of prepared(this.db, `SELECT g.title_id, g.episodes FROM grabs g JOIN library_titles t ON t.id = g.title_id WHERE t.kind = 'show' AND g.${ACTIVE}`)
-      .all() as { title_id: number; episodes: string }[]) {
-      const seasons = bySeason.get(r.title_id) ?? new Set<number>();
-      for (const [season] of json<EpisodeRef[]>(r.episodes, [])) seasons.add(season);
-      bySeason.set(r.title_id, seasons);
-    }
-    return bySeason;
-  }
+  // Titles with a grab under way (library.state's downloading).
   grabbingTitles() { return new Set((prepared(this.db, `SELECT DISTINCT title_id FROM grabs WHERE ${ACTIVE}`).all() as { title_id: number }[]).map(r => r.title_id)); }
   // A step in a grab's history (grab_events): a GrabState it moved to, `grabbed` or `retried`.
   grabEvent(grabId: number, kind: GrabEventKind, note?: string) {
@@ -471,19 +464,25 @@ export class LibraryStore {
     for (const r of rows) if (!byEpisode.has(`${r.season}:${r.episode}`)) byEpisode.set(`${r.season}:${r.episode}`, file(r));
     return byEpisode;
   }
-  // Every movie, for the calendar: its TMDB dates and whether tk.box has a file for it.
+  // Movies for the calendar (library.calendar decides which it shows): each with its TMDB dates and whether tk.box has
+  // a file.
   calendarMovies() {
-    return (prepared(this.db, `SELECT t.*, EXISTS(SELECT 1 FROM library_files f WHERE f.title_id = t.id) AS has_file FROM library_titles t WHERE t.kind = 'movie'`).all() as
-      (TitleRaw & { has_file: number })[]).map(r => ({ ...title(r), hasFile: !!r.has_file }));
+    return (prepared(this.db, `SELECT t.*, EXISTS(SELECT 1 FROM library_files f WHERE f.title_id = t.id) AS has_file FROM library_titles t WHERE t.kind = 'movie'`)
+      .all() as (TitleRaw & { has_file: number })[]).map(r => ({ ...title(r), hasFile: !!r.has_file }));
   }
-  // Shows' episodes airing from `from` to `to` (YYYY-MM-DD), for the calendar: the show, the episode and whether
-  // tk.box has a file for it.
+  // Shows' episodes airing from `from` to `to` (YYYY-MM-DD), for the calendar (library.calendar decides which it shows):
+  // the show, the episode, its exact air time where known, whether the show, its season and the episode are all
+  // monitored, and whether tk.box has a file for it.
   calendarEpisodes(from: string, to: string) {
-    return (prepared(this.db, `SELECT t.*, e.season AS e_season, e.episode AS e_episode, e.name AS e_name, e.air_date AS e_air_date,
+    return (prepared(this.db, `SELECT t.*, e.season AS e_season, e.episode AS e_episode, e.name AS e_name, e.air_date AS e_air_date, e.air_time AS e_air_time,
+        (t.monitor != 'none' AND COALESCE(s.monitored, 0) AND e.monitored) AS e_followed,
         EXISTS(SELECT 1 FROM library_file_episodes fe WHERE fe.title_id = t.id AND fe.season = e.season AND fe.episode = e.episode) AS has_file
-      FROM library_episodes e JOIN library_titles t ON t.id = e.title_id WHERE t.kind = 'show' AND e.air_date >= ? AND e.air_date <= ? ORDER BY e.air_date, t.id, e.season, e.episode`)
-      .all(from, to) as (TitleRaw & { e_season: number; e_episode: number; e_name: string | null; e_air_date: string; has_file: number })[])
-      .map(r => ({ show: title(r), season: r.e_season, episode: r.e_episode, ...opt('name', r.e_name), airDate: r.e_air_date, hasFile: !!r.has_file }));
+      FROM library_episodes e JOIN library_titles t ON t.id = e.title_id LEFT JOIN library_seasons s ON s.title_id = e.title_id AND s.season = e.season
+      WHERE t.kind = 'show' AND e.air_date >= ? AND e.air_date <= ?
+      ORDER BY e.air_date, t.id, e.season, e.episode`)
+      .all(from, to) as (TitleRaw & { e_season: number; e_episode: number; e_name: string | null; e_air_date: string; e_air_time: number | null; e_followed: number; has_file: number })[])
+      .map(r => ({ show: title(r), season: r.e_season, episode: r.e_episode, ...opt('name', r.e_name), airDate: r.e_air_date, ...opt('airTime', r.e_air_time),
+        followed: !!r.e_followed, hasFile: !!r.has_file }));
   }
   // Shows Clean Up must keep (library_titles.keep), by TMDB id.
   keptShows() { return new Set((prepared(this.db, `SELECT tmdb_id FROM library_titles WHERE kind = 'show' AND keep = 1`).all() as { tmdb_id: number }[]).map(r => r.tmdb_id)); }

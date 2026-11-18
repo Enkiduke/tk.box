@@ -62,14 +62,15 @@ export class Tvmaze {
 }
 
 // TMDB's episodes with TVmaze's air time where both agree it's the same episode: the same season and number, and air
-// days at most a day apart (TVmaze's day is the network's, TMDB's usually the US one). Others keep `fallback`.
-export function withAirTimes<E extends { season: number; episode: number; airDate?: string; airAt?: number }>(episodes: readonly E[], airings: readonly TvmazeAiring[]): E[] {
+// days at most a day apart (TVmaze's day is the network's, TMDB's usually the US one). Others get no `airTime`. Only
+// `airTime` is written: when an episode counts as aired is episodeAiredAt's call (services/wanted.ts).
+export function withAirTimes<E extends { season: number; episode: number; airDate?: string; airTime?: number }>(episodes: readonly E[], airings: readonly TvmazeAiring[]): E[] {
   const byNumber = new Map(airings.map(a => [`${a.season}:${a.episode}`, a]));
   const day = (d: string) => Date.parse(`${d}T00:00:00Z`);
   return episodes.map(e => {
     const a = byNumber.get(`${e.season}:${e.episode}`);
     if (!a) return e;
     if (e.airDate && a.airDate && Math.abs(day(e.airDate) - day(a.airDate)) > 86400000) return e;
-    return { ...e, airAt: a.airAt };
+    return { ...e, airTime: a.airAt };
   });
 }

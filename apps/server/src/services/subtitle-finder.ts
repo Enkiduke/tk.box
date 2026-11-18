@@ -5,7 +5,7 @@ import { errorDetail } from '../lib/every.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem } from './queue.js';
 import { homeRelease } from './wanted.js';
 import type { LibraryStore } from '../persistence/library-store.js';
-import { SubtitleStore, nextUtcDay } from '../persistence/subtitle-store.js';
+import { SubtitleStore, nextUtcDay, whisperRecheckDue } from '../persistence/subtitle-store.js';
 import { OpenSubtitlesError, movieHashOf, pickSubtitle, sidecarPath, type Login, type OpenSubtitles, type Wanted } from '../providers/opensubtitles.js';
 import { findSidecar, isEnglishText, type ProbeSubtitles } from './subtitle-check.js';
 
@@ -15,19 +15,19 @@ import { findSidecar, isEnglishText, type ProbeSubtitles } from './subtitle-chec
 // 2. An English sidecar or embedded text track: recorded as `sidecar` / `embedded`.
 // 3. OpenSubtitles: search by hash and TMDB id, pick, download (under the daily cap), write `<video>.en.srt`, record it,
 //    and have Plex scan the folder.
-// 4. Nothing found: the grace (`waiting`; `due()` brings it back) or a job for the PC worker (`queued`).
+// 4. Nothing found: a job for the PC worker (`queued`) at once.
 // A refused or missing login stops it for an hour (`blocked`), without failing items. The backfill and the monthly
-// Whisper retry (`recheck`, which skips straight to OpenSubtitles) feed it too.
+// Whisper retry (`recheck`, which skips straight to OpenSubtitles; whisperRecheckDue says when) feed it too.
 // The cap, a 429 and a 406 put the item back for later (each uses one of its 10 tries).
 
 export const FIND = 'find-subtitles', CHECK = 'check-subtitles';
-const MAX_TRIES = 10, CHECK_TRIES = 3,RATE_WAIT_MS = 60000, BLOCK_MS = 3600000, BATCH = 50, MONTH_MS = 30 * 86400000;
+const MAX_TRIES = 10, CHECK_TRIES = 3,RATE_WAIT_MS = 60000, BLOCK_MS = 3600000, BATCH = 50;
 export const NO_LOGIN = 'No OpenSubtitles login in Admin › Downloads › Subtitles.';
 type Payload = { path: string; recheck?: boolean };
 export type SubtitleClient = Pick<OpenSubtitles, 'search' | 'download' | 'fetchText'>;
 export type FinderDeps = {
   store: SubtitleStore;
-  library: Pick<LibraryStore, 'fileByPath' | 'title' | 'fileEpisodes' | 'episodes' | 'filePaths'>;
+  library: Pick<LibraryStore, 'fileByPath' | 'title' | 'fileEpisodes' | 'episodes' | 'filePaths' | 'hasFile'>;
   queue: Pick<QueueApi, 'handle' | 'enqueue' | 'view'>;
   probe: ProbeSubtitles;
   client: (login: Login) => SubtitleClient;
@@ -116,21 +116,21 @@ export class SubtitleFinder {
     return done();
   }
 
-  // Videos the library no longer has (an upgrade replaced them, or they were deleted): their rows and jobs go, with
+  // The library deleted or replaced these files (library.title.changed): what was known for each goes at once, with a
+  // sidecar tk.box wrote for it. A path a new file took is left for `imported`. Returns how many were forgotten.
+  async gone(paths: readonly string[]) {
+    const left = paths.filter(p => !this.deps.library.hasFile(p));
+    for (const path of left) await this.removeSidecars(this.deps.store.forgetFile(path));
+    return left.length;
+  }
+
+  // The hourly safety net for `gone`. Videos the library no longer has (an upgrade replaced them, or they were deleted): their rows and jobs go, with
   // any sidecar tk.box wrote that's still there. Returns how many were forgotten.
   async reconcile() {
     const have = this.deps.library.filePaths();
     const gone = this.deps.store.knownPaths().filter(p => !have.has(p));
     for (const path of gone) await this.removeSidecars(this.deps.store.forgetFile(path));
     return gone.length;
-  }
-
-  // Jobs whose grace is over go back to the queue. Returns how many.
-  due() {
-    if (!this.deps.store.settings().enabled) return 0;
-    const paths = this.deps.store.dueWaiting(this.now());
-    for (const path of paths) this.request(path);
-    return paths.length;
   }
 
   private async removeSidecars(paths: string[]) {
@@ -148,7 +148,7 @@ export class SubtitleFinder {
     return this.cached.client;
   }
 
-  // What to search for, and when the video came out (for the grace).
+  // What to search for, and when the video came out (for the Whisper rechecks).
   private wanted(path: string): { wanted: Wanted; releasedAt?: number } | undefined {
     const file = this.deps.library.fileByPath(path);
     const title = file && this.deps.library.title(file.titleId);
@@ -213,10 +213,17 @@ export class SubtitleFinder {
     return next.length;
   }
 
-  // Whisper subtitles are looked for on OpenSubtitles again once a month; a match replaces them. Returns how many.
+  // Whisper subtitles are looked for on OpenSubtitles again, daily while the release is new and monthly until it's a
+  // year old (whisperRecheckDue); a match replaces them. Returns how many.
   whisperRetry() {
     if (!this.ready()) return 0;
-    const paths = this.deps.store.whisperDue(this.now() - MONTH_MS, BATCH);
+    const now = this.now(), paths: string[] = [];
+    for (const { path, at } of this.deps.store.whisperFiles()) {
+      const releasedAt = this.wanted(path)?.releasedAt;
+      if (!whisperRecheckDue({ now, lastAt: at, ...(releasedAt !== undefined ? { releasedAt } : {}) })) continue;
+      paths.push(path);
+      if (paths.length >= BATCH) break;
+    }
     for (const path of paths) this.deps.queue.enqueue(FIND, path, { path, recheck: true }, { maxAttempts: MAX_TRIES });
     return paths.length;
   }
@@ -228,9 +235,7 @@ export class SubtitleFinder {
     if (!target) return done();
     if (recheck ? known?.source !== 'whisper' : known) return done();
     if (!recheck) {
-      const job = store.job(path);
-      if (job && job.state !== 'waiting') return done();
-      if (job && job.notBefore > this.now()) return done();
+      if (store.openJob(path)) return done();
 
       try { if (await this.local(path, signal)) return done(); } catch (e) { return fail(`ffprobe: ${errorText(e)}`); }
     }
@@ -245,8 +250,8 @@ export class SubtitleFinder {
       const hit = pickSubtitle(await client.search(target.wanted, hash, signal), settings.preferHearingImpaired);
       if (!hit && recheck) { store.touch(path); return done(); }
       if (!hit) {
-        const next = store.nothingFound(path, target.releasedAt);
-        this.deps.log(next.state === 'waiting' ? 'subtitles: none yet, trying again after the grace' : 'subtitles: none on OpenSubtitles, queued for the worker', { path });
+        store.nothingFound(path);
+        this.deps.log('subtitles: none on OpenSubtitles, queued for the worker', { path });
         return done();
       }
       const download = await client.download(hit.fileId, signal);

@@ -1,5 +1,5 @@
 import {AppError} from '../errors.js';
-import type {ArtworkKeys} from '../persistence/artwork-store.js';
+import type {ProviderKeys} from '../persistence/service-keys.js';
 import {remoteJson} from '../providers/remote-json.js';
 
 // The library's side: SABnzbd and qBittorrent are checked with their own Test. The indexers report their own state
@@ -9,7 +9,8 @@ export type LibraryHealth = {downloaders:{view():{name:DownloaderName;url:string
 type Result = {state:'working'|'limited'|'failed';checkedAt:number;detail?:string};
 
 // `tvmaze`: check TVmaze too (it needs no key, so there is nothing saved to tell).
-export function connectionHealth(artworkKeys:()=>ArtworkKeys,
+// `keys`: the saved provider keys to check (service keys).
+export function connectionHealth(artworkKeys:()=>ProviderKeys,
   transports:{tmdb?:typeof fetch;other?:typeof fetch} = {}, library?:LibraryHealth, options:{tvmaze?:boolean} = {}) {
   // Share checks if two admins open the page at the same time. A settings change gets a fresh check.
   let pending: {config:string;result:Promise<Record<string,Result>>} | undefined;

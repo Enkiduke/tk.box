@@ -8,17 +8,19 @@ import type { RequestsSiteSettings } from '../services/requests-site.js';
 export const requestStatuses = ['queued', 'requested', 'downloading', 'partial', 'available', 'failed', 'removed'] as const;
 export type RequestStatus = typeof requestStatuses[number];
 export type RequestKind = 'movie' | 'show';
-// Rows the sweep still follows: not yet in Plex in full, not failed, not removed.
+// Rows still followed: not yet in Plex in full, not failed, not removed.
 export const openStatuses: readonly RequestStatus[] = ['queued', 'requested', 'downloading', 'partial'];
 export type RequestSeason = { season: number; availableAt?: number };
 export type RequestRow = {
   id: number; kind: RequestKind; tmdbId: number; tvdbId?: number; title: string; year?: number;
   accountId?: string; accountName: string; createdAt: number; status: RequestStatus; statusAt: number; seen: boolean;
-  profileId?: number; rootFolder?: string; tags: number[]; monitorFuture: boolean; arrId?: number;
+  profileId?: number; rootFolder?: string; tags: number[]; monitorFuture: boolean; titleId?: number;
+  // The library's Favorite (Keep) and a movie's Early copies, asked for by an admin.
+  keep: boolean; earlyCopies: boolean;
   attempts: number; nextAttemptAt?: number; lastError?: string; availableAt?: number; removedAt?: number; removedBy?: string; seerrId?: number;
   seasons: RequestSeason[];
 };
-export type NewRequest = Pick<RequestRow, 'kind' | 'tmdbId' | 'title' | 'accountName'> & Partial<Pick<RequestRow, 'tvdbId' | 'year' | 'accountId' | 'profileId' | 'rootFolder' | 'monitorFuture' | 'seerrId' | 'availableAt'>>
+export type NewRequest = Pick<RequestRow, 'kind' | 'tmdbId' | 'title' | 'accountName'> & Partial<Pick<RequestRow, 'tvdbId' | 'year' | 'accountId' | 'profileId' | 'rootFolder' | 'monitorFuture' | 'seerrId' | 'availableAt' | 'keep' | 'earlyCopies'>>
   & { tags?: number[]; seasons?: RequestSeason[]; status?: RequestStatus; createdAt?: number };
 
 const defaults = (kind: RequestKind) => ({ profileId: 0, rootFolder: '', tags: [] as number[], ...(kind === 'show' ? { seasonFolders: true } : {}) });
@@ -53,9 +55,9 @@ export class RequestStore {
     return raw.map(r => {
       const row: RequestRow = { id: r.id as number, kind: r.kind as RequestKind, tmdbId: r.tmdb_id as number, title: r.title as string, accountName: r.account_name as string,
         createdAt: r.created_at as number, status: r.status as RequestStatus, statusAt: r.status_at as number, seen: r.seen === 1, tags: JSON.parse(r.tags as string) as number[],
-        monitorFuture: r.monitor_future === 1, attempts: r.attempts as number, seasons: seasons.get(r.id as number) ?? [] };
+        monitorFuture: r.monitor_future === 1, keep: r.keep === 1, earlyCopies: r.early_copies === 1, attempts: r.attempts as number, seasons: seasons.get(r.id as number) ?? [] };
       const extra: Partial<RequestRow> = { tvdbId: opt(r.tvdb_id), year: opt(r.year), accountId: opt(r.account_id), profileId: opt(r.profile_id), rootFolder: opt(r.root_folder),
-        arrId: opt(r.arr_id), nextAttemptAt: opt(r.next_attempt_at), lastError: opt(r.last_error), availableAt: opt(r.available_at), removedAt: opt(r.removed_at),
+        titleId: opt(r.title_id), nextAttemptAt: opt(r.next_attempt_at), lastError: opt(r.last_error), availableAt: opt(r.available_at), removedAt: opt(r.removed_at),
         removedBy: opt(r.removed_by), seerrId: opt(r.seerr_id) };
       for (const [key, value] of Object.entries(extra)) if (value !== undefined) (row as Record<string, unknown>)[key] = value;
       return row;
@@ -66,16 +68,17 @@ export class RequestStore {
     const now = this.now(), status = input.status ?? 'queued', created = input.createdAt ?? now;
     return this.db.transaction(() => {
       const { lastInsertRowid } = prepared(this.db, `INSERT INTO requests(kind,tmdb_id,tvdb_id,title,year,account_id,account_name,created_at,status,status_at,seen,profile_id,root_folder,tags,
-        monitor_future,next_attempt_at,available_at,seerr_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?)`)
+        monitor_future,next_attempt_at,available_at,seerr_id,keep,early_copies) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?)`)
         .run(input.kind, input.tmdbId, input.tvdbId ?? null, input.title, input.year ?? null, input.accountId ?? null, input.accountName, created, status, now,
-          input.profileId ?? null, input.rootFolder ?? null, JSON.stringify(input.tags ?? []), input.monitorFuture ? 1 : 0, status === 'queued' ? now : null, input.availableAt ?? null, input.seerrId ?? null);
+          input.profileId ?? null, input.rootFolder ?? null, JSON.stringify(input.tags ?? []), input.monitorFuture ? 1 : 0, status === 'queued' ? now : null, input.availableAt ?? null, input.seerrId ?? null,
+          input.keep ? 1 : 0, input.earlyCopies ? 1 : 0);
       const id = Number(lastInsertRowid), season = prepared(this.db, 'INSERT INTO request_seasons VALUES(?,?,?)');
       for (const s of input.seasons ?? []) season.run(id, s.season, s.availableAt ?? null);
       return this.get(id)!;
     })();
   }
   // Open rows, oldest first.
-  open() { return this.rows(prepared(this.db, `SELECT * FROM requests WHERE status IN ('queued','requested','downloading','partial') ORDER BY id`).all() as Raw[]); }
+  open() { return this.rows(prepared(this.db, `SELECT * FROM requests WHERE status IN (${openStatuses.map(s => `'${s}'`).join(',')}) ORDER BY id`).all() as Raw[]); }
   // Every row that still names the title as requested or on the server: neither failed nor removed.
   live() { return this.rows(prepared(this.db, `SELECT * FROM requests WHERE status NOT IN ('failed','removed') ORDER BY id`).all() as Raw[]); }
   // Who asked for each title, by TMDB id, oldest first; removed requests don't count (Admin › Manage › Movies' source).
@@ -85,6 +88,10 @@ export class RequestStore {
     const result = new Map<number, { name: string; at: number; status: RequestStatus }[]>();
     for (const r of rows) result.set(r.tmdb_id, [...result.get(r.tmdb_id) ?? [], { name: r.account_name, at: r.created_at, status: r.status }]);
     return result;
+  }
+  // Open rows the library took as this title (library.grab.changed names only its id).
+  openForTitleId(titleId: number) {
+    return this.rows(prepared(this.db, `SELECT * FROM requests WHERE title_id=? AND status IN (${openStatuses.map(s => `'${s}'`).join(',')}) ORDER BY id`).all(titleId) as Raw[]);
   }
   forTitle(kind: RequestKind, tmdbId: number) {
     return this.rows(prepared(this.db, `SELECT * FROM requests WHERE kind=? AND tmdb_id=? AND status NOT IN ('failed','removed') ORDER BY id`).all(kind, tmdbId) as Raw[]);
@@ -121,8 +128,8 @@ export class RequestStore {
         extra.lastError !== undefined ? 1 : 0, extra.lastError ?? null, status, now, status, id);
   }
   // The library took it (its title id).
-  sent(id: number, arrId: number) { prepared(this.db, 'UPDATE requests SET arr_id=?, last_error=NULL, next_attempt_at=NULL WHERE id=?').run(arrId, id); }
-  setArrId(id: number, arrId: number) { prepared(this.db, 'UPDATE requests SET arr_id=? WHERE id=?').run(arrId, id); }
+  sent(id: number, titleId: number) { prepared(this.db, 'UPDATE requests SET title_id=?, last_error=NULL, next_attempt_at=NULL WHERE id=?').run(titleId, id); }
+  setTitleId(id: number, titleId: number) { prepared(this.db, 'UPDATE requests SET title_id=? WHERE id=?').run(titleId, id); }
   attemptFailed(id: number, error: string, nextAt: number) { prepared(this.db, 'UPDATE requests SET attempts=attempts+1, last_error=?, next_attempt_at=? WHERE id=?').run(error.slice(0, 500), nextAt, id); }
   seasonAvailable(id: number, season: number, at: number) { prepared(this.db, 'UPDATE request_seasons SET available_at=COALESCE(available_at,?) WHERE request_id=? AND season=?').run(at, id, season); }
   settings(): RequestSettings & { revision: number } {

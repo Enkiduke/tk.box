@@ -1,11 +1,10 @@
 import type {CalendarEntry} from '../../../packages/contracts/src/index.js';
 
-// Calendar episode keys end in the season and episode numbers. Group by the series ID and local day.
+// Group by the movie or series (titleKey) and local day.
 export function groupCalendarEntries(entries: CalendarEntry[]): CalendarEntry[][] {
   const groups = new Map<string, CalendarEntry[]>();
   for (const entry of entries) {
-    const titleKey = entry.kind === 'episode' ? entry.key.replace(/:\d+:\d+$/, '') : entry.key;
-    const key = `${entry.day}:${titleKey}`;
+    const key = `${entry.day}:${entry.titleKey}`;
     const group = groups.get(key);
     if (group) group.push(entry);
     else groups.set(key, [entry]);

@@ -1,9 +1,15 @@
 import type { Db } from '../persistence/database.js';
+import { PlaybackStore } from '../persistence/playback-store.js';
 import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import { Vault, opaque, digest } from '../security/vault.js';
 import { AppError, requireThat } from '../errors.js';
 import { prepared } from '../persistence/statements.js';
 import { TtlCache } from '../lib/ttl-cache.js';
+import { AdminStore } from '../persistence/admin-store.js';
+
+// Who runs tk.box: the Plex server owner (Plex itself says so: `role: 'owner'` on their grant) and the Plex accounts
+// the owner made admins (Admin › Users). Every admin or owner check asks one of these two.
+export const isOwner = (grant: Pick<PlexGrant, 'role'>) => grant.role === 'owner';
 
 // A sign-in lasts while it's used: each use pushes its end to a week out, so it ends only after 7 days unused.
 // The row is written at most hourly, not on every video segment.
@@ -16,9 +22,14 @@ export class IdentityService {
   // A Plex check that passed is reused for `recheckMs` (0 checks every request), so a page of artwork doesn't
   // wait on plex.tv for each image. Sign-out and disabled accounts still apply at once: the session row is read every time.
   private grants = new TtlCache<PlexGrant>(1000);
+  readonly admins: AdminStore;
   // plex.tv now and then refuses or drops a check it passes a moment later, so a failed check is asked again after
   // each of `retryDelays` before the request fails; that keeps a brief Plex hiccup from stopping playback.
-  constructor(private db: Db, private vault: Vault, private plex: PlexAdapter, private recheckMs = 0, private retryDelays = [500, 1500]) {}
+  constructor(private db: Db, private vault: Vault, private plex: PlexAdapter, private recheckMs = 0, private retryDelays = [500, 1500]) {
+    this.admins = new AdminStore(db);
+  }
+  // The owner, or an account the owner made admin.
+  isAdmin(grant: Pick<PlexGrant, 'role' | 'accountId'>) { return isOwner(grant) || this.admins.has(grant.accountId); }
   async start(now = Date.now()) {
     const count = prepared(this.db, 'SELECT count(*) AS n FROM auth_challenges WHERE expires>?').get(now) as {n: number};
     requireThat(count.n < 100, 'LOGIN_LIMIT', 'Too many pending sign-ins.', 429);
@@ -121,6 +132,6 @@ export class IdentityService {
     this.grants.prune(now);
     prepared(this.db, 'DELETE FROM sessions WHERE expires<=?').run(now);
     prepared(this.db, 'DELETE FROM auth_challenges WHERE expires<=?').run(now);
-    prepared(this.db, 'DELETE FROM playback_sessions WHERE expires<=?').run(now);
+    new PlaybackStore(this.db).reap(now);
   }
 }

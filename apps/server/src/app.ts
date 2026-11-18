@@ -9,14 +9,15 @@ import type { Db } from './persistence/database.js';
 import { SettingsStore } from './persistence/database.js';
 import { PlexAdapter } from './providers/plex.js';
 import { LocalMedia } from './providers/local-media.js';
-import { IdentityService } from './services/identity.js';
+import { IdentityService, isOwner } from './services/identity.js';
 import { SubtitleService } from './services/subtitles.js';
 import { AppError, requireThat } from './errors.js';
 import type { Vault } from './security/vault.js';
 import { EncoderBudget } from './streaming/policy.js';
 import { ServiceKeys } from './persistence/service-keys.js';
-import { AdminStore } from './persistence/admin-store.js';
 import { PlexBackground } from './services/plex-background.js';
+import { plexOwner as ownerGrant } from './services/plex-owner.js';
+import { TmdbTitles } from './providers/tmdb-titles.js';
 import { ServerMetrics } from './services/metrics.js';
 import { bearerToken, installAccess, requireDeclaredAccess } from './modules/access.js';
 import { SubtitleWorkerStore } from './persistence/subtitle-worker-store.js';
@@ -39,8 +40,8 @@ import { queueModule } from './modules/queue.js';
 import { indexersModule } from './modules/indexers.js';
 import { downloadersModule } from './modules/downloaders.js';
 import { libraryModule } from './modules/library.js';
+import { plexIndexModule } from './modules/plex-index.js';
 import { subtitleFinderModule } from './modules/subtitle-finder.js';
-import type { LibrarySources } from './library-api.js';
 import { systemAlertsModule } from './modules/system-alerts.js';
 import { catalogModule } from './modules/catalog.js';
 import { exploreModule } from './modules/explore.js';
@@ -48,7 +49,6 @@ import { calendarModule } from './modules/calendar.js';
 import { plexNotificationsModule } from './modules/plex-notifications.js';
 import { signInModule } from './modules/sign-in.js';
 import { adminModule } from './modules/admin.js';
-import { connectionHealth } from './services/connection-health.js';
 import { webModule } from './modules/web.js';
 
 declare module 'fastify' {
@@ -136,13 +136,14 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // Admins are the Plex server owner and the Plex accounts the owner made admins (Admin › Users). Plex lets only the
   // owner's token change the server, so the others act on Plex with the owner's saved Plex admin token (Admin ›
   // Connections), as themselves in tk.box's audit; without one saved they keep their own.
-  const admins = new AdminStore(db);
+  // The grant keeps the account's own role ('viewer'): only the token is the owner's.
+  const admins = identity.admins;
   const admin = async (req: {cookies: Record<string, string | undefined>}) => {
     const a = await auth(req);
-    if (a.grant.role === 'admin') return a;
-    requireThat(admins.has(a.grant.accountId), 'FORBIDDEN', 'Administrator access required.', 403);
-    const {name: _, ...owner} = await background.grant() ?? a.grant;
-    return {...a, grant: {...owner, accountId: a.grant.accountId, ...(a.grant.name ? {name: a.grant.name} : {}), role: 'admin' as const}};
+    if (isOwner(a.grant)) return a;
+    requireThat(identity.isAdmin(a.grant), 'FORBIDDEN', 'Administrator access required.', 403);
+    const {name: _, role: __, ...owner} = await plexOwner.grant() ?? a.grant;
+    return {...a, grant: {...owner, accountId: a.grant.accountId, ...(a.grant.name ? {name: a.grant.name} : {}), role: a.grant.role}};
   };
   // Admin › metrics: event-loop delay, route timings and Plex reads since the server started.
   const metrics = new ServerMetrics();
@@ -150,7 +151,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   app.addHook('onReady', async () => { metrics.start(); });
   app.addHook('onClose', async () => { metrics.stop(); });
   app.addHook('onResponse', async (req, reply) => { metrics.route(`${req.method} ${req.routeOptions.url ?? 'unmatched'}`, reply.elapsedTime, reply.statusCode < 500); });
-  const ownerOnly = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(a.grant.role === 'admin', 'FORBIDDEN', 'Only the Plex server owner can do that.', 403); return a; };
+  const ownerOnly = async (req: {cookies: Record<string, string | undefined>}) => { const a = await auth(req); requireThat(isOwner(a.grant), 'FORBIDDEN', 'Only the Plex server owner can do that.', 403); return a; };
   const connectionAdmin = async (req: {cookies: Record<string, string | undefined>}) => {
     const accountId = identity.sessionAccount(req.cookies[sessionCookie]);
     // The configured owner can recover these settings using an existing session during a Plex outage.
@@ -175,59 +176,49 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // Plex caches go first, so every module reacting to the same change (and every page told to reload) reads Plex anew.
   bus.on('plex.library.changed', () => plex.forgetIndexes());
   bus.on('library.edited', () => plex.forgetMetadata());
+  bus.on('library.title.changed', ({ change }) => { if (change === 'file' || change === 'removed') plex.forgetMetadata(); });
   // Background work reads Plex with the owner's Plex token from Admin › Connections.
-  const serviceKeys = new ServiceKeys(db, vault), background = new PlexBackground(serviceKeys, plex, (message, detail) => app.log.warn(detail, message));
+  const serviceKeys = new ServiceKeys(db, vault);
+  const plexOwner = ownerGrant(new PlexBackground(serviceKeys, plex, (message, detail) => app.log.warn(detail, message)), plex);
+  // The one TMDB client, with its key from Admin › Connections: the library, requests, Explore, the calendar and Artwork.
+  const tmdb = new TmdbTitles(() => serviceKeys.get('tmdb'), exploreTransports.tmdb);
   const jobs = new Jobs((message, detail) => app.log.info(detail, message));
-  const ctx: ModuleContext = {config, db, vault, plex, bus, budget, serviceKeys, background, jobs,
+  const ctx: ModuleContext = {config, db, vault, plex, bus, budget, serviceKeys, plexOwner, tmdb, jobs,
     log: {info: (message, detail) => app.log.info(detail ?? {}, message), warn: (message, detail) => app.log.warn(detail ?? {}, message)}};
-  // Watch history and Admin › Activity come first: every playback module reports to them.
-  const {history, monitor: plexMonitor, latestWatches, accountWatches} = await mountModule(app, ctx, watchHistoryModule, undefined);
-  const plexSessions = (grant: Parameters<typeof plex.sessions>[0]) => plexMonitor.sessions(grant);
-  const activityApi = await mountModule(app, ctx, activityModule, {history, plexSessions}), {activity} = activityApi;
+  // What Plex holds, and the one title identity (plexIndex.resolve): read by watch history, the library, requests,
+  // Explore and the calendar. It needs nothing else, so it mounts first.
+  const plexIndex = await mountModule(app, ctx, plexIndexModule, undefined);
+  // Watch history and Admin › Activity come next: every playback module reports to them.
+  const watchHistory = await mountModule(app, ctx, watchHistoryModule, {plexIndex}), {history, monitor} = watchHistory;
+  const activityApi = await mountModule(app, ctx, activityModule, {history, monitor});
   // Custom channels share the live session routes with IPTV; their sessions belong to CustomTv.
-  const {store: custom, tv: customTv} = await mountModule(app, ctx, customChannelsModule, {localMedia, pauseRetentionMs: () => settings.get().pauseRetentionMinutes * 60000});
+  const {store: custom, tv: customTv} = await mountModule(app, ctx, customChannelsModule, {localMedia, settings});
   const {store: iptv, live} = await mountModule(app, ctx, iptvModule, {custom});
   await mountModule(app, ctx, liveSessionsModule, {live, iptv, customTv, custom, activity: activityApi, history, subtitles});
   await mountModule(app, ctx, vodPlaybackModule, {identity, activity: activityApi, history, subtitles, localMedia});
-  // Owners and the accounts made admins see the shared system alerts.
-  const isAdmin = (grant: {role: string; accountId: string}) => grant.role === 'admin' || admins.has(grant.accountId);
-  await mountModule(app, ctx, clientEventsModule, {isAdmin});
-  await mountModule(app, ctx, notificationsModule, {isAdmin});
+  await mountModule(app, ctx, clientEventsModule, {identity});
+  await mountModule(app, ctx, notificationsModule, {identity});
   // The durable work queue, NZBGeek and SABnzbd (docs/ARR-REPLACEMENT.md, phase 1). The library module uses them.
   const queue = await mountModule(app, ctx, queueModule, undefined);
   const indexers = await mountModule(app, ctx, indexersModule, undefined);
   const downloaders = await mountModule(app, ctx, downloadersModule, undefined);
-  // Anyone streaming, in tk.box or any Plex app, holds back the nightly full collections run.
-  const streaming = async (grant: Parameters<typeof plex.sessions>[0]) => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length;
-  // Collections' seasonal downloads go to tk.box's library (collections.acquire on the bus).
-  const artwork = await mountModule(app, ctx, artworkModule, {streaming, tmdbTransport: exploreTransports.tmdb}), tmdbTitles = artwork.titles;
-  await mountModule(app, ctx, catalogModule, {hiddenRecent: () => artwork.engine.hiddenFromRecent()});
-  // tk.box's own library for movies and shows. Requests send both to it.
-  // Why each movie is there (Admin › Manage › Movies): its requesters, filled in once requests mounts, and collections.
-  const librarySources: LibrarySources = {collections: () => artwork.engine.collectionMovies()};
-  const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, titles: tmdbTitles, sources: librarySources});
+  // Anyone streaming (Activity's `streaming`) holds back the nightly full collections run. Collections' seasonal
+  // downloads go to tk.box's library (collections.acquire on the bus).
+  const artwork = await mountModule(app, ctx, artworkModule, {streaming: activityApi.streaming});
+  await mountModule(app, ctx, catalogModule, {artwork});
+  // tk.box's own library for movies and shows. Requests send both to it, and hand it who asked for each title as they
+  // mount (Admin › Manage's Source column).
+  const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, artwork, plexIndex});
   await mountModule(app, ctx, subtitleFinderModule, {queue, library});
-  const requestsApi = await mountModule(app, ctx, requestsModule, {titles: tmdbTitles, site, library}), {requests} = requestsApi;
-  librarySources.requesters = () => requestsApi.store.requesters('movie');
-  librarySources.showRequesters = () => requestsApi.store.requesters('show');
-  librarySources.history = (kind, tmdbId) => requestsApi.store.history(kind, tmdbId).map(r => ({ id: r.id, name: r.accountName, at: r.createdAt, status: r.status,
-    statusAt: r.statusAt, ...(r.seasons.length ? { seasons: r.seasons.map(s => s.season) } : {}), ...(r.availableAt ? { availableAt: r.availableAt } : {}),
-    ...(r.removedAt ? { removedAt: r.removedAt } : {}), ...(r.removedBy ? { removedBy: r.removedBy === 'arr' || r.removedBy === 'cleanup' ? r.removedBy : r.removedBy === r.accountId ? 'requester' : 'admin' } : {}), ...(r.lastError && r.status === 'failed' ? { error: r.lastError } : {}) }));
-  const cleanup = await mountModule(app, ctx, cleanupModule, {artwork, requests, watches: latestWatches, identity, library});
-  // Explore's suggestions read every watch on this server, in tk.box or Plex's apps, and the saved watch history.
-  const watches = (account: string) => {
-    const server = config.PLEX_MACHINE_ID;
-    return server ? [...accountWatches(server, account),
-      ...cleanup.watchSnapshot(server).flatMap(w => w.account === account && w.scope !== 'season' ? [{kind: w.scope, ratingKey: w.ratingKey, at: w.at}] : [])] : [];
-  };
-  await mountModule(app, ctx, exploreModule, {accountToken: hash => identity.accountToken(hash), titles: tmdbTitles, requests, watches, transports: exploreTransports});
+  const {requests} = await mountModule(app, ctx, requestsModule, {site, library, plexIndex});
+  await mountModule(app, ctx, cleanupModule, {artwork, requests, watchHistory, identity, library});
+  await mountModule(app, ctx, exploreModule, {identity, requests, plexTitles: plexIndex, watchHistory, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
-  await mountModule(app, ctx, calendarModule, {titles: tmdbTitles, library});
-  await mountModule(app, ctx, signInModule, {identity, admins, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
+  await mountModule(app, ctx, calendarModule, {library, plexTitles: plexIndex});
+  await mountModule(app, ctx, signInModule, {identity, cookies: {session: sessionCookie, link: linkCookie, setup: `${cookieNamespace}_setup`, options: cookieOpts, sessionAge: sessionCookieAge}});
   // Admins' system alerts. Admin › Connections checks through it, so its result updates the alerts too.
-  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, checkConnections: connectionHealth(() => artwork.store.keys(), exploreTransports,
-    {downloaders}, {tvmaze: true})});
-  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customBuffer: () => customTv.usage(), checkConnections: alerts.checkConnections});
+  const alerts = await mountModule(app, ctx, systemAlertsModule, {identity, downloaders, transports: exploreTransports});
+  await mountModule(app, ctx, adminModule, {admins, settings, metrics, identity, customTv, checkConnections: alerts.checkConnections});
   await mountModule(app, ctx, jobsModule, undefined);
   await mountModule(app, ctx, webModule, undefined);
   return app;

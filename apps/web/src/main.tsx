@@ -58,8 +58,8 @@ function App() {
   useEffect(()=>{setArtworkEditor(admin?setArtwork:undefined);return()=>setArtworkEditor(undefined);},[admin]);
   // Leaving Soon titles offer Keep longer on their menus to admins, from the last clean up run.
   useEffect(()=>{if(!admin)return;setHoldMenu(leavingEntries);void loadLeaving();return()=>setHoldMenu(undefined);},[admin]);
-  // When an artwork or cleanup job finishes, the server says so and every view on screen reloads its titles; changed
-  // art has a new address, so only those posters load again. After a dropped stream it reloads once, for what it missed.
+  // When the library changes (an artwork or cleanup job, an import, a removal, Plex's own library), the server says so
+  // and every view on screen reloads its titles; changed art has a new address, so only those posters load again. After a dropped stream it reloads once, for what it missed.
   const signedIn=me?.accountId;
   useEffect(()=>{
     if(!signedIn||!('EventSource' in window))return;
@@ -69,6 +69,8 @@ function App() {
     events.addEventListener('library',()=>{invalidate('/catalog');invalidate('/calendar');if(admin){invalidate('/admin/cleanup/titles');void loadLeaving();}});
     events.addEventListener('requests',()=>{void import('./my-requests.js').then(m=>m.requestsChanged());});
     events.addEventListener('notifications',()=>{void notifications.reload();});
+    // A download moved on: Admin's downloads, wanted, history and an open title read it again at once.
+    events.addEventListener('downloads',()=>{invalidate('/admin/library');});
     events.addEventListener('open',()=>{if(dropped){invalidate('/catalog');invalidate('/calendar');void notifications.reload();void serverLink.back();}dropped=false;});
     events.addEventListener('error',()=>{dropped=true;serverLink.lost();});
     return()=>{events.close();notifications.clear();serverLink.stop();ended();toast.dismissKey('session');};

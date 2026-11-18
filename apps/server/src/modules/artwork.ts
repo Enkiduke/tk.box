@@ -8,29 +8,27 @@ import { ArtworkWorker } from '../services/artwork-worker.js';
 import { ArtworkSchedule, type ScheduleState, type Task } from '../services/artwork-schedule.js';
 import type { Job } from '../services/jobs.js';
 import { registerArtwork } from '../artwork-api.js';
-import { TmdbTitles } from '../providers/tmdb-titles.js';
 import type { PlexGrant } from '../providers/plex.js';
 
 type Deps = {
   // How many streams are playing, in tk.box or any Plex app: anyone streaming holds back the nightly full collections run.
   streaming: (grant: PlexGrant) => Promise<number>;
-  tmdbTransport?: typeof fetch;
 };
 
 // Admin › Artwork: posters, logos and collections made by the artwork engine, which runs as a separate Python process,
-// apart from every playback path. Its TMDB key also serves Explore and the calendar (`titles`).
+// apart from every playback path. TMDB is the shared client (ctx.tmdb); every provider key (TMDB, TVDB, Fanart.tv, MDBList)
+// is a service key in Admin › Connections.
 export const artworkModule = defineModule({
   name: 'artwork',
   migrations: artworkMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, plex, bus, background, jobs, log }, { streaming, tmdbTransport }: Deps) {
+  setup(routes, { config, db, vault, plex, bus, plexOwner, serviceKeys, tmdb, jobs, log }, { streaming }: Deps) {
     const store = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
-    const titles = new TmdbTitles(() => store.keys().tmdb, tmdbTransport);
     const engine = new ArtworkEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'),
-      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail));
+      dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail), () => serviceKeys.providers());
     const worker = new ArtworkWorker(engine, (message, detail) => log.warn(message, detail));
     engine.useWorker(worker);
-    const schedule = new ArtworkSchedule(store, engine, plex, () => background.grant(), (message, detail) => log.warn(message, detail), streaming);
+    const schedule = new ArtworkSchedule(store, engine, plex, () => plexOwner.grant(), (message, detail) => log.warn(message, detail), streaming);
     bus.on('plex.library.changed', ({ sections }) => schedule.finished(sections));
     bus.on('plex.notifications.connecting', ({ grant }) => schedule.notificationLibraries(grant));
     engine.finished = () => {
@@ -39,7 +37,7 @@ export const artworkModule = defineModule({
       // Seasonal downloads: tk.box's library adds and removes them.
       if (add.length || remove.length) bus.emit('collections.acquire', { tmdbIds: add, removeIds: remove });
     };
-    registerArtwork(routes, store, engine, worker, schedule, titles);
+    registerArtwork(routes, store, engine, worker, schedule, tmdb, () => serviceKeys.providers());
     // Admin › Schedule. A note starting "Waiting" is a run held back (no Plex admin token, streams playing).
     const status = ({ lastRun, note }: ScheduleState) => ({ lastRun, note, waiting: note?.startsWith('Waiting') });
     const job = (id: Task | 'added' | 'collections-added', label: string, section: 'artwork' | 'collections', scheduled: Job['schedule'], state: () => ScheduleState): Job =>
@@ -52,7 +50,9 @@ export const artworkModule = defineModule({
       job('collections-all', 'Update every collection', 'collections', () => store.collections().schedules.all, () => schedule.collectionStates().all),
       job('collections-added', 'Collections for newly added', 'collections', () => store.collections().schedules.added, () => schedule.collectionStates().added));
     return {
-      api: { store, engine, titles },
+      api: { store, engine,
+        // Which collections downloaded each movie (Admin › Manage's Source column), and the downloads kept off Recently added.
+        collectionMovies: () => engine.collectionMovies(), hiddenFromRecent: () => engine.hiddenFromRecent() },
       start() { if (!preview()) schedule.start(); },
       stop() { schedule.close(); worker.close(); engine.close(); }
     };

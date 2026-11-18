@@ -564,7 +564,7 @@ export class IptvStore {
   mappingReview(id:string,feedId:string) {const {c,xml,manual,mapping,snapshot}=this.guideData(id,feedId);return {mapping,reviewRevision:manual?.revision??0,candidates:xml&&snapshot&&!c.conflict?mappingCandidates(this.provider(c),snapshot.channels,xml):{suggestions:[]}};}
   map(actor:string,id:string,feedId:string,xmlId:string,expectedRevision:number,now=Date.now()) {
     return this.db.transaction(()=>{const {c,xml,manual,scope}=this.guideData(id,feedId);requireThat(xml&&!c.conflict&&c.present,'MAPPING_CONFLICT','Channel or guide identity is unavailable or ambiguous.');
-      const mapping=approveMapping({role:'admin',accountId:actor,...scope,xmlId,expectedRevision},manual,scope,xml);
+      const mapping=approveMapping({accountId:actor,...scope,xmlId,expectedRevision},manual,scope,xml);
       this.q('INSERT INTO iptv_mappings VALUES(?,?,?) ON CONFLICT(channel_id,feed_id) DO UPDATE SET value=excluded.value').run(id,feedId,JSON.stringify(mapping));this.audit(actor,'iptv_mapping_approved',id,now);this.coverage(c.source_id);return mapping;
     })();
   }

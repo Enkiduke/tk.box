@@ -14,7 +14,7 @@ try {
   try {row=db.prepare('SELECT hash,encrypted_credential FROM sessions WHERE account_id=? AND expires>? ORDER BY expires DESC LIMIT 1').get(config.PLEX_OWNER_ACCOUNT_ID??'',Date.now()) as typeof row;}finally{db.close();}
   requireThat(row,'BROWSER_LOGIN_REQUIRED','Sign in to tk.box with the owner account before this local read-only catalog check.');
   const vault=new Vault(readFileSync(config.SECRET_KEY_FILE??join(config.DATA_DIR,'secret.key'))),plex=new PlexAdapter(config,readFileSync(join(config.DATA_DIR,'client-id'),'utf8').trim());
-  const grant=await plex.authorize(vault.open(row.encrypted_credential,row.hash));requireThat(grant.role==='admin','PLEX_OWNER_REQUIRED','Owner session required.');
+  const grant=await plex.authorize(vault.open(row.encrypted_credential,row.hash));requireThat(grant.role==='owner','PLEX_OWNER_REQUIRED','Owner session required.');
   const checks:Record<string,unknown>[]=[];
   for(const library of grant.libraries.filter(l=>['movie','show'].includes(l.type))) {
     const page=await plex.catalogPage(grant,library.key,{limit:3}),recent=await plex.catalogPage(grant,library.key,{limit:3,shelf:'recent'}),ongoing=await plex.catalogPage(grant,library.key,{limit:3,shelf:'continue'}),genres=await plex.catalogGenres(grant,library.key),unwatched=await plex.catalogPage(grant,library.key,{limit:3,shelf:'unwatched'});

@@ -197,7 +197,8 @@ export type TitleRelated = {
 };
 export type CalendarEpisodeLabel = 'series-premiere' | 'season-premiere' | 'season-finale' | 'series-finale';
 export type CalendarEntry = {
-  key: string; title: string; day: string; year?: number; airTime?: string;
+  // `key`: this entry; `titleKey`: its movie or show (a show's episodes share it), e.g. `movie:603`, `episode:tvdb:121361`.
+  key: string; titleKey: string; title: string; day: string; year?: number; airTime?: string;
   kind: 'theatrical' | 'digital' | 'physical' | 'episode';
   season?: number; episode?: number; episodeTitle?: string; episodeLabel?: CalendarEpisodeLabel; summary?: string;
   posterUrl?: string; backdropUrl?: string; stillUrl?: string;

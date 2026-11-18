@@ -3,12 +3,11 @@ import { viewer } from './access.js';
 import { requireThat } from '../errors.js';
 import { digest } from '../security/vault.js';
 import { registerSetup, type CookieOptions } from '../setup-api.js';
-import type { IdentityService } from '../services/identity.js';
-import type { AdminStore } from '../persistence/admin-store.js';
+import { isOwner, type IdentityService } from '../services/identity.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 type Deps = {
-  identity: IdentityService; admins: AdminStore;
+  identity: IdentityService;
   cookies: { session: string; link: string; setup: string; options: CookieOptions; sessionAge: number };
 };
 
@@ -17,7 +16,7 @@ type Deps = {
 export const signInModule = defineModule({
   name: 'sign-in',
   portal: true,
-  setup(routes, { config, plex, bus, log }, { identity, admins, cookies }: Deps) {
+  setup(routes, { config, plex, bus, log }, { identity, cookies }: Deps) {
     registerSetup(routes, config, plex, identity, { setup: cookies.setup, session: cookies.session, options: cookies.options, sessionAge: cookies.sessionAge });
     routes.post('/api/v1/auth/plex/start', { config: { access: 'public', rateLimit: { max: 10, timeWindow: 60000 } } }, async (_req, reply) => {
       requireThat(config.plexConfigured, 'SETUP_REQUIRED', 'Configure Plex owner, machine and library IDs.', 503);
@@ -37,7 +36,7 @@ export const signInModule = defineModule({
       identity.logout(token); reply.clearCookie(cookies.session, cookies.options); return { status: 'signed_out' };
     });
     const asViewer = { config: { access: 'viewer' as const } };
-    routes.get('/api/v1/me', asViewer, async req => { const { grant } = viewer(req), owner = grant.role === 'admin'; return { accountId: grant.accountId, role: owner || admins.has(grant.accountId) ? 'admin' : 'viewer', owner, libraries: grant.libraries.filter(l => ['movie', 'show'].includes(l.type)) }; });
+    routes.get('/api/v1/me', asViewer, async req => { const { grant } = viewer(req), owner = isOwner(grant); return { accountId: grant.accountId, role: identity.isAdmin(grant) ? 'admin' : 'viewer', owner, libraries: grant.libraries.filter(l => ['movie', 'show'].includes(l.type)) }; });
     routes.get('/api/v1/libraries', asViewer, async req => ({ libraries: viewer(req).grant.libraries }));
     routes.get<{ Params: { id: string } }>('/api/v1/media/:id', asViewer, async req => {
       const { grant } = viewer(req), item = await plex.metadata(grant, req.params.id);

@@ -2,40 +2,39 @@ import { defineModule } from './module.js';
 import { libraryMigrations } from './migrations/library.js';
 import { AppError, preview } from '../errors.js';
 import { every, errorDetail } from '../lib/every.js';
+import { TtlCache } from '../lib/ttl-cache.js';
 import { LibraryStore } from '../persistence/library-store.js';
-import { Library, SWEEP_EVERY, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
+import { Library, SWEEP_EVERY, type LibraryFiles, type DownloadersApi, type IndexersApi, type PlexHolds } from '../services/library.js';
 import { LibraryImporter, ffprobe } from '../services/library-import.js';
-import { RequestAvailability } from '../services/request-availability.js';
-import { LibraryFulfiller } from '../providers/library-fulfiller.js';
-import { registerLibraryAdmin, type LibrarySources } from '../library-api.js';
+import type { PlexIndex } from '../services/plex-index.js';
+import { registerLibraryAdmin, type LibrarySources, type RequestReads } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
-import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import { Tvmaze } from '../providers/tvmaze.js';
 
-const SWEEP_MINUTES = SWEEP_EVERY / 60000, CHECK_MS = 30000, SEEDING_MINUTES = 60;
+const SWEEP_MINUTES = SWEEP_EVERY / 60000, CHECK_MS = 30000, SEEDING_MINUTES = 60, LIVE_SHARED_MS = 4000;
 
-type Deps = { queue: QueueApi; indexers: IndexersApi & { feedEvery?: (minutes: () => number) => void }; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>; sources?: LibrarySources };
+type Deps = { queue: QueueApi; indexers: IndexersApi & { feedEvery?: (minutes: () => number) => void }; downloaders: DownloadersApi;
+  // Which collections downloaded each movie (Admin › Manage's Source column).
+  artwork?: { collectionMovies(): Map<number, string[]> };
+  // What Plex holds (the plex-index module), shared with requests.
+  plexIndex: PlexIndex };
 
-// tk.box's own library (docs/ARR-REPLACEMENT.md, phase 1b): movies, from adding one to importing it. Its work runs on
+// tk.box's own library (docs/ARR-REPLACEMENT.md, phases 1b and 2): movies and shows, from adding one to importing it. Its work runs on
 // the queue (search, send, unpack, import, refresh-title, plex-scan). The wanted sweep runs every 30 minutes, the
 // download check (SABnzbd and qBittorrent) every 30 s while grabs are under way, and the seeding check hourly, all in
 // Admin › Schedule with Run now. Admin › Downloads reads and changes it
-// through /api/v1/admin/library/* (library-api.ts). Requests use LibraryFulfiller for movies and shows.
+// through /api/v1/admin/library/* (library-api.ts). Requests add, follow and let go of titles through its API.
 export const libraryModule = defineModule({
   name: 'library',
   access: 'admin',
   migrations: libraryMigrations,
-  setup(routes, { config, db, plex, bus, background, jobs, log }, { queue, indexers, downloaders, titles, sources }: Deps) {
+  setup(routes, { config, db, bus, plexOwner, tmdb: titles, jobs, log }, { queue, indexers, downloaders, artwork, plexIndex }: Deps) {
     const store = new LibraryStore(db);
-    // What Plex holds, read with the owner's grant, as requests read it.
-    const availability = new RequestAvailability(async () => {
-      const grant = await background.grant();
-      if (!grant) throw new Error('No Plex admin token in Admin › Connections');
-      return plex.availability(grant);
-    }, (message, detail) => log.warn(message, detail));
     const holds: PlexHolds = {
-      has: tmdbId => availability.movie(tmdbId) !== undefined,
-      ready: async () => { if (!availability.ready()) await availability.rebuild(); return availability.ready(); },
+      has: tmdbId => plexIndex.movie(tmdbId) !== undefined,
+      showSeasons: (tmdbId, tvdbId) => plexIndex.show(tmdbId, tvdbId)?.seasons,
+      showEpisodes: (tmdbId, tvdbId) => plexIndex.show(tmdbId, tvdbId)?.episodes,
+      ready: async () => { if (!plexIndex.ready()) await plexIndex.rebuild(); return plexIndex.ready(); },
     };
     const warn = (message: string, detail?: Record<string, unknown>) => log.warn(message, detail);
     const importer = new LibraryImporter(store, ffprobe(config.FFPROBE_PATH), undefined, warn);
@@ -43,22 +42,34 @@ export const libraryModule = defineModule({
     const tvmaze = preview() ? undefined : new Tvmaze();
     const library = new Library({
       store, queue, indexers, downloaders, titles, plex: holds, importer, ...(tvmaze ? { airings: tvmaze.airings.bind(tvmaze) } : {}),
-      scan: async folder => {
-        const grant = await background.grant();
-        if (!grant) throw new AppError('NO_PLEX_TOKEN', 'No Plex admin token in Admin › Connections.', 409);
-        return plex.scanFolder(grant.serverToken, folder);
-      },
+      scan: folder => plexOwner.scanFolder(folder),
       emit: (event, payload) => bus.emit(event, payload),
       log: (message, detail) => log.info(message, detail),
     });
     library.register();
+    // The Plex index reads the episodes of the shows the library follows, and a show's again when it is added or its
+    // seasons are switched.
+    plexIndex.follow(() => store.monitoredShows());
+    // The title identity (plexIndex.resolve) learns library title ids and file paths from here.
+    plexIndex.library({ title: id => store.title(id), titleId: (kind, tmdbId) => store.titleByTmdb(kind, tmdbId)?.id,
+      pathTitle: path => store.fileByPath(path)?.titleId });
+    bus.on('library.title.changed', ({ titleId, kind, change }) => {
+      if (kind !== 'show' || (change !== 'added' && change !== 'monitor')) return;
+      const title = store.title(titleId);
+      if (title && title.monitor !== 'none') void plexIndex.refreshShow(title).catch(e => log.warn('plex index: a show’s episodes could not be read', errorDetail(e)));
+    });
     indexers.feedEvery?.(() => store.settings().rssMinutes);
-    const plexKey = (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => {
-      const held = kind === 'movie' ? availability.movie(tmdbId) : availability.show(tmdbId, tvdbId);
-      return held && config.PLEX_MACHINE_ID ? { server: config.PLEX_MACHINE_ID, key: held.ratingKey } : undefined;
-    };
-    registerLibraryAdmin(routes, { store, library, queue, titles, downloaders, plexKey, ...(sources ? { sources } : {}) });
-    bus.on('plex.library.changed', () => availability.soon());
+    // Admin › Downloads reads the downloaders live (speeds, free space, everything they hold). Every open page and admin
+    // shares one read for a few seconds; a grab moving on or any change made here reads them again.
+    const liveReads = new TtlCache<ReturnType<NonNullable<DownloadersApi['live']>>>(1), readLive = downloaders.live?.bind(downloaders);
+    const shared = readLive ? { live: () => liveReads.remember('live', LIVE_SHARED_MS, readLive) } : {};
+    bus.on('library.grab.changed', () => liveReads.clear());
+    routes.addHook('onResponse', async request => { if (request.method !== 'GET' && request.method !== 'HEAD') liveReads.clear(); });
+    // Who asked for each title is the requests module's: it mounts after the library (it sends titles here) and hands
+    // its reads over as it does (`readRequests`), before any route serves.
+    let requestReads: RequestReads | undefined;
+    const sources: LibrarySources = { requests: () => requestReads, ...(artwork ? { collections: () => artwork.collectionMovies() } : {}) };
+    registerLibraryAdmin(routes, { store, library, queue, titles, downloaders: shared, plexTitles: plexIndex, plexServer: () => config.PLEX_MACHINE_ID, sources });
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library
     // added them for collections and nobody has requested or kept them since.
@@ -79,26 +90,36 @@ export const libraryModule = defineModule({
     const checkNow = () => jobs.track('library.downloads', () => library.checkDownloads());
     const seedNow = () => jobs.track('library.seeding', () => library.seedingCheck());
     jobs.add(
-      { id: 'library.wanted', label: 'Search for wanted movies', area: 'Library', section: 'wanted',
+      { id: 'library.wanted', label: 'Search for wanted titles', area: 'Library', section: 'wanted',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SWEEP_MINUTES } }), status: () => jobs.tracked('library.wanted'), run: sweepNow },
       { id: 'library.downloads', label: 'Check downloads', area: 'Library', section: 'queue',
         schedule: () => ({ enabled: store.hasOpenGrabs(), schedule: { kind: 'every', minutes: CHECK_MS / 60000 } }), status: () => jobs.tracked('library.downloads'), run: checkNow },
       { id: 'library.seeding', label: 'Remove seeded torrents', area: 'Library', section: 'queue',
         schedule: () => ({ enabled: true, schedule: { kind: 'every', minutes: SEEDING_MINUTES } }), status: () => jobs.tracked('library.seeding'), run: seedNow });
 
-    const fulfiller = new LibraryFulfiller(library, store);
     let timers: { stop(): void }[] = [];
     return {
+      // Other modules ask through these; none gets the store.
       api: {
-        fulfiller, store,
+        state: library.state.bind(library), states: library.states.bind(library), calendar: library.calendar.bind(library),
+        titleId: (kind: 'movie' | 'show', tmdbId: number) => store.titleByTmdb(kind, tmdbId)?.id,
+        // Titles Clean Up must keep, by TMDB id.
+        kept: (kind: 'movie' | 'show') => kind === 'movie' ? store.keptMovies() : store.keptShows(),
+        // The library's files, for subtitles.
+        files: { fileByPath: store.fileByPath.bind(store), filePaths: store.filePaths.bind(store), hasFile: store.hasFile.bind(store), files: store.files.bind(store),
+          fileEpisodes: store.fileEpisodes.bind(store), title: store.title.bind(store), episodes: store.episodes.bind(store) } satisfies LibraryFiles,
         forgetSeason: library.forgetSeason.bind(library),
-        // Collections' seasonal downloads add through here, as requests do.
-        add: library.add.bind(library),
+        // Requests and Collections' seasonal downloads add through here; a cancelled request lets go of what nobody else needs.
+        add: library.add.bind(library), addShow: library.addShow.bind(library),
+        unmonitor: library.unmonitor.bind(library), unmonitorSeasons: library.unmonitorSeasons.bind(library),
+        // A request's timing, and its Advanced profiles.
+        progress: library.progress.bind(library), profiles: library.profiles.bind(library),
         keep: library.keep.bind(library),
         forget: library.forget.bind(library),
+        // The requests module's reads, for Admin › Manage's Source column and each title's Requests tab.
+        readRequests: (reads: RequestReads) => { requestReads = reads; },
       },
       start() {
-        void availability.rebuild();
         if (preview()) return;
         void importer.cleanLeftovers().catch(e => log.warn('library leftover cleanup failed', errorDetail(e)));
         timers = [
@@ -107,7 +128,7 @@ export const libraryModule = defineModule({
           every(SEEDING_MINUTES * 60000, seedNow, e => log.warn('library seeding check failed', errorDetail(e))),
         ];
       },
-      stop() { for (const t of timers) t.stop(); library.close(); availability.close(); }
+      stop() { for (const t of timers) t.stop(); library.close(); }
     };
   }
 });

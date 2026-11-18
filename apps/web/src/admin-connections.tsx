@@ -8,9 +8,7 @@ import {ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {date,SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
 
-type KeyName='tmdb'|'tvdb'|'fanart'|'mdblist';
-type ArtworkKeysView={revision:number;keysSet:Record<KeyName,boolean>};
-type KeysView={plex:boolean;thesportsdb:boolean};
+type KeysView={plex:boolean;thesportsdb:boolean;tmdb:boolean;tvdb:boolean;fanart:boolean;mdblist:boolean};
 type PlexHealth={account:boolean;server:boolean;admin:'working'|'missing'|'failed'|'unverified';checkedAt:number};
 type FeedHealth={state:'idle'|'waiting'|'working'|'warning'|'backoff';lastSuccess:number|null;lastChecked:number|null;failedRequests:number;retryAt:number|null};
 type SportsHealth=Record<'espn'|'tsdb',FeedHealth>;
@@ -40,8 +38,9 @@ type Connection={
   editor?:(close:()=>void)=>ReactNode;
 };
 
+// The metadata and artwork providers' keys, saved with the other service keys.
 const artworkProviders=[
-  ['tmdb','TMDb','Movies and TV in Explore, Artwork, Collections, and Calendar.','themoviedb.org › Settings › API'],
+  ['tmdb','TMDb','Movies and TV in Explore, Requests, Calendar, Artwork, and Collections.','themoviedb.org › Settings › API'],
   ['tvdb','TVDB','TV series and season artwork.','thetvdb.com › Dashboard › API keys'],
   ['fanart','Fanart.tv','Additional posters, backgrounds, and logos for Artwork.','fanart.tv › Profile'],
   ['mdblist','MDBList','List import and discovery in Collections.','mdblist.com › Preferences'],
@@ -131,7 +130,6 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   const plex=useApi<PlexHealth>('/admin/connections/plex');
   const sports=useApi<SportsHealth>('/admin/connections/sports');
   const services=useApi<Record<string,ServiceHealth>>('/admin/connections/services');
-  const artwork=useApi<ArtworkKeysView>('/admin/connections/artwork');
   const indexers=useApi<IndexerView[]>('/admin/indexers');
   const downloaders=useApi<DownloaderView[]>('/admin/downloaders');
   const subtitles=useApi<SubtitlesView>('/admin/subtitles');
@@ -149,7 +147,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
     save:async ({key})=>{
       await api('/admin/keys','PUT',{[name]:key??''});
       invalidate('/admin/keys');
-      invalidate(name==='plex'?'/admin/connections/plex':'/admin/connections/sports');
+      invalidate(name==='plex'?'/admin/connections/plex':name==='thesportsdb'?'/admin/connections/sports':'/admin/connections/services');
       if(name==='plex')invalidate('/admin/cleanup/users');
     },
   }));
@@ -208,20 +206,12 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
       },
     ]},
     {id:'indexers',title:'Indexers & downloaders',icon:'search',connections:searchConnections},
-    {id:'metadata',title:'Metadata & artwork',icon:'image',connections:[...artworkProviders.map(([id,name,description,keyHint]):Connection=>({
-      name,description,keyHint,
-      health:artwork.data?.keysSet[id]?serviceStatus(id):undefined,
-      ...readSettings(artwork,({revision,keysSet})=>({
-        keySaved:keysSet[id],
-        removableKey:true,
-        save:async ({key})=>{
-          await api('/admin/connections/artwork','PUT',{expectedRevision:revision,[`${id}Key`]:key??''});
-          invalidate('/admin/connections/artwork');
-          invalidate('/admin/artwork');
-          invalidate('/admin/connections/services');
-        },
+    {id:'metadata',title:'Metadata & artwork',icon:'image',connections:[
+      ...artworkProviders.map(([id,name,description,keyHint]):Connection=>({
+        name,description,keyHint,
+        health:serviceKeys.data?.[id]?serviceStatus(id):undefined,
+        ...keySettings(id),
       })),
-    })),
       // No key: TVmaze is free (data CC BY-SA, credited here).
       {name:'TVmaze',description:'Episode air times. Data from tvmaze.com.',builtIn:true,
         health:serviceStatus('tvmaze')},
@@ -248,7 +238,7 @@ export function ConnectionsSettings({params}:{params:URLSearchParams}) {
   }));
   const refresh=()=>{
     plex.reload();sports.reload();services.reload();indexers.reload();downloaders.reload();subtitles.reload();
-    for(const view of [serviceKeys,artwork])if(view.error)view.reload();
+    if(serviceKeys.error)serviceKeys.reload();
   };
   const refreshingStatus=plex.loading||sports.loading||services.loading||indexers.loading||downloaders.loading||subtitles.loading;
   return <>

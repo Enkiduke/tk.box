@@ -3,11 +3,12 @@ import { defineModule } from './module.js';
 import { viewer } from './access.js';
 import { notificationsMigrations } from './migrations/notifications.js';
 import { NotificationStore, type NewNotification, type NotificationTarget, type Resolution } from '../persistence/notifications-store.js';
-import type { PlexGrant } from '../providers/plex.js';
+import type { IdentityService } from '../services/identity.js';
 import { every, errorDetail } from '../lib/every.js';
 import { requireThat } from '../errors.js';
 
-type Deps = { isAdmin: (grant: PlexGrant) => boolean };
+// Owners and the accounts made admins see the shared alerts.
+type Deps = { identity: Pick<IdentityService, 'isAdmin'> };
 const PRUNE_MS = 3600000;
 const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
 const read = z.union([z.object({ all: z.literal(true) }).strict(), z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) }).strict()]);
@@ -20,7 +21,7 @@ export const notificationsModule = defineModule({
   name: 'notifications',
   portal: true,
   migrations: notificationsMigrations,
-  setup(routes, { db, bus, log }, { isAdmin }: Deps) {
+  setup(routes, { db, bus, log }, { identity }: Deps) {
     const store = new NotificationStore(db);
     const changed = (to: NotificationTarget) => bus.emit('notifications.changed', { to });
     const notify = (n: NewNotification) => { const r = store.post(n); if (r.changed) changed(n.to); return r.id; };
@@ -28,7 +29,7 @@ export const notificationsModule = defineModule({
     bus.on('notification.post', n => { notify(n); });
     bus.on('notification.resolve', ({ to, key, resolution }) => { resolve(to, key, resolution); });
 
-    const who = (request: Parameters<typeof viewer>[0]) => { const { grant } = viewer(request); return { account: grant.accountId, admin: isAdmin(grant) }; };
+    const who = (request: Parameters<typeof viewer>[0]) => { const { grant } = viewer(request); return { account: grant.accountId, admin: identity.isAdmin(grant) }; };
     routes.get('/api/v1/notifications', { config: { access: 'viewer' } }, async request => {
       const { account, admin } = who(request);
       return store.list(account, admin, since.parse(request.query).since);

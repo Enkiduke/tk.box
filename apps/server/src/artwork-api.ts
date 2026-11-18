@@ -3,15 +3,16 @@ import {join} from 'node:path';
 import {z} from 'zod';
 import type {PlexGrant} from './providers/plex.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,artworkKeysInput,layoutName,layoutValue} from './persistence/artwork-store.js';
+import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,layoutName,layoutValue} from './persistence/artwork-store.js';
+import type {ProviderKeys} from './persistence/service-keys.js';
 import type {ArtworkEngine,ArtworkRun} from './services/artwork-engine.js';
 import type {ArtworkWorker} from './services/artwork-worker.js';
 import type {ArtworkSchedule} from './services/artwork-schedule.js';
 import {ArtworkFiles,imageType} from './services/artwork-files.js';
 import {ArtworkPictures,type PlexJson} from './services/artwork-pictures.js';
 import {AppError,readOnly,requireThat} from './errors.js';
-import {asConnectionAdmin,connectionActor,viewer} from './modules/access.js';
-import {TmdbTitles} from './providers/tmdb-titles.js';
+import {viewer} from './modules/access.js';
+import type {TmdbTitles} from './providers/tmdb-titles.js';
 
 // Admin › Artwork: the engine's settings, layouts, titles, collections, schedules and jobs. Every route is
 // administrator-only (the artwork module's default access). Browsing titles, picking their files, the providers' pictures and pushes are tk.box's own work
@@ -54,10 +55,10 @@ const libraries=(grant:PlexGrant)=>grant.libraries.filter(l=>['movie','show'].in
 const runOf=(grant:PlexGrant):ArtworkRun=>({token:grant.serverToken,libraries:grant.libraries});
 type Marks={warning:string|null;marks:[string,string|boolean|null][]};
 
-export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,titles=new TmdbTitles(()=>store.keys().tmdb)) {
+export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,titles:TmdbTitles,keys:()=>ProviderKeys) {
   const remote=new ExploreImages(fetch,providerHosts,15*1024*1024);
   const files=new ArtworkFiles(join(engine.workDir,'assets'),join(engine.paths.cacheDir,'artwork'),join(engine.workDir,'config.json'));
-  const pictures=new ArtworkPictures(()=>store.keys(),()=>store.settings().language||'en');
+  const pictures=new ArtworkPictures(keys,titles,()=>store.settings().language||'en');
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=viewer(request);return worker.request<T>(runOf(grant),method,params);};
   const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string;boxes?:unknown},cache='no-store')=>{
     reply.header('Cache-Control',cache);if(image.note)reply.header('X-Artwork-Note',image.note);if(image.boxes)reply.header('X-Artwork-Boxes',JSON.stringify(image.boxes));
@@ -83,15 +84,6 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   // After settings, layouts or collections change, the worker's config is written again.
   const changed=(grant:PlexGrant)=>worker.refresh(runOf(grant));
 
-  app.get('/api/v1/admin/connections/artwork',asConnectionAdmin,async()=>{
-    const {revision,keysSet}=store.view();
-    return {revision,keysSet};
-  });
-  app.put('/api/v1/admin/connections/artwork',asConnectionAdmin,async request=>{
-    const {expectedRevision,...keys}=artworkKeysInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
-    const {revision,keysSet}=store.updateKeys(connectionActor(request),expectedRevision,keys);
-    return {revision,keysSet};
-  });
   app.get('/api/v1/admin/artwork',async request=>{
     const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
     const status=await engine.status(!!query.recheck);

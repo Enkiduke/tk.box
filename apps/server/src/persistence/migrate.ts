@@ -1,14 +1,18 @@
 import type Database from 'better-sqlite3';
+import type { Vault } from '../security/vault.js';
 
 // A named schema change. `up` is SQL or a function for changes that read the database first. Names are recorded per
 // owner (`core` or a module's name) in schema_migrations and never run twice, so a migration is never edited once
 // shipped: a later change is a new migration after it.
 // `legacy` is the number the change had in the old single `migrations(version)` list; a database that already recorded
 // that number has the change, so it is marked applied without running.
-export type Migration = { name: string; legacy?: number; up: string | ((db: Database.Database) => void) };
+// A function is also given the vault, for data that has to be sealed again (mountModule passes it; tests and scripts that
+// open the database without one get none, and a migration that needs it throws).
+export type MigrationDeps = { vault?: Vault };
+export type Migration = { name: string; legacy?: number; up: string | ((db: Database.Database, deps: MigrationDeps) => void) };
 
 // Applies the owner's migrations not yet recorded, in list order, in one transaction: all of them or none.
-export function migrate(db: Database.Database, owner: string, migrations: readonly Migration[]) {
+export function migrate(db: Database.Database, owner: string, migrations: readonly Migration[], deps: MigrationDeps = {}) {
   const names = new Set<string>();
   for (const m of migrations) {
     if (names.has(m.name)) throw new Error(`Migrations of ${owner}: ${m.name} is listed twice.`);
@@ -23,7 +27,7 @@ export function migrate(db: Database.Database, owner: string, migrations: readon
     for (const m of migrations) {
       if (applied.has(m.name)) continue;
       if (m.legacy === undefined || !hasLegacy(m.legacy)) {
-        if (typeof m.up === 'string') db.exec(m.up); else m.up(db);
+        if (typeof m.up === 'string') db.exec(m.up); else m.up(db, deps);
       }
       record.run(owner, m.name, Date.now());
     }

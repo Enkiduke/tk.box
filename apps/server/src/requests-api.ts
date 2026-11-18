@@ -4,8 +4,7 @@ import type { MyRequests, RequestOptions, RequestPage, RequestSettings } from '.
 import { authorize, viewer } from './modules/access.js';
 import { requireThat } from './errors.js';
 import { requestSettings, requestStatuses, type RequestStore } from './persistence/requests-store.js';
-import { requestItem, type Requests } from './services/requests.js';
-import type { Fulfiller } from './providers/fulfiller.js';
+import { requestItem, type Requests, type RequestsLibrary } from './services/requests.js';
 
 const kind = z.enum(['movie', 'show']);
 const id = z.object({ id: z.coerce.number().int().positive() }).strict();
@@ -15,22 +14,15 @@ const override = { profileId: z.number().int().positive().optional(), rootFolder
 
 // Requests: any viewer may request, see everyone's (not removed ones) and cancel their own; Admin › Requests lists, removes and retries every one,
 // and sets their defaults. Only administrators may pick a profile (4K is a profile), folder or tags.
-export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, fulfiller: Fulfiller) {
+export function registerRequests(app: FastifyInstance, store: RequestStore, requests: Requests, library: Pick<RequestsLibrary, 'profiles'>) {
   app.post('/api/v1/requests', { config: { access: 'viewer', rateLimit: { max: 20, timeWindow: 60000 } } }, async request => {
     const input = z.object({ kind, tmdb: z.number().int().positive(), seasons: z.array(z.number().int().positive()).min(1).max(100).optional(), ...override }).strict().parse(request.body);
-    const { kind: media, tmdb, seasons, profileId, rootFolder, keep } = input, earlyCopies = media === 'movie' && !!input.earlyCopies;
-    let { tags } = input;
+    const { kind: media, tmdb, seasons, profileId, rootFolder, tags, keep } = input, earlyCopies = media === 'movie' && !!input.earlyCopies;
     const extras = profileId !== undefined || rootFolder !== undefined || tags !== undefined || !!keep || earlyCopies;
     const { grant } = extras ? await authorize(request, 'admin') : viewer(request);
-    // The library keeps a title, and takes a movie's early copies, by its own flags, each offered as one tag.
-    for (const [on, label] of [[!!keep, 'Keep'], [earlyCopies, 'Early copies']] as const) {
-      if (!on) continue;
-      requireThat(fulfiller.tagId, 'REQUESTS_UNAVAILABLE', `${label === 'Keep' ? 'Favorite' : label} isn’t available here.`, 409);
-      const tagId = await fulfiller.tagId(media, label);
-      tags = [...new Set([...(tags ?? store.settings()[media].tags), tagId])];
-    }
     const row = await requests.create({ accountId: grant.accountId, name: grant.name ?? 'Plex user' }, { kind: media, tmdb, ...(seasons ? { seasons } : {}) },
-      extras ? { ...(profileId !== undefined ? { profileId } : {}), ...(rootFolder !== undefined ? { rootFolder } : {}), ...(tags !== undefined ? { tags } : {}) } : undefined);
+      extras ? { ...(profileId !== undefined ? { profileId } : {}), ...(rootFolder !== undefined ? { rootFolder } : {}), ...(tags !== undefined ? { tags } : {}),
+        ...(keep ? { keep: true } : {}), ...(earlyCopies ? { earlyCopies: true } : {}) } : undefined);
     return requestItem(row);
   });
   app.get('/api/v1/requests/mine', { config: { access: 'viewer' } }, async request => {
@@ -73,7 +65,8 @@ export function registerRequests(app: FastifyInstance, store: RequestStore, requ
   // Also on the Requests site, for its administrators' Request with options….
   app.get('/api/v1/admin/requests/options', { config: { access: 'admin', portal: 'admin' } }, async request => {
     const { kind: media } = z.object({ kind }).strict().parse(request.query), { profileId } = store.settings()[media];
-    const options = await fulfiller.options(media);
+    // The library's own profiles, the default first; its root is its own and Favorite its own flag, so no folders or tags to pick.
+    const options = { connected: true, tkbox: true, profiles: library.profiles(), rootFolders: [], tags: [] };
     // A profile saved that the library doesn't have means nothing: its default profile (listed first) stands in.
     const defaults = { profileId: options.profiles.some(p => p.id === profileId) ? profileId : options.profiles[0]?.id ?? 0, rootFolder: '', tags: [] };
     return { ...options, defaults, keepTag: 'Keep' } satisfies RequestOptions;

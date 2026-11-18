@@ -101,7 +101,7 @@ export class SubtitleWorkerService {
     if (readOnly()) return undefined;
     for (const id of this.deps.workers.expire()) await this.removeAudio(id);
     for (let tries = 0; tries < 5; tries++) {
-      const job = this.deps.workers.claim(workerId);
+      const job = this.deps.workers.claim(workerId, path => this.deps.library.fileByPath(path)?.importedAt);
       if (!job) return undefined;
       const file = this.deps.library.fileByPath(job.path), title = file && this.deps.library.title(file.titleId);
       const durationSec = file?.media.durationSec ?? await this.deps.probeDuration(job.path).catch(() => undefined);

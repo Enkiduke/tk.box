@@ -1,6 +1,6 @@
 # tk.box
 
-A self-hosted media app for your Plex server and IPTV channels. One web UI for watching your Plex movies and shows, discovering new titles, live TV, and always-on channels built from your library, plus admin tools for artwork, collections and cleanup.
+A self-hosted media app for your Plex server. It's where you watch your movies and shows, find new ones, request them and watch live TV. It also downloads, organizes and subtitles your library on its own, so you don't need Radarr, Sonarr, Prowlarr, Bazarr or Seerr.
 
 > **Status:** early and in active development. Not production ready.
 
@@ -10,43 +10,34 @@ A self-hosted media app for your Plex server and IPTV channels. One web UI for w
 | --- | --- |
 | ![Movies library](docs/screenshots/movies.webp) | ![Live TV guide](docs/screenshots/live-tv.png) |
 
-## Features
+## What it does
 
-- **Plex sign-in.** Your friends and Plex Home members sign in with their own Plex accounts and see the libraries you share with them.
-- **Library.** Home, Movies and TV Shows with filters, sorting, collections and resume.
-- **Playback.** Direct Play when the browser can play the file, otherwise Plex transcodes it.
-- **Explore.** Browse Plex Discover and TMDB. Search, manage your Plex watchlist, request titles (downloaded by tk.box's own library), and discover subscription streaming catalogs and Plex-based recommendations.
-- **Live TV.** M3U/XMLTV sources with a guide and favorites, and live sports events with their own channels.
-- **Plex Channels.** Looping channels made from your movies, shows and collections, with Pause and Go Live.
-- **Admin.**
-  - Artwork: custom posters and title cards, sent to Plex.
-  - Collections: franchise, streaming, chart and custom collections kept in Plex.
-  - Clean Up: deletes requested titles once they've been watched.
-  - Activity: shows every stream, in tk.box and other Plex apps.
-  - Admins: lets the owner make other people admins.
+**For everyone**
+
+- **Sign in with Plex.** Friends and Plex Home members use their own Plex accounts and see the libraries you share with them.
+- **Watch.** Home, Movies and TV Shows, with filters, collections and resume. Files play directly when the browser can handle them; otherwise Plex transcodes.
+- **Explore.** Browse Plex Discover and TMDB, see what's on your streaming services, get recommendations based on what you watch, and manage your Plex watchlist.
+- **Request.** Ask for a movie or show and follow it until it's ready. There's an optional Requests site for people who only request.
+- **Live TV.** M3U and XMLTV sources with a guide, favorites and live sports.
+- **Channels.** Always-on channels looped from your own movies, shows and collections.
+
+**For admins**
+
+- **Downloads.** Searches Usenet (Newznab) and IPTorrents, sends to SABnzbd or qBittorrent, imports and renames the files, and upgrades them until they reach your quality profile.
+- **Subtitles.** Finds English subtitles on OpenSubtitles. When there aren't any, an optional Windows tray app makes them on your own GPU with whisper.cpp.
+- **Artwork and Collections.** Custom posters, title cards and collections, kept in Plex.
+- **Clean Up.** Removes requested titles after they've been watched.
+- **Activity and alerts.** Every stream, in tk.box or any Plex app, plus a bell for failed downloads, broken connections and request updates.
 
 ![Explore](docs/screenshots/explore.png)
-
-### TMDB on Explore
-
-Save a TMDB API key in **Admin › Artwork › Settings**. In **Settings › Explore**, choose your streaming region and services. The default region is US. Each streaming row remembers its own service in this browser, and **See all** follows that selection. Streaming rows use subscription availability from JustWatch via TMDB. The recent row uses movie release and TV premiere dates.
-
-Library and Explore title details use TMDB directly, including JustWatch availability for your streaming region. Explore searches Plex Discover and TMDB. Titles show whether they are requested or on the server from tk.box's own requests. IMDb and Rotten Tomatoes scores appear when Plex supplies them.
-
-**Admin › Explore** controls the order of the TMDB group and its rows. Personal recommendations use titles and genres from the signed-in viewer’s accessible Plex libraries. Explore excludes known owned titles and uses popular titles when there are too few usable recommendations. Ownership checks cover up to 10,000 Plex titles and depend on a matching TMDB ID or an exact title and year. Use **Refresh** to rebuild your recommendations.
-
-**Because You Watched** uses movies and series that Plex records as watched by the signed-in viewer within the past 90 days. A watched episode can seed its series. Explore shows up to two of these rows when it can match the watched titles to TMDB.
-
-**Top Picks for You** uses a wider sample of the viewer’s watch activity, combining this server’s watched titles with Plex Profile history when available. With Plex watch-state sync enabled, the profile can include titles watched on other Plex servers or marked as watched in Plex Discover. Explore uses the viewer’s most-watched genres and a mix of watched movies and shows to rank TMDB recommendations. When there is no usable watch activity, it shows **Popular Picks**.
-
-TMDB supplies the Popular, Upcoming, and streaming-service lists. Plex supplies the order and contents of its other Discover shelves. **Admin › Explore › Plex** can hide individual shelves. Viewers can hide any shelf the administrator offers in **Settings › Explore**.
 
 ## Requirements
 
 - Node.js 22 or 24 LTS
 - FFmpeg and FFprobe
-- A Plex Media Server with at least one Movies and one TV library
+- A Plex Media Server with a Movies and a TV library
 - Python 3.10+ for Artwork, Collections and Clean Up (optional)
+- Go, to build the subtitle worker (optional)
 
 ## Getting started
 
@@ -56,27 +47,26 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:3000`. On first run tk.box walks you through setup:
+Open `http://127.0.0.1:3000` and follow the setup. tk.box finds your Plex server, has you sign in with the account that owns it, lets you pick your libraries and checks for FFmpeg and Python. Settings are saved to `.env`; your Plex token isn't.
 
-1. It finds your Plex server, or asks for its address.
-2. You sign in with the Plex account that owns the server.
-3. You choose your Movies and TV libraries.
-4. It checks that FFmpeg, FFprobe and Python can be found.
+Setup only answers on this computer and your home network. To change the address or port, copy `.env.example` to `.env` and edit it first.
 
-It saves your settings to `.env` and signs you in. Your Plex token is never saved.
+Indexers, download clients, TMDB, OpenSubtitles and artwork providers are added later in **Admin › Connections**.
 
-Setup only answers this computer and your home network. To change the address or port tk.box listens on, copy `.env.example` to `.env` and edit it before you start tk.box. It reads `.env` on its own.
+### Python features
 
-For Artwork, Collections and Clean Up, install their Python packages into a virtual environment:
+Artwork, Collections and Clean Up need their Python packages, ideally in a virtual environment:
 
 ```sh
 python -m venv .venv
 .venv/bin/pip install -r apps/artwork/requirements.txt -r apps/cleanup/requirements.txt
 ```
 
-On Windows the pip path is `.venv\Scripts\pip`. Then enter that environment's `python` in the setup screen's Python field, or set `PYTHON_PATH` in `.env`.
+On Windows use `.venv\Scripts\pip`. Then point setup's Python field (or `PYTHON_PATH` in `.env`) at that environment's `python`.
 
-The indexers, downloaders and artwork providers are set up later in **Admin › Connections**.
+### Subtitle worker
+
+See [apps/subtitle-worker](apps/subtitle-worker/README.md) to build it and set it up on a Windows PC with an NVIDIA GPU.
 
 ## Development
 
@@ -87,22 +77,21 @@ npm run typecheck
 npm test
 ```
 
-`npm run doctor` checks your configuration and FFmpeg. `npm run build && npm run preview:ui` serves a UI preview with made-up data at `http://127.0.0.1:3011/__preview`.
-
-Run `npm run preview:plex` and open [the local Plex preview](http://localhost:3012) to test the current UI against the Plex server configured in your local `.env`. The preview builds its own web assets and takes a one-time snapshot of your local tk.box database into `.local/plex-preview`, so it starts with the same connection settings and TMDB key. Sign in to Plex in the preview window. Any tk.box settings you change stay in the preview copy. Plex watch history and watchlist writes, artwork uploads, downloads and library file changes are blocked. Playback can still use Plex streaming and transcoding resources. Press Ctrl+C to stop the preview.
-
-The Plex preview disables scheduled and manual channel health checks. Live TV can still connect to a channel you choose to play.
+- `npm run doctor` checks your configuration and FFmpeg.
+- `npm run preview:ui` serves the UI with made-up data at `http://127.0.0.1:3011/__preview` (run `npm run build` first).
+- `npm run preview:plex` serves a read-only copy of your tk.box at `http://localhost:3012`, against your real Plex server. Settings you change stay in the copy, and writes to Plex, downloads and file changes are blocked. Playback still uses Plex.
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
-| `apps/server` | Fastify backend: Plex, IPTV, streaming, scheduling, SQLite |
+| `apps/server` | Fastify backend: Plex, library, downloads, IPTV, streaming, SQLite |
 | `apps/web` | React frontend |
 | `apps/artwork` | Python artwork and collections engines |
 | `apps/cleanup` | Python Clean Up script |
+| `apps/subtitle-worker` | Windows tray app that makes subtitles with whisper.cpp |
 | `packages/contracts` | Shared types and settings |
-| `scripts` | Setup, diagnostics and media experiments |
+| `scripts` | Setup, diagnostics and previews |
 | `tests` | Test suite |
 | `deploy` | Example systemd unit |
 | `docs` | Guides |
@@ -112,6 +101,7 @@ The Plex preview disables scheduled and manual channel health checks. Live TV ca
 - [Deployment](docs/DEPLOYMENT.md)
 - [Artwork and Collections](docs/ARTWORK.md)
 - [Clean Up](docs/CLEANUP.md)
+- [Subtitle worker](apps/subtitle-worker/README.md)
 
 ## License
 

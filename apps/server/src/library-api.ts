@@ -12,7 +12,7 @@ import { BOOLEAN_FIELDS, FLAGS, FORMAT_CATEGORIES, FORMAT_FIELDS, formatMatches,
 import type { QualityProfile } from './lib/profiles.js';
 import { builtInProfile } from './lib/builtin-profiles.js';
 import { decide } from './lib/pick-rules.js';
-import { parsedFacts } from './services/library.js';
+import { parsedFacts, showCounts } from './services/library.js';
 import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
 import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
@@ -23,6 +23,7 @@ import type { Grab, LibraryStore, LibraryTitle } from './persistence/library-sto
 import { episodesLabel } from './services/wanted.js';
 import type { DownloadersApi, Library } from './services/library.js';
 import type { QueueApi } from './services/queue.js';
+import type { PlexIndex } from './services/plex-index.js';
 
 // Admin › Manage for movies (docs/ARR-REPLACEMENT.md, "Admin UI"; docs/PHASE-3.5.md): downloads, wanted, every movie,
 // a title with its interactive search, pick rules (profiles and score rules) and the library settings with a naming
@@ -123,18 +124,21 @@ export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>,
 }
 
 // `titles`: TMDB details, cached (the library and the calendar read the same ones), for posters.
-// Where Admin › Manage › Movies learns why each movie is there: who requested it (the requests module) and which
-// collections downloaded it (the artwork engine's journals). Filled in as those modules mount; empty until then.
+// Who asked for each title, and one title's requests newest first (its dialog's Requests tab): the requests module's
+// reads, which it hands the library as it mounts (`readRequests`).
+export type RequestReads = {
+  requesters(kind: 'movie' | 'show'): Map<number, { name: string; at: number; status: string }[]>;
+  titleHistory(kind: 'movie' | 'show', tmdbId: number): TitleRequest[];
+};
+// Where Admin › Manage learns why each title is there: who requested it (the requests module) and which collections
+// downloaded a movie (the artwork engine's journals).
 export type LibrarySources = {
-  requesters?: () => Map<number, { name: string; at: number; status: string }[]>;
-  showRequesters?: () => Map<number, { name: string; at: number; status: string }[]>;
+  requests?: () => RequestReads | undefined;
   collections?: () => Map<number, string[]>;
-  // Every request for one title, newest first (its dialog's Requests tab).
-  history?: (kind: 'movie' | 'show', tmdbId: number) => TitleRequest[];
 };
 type Deps = { store: LibraryStore; library: Library; queue: QueueApi; titles?: Pick<TmdbTitles, 'get'>; sources?: LibrarySources; downloaders?: Pick<DownloadersApi, 'live'>;
-  // Where a title is on Plex, for its dialog's History tab; none until Plex has been read.
-  plexKey?: (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => PlexKey | undefined };
+  // Where a title is on Plex (the title identity), for its dialog's History tab; none until Plex has been read.
+  plexTitles?: Pick<PlexIndex, 'resolve'>; plexServer?: () => string | undefined };
 // A movie's source: a request first, then collections, then the one-time import. A show's: a request, else the
 // one-time import.
 export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'movie' | 'show' }, requests: Map<number, { name: string; at: number; status: string }[]>,
@@ -148,11 +152,16 @@ export function movieSource(title: { tmdbId: number; addedBy: string; kind?: 'mo
   return { kind: 'other', by: title.addedBy };
 }
 
-export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders, plexKey }: Deps) {
-  const plexOf = (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number) => { const plex = plexKey?.(kind, tmdbId, tvdbId); return plex ? { plex } : {}; };
-  const sourcesNow = () => { const requests = sources.requesters?.() ?? new Map(), collections = sources.collections?.() ?? new Map();
+export function registerLibraryAdmin(app: FastifyInstance, { store, library, queue, titles, sources = {}, downloaders, plexTitles, plexServer }: Deps) {
+  const plexOf = (kind: 'movie' | 'show', tmdbId: number, tvdbId?: number): { plex?: PlexKey } => {
+    const key = plexTitles?.resolve({ kind, tmdb: tmdbId, tvdb: tvdbId })?.ratingKey, server = plexServer?.();
+    return key && server ? { plex: { server, key } } : {};
+  };
+  const requesters = (kind: 'movie' | 'show') => sources.requests?.()?.requesters(kind) ?? new Map<number, { name: string; at: number; status: string }[]>();
+  const requestHistory = (kind: 'movie' | 'show', tmdbId: number) => sources.requests?.()?.titleHistory(kind, tmdbId) ?? [];
+  const sourcesNow = () => { const requests = requesters('movie'), collections = sources.collections?.() ?? new Map();
     return (t: { tmdbId: number; addedBy: string }) => movieSource(t, requests, collections); };
-  const showSourcesNow = () => { const requests = sources.showRequesters?.() ?? new Map();
+  const showSourcesNow = () => { const requests = requesters('show');
     return (t: { tmdbId: number; addedBy: string }) => movieSource({ ...t, kind: 'show' }, requests, new Map()); };
   const admin = { config: { access: 'admin' as const } };
   const actor = (request: Parameters<typeof viewer>[0]) => viewer(request).grant.accountId;
@@ -189,15 +198,13 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
   };
   const settingsView = (): LibrarySettingsView => ({ ...store.settings(), seedingFloor: { ...IPT_FLOOR } });
   const showView = (title: LibraryTitle): ShowTitleView => {
-    const seasons = library.showDetail(title), byFile = store.fileEpisodes(title.id);
-    let missing = 0, cutoff = 0;
-    for (const e of seasons.flatMap(s => s.episodes)) if (e.wanted === 'missing') missing++; else if (e.wanted === 'cutoff') cutoff++;
+    const seasons = library.showDetail(title), byFile = store.fileEpisodes(title.id), { missing, cutoff, have, total, size, nextAir } = showCounts(seasons, Date.now());
     const files: LibraryFileView[] = store.files(title.id).map(f => ({ ...f, ...episodesOf(title.id, byFile.get(f.id) ?? []) }));
     return { kind: 'show', id: title.id, tmdbId: title.tmdbId, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), title: title.title, ...(title.year ? { year: title.year } : {}),
       ...(title.released.status ? { status: title.released.status } : {}), profileId: title.profileId, keep: title.keep, monitor: title.monitor, monitored: title.monitor !== 'none',
-      paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}), wanted: { missing, cutoff }, seasons, files,
+      paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}), wanted: { missing, cutoff }, have, total, size, ...(nextAir ? { nextAir } : {}), seasons, files,
       grabs: store.grabsFor(title.id, 50).map(grabView), profiles: store.profiles(), source: showSourcesNow()(title), addedAt: title.addedAt,
-      requests: sources.history?.('show', title.tmdbId) ?? [], ...plexOf('show', title.tmdbId, title.tvdbId) };
+      requests: requestHistory('show', title.tmdbId), ...plexOf('show', title.tmdbId, title.tvdbId) };
   };
   const titleView = async (titleId: number): Promise<TitleView> => {
     const title = store.title(titleId);
@@ -209,7 +216,7 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       profileId: title.profileId, keep: title.keep, earlyCopies: title.earlyCopies, monitored: title.monitor !== 'none', paused: title.paused, ...(title.pausedReason ? { pausedReason: title.pausedReason } : {}),
       wanted, released: title.released, ...(search ? { nextAt: search.nextAt, ...(search.lastAt ? { lastAt: search.lastAt } : {}) } : {}), misses: search?.misses ?? 0,
       files: store.files(title.id), grabs: store.grabsFor(title.id, 20).map(grabView), profiles: store.profiles(), source: sourcesNow()(title), addedAt: title.addedAt,
-      requests: sources.history?.('movie', title.tmdbId) ?? [], ...plexOf('movie', title.tmdbId) } satisfies LibraryTitleView;
+      requests: requestHistory('movie', title.tmdbId), ...plexOf('movie', title.tmdbId) } satisfies LibraryTitleView;
   };
 
   const seedingView = (g: Grab): DownloadsSeeding => {

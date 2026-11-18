@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError } from '../errors.js';
-import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore, CleanupWatch } from '../persistence/cleanup-store.js';
+import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
 import { WAITING } from './plex-background.js';
@@ -68,8 +68,10 @@ export function cleanupCollections(kept: KeptCollections['collections'], definit
   return kept.map(({ name, library, kind }) => ({ name, library, kind: kind === 'custom' && seasonal.has(`${library}:${collectionKey(name)}`) ? 'seasonal' : kind }));
 }
 
-// Each movie's, show's and season's latest watch by anyone and by each of `users` (Plex account ids), from the
-// saved snapshot (account '' is anyone) and tk.box's own history, the later of each.
+// A watch date, by scope and Plex rating key; account is a Plex account id, or '' for anyone (watch history's `watches`).
+export type CleanupWatch = { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number };
+// Each movie's, show's and season's latest watch by anyone and by each of `users` (Plex account ids), from watch
+// history (tk.box's own and the saved dates, account '' is anyone), the later of each.
 type WatchScope = CleanupWatch['scope'];
 export type CleanupWatches = { server_id: string } & Record<WatchScope, Record<string, { any: string; users: Record<string, string> }>>;
 export function cleanupWatches(serverId: string, rows: CleanupWatch[], users: Set<string>): CleanupWatches {
@@ -137,13 +139,13 @@ export class CleanupEngine {
   // tk.box's own collections, read as each run starts.
   collections: () => CleanupCollection[] = () => [];
   // tk.box's requests on the server, read as each run starts.
-  requests: () => CleanupRequest[] = () => [];
+  requests: () => Promise<CleanupRequest[]> = async () => [];
   // Told the whole titles a real run deleted, so their requests are removed, and the seasons it deleted (tk.box's
   // shows: the library forgets them).
   deleted?: (titles: { kind: 'movie' | 'show'; tmdb: number }[], seasons: { tmdb: number; season: number }[]) => void;
   // Movies and shows are kept by the library's own flag (`keep` returns false when the library doesn't have the title).
   movies: () => CleanupMovies & { keep(tmdbId: number, kind?: 'movie' | 'show'): boolean } = () => ({ kept: new Set(), shows: { kept: new Set() }, keep: () => false });
-  // This Plex server's id, and its watches (the saved snapshot and tk.box's history), read as each run starts.
+  // This Plex server's id, and its watches (watch history's, the saved dates included), read as each run starts.
   serverId: () => string | undefined = () => undefined;
   watches: (serverId: string) => CleanupWatch[] = () => [];
   constructor(private store: CleanupStore, readonly paths: Paths, private adminGrant: () => Promise<PlexGrant | undefined>,
@@ -264,10 +266,10 @@ export class CleanupEngine {
       this.store.jobStarted(job.id);
       const engine = await this.status();
       if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
-      const requests = this.requests();
+      const requests = await this.requests();
       const file = this.writeConfig(settings, requests);
       say(`> purge_requests ${job.args.join(' ')}`.trim());
-      if (!requests.length) say('No available or partially available requests in tk.box. Check Admin › Requests for the request inventory.');
+      if (!requests.length) say('No requested titles on Plex in tk.box. Check Admin › Requests for the request inventory.');
       const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);

@@ -1,5 +1,6 @@
 import { openDatabase, type Db } from '../../persistence/database.js';
 import { migrate, type Migration } from '../../persistence/migrate.js';
+import type { Vault } from '../../security/vault.js';
 import { watchHistoryMigrations } from './watch-history.js';
 import { customChannelsMigrations } from './custom-channels.js';
 import { iptvMigrations } from './iptv.js';
@@ -32,10 +33,12 @@ export const moduleMigrations: Readonly<Record<string, readonly Migration[]>> = 
   cleanup: cleanupMigrations
 };
 
-export function migrateModules(db: Db) {
-  for (const [owner, migrations] of Object.entries(moduleMigrations)) migrate(db, owner, migrations);
+// `vault` lets a migration that re-seals data run (artwork's TMDB key move); without it, such a migration throws when it
+// finds data to move.
+export function migrateModules(db: Db, vault?: Vault) {
+  for (const [owner, migrations] of Object.entries(moduleMigrations)) migrate(db, owner, migrations, { vault });
   return db;
 }
 
 // The database with every module's tables, for code that uses stores without mounting their modules.
-export const openMigratedDatabase = (path: string) => migrateModules(openDatabase(path));
+export const openMigratedDatabase = (path: string, vault?: Vault) => migrateModules(openDatabase(path), vault);

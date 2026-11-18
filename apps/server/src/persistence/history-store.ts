@@ -48,11 +48,13 @@ export type HistorySession = {
 };
 type Checkpoint = { session: HistorySession; days: ReadonlyMap<string, HistoryDay>; live?: Iterable<LiveAllocation> };
 type ResumeRow = Omit<HistorySession, 'media' | 'stream'> & Pick<HistoryMedia, 'serverId' | 'ratingKey'> & { metadata: string; stream: string };
+// A movie's or episode's TMDB and TVDB ids (an episode's: its show's), from the title identity.
+export type TitleIdsOf = (media: HistoryMedia) => { tmdb: number; tvdb?: number } | undefined;
 
 export class HistoryStore {
   private db?: Db;
 
-  constructor(private appDb: Db) {}
+  constructor(private appDb: Db, private titleIds: TitleIdsOf = () => undefined) {}
 
   private connection() {
     // History retries busy writes in the scheduler. Streaming uses the app connection's own timeout.
@@ -87,12 +89,49 @@ export class HistoryStore {
     return this.connection().prepare(`WITH w AS (SELECT json_extract(m.metadata,'$.type') AS type,
         CASE WHEN json_extract(m.metadata,'$.type')='movie' THEN m.rating_key ELSE json_extract(m.metadata,'$.showId') END AS rk,
         CASE WHEN json_extract(m.metadata,'$.type')='movie' THEN json_extract(m.metadata,'$.title') ELSE json_extract(m.metadata,'$.showTitle') END AS title,
-        json_extract(m.metadata,'$.year') AS year,s.started_at AS at
+        json_extract(m.metadata,'$.year') AS year,m.tmdb_id AS tmdb,s.started_at AS at
         FROM history_sessions s JOIN history_media m ON m.id=s.media_id
         WHERE s.source IN ('vod','plex') AND s.watch_ms>0 AND m.server_id=? AND s.account_id=?)
-      SELECT CASE WHEN type='movie' THEN 'movie' ELSE 'show' END AS kind,rk AS ratingKey,MAX(title) AS title,MIN(year) AS year,MAX(at) AS at,COUNT(*) AS plays
+      SELECT CASE WHEN type='movie' THEN 'movie' ELSE 'show' END AS kind,rk AS ratingKey,MAX(tmdb) AS tmdb,MAX(title) AS title,MIN(year) AS year,MAX(at) AS at,COUNT(*) AS plays
       FROM w WHERE rk IS NOT NULL AND type IN ('movie','episode') GROUP BY kind,rk ORDER BY at DESC LIMIT ?`)
-      .all(serverId, account, limit) as { kind: 'movie' | 'show'; ratingKey: string; title: string | null; year: number | null; at: number; plays: number }[];
+      .all(serverId, account, limit) as { kind: 'movie' | 'show'; ratingKey: string; tmdb: number | null; title: string | null; year: number | null; at: number; plays: number }[];
+  }
+
+  // Rows recorded before their title could be identified (the title-ids migration, or Plex's index not yet read), for
+  // `identify` to fill. Channels have no title ids.
+  unidentified(serverId: string) {
+    return (this.connection().prepare(`SELECT id,rating_key AS ratingKey,metadata FROM history_media
+        WHERE server_id=? AND tmdb_id IS NULL AND json_extract(metadata,'$.type') IN ('movie','episode')`)
+      .all(serverId) as { id: number; ratingKey: string; metadata: string }[])
+      .map(({ id, ratingKey, metadata }) => ({ id, media: { ...JSON.parse(metadata), serverId, ratingKey } as HistoryMedia }));
+  }
+  // Fills the title ids of the rows `unidentified` returned, where `titleIds` now knows them. Returns how many.
+  identify(rows: { id: number; media: HistoryMedia }[]) {
+    const db = this.connection(), write = db.prepare('UPDATE history_media SET tmdb_id=?,tvdb_id=? WHERE id=? AND tmdb_id IS NULL');
+    return db.transaction(() => {
+      let filled = 0;
+      for (const { id, media } of rows) {
+        const ids = this.titleIds(media);
+        if (ids) filled += write.run(ids.tmdb, ids.tvdb ?? null, id).changes;
+      }
+      return filled;
+    })();
+  }
+
+  // Watch dates saved from the old watch-history service, by scope and rating key; account '' is anyone.
+  importedWatches(serverId: string) {
+    return (this.connection().prepare(`SELECT scope,rating_key AS ratingKey,account,at,tmdb_id AS tmdb,tvdb_id AS tvdb FROM history_imported_watches WHERE server_id=?`)
+      .all(serverId) as { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number; tmdb: number | null; tvdb: number | null }[]);
+  }
+  // Saved movies and shows with no title ids yet (seasons have none: their show's is the show row's), for
+  // `identifyImports` to fill.
+  unidentifiedImports(serverId: string) {
+    return this.connection().prepare(`SELECT DISTINCT scope,rating_key AS ratingKey FROM history_imported_watches
+        WHERE server_id=? AND tmdb_id IS NULL AND scope IN ('movie','show')`).all(serverId) as { scope: 'movie' | 'show'; ratingKey: string }[];
+  }
+  identifyImports(serverId: string, rows: { scope: 'movie' | 'show'; ratingKey: string; tmdb: number; tvdb?: number }[]) {
+    const db = this.connection(), write = db.prepare('UPDATE history_imported_watches SET tmdb_id=?,tvdb_id=? WHERE server_id=? AND scope=? AND rating_key=? AND tmdb_id IS NULL');
+    return db.transaction(() => rows.reduce((n, r) => n + write.run(r.tmdb, r.tvdb ?? null, serverId, r.scope, r.ratingKey).changes, 0))();
   }
 
   recover(since: number): HistorySession[] {
@@ -113,8 +152,9 @@ export class HistoryStore {
 
   checkpoint(batch: Checkpoint[]) {
     const db = this.connection();
-    const media = db.prepare(`INSERT INTO history_media(server_id,rating_key,metadata) VALUES(?,?,?)
-      ON CONFLICT(server_id,rating_key,metadata) DO NOTHING`);
+    const media = db.prepare(`INSERT INTO history_media(server_id,rating_key,metadata,tmdb_id,tvdb_id) VALUES(?,?,?,?,?)
+      ON CONFLICT(server_id,rating_key,metadata) DO UPDATE SET tmdb_id=COALESCE(history_media.tmdb_id,excluded.tmdb_id),
+      tvdb_id=COALESCE(history_media.tvdb_id,excluded.tvdb_id) WHERE history_media.tmdb_id IS NULL AND excluded.tmdb_id IS NOT NULL`);
     const findMedia = db.prepare('SELECT id FROM history_media WHERE server_id=? AND rating_key=? AND metadata=?');
     const writeSession = db.prepare(`INSERT INTO history_sessions
       (id,source,account_id,account_name,media_id,client,stream,generation,started_at,observed_at,ended_at,end_reason,watch_ms,position_ms)
@@ -129,7 +169,8 @@ export class HistoryStore {
     const targetId = (target: HistoryTarget) => {
       const { serverId, ratingKey, ...snapshot } = target;
       const metadata = JSON.stringify(snapshot);
-      media.run(serverId, ratingKey, metadata);
+      const ids = target.type === 'channel' ? undefined : this.titleIds(target);
+      media.run(serverId, ratingKey, metadata, ids?.tmdb ?? null, ids?.tvdb ?? null);
       return (findMedia.get(serverId, ratingKey, metadata) as { id: number }).id;
     };
     db.transaction(() => {

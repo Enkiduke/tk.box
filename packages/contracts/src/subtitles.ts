@@ -1,7 +1,7 @@
 // Admin › Downloads › Subtitles (docs/PHASE-4.md, step 4), over /api/v1/admin/subtitles.
 
 export type SubtitleSource = 'embedded' | 'sidecar' | 'opensubtitles' | 'whisper';
-export type SubtitleJobState = 'waiting' | 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled';
+export type SubtitleJobState = 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled';
 
 export type SubtitlesView = {
   revision: number;

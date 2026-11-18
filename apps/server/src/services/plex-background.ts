@@ -29,7 +29,7 @@ export class PlexBackground {
   // Plex's grant for `token`, which must be the server owner's.
   async check(token: string) {
     const grant = await this.plex.authorize(token);
-    requireThat(grant.role === 'admin', 'PLEX_TOKEN_NOT_OWNER', 'That Plex token isn’t the server owner’s.', 400);
+    requireThat(grant.role === 'owner', 'PLEX_TOKEN_NOT_OWNER', 'That Plex token isn’t the server owner’s.', 400);
     return grant;
   }
   invalidate() { this.cached = undefined; }

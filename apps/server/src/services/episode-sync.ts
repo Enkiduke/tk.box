@@ -3,13 +3,14 @@ import type { CustomChannelStore, SyncResult } from '../persistence/custom-chann
 import type { PlexAdapter, PlexGrant } from '../providers/plex.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
-// Automatic new episodes for custom channels. Each enabled show or season selection is read from Plex now and then
-// (and on demand), and genuinely new playable episodes are added through CustomChannelStore.applySync, which
-// publishes at the next program boundary. Plex is read with the Plex admin token from Admin › Connections
+// Automatic new episodes for custom channels. Each enabled show or season selection is read from Plex hourly, a
+// minute after Plex's library changes or the library imports a file, and on demand. Genuinely new playable episodes
+// are added through CustomChannelStore.applySync, which publishes at the next program boundary. Plex is read with the Plex admin token from Admin › Connections
 // (services/plex-background.ts); the background check waits while there is no working one.
 export class EpisodeSync {
   private running = new Map<string, Promise<SyncResult>>();
   private timer?: Repeating;
+  private pending?: NodeJS.Timeout;
   // Wraps each background check, so Admin › Schedule can tell when it last ran.
   track: (task: () => Promise<void>) => Promise<void> = task => task();
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private adminGrant: () => Promise<PlexGrant | undefined>,
@@ -18,7 +19,17 @@ export class EpisodeSync {
     const failed = (e: unknown) => this.log('automatic new episodes failed', errorDetail(e));
     this.timer = every(this.intervalMs, () => this.track(() => this.tick()), failed); void this.track(() => this.tick()).catch(failed);
   }
-  close() { this.timer?.stop(); }
+  close() { this.timer?.stop(); this.timer = undefined; clearTimeout(this.pending); this.pending = undefined; }
+  // Something new may be on Plex: check once `delayMs` from now, so a burst of changes (a scan) is one check. Only
+  // while started; a check already running is joined per selection rather than repeated.
+  soon(delayMs = 60000) {
+    if (!this.timer || this.pending) return;
+    this.pending = setTimeout(() => {
+      this.pending = undefined;
+      void this.track(() => this.tick()).catch(e => this.log('automatic new episodes failed', errorDetail(e)));
+    }, delayMs);
+    this.pending.unref();
+  }
   // One check per selection at a time; a second request joins the running one.
   source(source: { id: string; plexId: string }, grant: PlexGrant, actor: string) {
     let work = this.running.get(source.id);

@@ -4,7 +4,7 @@ import type {PlexAdapter, PlexMetadata} from '../providers/plex.js';
 const history = (m: PlexMetadata) => ({viewOffset: m.viewOffset ?? null, viewCount: m.viewCount ?? null, lastViewedAt: m.lastViewedAt ?? null});
 export async function verifyPlexAccess(plex: PlexAdapter, tokens: {owner: string; viewer: string; unauthorized: string}) {
   const owner = await plex.authorize(tokens.owner), viewer = await plex.authorize(tokens.viewer);
-  requireThat(owner.role === 'admin' && viewer.role === 'viewer' && owner.accountId !== viewer.accountId, 'LIVE_TEST_ACCOUNTS', 'Supply distinct owner and shared-viewer accounts.');
+  requireThat(owner.role === 'owner' && viewer.role === 'viewer' && owner.accountId !== viewer.accountId, 'LIVE_TEST_ACCOUNTS', 'Supply distinct owner and shared-viewer accounts.');
   let rejected = false;
   try {await plex.authorize(tokens.unauthorized);} catch(e) {if (e instanceof AppError && e.code === 'PLEX_ACCESS_DENIED') rejected = true; else throw e;}
   requireThat(rejected, 'LIVE_TEST_UNAUTHORIZED_ADMITTED', 'The unauthorized test account was admitted.', 500);

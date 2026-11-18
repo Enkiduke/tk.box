@@ -43,7 +43,7 @@ try {
         const discovery=await plex.discoverOwner(credential);
         const resolved=loadConfig({...process.env,PLEX_OWNER_ACCOUNT_ID:discovery.ownerAccountId,PLEX_MACHINE_ID:discovery.machineId,PLEX_REQUIRED_LIBRARY_IDS:discovery.requiredLibraryIds.join(',')});
         const grant=await new PlexAdapter(resolved,readFileSync(clientPath,'utf8').trim()).authorize(credential);
-        requireThat(grant.role==='admin','PLEX_OWNER_REQUIRED','Owner verification failed.',403);
+        requireThat(grant.role==='owner','PLEX_OWNER_REQUIRED','Owner verification failed.',403);
         await savePlexConfiguration(envPath,challenge.envDigest,config.PLEX_URL,discovery);
         const report={generatedAt:new Date().toISOString(),serverIdentityVerified:true,ownerAccountVerified:true,ownerRole:'admin',requiredLibraries:{movies:discovery.libraries.filter(l=>l.type==='movie'&&discovery.requiredLibraryIds.includes(l.key)).length,tv:discovery.libraries.filter(l=>l.type==='show'&&discovery.requiredLibraryIds.includes(l.key)).length},unverified:['Shared/unauthorized accounts','Browser VOD playback and progress','Custom-channel history safety','Media codec/track compatibility']};
         await writeFile(join(root,'report.json'),JSON.stringify(report,null,2),{mode:0o600});await unlink(file);

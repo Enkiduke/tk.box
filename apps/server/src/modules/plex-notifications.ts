@@ -5,9 +5,9 @@ import { PlexNotifications } from '../services/plex-notifications.js';
 // `plex.library.changed`, playback in Plex's own apps `plex.playback.states`. A new Plex admin token reconnects it.
 export const plexNotificationsModule = defineModule({
   name: 'plex-notifications',
-  setup(_routes, { plex, bus, background, log }) {
+  setup(_routes, { plex, bus, plexOwner, log }) {
     const notifications = new PlexNotifications(async () => {
-      const grant = await background.grant();
+      const grant = await plexOwner.grant();
       if (!grant) return;
       bus.emit('plex.notifications.connecting', { grant });
       return plex.notificationSocket(grant);

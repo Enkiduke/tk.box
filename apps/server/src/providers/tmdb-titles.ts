@@ -3,8 +3,8 @@ import { remoteJson } from './remote-json.js';
 import { tmdbImage } from './explore-images.js';
 import type { CalendarEpisodeLabel, CalendarEntry } from '../../../../packages/contracts/src/index.js';
 
-// Admin › Collections picks titles by searching TMDb, and shows a collection's members as posters. Both use the
-// artwork engine's TMDb key; answers are kept for a day, so reopening a collection asks TMDb only for new members.
+// The one TMDB client (ModuleContext.tmdb), with the TMDB key from Admin › Connections: the library, requests, Explore,
+// the calendar and Artwork (Collections' search and posters, title pictures) read through it. Answers are kept for a day.
 export type TitleKind = 'movie' | 'tv';
 export type TitleCard = { tmdb_id: number; title: string; year?: number; poster?: string };
 export type TitleMember = { rating_key?: string; tmdb_id?: number; imdb_id?: string; title?: string; year?: number };
@@ -44,7 +44,7 @@ export class TmdbTitles {
   }
   async get(path: string, params: Record<string, string> = {}, ttl = DAY_MS): Promise<unknown> {
     const generation = this.credentialGeneration(), key = this.credential;
-    requireThat(key, 'TMDB_KEY_MISSING', 'Add a TMDB key in Artwork › Settings.', 409);
+    requireThat(key, 'TMDB_KEY_MISSING', 'Add a TMDB key in Admin › Connections.', 409);
     const query = new URLSearchParams(params); query.sort();
     const id = `${path}?${query}`, hit = this.cache.get(id), now = this.now();
     if (hit?.pending) return hit.pending;
@@ -55,7 +55,7 @@ export class TmdbTitles {
     entry.pending = this.limited(async () => {
       requireThat(this.credentialGeneration() === generation, 'TMDB_KEY_CHANGED', 'TMDB settings changed. Try again.', 409);
       const r = await remoteJson(url, {}, 'TMDB', this.transport, 10000);
-      requireThat(r.status !== 401 && r.status !== 403, 'TMDB_KEY_REJECTED', 'TMDB refused the API key. Check Artwork › Settings.', 502);
+      requireThat(r.status !== 401 && r.status !== 403, 'TMDB_KEY_REJECTED', 'TMDB refused the API key. Check Admin › Connections.', 502);
       requireThat(r.status === 404 || (r.status === 200 && r.data !== undefined), 'CATALOG_UNAVAILABLE', `TMDB answered ${r.status}.`, 502);
       return r.status === 404 ? undefined : r.data;
     }).then(data => {

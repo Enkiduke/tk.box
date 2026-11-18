@@ -23,5 +23,14 @@ export const cleanupMigrations: Migration[] = [
     const known = new Set(cleanupSettings.keyof().options as string[]);
     const saved = Object.fromEntries(Object.entries(JSON.parse(row.value) as Record<string, unknown>).filter(([key]) => known.has(key)));
     db.prepare("UPDATE cleanup_config SET value=? WHERE name='settings'").run(JSON.stringify(saved));
+  } },
+  // The saved watch dates are watch history's now (its `imported-watches` migration copied them; watch history mounts
+  // first). Saved dates that watch history hasn't taken are never dropped: that stops here instead.
+  { name: 'drop-watch-snapshot', up: db => {
+    const saved = db.prepare("SELECT 1 FROM cleanup_watch_snapshot LIMIT 1").get() || db.prepare("SELECT 1 FROM cleanup_config WHERE name='state:watch-snapshot'").get();
+    const copied = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()
+      && db.prepare("SELECT 1 FROM schema_migrations WHERE owner='watch-history' AND name='imported-watches'").get();
+    if (saved && !copied) throw new Error('Clean Up’s saved watch dates must move to watch history (its imported-watches migration) before they are dropped.');
+    db.exec("DROP TABLE cleanup_watch_snapshot; DELETE FROM cleanup_config WHERE name='state:watch-snapshot';");
   } }
 ];

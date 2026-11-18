@@ -1,13 +1,18 @@
 import { defineModule } from './module.js';
 import { ADMINS } from '../persistence/notifications-store.js';
 import { JobWatch, type JobAlert } from '../services/job-alerts.js';
-import type { connectionHealth } from '../services/connection-health.js';
+import { connectionHealth, type LibraryHealth } from '../services/connection-health.js';
 import { every, errorDetail } from '../lib/every.js';
 import type { PlexGrant } from '../providers/plex.js';
+import { isOwner } from '../services/identity.js';
 
 type Check = ReturnType<typeof connectionHealth>;
 type Deps = {
-  checkConnections: Check;
+  // The connection check: the provider keys (ctx.serviceKeys), the downloaders and TVmaze. `transports` reach TMDB in
+  // tests; `checkConnections` replaces the whole check (tests).
+  downloaders?: LibraryHealth['downloaders'];
+  transports?: Parameters<typeof connectionHealth>[1];
+  checkConnections?: Check;
   // Told when an account signs in to tk.box for the first time.
   identity: { firstSignIn?: ((account: Pick<PlexGrant, 'accountId' | 'name' | 'role'>) => void) | undefined };
 };
@@ -24,7 +29,8 @@ const names: Record<string, string> = { sabnzbd: 'SABnzbd', qbittorrent: 'qBitto
 // also updates the alerts.
 export const systemAlertsModule = defineModule({
   name: 'system-alerts',
-  setup(_routes, { bus, jobs, budget, log }, { checkConnections, identity }: Deps) {
+  setup(_routes, { bus, jobs, budget, log, serviceKeys }, { identity, downloaders, transports, ...deps }: Deps) {
+    const checkConnections = deps.checkConnections ?? connectionHealth(() => serviceKeys.providers(), transports, downloaders ? { downloaders } : undefined, { tvmaze: true });
     const apply = (alerts: JobAlert[]) => {
       for (const a of alerts) {
         if (a.post) bus.emit('notification.post', a.post);
@@ -92,7 +98,7 @@ export const systemAlertsModule = defineModule({
 
     // A new account.
     identity.firstSignIn = account => {
-      if (account.role === 'admin') return;
+      if (isOwner(account)) return;
       bus.emit('notification.post', { to: ADMINS, kind: 'user.new', tone: 'info', title: `${account.name ?? 'Someone new'} signed in for the first time`, link: '#admin?section=users' });
     };
 

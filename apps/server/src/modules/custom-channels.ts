@@ -6,18 +6,23 @@ import { EpisodeSync } from '../services/episode-sync.js';
 import { CustomTv } from '../services/custom-tv.js';
 import { PartProxy } from '../providers/part-proxy.js';
 import type { LocalMedia } from '../providers/local-media.js';
+import type { SettingsStore } from '../persistence/database.js';
 
-type Deps = { localMedia: LocalMedia; pauseRetentionMs: () => number };
+// `settings`: the playback settings (how long a paused custom channel keeps its place).
+type Deps = { localMedia: LocalMedia; settings: Pick<SettingsStore, 'get'> };
 
 // Custom channels: Plex titles looped as live channels. The Channel Manager (admin), new-episode sync, and the stations
 // that play them. Their viewers share the live session routes with IPTV, so those routes stay with the app for now.
 export const customChannelsModule = defineModule({
   name: 'custom-channels',
   migrations: customChannelsMigrations,
-  setup(routes, { config, db, plex, bus, budget, background, jobs, log }, { localMedia, pauseRetentionMs }: Deps) {
+  setup(routes, { config, db, plex, bus, budget, plexOwner, jobs, log }, { localMedia, settings }: Deps) {
+    const pauseRetentionMs = () => settings.get().pauseRetentionMinutes * 60000;
     const store = new CustomChannelStore(db);
-    const episodes = new EpisodeSync(store, plex, () => background.grant(), (message, detail) => log.info(message, detail));
+    const episodes = new EpisodeSync(store, plex, () => plexOwner.grant(), (message, detail) => log.info(message, detail));
     registerCustomChannels(routes, store, plex, episodes);
+    bus.on('plex.library.changed', () => episodes.soon());
+    bus.on('library.file.imported', () => episodes.soon());
     episodes.track = task => jobs.track('channels.episodes', task);
     jobs.add({ id: 'channels.episodes', label: 'Add new episodes', area: 'Channels', section: 'channels',
       schedule: () => ({ enabled: store.autoSources().length > 0, schedule: { kind: 'every', minutes: 60 } }), status: () => jobs.tracked('channels.episodes'),

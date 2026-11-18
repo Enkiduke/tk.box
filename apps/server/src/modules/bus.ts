@@ -4,6 +4,8 @@ import type { RequestChange } from '../services/requests.js';
 import type { NewNotification, NotificationTarget, Resolution } from '../persistence/notifications-store.js';
 import type { GrabState } from '../persistence/library-store.js';
 
+export type TitleChange = 'added' | 'monitor' | 'file' | 'removed';
+
 // In-process events between modules. A module announces what changed; others react, without either holding the other.
 // Listeners run synchronously in subscription order, and one listener's failure is logged without stopping the rest.
 export type BusEvents = {
@@ -30,10 +32,12 @@ export type BusEvents = {
   'notification.post': NewNotification;
   'notification.resolve': { to: NotificationTarget; key: string; resolution?: Resolution };
   // The library (docs/ARR-REPLACEMENT.md): a grab moved on (sent, downloading, importing, imported, failed); a file was
-  // imported and Plex told to scan its folder; a title was removed (by Clean Up, an admin, or a collection letting it go).
+  // imported and Plex told to scan its folder; a title changed: added (or added again), its Monitored switch or a
+  // season's turned, a file deleted or replaced (`paths`: the files that went), or removed (`by` Clean Up, an admin, or
+  // a collection letting it go; `paths`: its files' records that went).
   'library.grab.changed': { grabId: number; titleId: number; state: GrabState };
   'library.file.imported': { titleId: number; fileId: number; path: string; kind: 'movie' | 'show'; tmdbId: number };
-  'library.title.removed': { titleId: number; kind: 'movie' | 'show'; tmdbId: number; by: 'cleanup' | 'admin' | 'collections' };
+  'library.title.changed': { titleId: number; kind: 'movie' | 'show'; tmdbId: number; change: TitleChange; by?: string; paths?: string[] };
   // A collections run wants these movies (seasonal downloads): the library adds those it lacks, and
   // deletes those in `removeIds` that it added for collections and nobody has requested or kept since.
   'collections.acquire': { tmdbIds: number[]; removeIds: number[] };

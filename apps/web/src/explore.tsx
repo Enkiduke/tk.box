@@ -234,7 +234,7 @@ export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLS
     </div>
     <ActiveFilters filters={filters} searching={!!query} onChange={changeFilters}/>
     {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
-      {admin?<>Add a TMDB key in <a href="#admin?section=artwork&tab=settings">Artwork › Settings</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
+      {admin?<>Add a TMDB key in <a href="#admin?section=connections&category=metadata">Admin › Connections</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
     </p>}
     {/* Plex Discover doesn't say a title's language; TMDB is where it is looked up. */}
     {filters.languages.length>0&&!data.tmdb.configured&&<p className="explore-note muted">Plex titles without a language are hidden while a language filter is on.</p>}

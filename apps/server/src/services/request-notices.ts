@@ -13,7 +13,7 @@ const seasonText = (row: RequestRow) => row.kind === 'show' && row.seasons.lengt
   ? row.seasons.length === 1 ? `Season ${row.seasons[0]!.season}` : `Seasons ${row.seasons.map(s => s.season).join(', ')}` : undefined;
 const removedText = (row: RequestRow) =>
   row.removedBy === 'cleanup' ? 'Clean Up removed it from the library.'
-  : row.removedBy === 'arr' ? 'It was removed from the library.'
+  : row.removedBy === 'library' ? 'It was removed from the library.'
   : 'An admin removed the request.';
 
 export function requestNotices(change: RequestChange, row: RequestRow | undefined): RequestNotice[] {

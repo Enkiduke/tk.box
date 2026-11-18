@@ -72,12 +72,16 @@ export class SubtitleWorkerStore {
       return rows.map(r => r.id);
     })();
   }
-  // The next due job for a video the library still has, newest import first, leased to this worker.
-  claim(workerId: number): ClaimedJob | undefined {
+  // The next due job for a video the library still has, newest import first, leased to this worker. `importedAt` is the
+  // library's answer for a path: when its file was imported, or undefined once the library no longer has it.
+  claim(workerId: number, importedAt: (path: string) => number | undefined): ClaimedJob | undefined {
     return this.db.transaction(() => {
       const now = this.now();
-      const row = prepared(this.db, `SELECT j.id, j.path, j.language, j.attempts FROM subtitle_jobs j JOIN library_files f ON f.path = j.path
-        WHERE j.state = 'queued' AND j.not_before <= ? ORDER BY f.imported_at DESC, j.id LIMIT 1`).get(now) as Omit<ClaimedJob, 'leaseUntil'> | undefined;
+      let row: Omit<ClaimedJob, 'leaseUntil'> | undefined, best = -Infinity;
+      for (const job of prepared(this.db, `SELECT id, path, language, attempts FROM subtitle_jobs WHERE state = 'queued' AND not_before <= ? ORDER BY id`).all(now) as Omit<ClaimedJob, 'leaseUntil'>[]) {
+        const at = importedAt(job.path);
+        if (at !== undefined && at > best) { row = job; best = at; }
+      }
       if (!row) return undefined;
       const leaseUntil = now + LEASE_MS;
       prepared(this.db, "UPDATE subtitle_jobs SET state = 'claimed', worker_id = ?, lease_until = ? WHERE id = ?").run(workerId, leaseUntil, row.id);

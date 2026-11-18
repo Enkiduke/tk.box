@@ -5,7 +5,8 @@ import type { Vault } from '../security/vault.js';
 import type { PlexAdapter } from '../providers/plex.js';
 import type { EncoderBudget } from '../streaming/policy.js';
 import type { ServiceKeys } from '../persistence/service-keys.js';
-import type { PlexBackground } from '../services/plex-background.js';
+import type { PlexOwner } from '../services/plex-owner.js';
+import type { TmdbTitles } from '../providers/tmdb-titles.js';
 import type { EventBus } from './bus.js';
 import type { Jobs } from '../services/jobs.js';
 import type { AccessLevel } from './access.js';
@@ -16,10 +17,13 @@ export type ModuleContext = {
   config: Config; db: Db; vault: Vault; plex: PlexAdapter; bus: EventBus;
   // Server-wide CPU video encoder limit, shared by every transcode and relay.
   budget: EncoderBudget;
-  // Admin › Connections keys (TheSportsDB, the Plex admin token).
+  // Admin › Connections keys (TheSportsDB, the Plex admin token, TMDB).
   serviceKeys: ServiceKeys;
-  // The owner's Plex grant from the saved Plex admin token, for work no viewer started.
-  background: PlexBackground;
+  // The owner's Plex grant from the saved Plex admin token, for work no viewer started: `grant` (undefined without a
+  // working token), `require` (throws "No Plex admin token…"), `scanFolder`.
+  plexOwner: PlexOwner;
+  // The one cached TMDB client, with the TMDB key from Admin › Connections (service keys).
+  tmdb: TmdbTitles;
   // Admin › Schedule: each module registers its background jobs here.
   jobs: Jobs;
   log: { info: (message: string, detail?: object) => void; warn: (message: string, detail?: object) => void };
@@ -43,7 +47,7 @@ const stops = new WeakMap<FastifyInstance, (() => void | Promise<void>)[]>();
 
 // Routes a module adds live in their own scope, where each one must declare an access level or the server won't start.
 export async function mountModule<Deps, Api>(app: FastifyInstance, ctx: ModuleContext, module: AppModule<Deps, Api>, deps: Deps): Promise<Api> {
-  if (module.migrations) migrate(ctx.db, module.name, module.migrations);
+  if (module.migrations) migrate(ctx.db, module.name, module.migrations, { vault: ctx.vault });
   let instance: ModuleInstance<Api> | undefined;
   await app.register(async routes => {
     routes.addHook('onRoute', route => {

@@ -34,5 +34,8 @@ export const subtitleFinderMigrations: Migration[] = [
   // The PC workers (docs/PHASE-5.md): each one's bearer token, stored as its SHA-256, and revocable.
   { name: 'subtitle-workers', up: `
     CREATE TABLE subtitle_workers(id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL, last_seen_at INTEGER, revoked_at INTEGER);` }
+      created_at INTEGER NOT NULL, last_seen_at INTEGER, revoked_at INTEGER);` },
+  // No more 3-day grace: a video OpenSubtitles had nothing for goes to the worker at once, so any still waiting goes now.
+  { name: 'subtitle-no-grace', up: `
+    UPDATE subtitle_jobs SET state = 'queued', not_before = created_at WHERE state = 'waiting';` }
 ];

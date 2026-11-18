@@ -7,7 +7,8 @@ import { scheduled, toScheduled, type Scheduled } from '../../../../packages/con
 import { prepared } from './statements.js';
 
 // Artwork's settings, layouts and job history. The engine (apps/artwork/artwork_engine.py) reads none of this directly:
-// before each run tk.box writes it out as the engine's JSON config (artworkConfig). Provider keys are sealed.
+// before each run tk.box writes it out as the engine's JSON config (artworkConfig). Its provider keys (TMDB, TVDB, Fanart.tv,
+// MDBList) are service keys in Admin › Connections (persistence/service-keys.ts), not kept here.
 export const layoutName = z.string().regex(/^[\w-]{1,40}$/, 'Use letters, numbers, dashes or underscores (up to 40)');
 const libraryId = z.string().regex(/^\d{1,10}$/);
 // Full runs at most hourly; newly added checks, which are cheap, as often as every 5 minutes.
@@ -34,17 +35,13 @@ export const artworkSettings = z.object({
 export type ArtworkSettings = z.infer<typeof artworkSettings>;
 export type ScheduleName = keyof ArtworkSettings['schedules'];
 export type CollectionScheduleName = keyof ArtworkCollections['schedules'];
-const key = z.string().trim().max(200).regex(/^[\w-]*$/);
-// Omitted keeps a saved key; an empty string removes it.
-export const artworkKeysInput = z.object({ tmdbKey: key.optional(), tvdbKey: key.optional(), fanartKey: key.optional(), mdblistKey: key.optional() }).strict();
-export const artworkSettingsInput = artworkSettings.extend(artworkKeysInput.shape).strict();
+export const artworkSettingsInput = artworkSettings;
 export type ArtworkSettingsInput = z.infer<typeof artworkSettingsInput>;
 export const layoutValue = z.record(z.string().regex(/^[a-z_]{1,60}$/), z.unknown()).refine(value => JSON.stringify(value).length <= 40000, 'Layout is too large');
-export type ArtworkKeys = { tmdb?: string; tvdb?: string; fanart?: string; mdblist?: string };
-const keyNames = ['tmdb', 'tvdb', 'fanart', 'mdblist'] as const;
 // Collection schedules saved with the artwork settings, before collections had their own.
 type OldSchedules = { seasonal?: Scheduled; collections?: Scheduled };
-type Stored = ArtworkSettings & { keys: Partial<Record<typeof keyNames[number], string>>; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
+// `keys` held the sealed provider keys until they moved to the service keys (artwork migration provider-keys-to-service-keys).
+type Stored = ArtworkSettings & { keys?: unknown; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
 // Collections: custom and seasonal definitions in the engine's own format (it validates them), how franchise, streaming and
 // chart collections are kept in step. Seasonal collections' missing movies are added by tk.box's library.
 export const artworkCollections = z.object({
@@ -160,19 +157,17 @@ export class ArtworkStore {
   private stored() {
     const row = prepared(this.db, 'SELECT revision,value FROM artwork_settings WHERE id=1').get() as { revision: number; value: string } | undefined;
     // Settings saved before a field existed read as its default.
-    return { revision: row?.revision ?? 0, value: { ...defaults, keys: {}, ...(row ? JSON.parse(row.value) as Partial<Stored> : {}) } as Stored };
+    return { revision: row?.revision ?? 0, value: { ...defaults, ...(row ? JSON.parse(row.value) as Partial<Stored> : {}) } as Stored };
   }
   settings() {
     const { revision, value: { keys: _, schedules, ...settings } } = this.stored();
     // Schedules saved as a daily time or every N minutes read as schedules.
     return { revision, ...settings, schedules: { scrub: toScheduled(schedules.scrub ?? defaults.schedules.scrub) as Scheduled, added: toScheduled(schedules.added ?? defaults.schedules.added) as Scheduled } };
   }
-  // What the Admin page shows: whether each key is saved, never the key itself.
-  view() { const { keys } = this.stored().value; return { ...this.settings(), keysSet: Object.fromEntries(keyNames.map(k => [k, !!keys[k]])) as Record<typeof keyNames[number], boolean> }; }
-  keys(): ArtworkKeys { const { keys } = this.stored().value; return Object.fromEntries(keyNames.flatMap(k => keys[k] ? [[k, this.vault.open(keys[k]!, `artwork:${k}-key`)]] : [])); }
+  view() { return this.settings(); }
   // `check` validates the settings with the layouts they name (the engine's own check) before anything is saved.
   async update(actor: string, expectedRevision: number, input: ArtworkSettingsInput, check: (settings: ArtworkSettings) => Promise<void>, now = Date.now()) {
-    const { tmdbKey, tvdbKey, fanartKey, mdblistKey, ...settings } = artworkSettingsInput.parse(input);
+    const settings = artworkSettingsInput.parse(input);
     const names = new Set(this.layoutNames());
     const templates = new Set(this.layoutList().filter(l => l.base).map(l => l.name));
     for (const name of [settings.defaultLayout, ...Object.values(settings.layoutByLibrary), ...Object.values(settings.layoutByType)]) {
@@ -180,23 +175,11 @@ export class ArtworkStore {
       if (templates.has(name)) throw new AppError('LAYOUT_IS_TEMPLATE', `${name} is a season or episode template; choose its show layout.`, 422);
     }
     await check(settings);
-    return this.saveSettings(actor, expectedRevision, { tmdbKey, tvdbKey, fanartKey, mdblistKey }, now, settings);
-  }
-  updateKeys(actor: string, expectedRevision: number, input: z.input<typeof artworkKeysInput>, now = Date.now()) {
-    return this.saveSettings(actor, expectedRevision, artworkKeysInput.parse(input), now);
-  }
-  private saveSettings(actor: string, expectedRevision: number, input: z.infer<typeof artworkKeysInput>, now: number, settings?: ArtworkSettings) {
-    const { tmdbKey, tvdbKey, fanartKey, mdblistKey } = input;
     return this.db.transaction(() => {
-      const { revision, value } = this.stored();
+      const { revision } = this.stored();
       if (revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'Settings changed. Reload and retry.', 409);
-      const keys = { ...value.keys };
-      for (const [name, given] of [['tmdb', tmdbKey], ['tvdb', tvdbKey], ['fanart', fanartKey], ['mdblist', mdblistKey]] as const) {
-        if (given === undefined) continue;
-        if (given) keys[name] = this.vault.seal(given, `artwork:${name}-key`); else delete keys[name];
-      }
-      prepared(this.db, 'INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify({ ...(settings ?? value), keys }));
-      this.audit(actor, 'artwork_settings_changed', { ...settings, keysSet: Object.keys(keys) }, now);
+      prepared(this.db, 'INSERT INTO artwork_settings VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(revision + 1, JSON.stringify(settings));
+      this.audit(actor, 'artwork_settings_changed', settings, now);
       return this.view();
     })();
   }

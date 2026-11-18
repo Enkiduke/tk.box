@@ -33,7 +33,7 @@ export function SourceLine({source,addedAt}:{source:MovieSource;addedAt:number})
 
 const requestTone:Record<string,Tone>={available:'ok',partial:'wait',requested:'wait',queued:'wait',downloading:'active',failed:'bad',removed:'off'};
 const requestName:Record<string,string>={available:'Available',partial:'Partial',requested:'Requested',queued:'Queued',downloading:'Downloading',failed:'Failed',removed:'Removed'};
-const removedName:Record<NonNullable<TitleRequest['removedBy']>,string>={requester:'Cancelled by the requester',admin:'Removed by an admin',cleanup:'Removed by Clean Up',arr:'Gone from the library'};
+const removedName:Record<NonNullable<TitleRequest['removedBy']>,string>={requester:'Cancelled by the requester',admin:'Removed by an admin',cleanup:'Removed by Clean Up',library:'Gone from the library'};
 const seasonList=(seasons:number[])=>seasons.length===1?`Season ${seasons[0]}`:`Seasons ${seasons.join(', ')}`;
 
 // The dialog's Requests tab: every request for the title, newest first, cancelled and failed ones too.

@@ -11,7 +11,7 @@ export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',re
 const statusFilters=[['','All'] as const,...Object.entries(requestStatusNames)];
 const kindFilters=[['','All'],['movie','Movies'],['show','Shows']] as const;
 const tone:Partial<Record<RequestStatus,string>>={available:'ok',partial:'ok',downloading:'warning',failed:'danger'};
-const removedBy:Record<string,string>={requester:'by the requester',admin:'by an administrator',cleanup:'by Clean Up',arr:'from the library'};
+const removedBy:Record<string,string>={requester:'by the requester',admin:'by an administrator',cleanup:'by Clean Up',library:'from the library'};
 const seasonText=(item:RequestItem)=>item.kind==='movie'?'Movie':item.seasons.length?`Season${item.seasons.length>1?'s':''} ${item.seasons.map(s=>s.season).join(', ')}`:'Show';
 
 export function RequestsAdmin() {

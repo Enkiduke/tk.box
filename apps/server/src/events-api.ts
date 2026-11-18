@@ -6,7 +6,7 @@ import type {PlexGrant} from './providers/plex.js';
 // what changed; pages read the details again through the usual API, with the viewer's own access. An event for one
 // account (`requests`: one of their requests changed; `notifications`: their bell changed) goes only to that account's
 // pages, and one for 'admins' to every admin's pages.
-// 'downloads': tk.box's library moved a grab on (admins only; Admin › Downloads reads it in phase 1c).
+// 'downloads': tk.box's library moved a grab on (admins only; Admin › Downloads reloads on it).
 export type ClientEvent='library'|'requests'|'notifications'|'downloads';
 const HEARTBEAT_MS=25000;
 

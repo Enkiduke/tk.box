@@ -21,10 +21,11 @@ const downloading=(e:ShowEpisodeView)=>!!e.grab&&['sending','downloading','unpac
 
 function episodeStatus(e:ShowEpisodeView):{tone:Tone;label:string} {
   if(downloading(e))return {tone:'active',label:'Downloading'};
-  if(!e.aired&&!e.file)return {tone:'off',label:'Not aired'};
-  if(!e.monitored&&!e.file)return {tone:'off',label:'Not monitored'};
+  const had=!!(e.file||e.plex);
+  if(!e.aired&&!had)return {tone:'off',label:'Not aired'};
+  if(!e.monitored&&!had)return {tone:'off',label:'Not monitored'};
   if(e.wanted==='cutoff')return {tone:'wait',label:'Below cutoff'};
-  if(e.file)return {tone:'ok',label:'Available'};
+  if(had)return {tone:'ok',label:'Available'};
   return e.monitored?{tone:'wait',label:'Missing'}:{tone:'off',label:'Not monitored'};
 }
 function seasonStatus(s:ShowSeasonView):{tone:Tone;label:string} {
@@ -42,12 +43,6 @@ function showStatus(t:ShowTitleView):{tone:Tone;label:string} {
   if(t.wanted.missing)return {tone:'wait',label:'Missing'};
   if(t.wanted.cutoff)return {tone:'wait',label:'Below cutoff'};
   return {tone:'ok',label:'Available'};
-}
-// Episodes held of those that count (aired and monitored, or with a file), and their files' size.
-function counts(episodes:ShowEpisodeView[]) {
-  const files=new Map<number,number>();
-  for(const e of episodes)if(e.file)files.set(e.file.id,e.file.size);
-  return {have:episodes.filter(e=>e.file).length,total:episodes.filter(e=>e.file||(e.aired&&e.monitored)).length,size:[...files.values()].reduce((a,b)=>a+b,0)};
 }
 
 export function ShowDialogBody({t,path,pane,scope,setPane,mutation,onDeleted}:{t:ShowTitleView;path:string;pane:TitlePane;scope?:string;setPane:(pane:TitlePane,scope?:string)=>void;mutation:Mutation;onDeleted:()=>void}) {
@@ -68,8 +63,7 @@ export function ShowDialogBody({t,path,pane,scope,setPane,mutation,onDeleted}:{t
 }
 
 function Head({t,path,mutation,search,onDeleted}:{t:ShowTitleView;path:string;mutation:Mutation;search:()=>void;onDeleted:()=>void}) {
-  const now=Date.now(),s=showStatus(t),all=t.seasons.flatMap(x=>x.episodes),{have,total,size}=counts(all);
-  const today=new Date(now).toISOString().slice(0,10),next=all.filter(e=>!e.aired&&e.airDate&&e.airDate>=today).map(e=>e.airDate!).sort()[0];
+  const now=Date.now(),s=showStatus(t),{have,total,size}=t,next=t.nextAir?.day;
   return <header className="ui-movie">
     <Poster id={t.id} className="ui-movie-poster"/>
     <div className="ui-movie-main">
@@ -102,7 +96,7 @@ function SeasonsTable({t,path,mutation,search,interactive}:{t:ShowTitleView;path
   const now=Date.now(),searchable=!t.paused&&t.monitored;
   return <Table empty={t.seasons.length?undefined:'No seasons'} columns={[{label:'Season'},{label:'Have',width:130},{label:'Size',width:90,num:true},{label:'Aired',width:110},
     {label:'Status',width:140},{label:'Monitored',width:96},ACTIONS]}>
-    {t.seasons.map(s=>{const expanded=open.has(s.season),c=counts(s.episodes),st=seasonStatus(s),wanted=s.episodes.some(e=>e.wanted&&!downloading(e)),scope=scopeOf(s.season);
+    {t.seasons.map(s=>{const expanded=open.has(s.season),c=s,st=seasonStatus(s),wanted=s.episodes.some(e=>e.wanted&&!downloading(e)),scope=scopeOf(s.season);
       return <Fragment key={s.season}>
         <tr className={`ui-release ${expanded?'is-open':''} ${s.monitored?'':'is-off'}`} onClick={()=>toggle(s.season)}>
           <td><div className="ui-release-name"><Icon name={expanded?'down':'next'} size={14}/><div><span className="ui-title-name">Season {s.season}</span>
@@ -126,7 +120,7 @@ function EpisodeRow({season,e,now,busy,searchable,search,interactive}:{season:nu
   return <tr className={`ui-episode ${e.monitored?'':'is-off'}`}>
     <td><div className="ui-episode-name"><span className="ui-mono">E{pad(e.episode)}</span><div><span title={e.name}>{e.name??`Episode ${e.episode}`}</span>
       {e.lastAt?<small>Searched <When at={e.lastAt} now={now}/></small>:null}</div></div></td>
-    <td>{e.file?.quality??<Dash/>}</td>
+    <td>{e.file?.quality??(e.plex?<span className="ui-dash" title="On Plex, no tk.box file">Plex</span>:<Dash/>)}</td>
     <td className="num">{e.file?gb(e.file.size):<Dash/>}</td>
     <td><WhenDay day={e.airDate} now={now}/></td>
     <td>{e.grab&&downloading(e)?<GrabPill state={e.grab}/>:<Pill tone={st.tone}>{st.label}</Pill>}</td>

@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
-import type { ArtworkCollections, ArtworkKeys, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
+import type { ArtworkCollections, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
+import type { ProviderKeys } from '../persistence/service-keys.js';
 import { collectionsByMovie, hiddenDownloads } from './hidden-downloads.js';
 
 // Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
@@ -45,7 +46,8 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {})
   };
 }
-export type EngineSecrets = ArtworkKeys;
+// The engine's provider keys, from Admin › Connections (service keys).
+export type EngineSecrets = ProviderKeys;
 // Only what Python needs, plus the credentials for this run; never the server's own environment.
 export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
@@ -70,7 +72,7 @@ export class ArtworkEngine {
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
-  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
+  constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private keys: () => EngineSecrets = () => ({})) {
     this.workDir = join(paths.dataDir, 'artwork');
     store.abandonJobs();
     this.renameFiles();
@@ -95,7 +97,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
-  secrets(): EngineSecrets { return this.store.keys(); }
+  secrets(): EngineSecrets { return this.keys(); }
   // Cache the dependency check for a minute. An interrupted check can be tried again on the next request.
   status(force = false) {
     if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);

@@ -28,14 +28,26 @@ export type MovieState = {
 };
 export type Wanted = { wanted: true; why: 'missing' | 'cutoff' } | { wanted: false; why: 'unmonitored' | 'paused' | 'have' };
 
+// Whether tk.box has a movie or an episode: its own file, else Plex holding it (copied in by hand, or an import tk.box
+// never recorded), else none. The one rule wanted, the library's state, Calendar, request labels and Clean Up share.
+export type Have = 'file' | 'plex' | 'none';
+export const have = (item: { file?: unknown; inPlex?: boolean }): Have => item.file ? 'file' : item.inPlex ? 'plex' : 'none';
+
 // Wanted when monitored and not paused, and either nothing is on the server, or tk.box's file is below the cutoff: in a
 // fallback tier (an early copy always is). A score under the profile's upgrade-until isn't searched for: the upgrade is
 // taken when a search or the RSS feed finds it. A file Plex has that tk.box never recorded is taken as the movie.
 export function movieWanted(state: MovieState, profile: QualityProfile): Wanted {
   if (state.monitor === 'none') return { wanted: false, why: 'unmonitored' };
   if (state.paused) return { wanted: false, why: 'paused' };
-  if (state.file) return meetsCutoff(profile, state.file.quality) ? { wanted: false, why: 'have' } : { wanted: true, why: 'cutoff' };
-  return state.inPlex ? { wanted: false, why: 'have' } : { wanted: true, why: 'missing' };
+  return fileOrPlex(state, profile);
+}
+// A file below the cutoff is wanted for an upgrade; one Plex holds that tk.box has no file for is had.
+function fileOrPlex(item: { file?: { quality: Quality }; inPlex?: boolean }, profile: QualityProfile): Wanted {
+  switch (have(item)) {
+    case 'file': return meetsCutoff(profile, item.file!.quality) ? { wanted: false, why: 'have' } : { wanted: true, why: 'cutoff' };
+    case 'plex': return { wanted: false, why: 'have' };
+    case 'none': return { wanted: true, why: 'missing' };
+  }
 }
 
 const dayStart = (day: string | undefined) => { const at = day ? Date.parse(`${day}T00:00:00Z`) : NaN; return Number.isFinite(at) ? at : undefined; };
@@ -94,6 +106,9 @@ export function nextSearchAt(input: TimingInput & { misses: number }): number {
 // is out. RSS picks up anything sooner.
 const AIRED_AFTER = DAY + 8 * HOUR;
 export const airedAt = (airDate: string | undefined) => { const day = dayStart(airDate); return day === undefined ? undefined : day + AIRED_AFTER; };
+// When an episode counts as aired (library_episodes.air_at): TVmaze's exact time where known, else the guess above.
+// The one place that decides it; the library stores only what it gives.
+export const episodeAiredAt = (e: { airDate?: string | undefined; airTime?: number | undefined }) => e.airTime ?? airedAt(e.airDate);
 
 // A show's follow mode (docs/ARR-REPLACEMENT.md, "Wanted"): `monitorFrom` for Future, `chosen` for Manual's seasons.
 export type ShowFollow = { monitor: Monitor; monitorFrom?: number; chosen?: readonly number[] };
@@ -135,16 +150,16 @@ export const showEnded = (released: Released) => released.status === 'Ended' || 
 
 // ---- Shows: wanted episodes and what to search ----
 
-export type ShowEpisodeState = Pick<EpisodeRow, 'season' | 'episode' | 'airAt' | 'monitored'> & { file?: { quality: Quality } };
+// `inPlex`: Plex holds the episode (the Plex index, for followed shows).
+export type ShowEpisodeState = Pick<EpisodeRow, 'season' | 'episode' | 'airAt' | 'monitored'> & { file?: { quality: Quality }; inPlex?: boolean };
 
-// An episode is wanted on the movie rules once it has aired: monitored (and its season), the show not paused, and no
-// file or one below the cutoff. A show's files are tk.box's own records (library_file_episodes).
+// An episode is wanted on the movie rules once it has aired: monitored (and its season), the show not paused, and
+// neither a file (tk.box's records, library_file_episodes) nor Plex holding it, or a file below the cutoff.
 export function episodeWanted(show: { monitor: Monitor; paused: boolean }, seasonMonitored: boolean, episode: ShowEpisodeState, profile: QualityProfile, now: number): Wanted {
   if (show.monitor === 'none' || !seasonMonitored || !episode.monitored) return { wanted: false, why: 'unmonitored' };
   if (show.paused) return { wanted: false, why: 'paused' };
   if (episode.airAt === undefined || episode.airAt > now) return { wanted: false, why: 'unmonitored' };
-  if (episode.file) return meetsCutoff(profile, episode.file.quality) ? { wanted: false, why: 'have' } : { wanted: true, why: 'cutoff' };
-  return { wanted: true, why: 'missing' };
+  return fileOrPlex(episode, profile);
 }
 
 // A search scope, as `searches.scope` keeps it: S02 (a season, pack first) or S02E05.

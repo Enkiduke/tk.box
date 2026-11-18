@@ -13,7 +13,7 @@ import {ACTIONS,Field,FieldError,IconAction,Loaded,Panel,Pill,RowActions,SaveBar
 const changed=()=>invalidate('/admin/subtitles');
 type View='settings'|'missing'|'workers';
 const sourceNames:Record<SubtitleSource,string>={opensubtitles:'OpenSubtitles',whisper:'Whisper',embedded:'Embedded',sidecar:'Sidecar'};
-const jobNames:Record<SubtitleJobState,[string,Tone]>={waiting:['Waiting','wait'],queued:['Queued','wait'],claimed:['Running','active'],done:['Done','ok'],failed:['Failed','bad'],cancelled:['Cancelled','off']};
+const jobNames:Record<SubtitleJobState,[string,Tone]>={queued:['Queued','wait'],claimed:['Running','active'],done:['Done','ok'],failed:['Failed','bad'],cancelled:['Cancelled','off']};
 const count=(n:number)=>n.toLocaleString();
 
 export function SubtitlesPage() {
@@ -81,7 +81,7 @@ function VideoCell({video,sub}:{video:SubtitleVideo;sub?:ReactNode}) {
 }
 
 // What's happening to a video without English: skipped (given up on), the worker's job, or only checked.
-const jobRank:Record<SubtitleJobState,number>={failed:1,claimed:2,queued:3,waiting:4,done:5,cancelled:5};
+const jobRank:Record<SubtitleJobState,number>={failed:1,claimed:2,queued:3,done:4,cancelled:4};
 function statusOf(r:SubtitleMissing):[string,Tone,number] {
   if(r.skipped!==undefined)return ['Skipped','bad',0];
   if(r.job){const [word,tone]=jobNames[r.job.state];return [word,tone,jobRank[r.job.state]];}
@@ -97,7 +97,7 @@ function Missing({rows:all}:{rows:SubtitleMissing[]}) {
       columns={[{label:'Title',sort:'title'},{label:'Since',width:110,sort:'at',desc:true},{label:'Status',width:130,sort:'status'},ACTIONS]}>
       {rows.map(r=>{const [word,tone]=statusOf(r),error=r.skipped??r.job?.error;return <tr key={r.path}>
         <td><VideoCell video={r} sub={error?<span className="danger-text" title={error}>{error}</span>
-          :r.job?.state==='waiting'?<>Again <When at={r.job.notBefore} now={now} due="now"/></>:r.job?'For the worker':undefined}/></td>
+          :r.job?'For the worker':undefined}/></td>
         <td><When at={r.at} now={now}/></td>
         <td><Pill tone={tone}>{word}</Pill></td>
         <td><RowActions>{r.skipped!==undefined&&<IconAction icon="search" label={`Look again for ${r.title??r.path}`} disabled={mutation.busy||r.titleId===undefined} onClick={()=>retry(r)}/>}</RowActions></td>
