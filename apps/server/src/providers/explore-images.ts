@@ -37,7 +37,8 @@ export class ExploreImages {
   }
   private async load(url: URL) {
     let response: Response;
-    try { response = await this.transport(url, { redirect: 'error', signal: AbortSignal.timeout(10000) }); }
+    // TMDB's CDN sends WebP when asked (about 35-40% smaller); hosts that don't still answer with JPEG or PNG.
+    try { response = await this.transport(url, { headers: { accept: 'image/webp,image/jpeg;q=0.9,image/*;q=0.8' }, redirect: 'error', signal: AbortSignal.timeout(10000) }); }
     catch { throw new AppError('ARTWORK_UNAVAILABLE', 'Artwork could not be loaded.', 502); }
     const type = response.headers.get('content-type')?.split(';')[0];
     if (!response.ok || !type || !['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'].includes(type)) { await response.body?.cancel(); throw new AppError('ARTWORK_NOT_FOUND', 'Artwork is unavailable.', 404); }

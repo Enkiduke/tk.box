@@ -1,9 +1,10 @@
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {exploreGenres,mergeRatings,type ExternalRating,type ExploreBrowseSource,type ExploreGenre,type ExploreSource,type StreamingRow} from '../../../packages/contracts/src/explore.js';
+import {exploreBrowseSources,exploreGenres,mergeRatings,type ExploreBrowseSource,type ExploreGenre,type ExploreSource,type StreamingRow} from '../../../packages/contracts/src/explore.js';
 import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
-import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
+import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,prefetch,replaceRoute,invalidate} from './hooks.js';
+import {useCardRatings} from './explore-ratings.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';
 import {ratingLinks,Ratings} from './library.js';
 import {extrasBody,RequestDialog,RequestOptionsPanel,statusNames,type RequestExtras} from './request-dialog.js';
@@ -59,11 +60,7 @@ const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;on
   const kindLabel=item.kind==='show'?'Show':'Movie';
   const [ref,visible]=useNearViewport<HTMLDivElement>('0px');
   const complete=(['imdb','tomatometer','tmdb'] as const).every(source=>item.ratings?.some(r=>r.source===source));
-  const query=new URLSearchParams({kind:item.kind});
-  if(item.ids.plex)query.set('plex',item.ids.plex);
-  if(item.ids.tmdb)query.set('tmdb',String(item.ids.tmdb));
-  const extra=useApi<ExternalRating[]>(visible&&!complete&&(item.ids.plex||item.ids.tmdb)?`/explore/ratings?${query}`:undefined);
-  const ratings=mergeRatings(item.ratings,extra.data);
+  const ratings=mergeRatings(item.ratings,useCardRatings(item,visible&&!complete));
   return <div ref={ref} className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
     <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}, ${kindLabel}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
       <Artwork src={item.posterUrl} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
@@ -213,6 +210,8 @@ function ActiveFilters({filters,searching,onChange}:{filters:Filters;searching:b
 
 // `requestsButton` false leaves out My requests, for the Requests site, which has its own Requests page.
 export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLSearchParams;admin:boolean;onSelect:(item:ExploreItem)=>void;requestsButton?:boolean}) {
+  // Each source's rows list is asked for alongside the sources rather than after them; SourceRows then reads it from cache.
+  useState(()=>{for(const s of exploreBrowseSources)prefetch(`/explore/${s}/rows`);});
   const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,prefs=useExplorePrefs();
   // Sources in the administrator's order, leaving out those switched off (by the administrator or the viewer) or not set up.
   const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));

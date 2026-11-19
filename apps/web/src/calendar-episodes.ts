@@ -51,3 +51,17 @@ export function episodeRanges(entries: CalendarEntry[]): string {
     return `${season === 0 ? 'Specials' : `Season ${season}`}, ${numbers.size === 1 ? 'Episode' : 'Episodes'} ${caption}`;
   }).join(' · ');
 }
+
+// A card shows a backdrop at about 285×160, so it asks for a smaller copy than the 1280-wide one the details dialog
+// uses: TMDB's w780 through the image proxy, or the 800×450 tile Plex transcodes from the same picture.
+export function cardBackdrop(url: string): string {
+  const parsed = new URL(url, 'https://tk.box');
+  if (parsed.pathname === '/api/v1/explore/image') {
+    const source = parsed.searchParams.get('u');
+    if (!source?.startsWith('https://image.tmdb.org/t/p/w1280/')) return url;
+    parsed.searchParams.set('u', source.replace('/t/p/w1280/', '/t/p/w780/'));
+  } else if (/^\/api\/v1\/catalog\/items\/[^/]+\/artwork$/.test(parsed.pathname) && parsed.searchParams.get('kind') === 'backdrop') {
+    parsed.searchParams.set('kind', 'tile');
+  } else return url;
+  return parsed.pathname + parsed.search;
+}

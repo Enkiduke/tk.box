@@ -56,6 +56,10 @@ export function fetchCached<T>(path:string):Promise<T> {
   }
   return pending as Promise<T>;
 }
+// Starts a GET a view is about to read, unless a fresh copy is already kept. A failure is left for that view to show.
+export function prefetch(path:string) {const hit=cache.get(path);if(!hit||Date.now()-hit.time>=freshFor(path))void fetchCached(path).catch(()=>undefined);}
+// Hears each invalidated prefix, for data kept outside this cache (Explore's card ratings).
+export function onInvalidate(listener:(prefix:string)=>void) {watchers.add(listener);return()=>{watchers.delete(listener);};}
 // A title some cached list already holds, so its details can draw at once while the full record loads.
 export function cachedListItem<T extends {id:string}>(id:string):T|undefined {
   for(const {data} of cache.values()){const items=(data as {items?:unknown}|undefined)?.items;if(!Array.isArray(items))continue;const hit=items.find(item=>(item as T|undefined)?.id===id);if(hit)return hit as T;}

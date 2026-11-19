@@ -26,6 +26,17 @@ export function sportIcon(sport: Sport) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 64 64" width="96" height="96" color="${ACCENT}" fill="none" stroke="${ACCENT}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${GLYPHS[sport] ?? GLYPHS.sports}</svg>`;
 }
 
+// A team logo at about twice its 72px matchup slot, rather than the 500px original the sports feeds name:
+// ESPN through its image resizer, TheSportsDB through its 200px `/small` badge. Other addresses are left as they are.
+export function smallTeamLogo(url: string): string {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return url; }
+  if (parsed.hostname === 'a.espncdn.com' && /^\/i\/teamlogos\/[\w/-]+\.png$/.test(parsed.pathname) && !parsed.search)
+    return `https://a.espncdn.com/combiner/i?img=${parsed.pathname}&w=144&h=144`;
+  if (/(^|\.)thesportsdb\.com$/.test(parsed.hostname) && /\/images\/media\/team\/badge\/[\w-]+\.png$/.test(parsed.pathname) && !parsed.search)
+    return `${parsed.origin}${parsed.pathname}/small`;
+  return url;
+}
 // An event channel's matchup: both teams' downloaded logos either side of "vs". Only raster images the logo
 // fetcher accepted are embedded, so the markup stays script-free.
 export function matchupLogo(left: { type: string; bytes: Buffer }, right: { type: string; bytes: Buffer }) {

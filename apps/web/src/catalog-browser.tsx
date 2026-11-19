@@ -27,14 +27,16 @@ const CatalogWindow=forwardRef<WindowHandle,{path?:string;layout:Layout;onOpen:(
   const [geometry,setGeometry]=useState({width:900,top:0,height:800,documentTop:0,controls:56});
   useLayoutEffect(()=>{
     const element=root.current!;let frame=0;
-    const measure=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
+    const read=()=>{
       // The toolbar sticks below the fixed navigation; rows under either are not visible.
       const bounds=element.getBoundingClientRect(),bar=element.closest('.library-browser')?.querySelector<HTMLElement>('.page-toolbar');
       const controls=bar?(parseFloat(getComputedStyle(bar).top)||0)+bar.getBoundingClientRect().height:56;
       const next={width:element.clientWidth,top:Math.max(0,controls+18-bounds.top),height:window.innerHeight-controls,documentTop:bounds.top+window.scrollY,controls};
       setGeometry(g=>g.width===next.width&&g.top===next.top&&g.height===next.height&&g.documentTop===next.documentTop&&g.controls===next.controls?g:next);
-    });};
-    const resize=new ResizeObserver(measure);resize.observe(element);window.addEventListener('scroll',measure,{passive:true});window.addEventListener('resize',measure);measure();
+    };
+    const measure=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(read);};
+    // The first reading is taken before paint, so the grid never shows at the placeholder width and then jumps.
+    const resize=new ResizeObserver(measure);resize.observe(element);window.addEventListener('scroll',measure,{passive:true});window.addEventListener('resize',measure);read();
     return()=>{resize.disconnect();cancelAnimationFrame(frame);window.removeEventListener('scroll',measure);window.removeEventListener('resize',measure);};
   },[path,layout]);
   const gap=18,columns=layout==='list'?1:Math.max(1,Math.floor((geometry.width+gap)/((geometry.width<600?105:geometry.width>1500?175:150)+gap)));

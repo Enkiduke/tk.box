@@ -68,7 +68,7 @@ function useNow(){const [now,setNow]=useState(Date.now);useEffect(()=>{const tim
 // Shuffled, it picks from the first 60.
 export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
   const settings=useHomeSettings(),[seed]=useState(()=>Math.random().toString(36));
-  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveShuffle?60:settings.liveCount}&kind=channels`;
+  const now=useNow(),start=Math.floor(now/1800000)*1800000,base=`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveShuffle?60:settings.liveCount}&kind=channels&brief=1`;
   const favorites=useApi<Guide>(`${base}&filter=favorites`),none=favorites.data?.channels.length===0;
   const lineup=useApi<Guide>(none?`${base}&filter=all`:undefined),data=none?lineup:favorites;
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start,none]);
@@ -81,7 +81,7 @@ export function LiveNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
 // Live events on now, in the guide's sport and league order; the row is gone while nothing is on.
 export function LiveEventsNow({onWatch,busy}:{onWatch:WatchChannel;busy:boolean}) {
   const settings=useHomeSettings(),now=useNow(),start=Math.floor(now/1800000)*1800000;
-  const data=useApi<Guide>(`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveCount}&kind=events`);
+  const data=useApi<Guide>(`/guide?start=${start}&end=${start+7200000}&limit=${settings.liveCount}&kind=events&brief=1`);
   useEffect(()=>{const timer=setInterval(data.reload,60000);return()=>clearInterval(timer);},[start]);
   if(data.error)return <ErrorNotice message="Live events could not be loaded." retry={data.reload}/>;
   if(!data.data?.channels.length)return null;

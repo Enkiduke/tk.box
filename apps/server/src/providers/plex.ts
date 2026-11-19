@@ -919,15 +919,26 @@ export class PlexAdapter {
     if(!pending){pending=this.loadArtwork(path,kind,grant.serverToken,scale).then(image=>{this.images.set(cacheKey,image);return image;}).finally(()=>this.imageRequests.delete(cacheKey));this.imageRequests.set(cacheKey,pending);}
     return pending;
   }
+  // Logos are transparent, so they come as PNG. Everything else asks for WebP, about half the size of Plex's JPEG for
+  // the same picture. Plex doesn't document `format=webp`, so if it answers that with anything but a picture (other than
+  // a 404, which means there is no such art), the picture is asked for again in Plex's default JPEG.
   private async loadArtwork(path:string,kind:ArtworkKind,serverToken:string,scale:1|2) {
+    const format=kind==='logo'?'png':'webp';
+    let image=await this.transcodeArtwork(path,kind,serverToken,scale,format);
+    if(image==='refused'&&format==='webp')image=await this.transcodeArtwork(path,kind,serverToken,scale);
+    if(typeof image==='string')throw new AppError('ARTWORK_NOT_FOUND','Artwork is unavailable.',404);
+    return image;
+  }
+  // Plex's answer: the picture, 'missing' (a 404) or 'refused' (any other status, or not a picture). A timeout or a
+  // picture over the size limit throws, and is not asked for again.
+  private async transcodeArtwork(path:string,kind:ArtworkKind,serverToken:string,scale:1|2,format?:'png'|'webp'):Promise<{bytes:Buffer;type:string}|'missing'|'refused'> {
     const url=new URL('/photo/:/transcode',this.config.PLEX_URL),[width,height]=kind==='poster'?[360*scale,540*scale]:kind==='logo'?[800,400]:kind==='tile'?[800,450]:[1280,720];
     url.searchParams.set('url',path);url.searchParams.set('width',String(width));url.searchParams.set('height',String(height));url.searchParams.set('minSize','1');url.searchParams.set('upscale','0');
-    // Logos are transparent; PNG keeps the transparency a JPEG transcode would fill in.
-    if(kind==='logo')url.searchParams.set('format','png');
+    if(format)url.searchParams.set('format',format);
     try {
       const response=await this.transport(url,{headers:this.headers(serverToken),redirect:'error',signal:AbortSignal.timeout(10000)});
       const type=response.headers.get('content-type')?.split(';')[0];
-      if(!response.ok||!type||!['image/jpeg','image/png','image/webp','image/gif'].includes(type)){await response.body?.cancel();throw new AppError('ARTWORK_NOT_FOUND','Artwork is unavailable.',404);}
+      if(!response.ok||!type||!['image/jpeg','image/png','image/webp','image/gif'].includes(type)){await response.body?.cancel();return response.status===404?'missing':'refused';}
       const reader=response.body?.getReader();requireThat(reader,'ARTWORK_NOT_FOUND','Artwork is unavailable.',404);let size=0;const chunks:Uint8Array[]=[];
       try {while(true){const chunk=await reader.read();if(chunk.done)break;size+=chunk.value.length;requireThat(size<=6*1024*1024,'ARTWORK_LIMIT','Artwork exceeded its size limit.',502);chunks.push(chunk.value);}}
       finally{await reader.cancel().catch(()=>{});reader.releaseLock();}

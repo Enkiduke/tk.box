@@ -187,6 +187,11 @@ function App() {
   // Next, Previous and the end-of-title countdown start from the beginning; a pick from the list resumes.
   // The player stays open on a spinner while the next title starts.
   const [loadingNext,setLoadingNext]=useState<CatalogItem>();
+  const idleWatch=watching&&!session&&!tuning&&!loadingNext&&!busy;
+  useEffect(()=>{
+    // The hash may have changed before useRoute receives the hashchange event.
+    if(idleWatch&&window.location.hash.slice(1).split('?')[0]==='watch')replaceRoute('#home');
+  },[idleWatch]);
   const playQueued=(index:number,from:'resume'|'beginning')=>{
     const next=queue?.items[index];if(!next||locking.current)return;setLoadingNext(next);
     void action(async()=>{try{await start(next,from,true);}finally{setLoadingNext(undefined);}});
@@ -337,7 +342,7 @@ function App() {
     :route.page==='live'?<Live key={me.accountId} admin={me.role==='admin'} params={route.params} accountId={me.accountId} onWatch={watchChannel} busy={busy} playing={session?.kind==='live'?session.channel.id:undefined}/>
     :route.page==='settings'?<div className="page"><Suspense fallback={<Loading/>}><Settings me={me} onLogout={logout} params={route.params}/></Suspense></div>
     :route.page==='admin'?<div className="page admin-page"><Suspense fallback={<Loading/>}><Admin me={me} params={route.params}/></Suspense></div>
-    :watching?(!session&&!tuning&&<div className="page"><Empty title="Nothing is playing"><a href="#home">Find something to watch</a></Empty></div>)
+    :watching?null
     :<div className="page"><Empty title="Page not found"><a href="#home">Return home</a></Empty></div>;
   return <div className={`app page-${route.page}`}>
     <a className="skip-link" href="#main-content" onClick={e=>{e.preventDefault();document.getElementById('main-content')?.focus();}}>Skip to content</a>

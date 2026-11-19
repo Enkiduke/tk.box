@@ -1,6 +1,9 @@
 // A third-party score from the item's Plex agent, on Plex's 0–10 scale. `fresh` is Rotten Tomatoes' fresh/upright state.
 export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
 // Keep the preferred score when multiple providers report the same meter.
+// The most titles one /explore/ratings/batch request names.
+export const RATINGS_BATCH = 24;
+
 export function mergeRatings(preferred: ExternalRating[] = [], extra: ExternalRating[] = []) {
   return [...preferred, ...extra.filter(rating => !preferred.some(first => first.source === rating.source))];
 }

@@ -2,7 +2,7 @@ import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import type {CalendarEntry, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice, Icon, Loading} from './components.js';
 import {link, useApi} from './hooks.js';
-import {episodeRanges, episodeReleaseLabel, groupCalendarEntries} from './calendar-episodes.js';
+import {cardBackdrop, episodeRanges, episodeReleaseLabel, groupCalendarEntries} from './calendar-episodes.js';
 import {bindCalendarWheel} from './calendar-scroll.js';
 import './calendar.css';
 
@@ -62,10 +62,10 @@ function MonthPicker({from, active, current, onPick}: {from: string; active: str
 }
 
 function CardArtwork({entries, list, layer}: {entries: CalendarEntry[]; list: boolean; layer?: CalendarEntry}) {
-  const posters = entries.map(entry => entry.posterUrl), backdrops = entries.map(entry => entry.backdropUrl);
+  const posters = entries.map(entry => entry.posterUrl), backdrops = entries.map(entry => entry.backdropUrl && cardBackdrop(entry.backdropUrl));
   const stills = entries.map(entry => entry.stillUrl);
   const ordered = list ? [...posters, ...backdrops, ...stills]
-    : entries.length > 1 ? [layer?.stillUrl, layer?.backdropUrl, ...backdrops, ...stills, ...posters] : [...stills, ...backdrops, ...posters];
+    : entries.length > 1 ? [layer?.stillUrl, layer?.backdropUrl && cardBackdrop(layer.backdropUrl), ...backdrops, ...stills, ...posters] : [...stills, ...backdrops, ...posters];
   const choices = [...new Set(ordered.filter((url): url is string => !!url))];
   const [failed, setFailed] = useState<string[]>([]);
   const src = choices.find(url => !failed.includes(url));

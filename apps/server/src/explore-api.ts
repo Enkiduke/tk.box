@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {exploreGenres,exploreBrowseSources,mergeRatings,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,exploreBrowseSources,mergeRatings,RATINGS_BATCH,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import {viewerCopies,type PlexAdapter,type PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
@@ -30,6 +30,8 @@ const providerId=z.string().regex(/^[1-9]\d{0,9}$/).transform(Number);
 const tmdbPage=page.extend({region:regionCode.optional(),provider:z.union([z.literal('all'),providerId]).optional(),
   providers:z.string().max(131).regex(/^(?:[1-9]\d{0,9}(?:,[1-9]\d{0,9}){0,11})?$/).transform(value=>value?value.split(',').map(Number):[]).optional()});
 const streamingQuery=tmdbPage.pick({region:true,provider:true,providers:true});
+// One title in a batch of card ratings (see /explore/ratings/batch).
+const ratingTitle=z.string().regex(/^(?:movie|show):(?:[\w-]{1,64}:(?:[1-9]\d{0,9})?|:[1-9]\d{0,9})$/);
 const ids=z.object({tmdb:z.coerce.number().int().positive().optional(),imdb:z.string().regex(/^tt\d{1,12}$/).optional(),tvdb:z.coerce.number().int().positive().optional(),
   plex:z.string().regex(/^[\w-]{1,64}$/).optional()});
 
@@ -182,11 +184,9 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     return {items:filtering(filter)?await filtered(items,filter):items,failed} satisfies ExploreSearchResult;
   });
   // Visible posters need only scores. Opening a title also reads its watchlist, library and request state.
-  app.get('/api/v1/explore/ratings',{config:{access:'viewer',rateLimit:{max:600,timeWindow:60000}}},async request=>{
-    const input=ids.pick({plex:true,tmdb:true}).extend({kind}).strict().parse(request.query);
-    requireThat(input.plex||input.tmdb,'INVALID_REQUEST','Choose a title.',400);
-    const {account,token}=await viewer(request);
-    return cache.get(account,`ratings:${tmdbClient.credentialGeneration()}:${JSON.stringify(input)}`,DETAILS_MS,async()=>{
+  // A card's scores Plex or TMDB left out of its row: from the title's Discover metadata, and TMDB's own score.
+  const ratingsOf=(account:string,token:string,input:{kind:'movie'|'show';plex?:string;tmdb?:number})=>
+    cache.get(account,`ratings:${tmdbClient.credentialGeneration()}:${input.kind}:${input.plex??''}:${input.tmdb??''}`,DETAILS_MS,async()=>{
       const meta=input.plex?await discover.metadata(token,input.plex):await discover.match(token,input.kind,{tmdb:input.tmdb});
       let ratings=meta?externalRatings(meta)??[]:[];
       if(!input.plex&&meta?.ratingKey&&(!ratings.some(r=>r.source==='imdb')||!ratings.some(r=>r.source==='tomatometer'))){
@@ -201,6 +201,23 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
       }
       return ratings;
     });
+  app.get('/api/v1/explore/ratings',{config:{access:'viewer',rateLimit:{max:600,timeWindow:60000}}},async request=>{
+    const input=ids.pick({plex:true,tmdb:true}).extend({kind}).strict().parse(request.query);
+    requireThat(input.plex||input.tmdb,'INVALID_REQUEST','Choose a title.',400);
+    const {account,token}=await viewer(request);
+    return ratingsOf(account,token,input);
+  });
+  // The cards on screen in one request: each `t` is `kind:plex:tmdb` (either ID may be empty), answered under the same
+  // string. A title whose lookup fails comes back with no scores rather than failing the rest.
+  app.get('/api/v1/explore/ratings/batch',{config:{access:'viewer',rateLimit:{max:300,timeWindow:60000}}},async request=>{
+    const {t}=z.object({t:z.union([ratingTitle,z.array(ratingTitle).min(1).max(RATINGS_BATCH)])}).strict().parse(request.query);
+    const titles=[...new Set(Array.isArray(t)?t:[t])],{account,token}=await viewer(request),ratings:Record<string,ExternalRating[]>={};
+    // All at once, as the cards' own requests were: the batch answers when its slowest title does.
+    await Promise.all(titles.map(async title=>{
+      const [media,plex,tmdb]=title.split(':') as ['movie'|'show',string,string];
+      ratings[title]=await ratingsOf(account,token,{kind:media,...(plex?{plex}:{}),...(tmdb?{tmdb:Number(tmdb)}:{})}).catch(()=>[]);
+    }));
+    return {ratings};
   });
   app.get('/api/v1/explore/details',{config:{access:'viewer'}},async request=>{
     const input=ids.extend({kind,title:z.string().max(300).default(''),year:z.coerce.number().int().optional(),
