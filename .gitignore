@@ -22,3 +22,6 @@ __pycache__/
 !/docs/CLEANUP.md
 !/docs/DEPLOYMENT.md
 !/docs/UI.md
+
+# Tests stay local; they are not published.
+tests/
