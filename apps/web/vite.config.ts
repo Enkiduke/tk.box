@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 
 // Writes a .br (quality 11) and .gz (level 9) copy beside each built script, style, SVG and page, once per build.
@@ -12,7 +12,8 @@ function precompress(): Plugin {
   const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(f => f.isDirectory() ? walk(join(dir, f.name)) : [join(dir, f.name)]);
   return {
     name: 'tk-precompress', apply: 'build',
-    configResolved(config) { outDir = config.build.outDir; },
+    // outDir is relative to the app's root, not to where the build was started.
+    configResolved(config) { outDir = resolve(config.root, config.build.outDir); },
     closeBundle() {
       for (const file of walk(outDir)) {
         if (!/\.(?:js|css|svg|html)$/.test(file)) continue;
