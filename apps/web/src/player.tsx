@@ -462,9 +462,3 @@ function UpNext({item,countdown,countdownSeconds,onPlay,onCancel}:{item:CatalogI
 const PanelSection=({title,children}:{title:string;children:ReactNode})=><section className="panel-section"><h4>{title}</h4>{children}</section>;
 const Choice=({selected,disabled,detail,onSelect,children}:{selected:boolean;disabled?:boolean;detail?:string;onSelect:()=>void;children:ReactNode})=>
   <button className="choice" role="radio" aria-checked={selected} disabled={disabled} onClick={onSelect}><span className="choice-check">{selected&&<Icon name="check" size={16}/>}</span><span className="choice-label">{children}{detail&&<small>{detail}</small>}</span></button>;
-export function browserCapabilities() {
-  const video=document.createElement('video');
-  const videoCodecs=[['h264:8','video/mp4; codecs="avc1.640028"'],['hevc:8','video/mp4; codecs="hvc1.1.6.L120.B0"'],['hevc:10','video/mp4; codecs="hvc1.2.4.L153.B0"']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
-  const audioCodecs=[['aac','audio/mp4; codecs="mp4a.40.2"'],['mp3','audio/mpeg']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
-  return {videoCodecs,audioCodecs,containers:['mp4',...(!!window.MediaSource||video.canPlayType('application/vnd.apple.mpegurl')?['hls']:[])]};
-}

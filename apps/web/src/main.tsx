@@ -3,7 +3,7 @@ import {createRoot} from 'react-dom/client';
 import type {Principal,Library,CatalogItem,CatalogPage,ExploreItem,PlaybackObservation,Quality,QualityOption} from '../../../packages/contracts/src/index.js';
 import {api,ApiClientError,onSessionEnded} from './api.js';
 import {useApi,useRoute,useScrolled,link,replaceRoute,invalidate} from './hooks.js';
-import {PersistentPlayer,browserCapabilities,type PlayerHandle,type Delivery,type Timeshift,type TimeshiftState,type MediaTracks,type SourceInfo,type LiveProgram,type SkipMarker} from './player.js';
+import type {PersistentPlayer,PlayerHandle,Delivery,Timeshift,TimeshiftState,MediaTracks,SourceInfo,LiveProgram,SkipMarker} from './player.js';
 import {Icon,ErrorNotice,Loading,Empty,Toaster,setArtworkEditor,setHoldMenu} from './components.js';
 import {leavingEntries,loadLeaving} from './cleanup-holds.js';
 import {refreshCatalog} from './media-actions.js';
@@ -48,6 +48,12 @@ type VodSession={kind:'vod';id:string;streamUrl:string;delivery:Delivery;startOf
 type Session=VodSession|LiveSession;
 const fetchPage=(path:string)=>api<CatalogPage>(path);
 const navigation=[['home','Home'],['movies','Movies','film'],['shows','Shows'],['live','Live','signal'],['calendar','Calendar'],['explore','Explore'],['requests','Requests','download']] as const;
+function browserCapabilities() {
+  const video=document.createElement('video');
+  const videoCodecs=[['h264:8','video/mp4; codecs="avc1.640028"'],['hevc:8','video/mp4; codecs="hvc1.1.6.L120.B0"'],['hevc:10','video/mp4; codecs="hvc1.2.4.L153.B0"']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
+  const audioCodecs=[['aac','audio/mp4; codecs="mp4a.40.2"'],['mp3','audio/mpeg']].filter(([,mime])=>!!video.canPlayType(mime!)).map(([codec])=>codec!);
+  return {videoCodecs,audioCodecs,containers:['mp4',...(!!window.MediaSource||video.canPlayType('application/vnd.apple.mpegurl')?['hls']:[])]};
+}
 function App() {
   const route=useRoute(),identity=useApi<Principal&{libraries?:Library[]}>('/me'),setup=useApi<{plexConfigured:boolean;plexUrl?:string}>('/setup'),scrolled=useScrolled();
   // Only a 401 means signed out. A 403 is Plex refusing a check, which the server has already retried; the viewer stays
@@ -83,6 +89,12 @@ function App() {
   useEffect(()=>{void server.current.remember();},[]);
   // The channel being tuned: the player opens on it with a spinner before the server has a stream.
   const [tuning,setTuning]=useState<{name:string;program?:string}>(),tuningRef=useRef<object>(undefined);
+  const [Player,setPlayer]=useState<typeof PersistentPlayer>();
+  // Load on first playback, then keep the same player mounted across streams and routes.
+  const preparePlayer=async()=>{
+    const {PersistentPlayer}=await import('./player.js');
+    setPlayer(()=>PersistentPlayer);
+  };
   const player=useRef<PlayerHandle>(null),sessionRef=useRef(session),returnTo=useRef('#home'),locking=useRef(false),routeRef=useRef(route);sessionRef.current=session;routeRef.current=route;
   // Alerts that arrive while watching wait in the bell instead of popping up over the player.
   useEffect(()=>{notifications.quiet=()=>routeRef.current.page==='watch';return()=>{notifications.quiet=()=>false;};},[]);
@@ -145,6 +157,7 @@ function App() {
   // A title starts in the viewer's preferred audio language and default quality; a default quality
   // this title or browser cannot use, or that needs an encoder none is free for, falls back to Auto.
   async function start(item:CatalogItem,from:'resume'|'beginning',keepReturn=false) {
+    await preparePlayer();
     await stop();
     if(!keepReturn){const {page,params}=routeRef.current,old=new URLSearchParams(params);old.delete('item');returnTo.current=link(page==='watch'?'home':page,Object.fromEntries(old));}
     const {quality,audioLanguage}=getPlayerPreferences(),create=(quality:Quality)=>api<Omit<VodSession,'item'|'kind'>>('/playback/sessions','POST',{mode:'plex_vod',ratingKey:item.id,capabilities:browserCapabilities(),startFrom:from,quality,...(audioLanguage?{audioLanguage}:{})});
@@ -180,6 +193,7 @@ function App() {
   };
   // The server answers once the channel's relay has its first segment, so playback starts promptly.
   const watchChannel=useCallback<WatchChannel>((channel,program,previousDeliveryId)=>void action(async()=>{
+    await preparePlayer();
     // Back returns to where the channel was picked (Live TV or Home); switching from the player keeps that place.
     const {page,params}=routeRef.current;if(page!=='watch')returnTo.current=link(page,Object.fromEntries(params));
     clearQueue();const token={};tuningRef.current=token;setTuning({name:channel.name,...(program?{program}:{})});window.location.hash='watch';
@@ -337,7 +351,7 @@ function App() {
       {identity.loading&&!me?<div className="page"><Loading/></div>:<>{catalog.error&&<div className="page"><ErrorNotice message={catalog.error.message} retry={catalog.reload}/></div>}{content}</>}
     </main>
     {me&&!watching&&<nav className="tabbar" aria-label="Mobile navigation">{[...navigation,['search','Search'] as const].map(([page,label,icon])=><a key={page} href={link(page)} aria-current={route.page===page?'page':undefined}><Icon name={icon??page} size={22}/><span>{label}</span></a>)}</nav>}
-    <PersistentPlayer key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} reconnecting={reconnecting} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>
+    {Player&&<Player key="persistent-player" ref={player} url={session?.streamUrl} live={!!channel||!!tuning} tuning={!!tuning&&!session} loading={!!loadingNext&&!session} onChannel={channel&&(lineup.data?.channels.length??0)>1?stepChannel:undefined} channels={channel&&<ChannelPanel playing={channel.channel.id} busy={busy} onWatch={watchChannel}/>} feeds={channel?.channel.feeds?.map(f=>({id:f.id,label:stationName(f.name).label,...(f.quality?{quality:f.quality}:{})}))} feed={channel?.channel.id} onFeed={channel&&switchFeed}delivery={session?.delivery} startOffsetMs={vod?.startOffsetMs} tracks={vod?.tracks} markers={vod?.markers} programs={customId?programs??[]:undefined} source={session?.source} subtitleBase={vod?`/api/v1/playback/sessions/${vod.id}/subtitles/`:customId&&`/api/v1/live/sessions/${customId}/subtitles/`} switching={switching} liveSwitching={switchingLive} reconnecting={reconnecting} timeshift={channel?.timeshift?timeshift:undefined} onAudioChange={vod&&((id:string,timeMs:number)=>restart({audioStreamId:id},timeMs))} onStall={vod&&((timeMs:number)=>restart({},timeMs))} quality={vod?.quality} qualityOptions={vod?.qualityOptions} onQualityChange={vod&&((quality:Quality,timeMs:number)=>restart({quality},timeMs))} title={channel?channel.channel.name:tuning?tuning.name:item?.title} subtitle={tuning&&!session?tuning.program:subtitle} docked={!watching} onStop={()=>{if(tuning&&!session){cancelTuning();if(watching)window.location.hash=returnTo.current;return;}void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash=returnTo.current;});}} onFinished={()=>void action(async()=>{const back=watching;clearQueue();await stop();if(back)window.location.hash='home';})} onRestore={()=>{window.location.hash='watch';}} onBack={()=>{window.location.hash=returnTo.current;}} onProgress={progress} queue={queueIndex>=0?{...queue!,index:queueIndex}:undefined} onQueuePick={playQueued} onError={playbackError}/>}
     {me&&dialog&&<DialogNavContext.Provider value={dialogs.nav}>{dialog.type==='library'
       ?<Details id={dialog.id} onClose={closeDialog} onOpen={openItem} onOpenRelated={openRelated} onPlay={play} busy={busy} error={error} admin={me.role==='admin'}/>
       :<Suspense fallback={null}>{dialog.type==='title'
