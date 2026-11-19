@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react';
 import {api,ApiClientError} from './api.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
 import {SectionHead} from './settings-ui.js';
-import {qualityTiers} from '../../../packages/contracts/src/index.js';
+import {qualityTiers} from '../../../packages/contracts/src/playback.js';
 import {ACTIVITY_REFRESH_MS,activityElapsed,activityPosition,formatActivityTime,useActivityClock,type ActivityTiming} from './activity-time.js';
 import './activity.css';
 

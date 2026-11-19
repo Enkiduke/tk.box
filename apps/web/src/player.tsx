@@ -7,7 +7,8 @@ import {CaptionCue,captionBox,subtitleFontSize,subtitleSizes,updateSubtitleStyle
 import {LivePlaybackWatchdog} from './live-failover.js';
 import {StallMeter} from './stall-meter.js';
 import {pickSubtitle,subtitleChoice,updatePlayerPreferences,usePlayerPreferences} from './player-preferences.js';
-import {qualityTiers,type CatalogItem,type PlaybackObservation,type Quality,type QualityOption} from '../../../packages/contracts/src/index.js';
+import type {CatalogItem,PlaybackObservation,QualityOption} from '../../../packages/contracts/src/index.js';
+import {qualityTiers,type Quality} from '../../../packages/contracts/src/playback.js';
 export type PlayerHandle={stop:()=>{timeMs:number;started:boolean;observation?:PlaybackObservation;epoch?:number}};
 type ProgressState = 'playing' | 'paused' | 'stopped';
 type ReportProgress = (timeMs: number, state?: ProgressState, observation?: PlaybackObservation, epoch?: number) => void;

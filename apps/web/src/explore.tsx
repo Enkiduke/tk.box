@@ -1,6 +1,7 @@
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {exploreGenres,mergeRatings,type ExternalRating,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,mergeRatings,type ExternalRating,type ExploreBrowseSource,type ExploreGenre,type ExploreSource,type StreamingRow} from '../../../packages/contracts/src/explore.js';
+import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';

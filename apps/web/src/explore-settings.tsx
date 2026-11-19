@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
-import {tmdbExploreRows,type ExploreLayout,type ExploreRowInfo,type ExploreBrowseSource,type ExploreSources,type TmdbExploreRow} from '../../../packages/contracts/src/index.js';
+import {tmdbExploreRows,type ExploreBrowseSource,type TmdbExploreRow} from '../../../packages/contracts/src/explore.js';
+import type {ExploreLayout,ExploreRowInfo,ExploreSources} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {ErrorNotice,Icon,Loading} from './components.js';

@@ -1,5 +1,5 @@
 import {useSyncExternalStore} from 'react';
-import {exploreBrowseSources,streamingRows,type ExploreBrowseSource,type StreamingRow} from '../../../packages/contracts/src/index.js';
+import {exploreBrowseSources,streamingRows,type ExploreBrowseSource,type StreamingRow} from '../../../packages/contracts/src/explore.js';
 
 // Which of the rows the administrator allows this viewer leaves out of Explore. Per browser, like the Home settings;
 // only what is switched off is kept, so a source or row the administrator adds later shows until it is switched off.

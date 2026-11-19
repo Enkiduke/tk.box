@@ -1,5 +1,5 @@
 import type {ReactNode} from 'react';
-import {preferredLanguages,qualityTiers,type Quality} from '../../../packages/contracts/src/index.js';
+import {preferredLanguages,qualityTiers,type Quality} from '../../../packages/contracts/src/playback.js';
 import {Card} from './settings-ui.js';
 import {countdownChoices,defaultPlayerPreferences,subtitleModes,updatePlayerPreferences,usePlayerPreferences,type PlayerPreferences} from './player-preferences.js';
 

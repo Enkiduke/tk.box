@@ -1,5 +1,5 @@
 import {useSyncExternalStore} from 'react';
-import {languageKey,quality as qualitySchema,type Quality} from '../../../packages/contracts/src/index.js';
+import {languageKey,qualityIds,type Quality} from '../../../packages/contracts/src/playback.js';
 import {readPreference} from './storage.js';
 
 // How titles start and what plays next, chosen per browser in Settings › Playback and from the player.
@@ -34,7 +34,7 @@ export function parsePlayerPreferences(raw:string|null,old:LegacyPreferences={})
     autoplay:bool(saved.autoplay,d.autoplay),countdownSeconds:countdownChoices.find(c=>c===saved.countdownSeconds)??d.countdownSeconds,
     skipIntros:bool(saved.skipIntros,d.skipIntros),skipCredits:bool(saved.skipCredits,d.skipCredits),
     subtitleMode:subtitleModes.find(([id])=>id===saved.subtitleMode)?.[0]??d.subtitleMode,subtitleLanguage:language(saved.subtitleLanguage),audioLanguage:language(saved.audioLanguage),
-    quality:qualitySchema.safeParse(saved.quality).data??d.quality,startFrom:saved.startFrom==='beginning'?'beginning':'resume',
+    quality:qualityIds.find(id=>id===saved.quality)??d.quality,startFrom:saved.startFrom==='beginning'?'beginning':'resume',
   };
 }
 
