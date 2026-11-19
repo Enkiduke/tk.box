@@ -55,11 +55,11 @@ Indexers, download clients, TMDB, OpenSubtitles and artwork providers are added 
 
 ### Python features
 
-Artwork, Collections and Clean Up need their Python packages, ideally in a virtual environment:
+Artwork and Collections need their Python packages, ideally in a virtual environment:
 
 ```sh
 python -m venv .venv
-.venv/bin/pip install -r apps/artwork/requirements.txt -r apps/cleanup/requirements.txt
+.venv/bin/pip install -r apps/artwork/requirements.txt
 ```
 
 On Windows use `.venv\Scripts\pip`. Then point setup's Python field (or `PYTHON_PATH` in `.env`) at that environment's `python`.
@@ -88,7 +88,6 @@ npm test
 | `apps/server` | Fastify backend: Plex, library, downloads, IPTV, streaming, SQLite |
 | `apps/web` | React frontend |
 | `apps/artwork` | Python artwork and collections engines |
-| `apps/cleanup` | Python Clean Up script |
 | `apps/subtitle-worker` | Windows tray app that makes subtitles with whisper.cpp |
 | `packages/contracts` | Shared types and settings |
 | `scripts` | Setup, diagnostics and previews |

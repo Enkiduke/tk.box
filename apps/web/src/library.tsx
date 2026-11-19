@@ -155,19 +155,20 @@ function RatingMark({source,fresh}:{source:ExternalRating['source'];fresh?:boole
   return <img className={`rating-mark ${source}`} src={icon} alt="" aria-hidden="true"/>;
 }
 export type RatingLinks=Partial<Record<'imdb'|'rottentomatoes'|'tmdb',string>>;
-export function Ratings({ratings=[],links}:{ratings?:ExternalRating[];links:RatingLinks}) {
+export function Ratings({ratings=[],links={},compact=false}:{ratings?:ExternalRating[];links?:RatingLinks;compact?:boolean}) {
   const scores=new Map(ratings.map(rating=>[rating.source,rating]));
   const marks=(['imdb','tomatometer','popcornmeter','tmdb'] as const).map(source=>{
     const rating=scores.get(source),tomatoes=source==='tomatometer'||source==='popcornmeter';
+    if(compact&&source==='popcornmeter'&&scores.has('tomatometer'))return null;
     const href=links[tomatoes?'rottentomatoes':source];
     // One Rotten Tomatoes icon covers the site when neither score is available.
     if(!rating&&(!href||source==='popcornmeter'||source==='tomatometer'&&scores.has('popcornmeter')))return null;
     const name=tomatoes&&!rating?'Rotten Tomatoes':ratingNames[source];
     const value=rating?(source==='imdb'?rating.score.toFixed(1):`${Math.round(rating.score*10)}%`):'N/A';
-    const content=<><RatingMark source={source} fresh={rating?.fresh}/><span className="sr-only">{name}</span>{value}</>;
+    const content=<><RatingMark source={source} fresh={rating?.fresh}/><span className="sr-only">{name} </span>{value}</>;
     return <li key={source} title={name}>{href?<a className="rating-link" href={href} target="_blank" rel="noreferrer">{content}</a>:content}</li>;
   });
-  return marks.some(Boolean)?<ul className="ratings">{marks}</ul>:null;
+  return marks.some(Boolean)?<ul className={compact?'ratings compact-ratings':'ratings'}>{marks}</ul>:null;
 }
 // Use direct title links when IDs are available and search by title otherwise.
 export const ratingLinks=({title,kind,tmdb,imdb}:{title:string;kind?:'movie'|'show';tmdb?:number;imdb?:string}):RatingLinks=>{

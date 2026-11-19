@@ -4,7 +4,7 @@ import type {ShowList,ShowRow} from '../../../packages/contracts/src/downloads.j
 import {useApi} from './hooks.js';
 import {SectionHead} from './settings-ui.js';
 import {SourceCell,sourceLabel} from './movie-source.js';
-import {CountBar,Dash,FavoriteStar,Loaded,Panel,Pill,SelectCell,Segmented,Table,TitleCell,Toolbar,WhenDay,gb,matches,usePaged,useRefresh,selectColumn,useSelection,useSorted,type Tone} from './manage-ui.js';
+import {CountBar,Dash,FavoriteStar,Loaded,MediaStatusPill,Panel,Pill,SelectCell,Segmented,Table,TitleCell,Toolbar,WhenDay,gb,matches,usePaged,useRefresh,selectColumn,useSelection,useSorted,type Tone} from './manage-ui.js';
 
 // Admin › Manage › Shows (docs/PHASE-2.md, docs/UI.md): every show in the library, like Movies. A show opens as a
 // dialog (show-dialog.tsx). Shows come in through requests, or the one-time import.
@@ -69,7 +69,7 @@ export function ShowsPage() {
             sub={`${s.seasons} season${s.seasons===1?'':'s'}`}/></td>
           <td><CountBar have={s.have} total={s.total} tone={barTone(s)} title={wanted?`${s.missing} missing, ${s.cutoff} below cutoff`:undefined}/></td>
           <td className="num">{s.size?gb(s.size):<Dash/>}</td><td>{s.profile}</td><td><SourceCell source={s.source}/></td>
-          <td><Pill tone={st.tone}>{st.label}</Pill>{wanted?<small>{s.missing?`${s.missing} missing`:`${s.cutoff} below cutoff`}</small>:null}</td>
+          <td><MediaStatusPill tone={st.tone}>{st.label}</MediaStatusPill>{wanted?<small>{s.missing?`${s.missing} missing`:`${s.cutoff} below cutoff`}</small>:null}</td>
           <td>{s.nextAir?<><WhenDay day={s.nextAir.day} now={now}/><small>{nextName(s.nextAir)}</small></>:<Dash/>}</td><td>{(a=>a?<Pill tone={a.tone} icon={a.icon}>{a.label}</Pill>:<Dash/>)(airing(s))}</td>
         </tr>;})}
       </Table></Panel>;}}</Loaded>

@@ -30,7 +30,6 @@ export const customChannelsModule = defineModule({
     const parts = new PartProxy(plex), tv = new CustomTv(store, plex, localMedia, parts, budget, config.CACHE_DIR, pauseRetentionMs, config.SEGMENT_CACHE_MAX_BYTES,
       config.FFMPEG_PATH, (message, detail) => log.warn(message, detail));
     tv.historyServerId = config.PLEX_MACHINE_ID;
-    tv.onViewerEnded = sessionId => bus.emit('live.viewer.ended', { sessionId });
     return {
       api: { store, tv },
       start() { episodes.start(); },

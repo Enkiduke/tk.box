@@ -7,7 +7,7 @@ import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {RequestsTable,SourceLine} from './movie-source.js';
 import {FilesTable,GrabsTable,TitleControls,WatchHistoryPanel,type Mutation} from './movie-dialog.js';
-import {ACTIONS,Dash,FavoriteStar,GrabPill,IconAction,Panel,Pill,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
+import {ACTIONS,Dash,FavoriteStar,GrabPill,IconAction,MediaStatusPill,Panel,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
 
 // A show in the library (docs/UI.md), in the same dialog as a movie (movie-dialog.tsx): its seasons with their
 // switches, each season's episodes with what tk.box has, its files, grabs and requests, and Interactive search for a season
@@ -69,7 +69,7 @@ function Head({t,path,mutation,search,onDeleted}:{t:ShowTitleView;path:string;mu
     <div className="ui-movie-main">
       <div>
         <h2 className="ui-movie-title">{t.title}{t.year?<span> {t.year}</span>:null}</h2>
-        <div className="ui-movie-line"><Pill tone={s.tone}>{s.label}</Pill><span>{have} of {total} episodes{size?` · ${gb(size)}`:''}</span>{t.status&&<span>{t.status}</span>}
+        <div className="ui-movie-line"><MediaStatusPill tone={s.tone}>{s.label}</MediaStatusPill><span>{have} of {total} episodes{size?` · ${gb(size)}`:''}</span>{t.status&&<span>{t.status}</span>}
           {t.keep&&<FavoriteStar/>}{t.pausedReason&&<span className="danger-text">{t.pausedReason}</span>}</div>
         <div className="ui-movie-source"><SourceLine source={t.source} addedAt={t.addedAt}/></div>
       </div>
@@ -104,7 +104,7 @@ function SeasonsTable({t,path,mutation,search,interactive}:{t:ShowTitleView;path
           <td>{c.total||c.have?`${c.have} of ${c.total}`:<Dash/>}</td>
           <td className="num">{c.size?gb(c.size):<Dash/>}</td>
           <td><WhenDay day={s.episodes.find(e=>e.airDate)?.airDate} now={now}/></td>
-          <td><Pill tone={st.tone}>{st.label}</Pill></td>
+          <td><MediaStatusPill tone={st.tone}>{st.label}</MediaStatusPill></td>
           <td onClick={e=>e.stopPropagation()}><Switch label="" ariaLabel={`Monitor season ${s.season}`} checked={s.monitored} disabled={mutation.busy} onChange={on=>monitor(s.season,on)}/></td>
           <td onClick={e=>e.stopPropagation()}><RowActions>
             <IconAction icon="search" label={`Automatic search for season ${s.season}`} disabled={mutation.busy||!searchable||!wanted} onClick={()=>search(scope)}/>
@@ -123,7 +123,7 @@ function EpisodeRow({season,e,now,busy,searchable,search,interactive}:{season:nu
     <td>{e.file?.quality??(e.plex?<span className="ui-dash" title="On Plex, no tk.box file">Plex</span>:<Dash/>)}</td>
     <td className="num">{e.file?gb(e.file.size):<Dash/>}</td>
     <td><WhenDay day={e.airDate} now={now}/></td>
-    <td>{e.grab&&downloading(e)?<GrabPill state={e.grab}/>:<Pill tone={st.tone}>{st.label}</Pill>}</td>
+    <td>{e.grab&&downloading(e)?<GrabPill state={e.grab}/>:<MediaStatusPill tone={st.tone}>{st.label}</MediaStatusPill>}</td>
     <td/>
     <td><RowActions>
       <IconAction icon="search" label={`Automatic search for ${scope}`} disabled={busy||!searchable||!e.wanted||downloading(e)} onClick={()=>search(scope)}/>

@@ -11,6 +11,7 @@ import { PlaybackService } from '../services/playback.js';
 import { VodTranscodes } from '../services/vod-transcode.js';
 import { describeClient } from '../services/activity.js';
 import type { ActivityApi } from './activity.js';
+import type { PlaybackSessions } from '../services/playback-sessions.js';
 import { plexHistoryMedia } from '../persistence/history-store.js';
 import type { PlaybackHistory } from '../services/playback-history.js';
 import type { SubtitleService } from '../services/subtitles.js';
@@ -19,8 +20,9 @@ import type { IdentityService } from '../services/identity.js';
 type Deps = {
   // Transcodes reauthorize their viewer with Plex while they run.
   identity: Pick<IdentityService, 'authenticateHash'>;
-  // Admin › Activity and watch history, which every on-demand viewer reports to.
-  activity: ActivityApi; history: PlaybackHistory; subtitles: SubtitleService; localMedia: LocalMedia;
+  // The playback session registry (start, touches, end; watch history hears it from there), Admin › Activity's row
+  // details, and watch history's observations from the player.
+  sessions: PlaybackSessions; activity: Pick<ActivityApi, 'source'>; history: Pick<PlaybackHistory, 'observe'>; subtitles: SubtitleService; localMedia: LocalMedia;
 };
 type Params = { Params: { id: string } };
 type Stream = { id: string; hash: string; abort: AbortController };
@@ -29,7 +31,7 @@ type Stream = { id: string; hash: string; abort: AbortController };
 // Plex transcoder HLS proxy, plus subtitles, progress and stopping.
 export const vodPlaybackModule = defineModule({
   name: 'vod-playback',
-  setup(routes, { config, db, plex, bus, budget }, { identity, activity: { activity, source }, history, subtitles, localMedia }: Deps) {
+  setup(routes, { config, db, plex, bus, budget }, { identity, sessions, activity: { source }, history, subtitles, localMedia }: Deps) {
     const playback = new PlaybackService(db, plex);
     const transcodes = new VodTranscodes(plex, budget, async a => {
       const { grant } = await identity.authenticateHash(a.hash); await plex.metadata(grant, a.ratingKey); playback.owned(a.id, a.hash); return grant;
@@ -58,25 +60,29 @@ export const vodPlaybackModule = defineModule({
       const playing = route.kind === 'direct' ? fileDefault : target;
       const details = { tracks: mediaTracks(item, playing?.id), markers: mediaMarkers(item), source: { videoCodec: media.videoCodec, audioCodec: playing?.codec ?? media.audioCodec, width: media.width, height: media.height, container: media.container, bitrateKbps: media.bitrate },
         quality: input.quality, qualityOptions: qualityOptions(sourceVideo, input.capabilities, false, !otherTrack) };
+      // The session opens once its delivery is ready; watch history records it from `session.started` (with a Plex server id).
       const watching = (created: { id: string; delivery: 'direct' | 'remux' | 'transcode' }, decision?: { video?: string; audio?: string }) => {
         const browser = { ip: req.ip, userAgent: req.headers['user-agent']?.slice(0, 400) };
-        activity.open({ id: created.id, kind: 'vod', hash, accountId: grant.accountId, user: grant.name, delivery: created.delivery, ...browser,
+        sessions.open(ticket, { id: created.id, kind: 'vod', hash, accountId: grant.accountId, user: grant.name, delivery: created.delivery, ...browser,
           mediaId: item.ratingKey, positionMs: startOffsetMs, durationMs: item.duration, quality: input.quality, source: details.source,
-          ...(route.kind === 'cpu' ? { target: { maxHeight: route.maxHeight, maxBitrateKbps: route.maxBitrateKbps } } : {}) });
-        if (config.PLEX_MACHINE_ID) history.open({ id: created.id, owner: hash, accountId: grant.accountId, accountName: grant.name,
-          client: describeClient(browser.userAgent), media: plexHistoryMedia(config.PLEX_MACHINE_ID, item),
-          stream: { delivery: decision?.video === 'copy' ? 'remux' : created.delivery, video: decision?.video, audio: decision?.audio,
-            sourceHeight: media.height, sourceWidth: media.width, maxHeight: route.kind === 'cpu' ? route.maxHeight : undefined }
-        }, input.previousDeliveryId);
+          ...(route.kind === 'cpu' ? { target: { maxHeight: route.maxHeight, maxBitrateKbps: route.maxBitrateKbps } } : {}),
+          history: config.PLEX_MACHINE_ID ? { previousId: input.previousDeliveryId, entry: { id: created.id, owner: hash, accountId: grant.accountId, accountName: grant.name,
+            client: describeClient(browser.userAgent), media: plexHistoryMedia(config.PLEX_MACHINE_ID, item),
+            stream: { delivery: decision?.video === 'copy' ? 'remux' : created.delivery, video: decision?.video, audio: decision?.audio,
+              sourceHeight: media.height, sourceWidth: media.width, maxHeight: route.kind === 'cpu' ? route.maxHeight : undefined } } } : undefined });
       };
-      if (route.kind === 'direct') { const created = playback.createVod(hash, input.ratingKey, startOffsetMs); watching(created); return { ...created, ...details }; }
-      if (requested && requested.id !== plexSelected?.id) await plex.selectAudioStream(grant, item, requested.id);
-      const created = playback.createVod(hash, input.ratingKey, startOffsetMs, route.kind === 'remux' ? 'remux' : 'transcode');
+      // The viewer's place is held (or refused over the limit) before any delivery starts.
+      const ticket = sessions.reserve('vod', hash);
       try {
-        const decision = await transcodes.start(created.id, hash, grant, item, route, requested || otherTrack ? { id: target!.id, codec: target!.codec } : undefined);
-        watching(created, decision);
-      } catch (e) { playback.stop(created.id, hash); throw e; }
-      return { ...created, ...details };
+        if (route.kind === 'direct') { const created = playback.createVod(hash, input.ratingKey, startOffsetMs); watching(created); return { ...created, ...details }; }
+        if (requested && requested.id !== plexSelected?.id) await plex.selectAudioStream(grant, item, requested.id);
+        const created = playback.createVod(hash, input.ratingKey, startOffsetMs, route.kind === 'remux' ? 'remux' : 'transcode');
+        try {
+          const decision = await transcodes.start(created.id, hash, grant, item, route, requested || otherTrack ? { id: target!.id, codec: target!.codec } : undefined);
+          watching(created, decision);
+        } catch (e) { try { playback.stop(created.id, hash); } catch { /* already ended */ } throw e; }
+        return { ...created, ...details };
+      } finally { sessions.release(ticket); }
     });
     // Plex transcoder HLS proxy. Playlists reauthorize fully; segments use the
     // local session check plus the transcoder's periodic Plex reauthorization.
@@ -86,9 +92,9 @@ export const vodPlaybackModule = defineModule({
       playback.owned(req.params.id, hash);
       const abort = new AbortController(); reply.raw.once('close', () => abort.abort());
       const result = await transcodes.fetch(req.params.id, hash, rel, req.url.split('?')[1] ?? '', abort.signal);
-      if (result.kind === 'playlist') { activity.touch(req.params.id, result.body.length); return reply.type('application/vnd.apple.mpegurl').send(result.body); }
+      if (result.kind === 'playlist') { sessions.touch(req.params.id, result.body.length); return reply.type('application/vnd.apple.mpegurl').send(result.body); }
       const { response } = result;
-      activity.touch(req.params.id, Number(response.headers.get('content-length')) || 0);
+      sessions.touch(req.params.id, Number(response.headers.get('content-length')) || 0);
       reply.code(response.status);
       for (const h of ['content-type', 'content-length']) if (response.headers.has(h)) reply.header(h, response.headers.get(h)!);
       return reply.send(response.body ? Readable.fromWeb(response.body as import('node:stream/web').ReadableStream) : null);
@@ -99,7 +105,7 @@ export const vodPlaybackModule = defineModule({
       requireThat(session.mode === 'plex_vod', 'INVALID_MODE', 'This endpoint only serves on-demand media.', 403);
       if (req.headers.range) requireThat(/^bytes=\d*-\d*$/.test(req.headers.range), 'INVALID_RANGE', 'Only a single byte range is supported.');
       const item = await plex.metadata(grant, session.rating_key), running: Stream = { id: session.id, hash, abort: new AbortController() };
-      activity.touch(session.id);
+      sessions.touch(session.id);
       requireThat([...streams].filter(s => s.hash === hash).length < 20, 'STREAM_LIMIT', 'Too many open media requests.', 429);
       streams.add(running);
       // Access loss ends delivery; a slow or briefly unreachable Plex does not cut the stream mid-play.
@@ -150,7 +156,7 @@ export const vodPlaybackModule = defineModule({
       if ('state' in input) {
         const { hash, grant } = await authorize(req, 'viewer');
         await playback.progress(id, hash, grant, input.timeMs, input.state);
-        activity.progress(id, hash, input.timeMs, input.state);
+        sessions.progress(id, hash, input.timeMs, input.state);
         transcodes.touch(id, hash, grant);
       }
       return { status: 'synchronized' };
@@ -163,21 +169,24 @@ export const vodPlaybackModule = defineModule({
     routes.delete<Params>('/api/v1/playback/sessions/:id', { config: { access: 'viewer' } }, async req => {
       const { hash } = viewer(req), { id } = req.params;
       const replacing = z.object({ replacing: z.boolean().optional() }).parse(req.body ?? {}).replacing;
-      playback.stop(id, hash);
-      history.end(id, replacing ? 'replacing' : 'stopped');
-      endDelivery(id, hash); activity.close(id);
+      playback.owned(id, hash);
+      // The registry stops its delivery (the kind below) and tells watch history; one it no longer holds is stopped here.
+      if (!sessions.end(id, replacing ? 'replacing' : 'stopped', { hash })) { playback.stop(id, hash); endDelivery(id, hash); }
       return { status: 'stopped' };
     });
-    // Admin › Activity: a transcode that ended is no longer listed; direct play lasts as long as the player checks in.
-    source('vod', {
-      delivering: s => s.delivery === 'direct' || transcodes.has(s.id, s.hash),
-      describe: async (s, _now, title) => ({ state: s.state, delivery: s.delivery, source: s.source, media: await title(s.mediaId), positionMs: s.positionMs, durationMs: s.durationMs }),
+    // Every end of an on-demand session (the viewer's stop, idle, Admin › Activity's Stop, sign-out) stops its delivery.
+    sessions.kind('vod', {
       stop: s => {
         try { playback.stop(s.id, s.hash); } catch { /* already ended */ }
         endDelivery(s.id, s.hash);
       }
     });
-    // Sign-out: every delivery the browser session had open.
+    // A transcode that ended on its own (access lost, or abandoned past its sweep) ends its session.
+    transcodes.onStopped = id => { sessions.end(id, 'removed'); };
+    source('vod', {
+      describe: async (s, _now, title) => ({ state: s.state, delivery: s.delivery, source: s.source, media: await title(s.mediaId), positionMs: s.positionMs, durationMs: s.durationMs })
+    });
+    // Sign-out: the registry has ended the browser's sessions (it mounts first); anything still delivering to it stops too.
     bus.on('session.signed-out', ({ hash }) => { stopStreams(s => s.hash === hash); transcodes.stopWhere(t => t.hash === hash); });
     return {
       api: {},

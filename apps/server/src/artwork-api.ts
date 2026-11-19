@@ -216,7 +216,7 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   app.get('/api/v1/admin/artwork/collections',async request=>{
     const {grant}=viewer(request),saved=store.collections();
     // Until definitions are first saved, the engine's seasonal presets (all off) are what it would use.
-    const defaults=await engine.defaultCollections(runOf(grant)).catch(()=>[]);
+    const defaults=engine.defaultCollections();
     return {...saved,defaults,kept:engine.keptCollections(),scheduleStates:schedule.collectionStates(),libraries:libraries(grant),upload:store.settings().upload,readOnly:readOnly()};
   });
   app.put('/api/v1/admin/artwork/collections',{bodyLimit:512*1024},async request=>{

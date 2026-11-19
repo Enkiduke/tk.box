@@ -1,5 +1,6 @@
 /* Explore catalog rows and title dialog. */
-.explore-page{padding-bottom:64px}
+.explore-page{padding-bottom:64px;--card-w:clamp(150px,13.5vw,190px)}
+.explore-grid .poster-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,clamp(150px,13vw,170px)),1fr))}
 .browse-search.explore-search{min-width:0;max-width:none}
 .explore-search .icon-button{flex:none}
 .explore-page .active-filters button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
@@ -18,6 +19,11 @@
 .explore-badge{position:absolute;top:6px;left:6px;z-index:1;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 7px;border-radius:4px;background:rgba(12,12,16,.82);backdrop-filter:blur(4px);font-size:11px;font-weight:700;color:#e6e6ea}
 /* Movie or TV, bottom right; the status badge keeps the top left. */
 .explore-kind{position:absolute;right:6px;bottom:6px;z-index:1;padding:2px 7px;border-radius:4px;background:rgba(12,12,16,.82);backdrop-filter:blur(4px);font-size:11px;font-weight:700;color:#e6e6ea;pointer-events:none}
+.explore-year{color:#d0d0d6;font-weight:500}
+.explore-card .compact-ratings{gap:3px 7px;margin-top:3px}
+.compact-ratings li{gap:3px;font-size:11px;line-height:16px;font-weight:550;color:#c8c8cf;white-space:nowrap}
+.compact-ratings .rating-mark{width:12px;height:12px}
+.compact-ratings .rating-mark.imdb,.compact-ratings .rating-mark.tmdb{width:auto;height:10px}
 .explore-badge.available{color:#7fd8a0}
 .explore-badge.partial{color:#b8e07a}
 .explore-badge.requested{color:var(--accent)}

@@ -19,7 +19,8 @@ type Relay = {
   encode: boolean; release: () => void; restarts: number; live: boolean; stopped: boolean; ready: Promise<void>; source?: LiveSource; stderr: string;
   lease?: ConnectionLease; cancel: AbortController;
 };
-// `watching` reports, every sweep, each channel with viewers and its viewers' latest request.
+// `watching` reports, every sweep, each channel with viewers and its viewers' latest request. (An idle viewer is ended by
+// the playback session registry, services/playback-sessions.ts, as is the per-viewer limit.)
 export type LiveObserver = { tuned?: (channelId: string) => void; tuneFailed?: (channelId: string) => void; watching?: (channelId: string, seen: number) => void };
 type Viewer = { id: string; hash: string; channelId: string; seen: number };
 const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -36,6 +37,7 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 // Upstream URIs stay server-side; the browser only sees this session's paths. Each relay holds
 // one of the server's provider connections (shared with channel checks) until FFmpeg exits.
 export class LiveTv {
+  // Told of every viewer that stops, whoever stopped it (its session's end, the channel removed, the relay failed).
   onViewerEnded?: (id: string) => void;
   private relays = new Map<string, Relay>();
   private viewers = new Map<string, Viewer>();
@@ -47,14 +49,13 @@ export class LiveTv {
   // Streams are read through the guard (public addresses only) unless their source allows local-network streams.
   guard?: StreamGuard;
   constructor(private store: IptvStore, private budget: EncoderBudget, cacheDir: string, private ffmpeg = 'ffmpeg', private ffprobe = 'ffprobe',
-    private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private options = { maxRelays: 8, maxPerViewer: 4, idleMs: 45000, readyMs: 30000 }) {
+    private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private options = { maxRelays: 8, readyMs: 30000 }) {
     this.root = join(cacheDir, 'live', `${process.pid}-${opaque().slice(0, 8)}`);
     void this.reapStale(join(cacheDir, 'live'));
     this.timer = every(10000, () => this.sweep(), e => this.log('live channel sweep failed', errorDetail(e)));
   }
   async start(hash: string, channelId: string) {
     const channel = this.store.tune(channelId);
-    requireThat([...this.viewers.values()].filter(v => v.hash === hash).length < this.options.maxPerViewer, 'PLAYBACK_SESSION_LIMIT', 'Too many live channels are open. Stop one first.', 429);
     let relay = this.relays.get(channelId);
     if (!relay) {
       requireThat(this.relays.size < this.options.maxRelays, 'LIVE_CAPACITY_REACHED', 'Too many channels are being watched right now. Please try again shortly.', 503);
@@ -118,8 +119,8 @@ export class LiveTv {
     const viewer = this.viewers.get(id), relay = viewer && this.relays.get(viewer.channelId);
     return relay && { delivery: (relay.encode ? 'transcode' : 'remux') as LiveDelivery, source: relay.source ?? {}, restarts: relay.restarts };
   }
+  // Channel checks hear which channels are being watched (a viewer that stopped asking is ended by the session registry).
   sweep(now = Date.now()) {
-    for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash);
     const seen = new Map<string, number>();
     for (const v of this.viewers.values()) seen.set(v.channelId, Math.max(seen.get(v.channelId) ?? 0, v.seen));
     for (const [channelId, at] of seen) this.observer.watching?.(channelId, at);

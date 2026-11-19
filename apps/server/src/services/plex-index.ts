@@ -15,7 +15,11 @@ export type Held = { ratingKey: string; addedAt?: number; seasons: Map<number, n
   // Every copy Plex has of the title (one per library it is in), this one first. Only on the copy the index answers with.
   copies?: PlexCopy[];
   // Followed shows only: the episodes Plex has, as `season:episode`, and their rating keys.
-  episodes?: ReadonlySet<string>; episodeKeys?: ReadonlyMap<string, readonly [season: number, episode: number]> };
+  episodes?: ReadonlySet<string>; episodeKeys?: ReadonlyMap<string, readonly [season: number, episode: number]>;
+  // Shows: every season Plex lists, specials (0) included, with its rating key and added date (Clean Up's seasons).
+  seasonItems?: Map<number, { ratingKey?: string; addedAt?: number }>;
+  // Followed shows only: each season's newest episode's added date, specials included.
+  seasonLatest?: ReadonlyMap<number, number> };
 export type ShowRef = { tmdbId: number; tvdbId?: number | undefined };
 export type TitleKind = 'movie' | 'show';
 // Any key a module holds for a title.
@@ -46,7 +50,7 @@ export class PlexIndex {
   private libraryIds?: LibraryIdentity;
   constructor(private read: () => Promise<PlexAvailability>, private log: (message: string, detail: object) => void = () => {},
     // A show's episodes on Plex, by its rating key.
-    private readEpisodes?: (ratingKey: string) => Promise<readonly { season: number; episode: number; ratingKey?: string }[]>) {}
+    private readEpisodes?: (ratingKey: string) => Promise<readonly { season: number; episode: number; ratingKey?: string; addedAt?: number }[]>) {}
   // `listener` is told after each rebuild that replaced the index.
   onChange(listener: () => void) { this.listeners.push(listener); }
   // The shows whose episodes to read (the library's followed shows), asked at each rebuild.
@@ -86,6 +90,11 @@ export class PlexIndex {
     return libraryTitleId === undefined ? ids : { ...ids, libraryTitleId };
   }
   ready() { return !!this.index; }
+  // One copy of a movie or show by its own rating key (not an episode's): its section, added date and seasons.
+  copy(ratingKey: string): Held | undefined {
+    const keyed = this.index?.keys.get(ratingKey);
+    return keyed && keyed.season === undefined ? keyed.held : undefined;
+  }
   movie(tmdbId: number) { return this.index?.movies.get(tmdbId); }
   show(tmdbId: number, tvdbId?: number | undefined) { return this.index?.shows.get(tmdbId) ?? (tvdbId ? this.index?.showsByTvdb.get(tvdbId) : undefined); }
   // Every title Plex holds, keyed like Explore items (`movie:tmdb:603`).
@@ -134,13 +143,16 @@ export class PlexIndex {
       for (const [key, [season, episode]] of keys ?? []) index.keys.set(key, { kind: 'show', held, season, episode });
     };
     try {
-      const found = (await this.readEpisodes!(held.ratingKey)).filter(e => e.season > 0);
+      const all = await this.readEpisodes!(held.ratingKey), found = all.filter(e => e.season > 0), latest = new Map<number, number>();
+      for (const e of all) if (e.addedAt) latest.set(e.season, Math.max(latest.get(e.season) ?? 0, e.addedAt * 1000));
+      held.seasonLatest = latest;
       held.episodes = new Set(found.map(e => `${e.season}:${e.episode}`));
       held.episodeKeys = new Map(found.flatMap(e => e.ratingKey ? [[e.ratingKey, [e.season, e.episode] as const]] : []));
       keyEpisodes(held.episodeKeys);
       return true;
     } catch (e) {
       if (previous?.episodes) held.episodes = previous.episodes;
+      if (previous?.seasonLatest) held.seasonLatest = previous.seasonLatest;
       if (previous?.episodeKeys) { held.episodeKeys = previous.episodeKeys; keyEpisodes(held.episodeKeys); }
       this.log('plex index: a show’s episodes could not be read', { ratingKey: held.ratingKey, error: (e as Error).message });
       return false;
@@ -173,6 +185,11 @@ export function build(found: PlexAvailability): Index {
     if (t.tmdbId && !index.shows.has(t.tmdbId)) index.shows.set(t.tmdbId, held);
     if (t.tvdbId && !index.showsByTvdb.has(t.tvdbId)) index.showsByTvdb.set(t.tvdbId, held);
   }
-  for (const s of found.seasons) if (s.season > 0) byKey.get(s.showKey)?.seasons.set(s.season, ms(s.addedAt));
+  for (const s of found.seasons) {
+    const show = byKey.get(s.showKey);
+    if (!show) continue;
+    if (s.season > 0) show.seasons.set(s.season, ms(s.addedAt));
+    (show.seasonItems ??= new Map()).set(s.season, { ...(s.ratingKey ? { ratingKey: s.ratingKey } : {}), ...(s.addedAt ? { addedAt: ms(s.addedAt) } : {}) });
+  }
   return index;
 }

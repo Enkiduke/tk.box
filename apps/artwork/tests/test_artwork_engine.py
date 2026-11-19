@@ -30,8 +30,6 @@ needs_parent_app = unittest.skipUnless((ROOT / "backend").is_dir(), "compares ag
 sys.path.insert(0, str(STANDALONE))
 import engine_common as common
 import artwork_engine as sp
-import plex_cleanup as cleanup
-import plex_collections as pc
 
 
 def example_config():
@@ -49,7 +47,7 @@ def rendered_path(base, rating_key):
 
 def main_style(**changes):
     config = example_config()
-    return sp.Style(**{**config["layouts"][config["default_layout"]], **changes})
+    return sp.make_style({**config["layouts"][config["default_layout"]], **changes})
 
 
 def configured(**changes):
@@ -109,20 +107,6 @@ class RendererTests(unittest.TestCase):
         expected = reference(background, logo, asdict(style)).convert("RGB")
         np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
 
-    @needs_parent_app
-    def test_grain_matches_app_blending_with_same_noise(self):
-        style = main_style(grain_seed=7)
-        background = Image.new("RGBA", (200, 300), (34, 98, 150, 255))
-        actual = sp.Renderer(style).render(background)
-        noise = np.random.default_rng(7).random((3000, 2000), dtype=np.float32)
-        noise *= 256 * style.grain_amount
-        noise += 128 - 128 * style.grain_amount
-        with patch.object(np.random, "uniform", return_value=noise - 128):
-            expected = original_renderer()(background, None, asdict(style)).convert("RGB")
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-        repeated = sp.Renderer(style).render(background)
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(repeated))
-
     def test_small_canvas_logo_proportions_and_stock(self):
         style = main_style(width=200, height=300, grain_amount=0, vignette_strength=0)
         renderer = sp.Renderer(style)
@@ -136,7 +120,7 @@ class RendererTests(unittest.TestCase):
     def test_generic_defaults_do_not_embed_main_look(self):
         style = sp.Style()
         self.assertEqual((style.poster_shift_y, style.matte_height_ratio, style.fade_height_ratio,
-                          style.vignette_strength, style.grain_amount), (0, 0, 0, 0, 0))
+                          style.vignette_strength), (0, 0, 0, 0))
         self.assertEqual((style.poster_filter, style.logo_preference), ("all", "any"))
 
     def test_layouts_share_effect_masks(self):
@@ -146,28 +130,24 @@ class RendererTests(unittest.TestCase):
         self.assertIs(movies.matte, tv.matte)
         self.assertIs(movies.vignette, tv.vignette)
 
-    def test_border_and_logo_alignment(self):
+    def test_logo_alignment(self):
         style = sp.Style(width=200, height=300, uniform_logo_max_w=400, uniform_logo_max_h=400,
-                         uniform_logo_h_align="left", uniform_logo_v_align="bottom",
-                         border_enabled=True, border_px=20, border_color="#0000FF")
+                         uniform_logo_h_align="left", uniform_logo_v_align="bottom")
         image = sp.Renderer(style).render(Image.new("RGB", (200, 300), "black"),
                                           Image.new("RGBA", (400, 200), "white"))
-        self.assertEqual(image.size, (204, 304))
-        self.assertEqual(image.getpixel((0, 0)), (0, 0, 255))
-        self.assertEqual(image.getpixel((82, 152)), (255, 255, 255))
-        self.assertEqual(image.getpixel((82, 142)), (0, 0, 0))
+        self.assertEqual(image.size, (200, 300))
+        self.assertEqual(image.getpixel((80, 150)), (255, 255, 255))
+        self.assertEqual(image.getpixel((80, 140)), (0, 0, 0))
 
     def test_boxes_say_where_each_layer_was_drawn(self):
-        # The layout editor's preview selects layers by these boxes, so they must match the final image, border included.
-        style = sp.Style(width=200, height=300, uniform_logo_max_w=400, uniform_logo_max_h=400, matte_height_ratio=0.2, fade_height_ratio=0,
-                         border_enabled=True, border_px=20, border_color="#0000FF")
+        # The layout editor's preview selects layers by these boxes, so they must match the final image.
+        style = sp.Style(width=200, height=300, uniform_logo_max_w=400, uniform_logo_max_h=400, matte_height_ratio=0.2, fade_height_ratio=0)
         renderer = sp.Renderer(style)
         image = renderer.render(Image.new("RGB", (200, 300), "black"), Image.new("RGBA", (400, 200), "white"))
         white = Image.eval(image.convert("L"), lambda value: 255 if value == 255 else 0).getbbox()
         self.assertEqual(renderer.boxes["logo"], list(white))
-        self.assertEqual(renderer.boxes["artwork"], [2, 2, 202, 302])
-        self.assertEqual(renderer.boxes["border"], [0, 0, 204, 304])
-        self.assertEqual(renderer.boxes["matte"], [2, 242, 202, 302])
+        self.assertEqual(renderer.boxes["artwork"], [0, 0, 200, 300])
+        self.assertEqual(renderer.boxes["matte"], [0, 240, 200, 300])
 
     def test_season_text_placeholders_and_visible_position(self):
         style = sp.Style(width=200, height=300, logo_mode="none", text_overlay_enabled=True,
@@ -193,7 +173,7 @@ class LayoutTests(unittest.TestCase):
         config["layout_by_library"] = {"Anime": "tk-tv"}
         self.assertEqual(sp.item_layout({"type": "movie", "library": "Anime"}, config, styles), ("tk-tv", False))
         self.assertEqual(sp.item_layout({"type": "movie", "library": "Other"}, config, styles), ("tk-movies", False))
-        self.assertEqual((styles["tk-movies", False].grain_amount, styles["tk-movies", False].uniform_logo_max_w), (0.12, 1500))
+        self.assertEqual(styles["tk-movies", False].uniform_logo_max_w, 1500)
         self.assertEqual((styles["tk-tv", False].uniform_logo_max_w, styles["tk-tv", False].uniform_logo_offset_y), (1700, 0.86))
         seasonal = styles["tk-tv", True]
         self.assertEqual((seasonal.uniform_logo_max_w, seasonal.uniform_logo_max_h, seasonal.uniform_logo_offset_y), (1500, 500, 0.83))
@@ -241,6 +221,27 @@ class LayoutTests(unittest.TestCase):
                 sp.layout_styles(bad)
         styles = sp.layout_styles(with_templates(base={"font_size": 90, "position_y": 0.2}, season={"position_y": 0.9}))
         self.assertEqual((styles["custom", True].font_size, styles["custom", True].position_y), (90, 0.9))
+
+    def test_retired_settings_still_load_draw_the_same_and_keep_their_signatures(self):
+        # Layouts saved before these settings were retired hold them at their old "off" values (2026-11-18).
+        saved = {"width": 200, "height": 300, "grain_amount": 0, "grain_seed": None, "border_enabled": False, "border_px": 0,
+                 "border_color": "#FFFFFF", "poster_zoom": 1, "streaming_logo_max_w": 160, "badges": ["gradient_top", "streaming", "status"]}
+        old, new = sp.make_style(saved), sp.make_style({"width": 200, "height": 300, "badges": ["gradient_top"]})
+        self.assertEqual(old.badges, ("gradient_top",))
+        self.assertEqual(old.old("grain_amount"), 0)
+        self.assertEqual(new.old("grain_amount"), 0.0)
+        background = Image.new("RGB", (200, 300), (90, 120, 200))
+        self.assertEqual(sp.Renderer(old).render(background).tobytes(), sp.Renderer(new).render(background).tobytes())
+        with tempfile.TemporaryDirectory() as directory:
+            poster = Path(directory) / "poster.png"
+            background.save(poster)
+            item = {"type": "movie", "rating_key": "1", "poster": str(poster)}
+            signature = lambda style: sp.render_signature(dict(item), style, {}, Path(directory), "server")
+            # Recorded as saved (0, not 0.0), as every signature made before recorded them
+            self.assertNotEqual(signature(old), signature(sp.make_style({**saved, "grain_amount": 0.0})))
+            self.assertEqual(signature(old), signature(sp.make_style({**saved, "streaming_logo_max_w": 285})))
+        self.assertEqual(sp.layout_styles({"layouts": {"custom": saved}})["custom", False], old)
+
 
 class TitleCardTests(unittest.TestCase):
     def test_title_split_matches_titlecardmaker_bottom_style(self):
@@ -363,12 +364,12 @@ class TitleCardTests(unittest.TestCase):
     def test_badge_gradients_are_generated_smooth_and_follow_settings(self):
         background = Image.new("RGBA", (40, 60), (200, 200, 200, 255))
         def render(**changes):
-            style = sp.Style(width=400, height=600, logo_mode="none", badges=("gradients",), **changes)
+            style = sp.Style(width=400, height=600, logo_mode="none", badges=("gradient_top",), **changes)
             return np.asarray(sp.Renderer(style).render(background, item={}).convert("RGB")).astype(int)
         pixels = render()
         self.assertEqual(pixels.tobytes(), render().tobytes())
-        self.assertLess(pixels[0].mean(), 200 * 0.45)          # strong at the edges (default 0.67 strength)
-        self.assertLess(pixels[-1].mean(), 200 * 0.45)
+        self.assertLess(pixels[0].mean(), 200 * 0.45)          # strong at the top edge (default 0.67 strength)
+        self.assertGreater(pixels[-1].mean(), 195)              # the bottom is left alone
         self.assertGreater(pixels[300].mean(), 195)             # untouched in the middle
         self.assertGreater(len(np.unique(pixels[:150, 200, 0])), 40)  # a smooth ramp, not a few steps
         weaker = render(badge_gradient_strength=0.2)
@@ -457,8 +458,10 @@ class ArtworkTests(unittest.TestCase):
         engine.start()
         self.addCleanup(engine.stop)
         self.http = FixtureHTTP(self.base)
-        self.config = configured(api={"tmdb_key": "fixture-key", "tvdb_key": "fixture-tvdb", "fanart_key": "fixture-fanart"},
-                                 plex={"url": "http://plex.invalid:32400", "token": "fixture-plex", "libraries": ["Movies"], "completion_label": ""})
+        keys = patch.dict(os.environ, {"TMDB_API_KEY": "fixture-key", "TVDB_API_KEY": "fixture-tvdb", "FANART_API_KEY": "fixture-fanart"})
+        keys.start()
+        self.addCleanup(keys.stop)
+        self.config = configured(plex={"url": "http://plex.invalid:32400", "token": "fixture-plex", "libraries": ["Movies"], "completion_label": ""})
         self.artwork = sp.Artwork(self.http, self.config, self.base)
         self.http.replies[self.artwork.plex.url + "/"] = b'<MediaContainer machineIdentifier="fixture-server"/>'
         self.poster_url = "https://art.invalid/textless.jpg"
@@ -662,10 +665,7 @@ class ArtworkTests(unittest.TestCase):
         url = self.artwork.plex.url
         self.http.replies[url + "/library/sections"] = b'<MediaContainer><Directory key="1" title="Movies" type="movie"/><Directory key="2" title="Television" type="show"/></MediaContainer>'
         self.http.replies[url + "/library/sections/1/all"] = b'<MediaContainer totalSize="1"><Video type="movie" ratingKey="9" title="The Matrix" year="1999"/></MediaContainer>'
-        path = self.base / "config.json"
-        path.write_text(json.dumps(self.config), encoding="utf-8")
-        self.assertEqual(self.run_folder_job(path, title="The Matrix", media_type="movie", year=1999)[0], 0)
-        self.assertTrue(rendered_path(self.base, 9).exists())
+        self.assertEqual([item["rating_key"] for item in self.artwork.plex.scan(media_type="movie")], ["9"])
         self.assertFalse(any("/sections/2/all" in call[1] for call in self.http.calls))
         with self.assertRaisesRegex(ValueError, "TV Shows.*Available libraries.*Television"):
             self.artwork.plex.scan()
@@ -910,25 +910,6 @@ class ArtworkTests(unittest.TestCase):
         self.assertFalse(any("/library/sections" in call[1] or "/metadata/10" in call[1] for call in self.http.calls))
         self.assertEqual(self.http.label_data[url]["labels"], ["tk.box"])
 
-    def test_exact_title_filters_and_ambiguity_never_process_other_titles(self):
-        self.config["layouts"]["custom"] = {"width": 200, "height": 300}
-        candidates = [{"type": kind, "title": "The Matrix", "year": str(year), "rating_key": key,
-                       "poster": self.poster_url, "logo": self.logo_url}
-                      for kind, year, key in (("movie", 1999, "9"), ("movie", 2021, "10"), ("tv", 1999, "11"))]
-        path = self.base / "config.json"
-        path.write_text(json.dumps(self.config), encoding="utf-8")
-        with patch.object(sp.Plex, "scan", return_value=candidates):
-            with self.assertRaisesRegex(ValueError, "Ambiguous.*Plex ID 9.*Plex ID 10"):
-                self.run_folder_job(path, title="The Matrix", force=True)
-            with self.assertRaisesRegex(ValueError, "No movie/show matches"):
-                self.run_folder_job(path, title="Not The Matrix", force=True)
-            self.assertFalse((self.base / "output").exists())
-            self.assertFalse((self.base / "assets").exists())
-            self.assertEqual(self.http.calls, [])
-            self.assertEqual(self.run_folder_job(path, title="the matrix", media_type="movie", year=1999, force=True)[0], 0)
-        self.assertEqual(list((self.base / "assets").rglob("rendered.jpg")), [rendered_path(self.base, 9)])
-        self.assertFalse((self.base / "output").exists())
-
     def test_targeted_show_defaults_to_series_and_expands_only_its_seasons_on_request(self):
         self.config["plex"].update(include_seasons=True, upload=True)
         self.config["layouts"]["custom"] = {"width": 200, "height": 300}
@@ -960,8 +941,7 @@ class ArtworkTests(unittest.TestCase):
         self.http.replies[url] = b'<MediaContainer><Video type="movie" ratingKey="8"/></MediaContainer>'
         with self.assertRaisesRegex(ValueError, "not found"):
             self.run_folder_job(path, rating_key=9, force=True)
-        for options in ({"force": True}, {"with_seasons": True}, {"rating_key": 9, "limit": 1},
-                        {"rating_key": 0}, {"title": ""}, {"title": "Matrix", "year": 99}):
+        for options in ({"with_seasons": True}, {"rating_key": 0}, {"added": True}, {"refresh": True, "changed_only": True}):
             with self.assertRaises(ValueError):
                 self.run_folder_job(path, **options)
         self.assertFalse((self.base / "output").exists())
@@ -1177,48 +1157,6 @@ class ArtworkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plex.upload"):
             self.run_folder_job(path, refresh=True)
 
-    def test_poster_and_icons_flags_download_ranked_candidates_without_rendering_or_uploading(self):
-        path = self.folder_job(upload=True)
-        config = json.loads(path.read_text(encoding="utf-8"))
-        config["layouts"]["custom"]["poster_filter"] = "textless"
-        path.write_text(json.dumps(config), encoding="utf-8")
-        self.http.replies[common.TMDB + "/movie/603"]["images"] = {
-            "posters": [{"file_path": "/p1.jpg", "iso_639_1": None, "width": 2000},
-                        {"file_path": "/p2.jpg", "iso_639_1": "en", "width": 3000},
-                        {"file_path": "/p3.jpg", "iso_639_1": None, "width": 1000}],
-            "logos": [{"file_path": "/logo.png", "iso_639_1": "en", "width": 500},
-                      {"file_path": "/blank.png", "iso_639_1": "en", "width": 900}]}
-        self.http.replies[sp.FANART + "/movies/603"] = {}
-        self.http.images["https://image.tmdb.org/t/p/w300/blank.png"] = Image.new("RGBA", (20, 5), (0, 0, 0, 0))
-        for name in ("p1", "p2", "p3"):
-            buffer = io.BytesIO()
-            Image.new("RGB", (20, 30), "red").save(buffer, format="JPEG")
-            self.http.replies[sp.IMAGE_BASE + f"/{name}.jpg"] = buffer.getvalue()
-        for name in ("logo", "blank"):
-            buffer = io.BytesIO()
-            Image.new("RGBA", (20, 5), "white").save(buffer, format="PNG")
-            self.http.replies[sp.IMAGE_BASE + f"/{name}.png"] = buffer.getvalue()
-
-        def files(stem):
-            return sorted(path.name for path in (self.base / "assets").rglob("*") if path.is_file() and path.stem.startswith(stem) and path.stem[len(stem):].isdigit())
-        result, output = self.run_folder_job(path, rating_key=9, posters=1, icons=1)
-        self.assertEqual(result, 0, output)
-        self.assertEqual(files("poster")[0].split(".")[0], "poster2")
-        self.assertEqual(len(files("poster")), 1)
-        self.assertIn("tmdb, no language, 2000w", output)  # best textless, not the 3000px text poster
-        self.assertEqual(len(files("logo")), 1)
-        result, output = self.run_folder_job(path, rating_key=9, posters="all", icons="all")
-        self.assertEqual(result, 0, output)
-        self.assertEqual([name.split(".")[0] for name in files("poster")], ["poster2", "poster3"])
-        self.assertEqual(len(files("logo")), 1)  # the blank logo never qualifies
-        self.assertIn("3 saved", output)  # two posters and the logo, each overwriting its number
-        self.assertFalse(list((self.base / "assets").rglob("render.png")))
-        self.assertFalse(list((self.base / "assets").rglob("poster.*")))
-        self.assertFalse([call for call in self.http.calls if call[0] == "POST"])
-        for bad in ({"posters": 0}, {"icons": "some"}, {"posters": 2}):
-            with self.assertRaises(ValueError):
-                self.run_folder_job(path, **bad)
-
     def test_episode_title_cards_use_tmdb_still_show_logo_and_own_plex_upload_id(self):
         self.config["plex"].update(include_episodes=True, upload=True)
         self.config["layouts"]["custom"] = {"width": 200, "height": 300}
@@ -1251,428 +1189,6 @@ class ArtworkTests(unittest.TestCase):
             self.assertNotEqual(first.tobytes(), second.tobytes())
         self.assertEqual(json.loads((cards[1].parent / ".artwork.json").read_text())["episode_title"], "Cat's in the Bag")
         self.assertTrue(list(cards[0].parent.parent.parent.glob("logo.*")))
-
-
-    def test_read_only_full_run_records_existing_collections_without_applying(self):
-        existing = {"kind": "franchise", "library": "Movies", "name": "Alien", "items": 2, "rating_key": "100"}
-        config_path = self.base / "config.json"
-        def build(artwork, apply, *, kept, **options):
-            self.assertFalse(apply)
-            kept.extend([existing, {"kind": "franchise", "library": "Movies", "name": "Planned", "items": 2}])
-            return 0
-        with patch.object(pc, "READ_ONLY", True), patch.object(pc, "read_collections_config", return_value={"plex": {"upload": True}}), \
-                patch.object(pc, "engine", return_value=self.artwork), patch.object(pc, "build_collections", side_effect=build), redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.sync_collections(config_path, "apply"), 0)
-        self.assertEqual(pc.read_kept(config_path), [existing])
-
-    def test_build_collections_plans_creates_adopts_and_trims(self):
-        plex = "http://plex.invalid:32400"
-        def video(key, title, tmdb):
-            return f'<Video ratingKey="{key}" title="{title}" type="movie"><Guid id="tmdb://{tmdb}"/></Video>'
-        def container(*parts, **attributes):
-            fields = "".join(f' {name}="{value}"' for name, value in attributes.items())
-            return f"<MediaContainer{fields}>{''.join(parts)}</MediaContainer>".encode()
-        self.http.replies.update({
-            plex + "/library/sections": container('<Directory key="1" title="Movies" type="movie"/>'),
-            plex + "/library/sections/1/all": container(video(1, "Alien", 10), video(2, "Aliens", 11), video(3, "Heat", 20),
-                                                        video(4, "Ronin", 21), video(5, "Solo", 30), totalSize=5),
-            plex + "/library/sections/1/collections": container(
-                '<Directory ratingKey="900" title="Alien" type="collection" subtype="movie"/>', totalSize=1),
-            plex + "/library/metadata/900/children": container(video(1, "Alien", 10), video(7, "Spin-off", 99)),
-            plex + "/": container(machineIdentifier="MID"),
-            common.TMDB + "/movie/10": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
-            common.TMDB + "/movie/11": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
-            common.TMDB + "/movie/20": {"belongs_to_collection": {"id": 200, "name": "Heat Collection"}},
-            common.TMDB + "/movie/21": {"belongs_to_collection": {"id": 200, "name": "Heat Collection"}},
-            common.TMDB + "/movie/30": {"belongs_to_collection": None}})
-        calls = []
-        class Created(Response):
-            content = b'<MediaContainer><Directory ratingKey="950"/></MediaContainer>'
-        self.http.request = lambda method, url, **kwargs: (calls.append((method, url.removeprefix(plex), kwargs.get("params"))), Created({}))[1]
-
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(pc.build_collections(self.artwork, False), 0)
-        self.assertEqual(calls, [])  # A plan never writes
-        for line in ("PLAN CREATE Heat [Movies]: 2 movies", "PLAN UPDATE Alien [Movies]: +Aliens; -Spin-off"):
-            self.assertIn(line, output.getvalue())
-
-        kept = []
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.build_collections(self.artwork, True, kept=kept), 0)
-        self.assertEqual(kept, [{"name": "Alien", "library": "Movies", "kind": "franchise", "items": 2, "rating_key": "900"},
-                                {"name": "Heat", "library": "Movies", "kind": "franchise", "items": 2, "rating_key": "950"}])
-        uri = "server://MID/com.plexapp.plugins.library/library/metadata/"
-        self.assertIn(("POST", "/library/collections", {"type": 1, "title": "Heat", "smart": 0, "sectionId": "1", "uri": uri + "3,4"}), calls)
-        self.assertIn(("PUT", "/library/metadata/950/prefs", {"collectionSort": 0}), calls)
-        self.assertIn(("PUT", "/library/collections/900/items", {"uri": uri + "2"}), calls)
-        self.assertIn(("DELETE", "/library/collections/900/items/7", None), calls)
-
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True, sync=False)
-        self.assertFalse([call for call in calls if call[0] == "DELETE"])  # append mode never removes
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True, minimum=3)
-        self.assertEqual(calls, [])  # Both franchises have only 2 movies
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True, franchises=False)
-        self.assertEqual(calls, [])  # Franchise collections off: nothing is looked up or made
-
-        with tempfile.TemporaryDirectory() as folder:
-            config = Path(folder) / "config.json"
-            pc.record_kept(config, kept)
-            self.assertEqual([e["name"] for e in pc.read_kept(config)], ["Alien", "Heat"])
-        self.assertEqual(common.collection_key("Star Trek: Alternate Reality Collection"), common.collection_key("Star Trek Alternate Reality"))
-
-        # tk.box's settings are what Plex holds: one turned off is deleted (and still listed, off), as is one an earlier
-        # run kept that no longer qualifies; where it shows is set for one that asks.
-        self.http.replies[plex + "/library/sections/1/collections"] = container(
-            '<Directory ratingKey="900" title="Alien" type="collection" subtype="movie"/>',
-            '<Directory ratingKey="960" title="Old Franchise" type="collection" subtype="movie"/>', totalSize=2)
-        self.http.replies[plex + "/hubs/sections/1/manage"] = container()
-        self.config["automatic_collections"] = [{"name": "Alien", "library": "Movies", "kind": "franchise", "enabled": False},
-                                                {"name": "Heat", "library": "Movies", "visibility": {"home": True}}]
-        earlier = [*kept, {"name": "Old Franchise", "library": "Movies", "kind": "franchise", "items": 2, "rating_key": "960"}]
-        calls.clear()
-        kept = []
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.build_collections(self.artwork, True, kept=kept, earlier=earlier), 0)
-        self.assertEqual([c for c in calls if c[0] == "DELETE"], [("DELETE", "/library/collections/900", None), ("DELETE", "/library/collections/960", None)])
-        self.assertEqual(kept[0], {"name": "Alien", "library": "Movies", "kind": "franchise", "items": 2, "off": True})
-        self.assertEqual(len(kept), 2)  # Old Franchise is gone from the list too
-        self.assertIn(("POST", "/hubs/sections/1/manage", {"promotedToOwnHome": 1, "metadataItemId": "950"}), calls)
-        # A failed TMDb lookup is a partial picture: nothing is deleted and the earlier entry stays.
-        self.http.replies[common.TMDB + "/movie/30"] = RuntimeError("TMDb is down")
-        self.config["automatic_collections"] = []
-        calls.clear()
-        kept = []
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            pc.build_collections(self.artwork, True, kept=kept, earlier=earlier)
-        self.assertFalse([c for c in calls if c[0] == "DELETE"])
-        self.assertIn("Old Franchise", [row["name"] for row in kept])
-
-        # Custom collections too: one turned off is deleted by name, and one removed from the list by its recorded ID.
-        self.http.replies[plex + "/library/sections/1/collections"] = container(
-            '<Directory ratingKey="970" title="Halloween" type="collection" subtype="movie"/>',
-            '<Directory ratingKey="980" title="Gone" type="collection" subtype="movie"/>', totalSize=2)
-        self.config["collections"] = [{"name": "Halloween", "library": "Movies", "type": "movie", "enabled": False}]
-        calls.clear()
-        kept = []
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.custom_collections(self.artwork, True, kept=kept, earlier=[{"name": "Gone", "library": "Movies", "kind": "custom", "items": 1, "rating_key": "980"}]), 0)
-        self.assertEqual(calls, [("DELETE", "/library/collections/970", None), ("DELETE", "/library/collections/980", None)])
-        self.assertEqual(kept, [])
-
-        # A title removed from a collection comes out of it in Plex, even when membership only adds.
-        self.http.replies[plex + "/library/sections/1/collections"] = container('<Directory ratingKey="990" title="Picks" type="collection" subtype="movie"/>', totalSize=1)
-        self.http.replies[plex + "/library/metadata/990/children"] = container(video(3, "Heat", 20))
-        self.config["collections"] = [{"name": "Picks", "library": "Movies", "type": "movie", "members": [{"title": "Alien"}, {"title": "Heat"}], "exclude": [{"title": "Heat"}]}]
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
-        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
-        # It always matches its titles: one in Plex's collection it doesn't list comes out, though a member isn't in Plex.
-        self.config["collections"] = [{"name": "Picks", "library": "Movies", "type": "movie", "members": [{"title": "Alien"}, {"title": "Not Here"}]}]
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
-        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"}), ("DELETE", "/library/collections/990/items/3", None)])
-        # One that matches two titles might be the one held, so nothing comes out.
-        library = self.http.replies[plex + "/library/sections/1/all"]
-        self.http.replies[plex + "/library/sections/1/all"] = container(video(1, "Alien", 10), video(3, "Heat", 20), video(6, "Solo", 31), video(5, "Solo", 30), totalSize=4)
-        self.config["collections"][0]["members"].append({"title": "Solo"})
-        calls.clear()
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(pc.custom_collections(self.artwork, True), 0)
-        self.assertEqual(calls, [("PUT", "/library/collections/990/items", {"uri": uri + "1"})])
-        self.assertIn("WARN Picks [Movies]: 1 members match more than one title; no members removed", output.getvalue())
-        self.http.replies[plex + "/library/sections/1/all"] = library
-
-        # A custom collection named like a franchise one keeps it: the franchise side neither trims nor deletes it.
-        # Without the claim, minimum=3 would make the earlier franchise "Alien" no longer qualify, and delete it.
-        self.http.replies[common.TMDB + "/movie/30"] = {"belongs_to_collection": None}
-        self.http.replies[plex + "/library/sections/1/collections"] = container('<Directory ratingKey="900" title="Alien" type="collection" subtype="movie"/>', totalSize=1)
-        self.config["collections"] = [{"name": "Alien", "library": "Movies", "type": "movie", "members": [{"tmdb_id": 10}, {"tmdb_id": 11}]}]
-        output = io.StringIO()
-        with redirect_stdout(output):
-            pc.build_collections(self.artwork, False, minimum=3, earlier=[{"name": "Alien", "library": "Movies", "kind": "franchise", "rating_key": "900"}])
-        self.assertIn("SKIP Alien [Movies]: kept as one of tk.box's custom collections", output.getvalue())
-        self.assertNotIn("no longer one of the franchise collections", output.getvalue())
-        self.assertNotIn("WARN", output.getvalue())
-
-
-    def test_imdb_episode_lists_keep_parent_series_for_tv_and_exclude_episodes_from_movies(self):
-        sources = pc.CollectionSources(self.artwork)
-        url = "https://www.imdb.com/list/ls566667558/"
-        parent = {"id": "tt100", "titleText": {"text": "Series"}, "releaseYear": {"year": 2012}}
-        titles = [
-            {"id": "tt101", "titleType": {"id": "tvEpisode"}, "series": {"series": parent}},
-            {"id": "tt102", "titleType": {"id": "tvEpisode"}, "series": {"series": parent}},
-            {"id": "tt103", "titleType": {"id": "movie"}},
-            {"id": "tt104", "titleType": {"id": "videoGame"}},
-        ]
-        reply = {"list": {"titleListItemSearch": {"edges": [{"title": t} for t in titles], "pageInfo": {"hasNextPage": False}}}}
-        with patch.object(sources, "imdb", return_value=reply):
-            shows = sources.fetch(url, "tv", resolve=False)["items"]
-            movies = sources.fetch(url, "movie", resolve=False)["items"]
-        self.assertEqual([row["member"] for row in shows], [{"imdb_id": "tt100"}])
-        self.assertEqual((shows[0]["title"], shows[0]["year"]), ("Series", "2012"))
-        self.assertEqual([row["member"] for row in movies], [{"imdb_id": "tt103"}])
-
-    def test_universes_are_counted_from_the_index_and_sorted_by_how_much_of_them_is_in_plex(self):
-        items = [{"title": "Alien", "year": "1979", "tmdb_id": 10}, {"title": "Iron Man", "year": "2008", "imdb_id": "tt0371746"},
-                 {"title": "Thor", "year": "2011"}]
-        self.assertEqual(pc.owned_members([{"tmdb_id": 10}, {"imdb_id": "tt0371746"}, {"title": "thor", "year": 2011},
-                                           {"title": "Thor", "year": 2022}, {"tmdb_id": 99}], items), 3)
-        lists = {"https://www.imdb.com/list/ls539646485/": [{"imdb_id": "tt0371746"}, {"title": "Thor", "year": 2011}, {"tmdb_id": 1}],
-                 "https://www.imdb.com/list/ls543971628/": [{"tmdb_id": 10}, {"tmdb_id": 2}]}
-        asked = []
-        def fetch(url, kind, limit, resolve=True):
-            asked.append(resolve)
-            if url not in lists:
-                raise ValueError("unreadable")
-            return {"items": [{"member": m} for m in lists[url]]}
-        sources, index = pc.CollectionSources(self.artwork), pc.empty_index()
-        with patch.object(sources, "fetch", side_effect=fetch):
-            failed = pc.index_universes(sources, index, now=1000)
-        self.assertEqual(set(asked), {False})  # Counting never converts list entries to TMDb IDs
-        self.assertEqual(sorted(index["universes"]), ["avp:movie", "mcu:movie", "mcu:tv"])
-        self.assertEqual(failed, sum(len(kinds) for *_, kinds in pc.COLLECTION_UNIVERSES) - 3)
-        asked.clear()
-        with patch.object(sources, "fetch", side_effect=fetch):  # Lists read within LIST_DAYS aren't asked for again
-            pc.index_universes(sources, index, now=1000 + 86400)
-        self.assertEqual(len(asked), failed)  # Only the unreadable ones are tried again
-        with patch.object(self.artwork.plex, "scan", return_value=items):
-            rows = sources.universes(index=index)
-        self.assertEqual([(r["key"], r.get("owned"), r.get("total")) for r in rows[:2]], [("mcu", 2, 3), ("avp", 1, 2)])
-        self.assertTrue(rows[1]["description"].startswith("You have 1 of 2. "))
-        self.assertTrue(all("owned" not in r for r in rows[2:]))  # Lists not read yet come last, without a count
-        self.assertEqual(rows[0]["url"], "https://www.imdb.com/list/ls539646485/")
-        with patch.object(self.artwork.plex, "scan", side_effect=AssertionError("no index, no Plex scan")):
-            self.assertTrue(all("owned" not in r for r in sources.universes(index=pc.empty_index())))
-
-    def test_plex_discover_lists_are_read_from_their_shelf_with_ids_filled_in(self):
-        url = "https://watch.plex.tv/discover/list/historical-week/"
-        self.assertEqual(pc.collection_source("https://watch.plex.tv/me/discover/list/historical-week")[1], url)
-        hubs = {"Hub": [{"title": "Trending", "key": "/hubs/trending"}, {"title": "Released This Week in History", "key": "/hubs/sections/home/historical-week"}]}
-        replies = {"/hubs/sections/home": hubs,
-                   "/hubs/sections/home/historical-week": {"Metadata": [
-                       {"type": "movie", "ratingKey": "a", "title": "The Terminator", "year": 1984},
-                       {"type": "show", "ratingKey": "b", "title": "White Collar", "year": 2009},
-                       {"type": "movie", "ratingKey": "c", "title": "Coco", "year": 2017, "Guid": [{"id": "imdb://tt2380307"}]}]},
-                   "/library/metadata/a": {"Metadata": [{"ratingKey": "a", "Guid": [{"id": "imdb://tt0088247"}, {"id": "tmdb://218"}]}]}}
-        sources = pc.CollectionSources(self.artwork)
-        with patch.object(sources, "plex_discover", side_effect=lambda path, **_: replies[path]) as asked:
-            result = sources.fetch(url, "movie", resolve=False)
-        self.assertEqual([row["member"] for row in result["items"]], [{"tmdb_id": 218}, {"imdb_id": "tt2380307"}])  # Shows are left out
-        self.assertEqual(result["name"], "Released This Week in History")
-        self.assertNotIn("/library/metadata/b", [call.args[0] for call in asked.call_args_list])  # Only movies without IDs are looked up
-        replies["/hubs/sections/home"] = {"Hub": hubs["Hub"][:1]}
-        with patch.object(sources, "plex_discover", side_effect=lambda path, **_: replies[path]), self.assertRaisesRegex(ValueError, "It offers: Trending"):
-            sources.fetch(url, "movie", resolve=False)
-        rotate = {"name": "Week", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "rotate"}
-        with self.assertRaisesRegex(ValueError, "rotate requires"):
-            pc.validate_collections({"collections": [{**rotate, "members": [{"tmdb_id": 1}]}]})
-        with self.assertRaisesRegex(ValueError, "rotate requires"):
-            pc.validate_collections({"collections": [{**rotate, "source": {"url": url, "refresh": False}}]})
-        pc.validate_collections({"collections": [{**rotate, "source": {"url": url}}]})
-
-    def test_a_list_is_filtered_and_sorted_before_the_collection_size_cuts_it(self):
-        def row(tmdb_id, year, rating=7.0, genres=("Drama",), certification="R", language="en"):
-            return {"title": f"Movie {tmdb_id}", "year": str(year), "member": {"tmdb_id": tmdb_id},
-                    "details": {"year": year, "rating": rating, "genres": list(genres), "certification": certification, "language": language}}
-        today = date(2026, 10, 25)
-        rows = [row(1, 2024), row(2, 1984, 8.1), row(3, 2006, 5.0), row(4, 1976, genres=("Horror",)), row(5, 1996, certification=None),
-                {"title": "Unknown", "year": "", "member": {"imdb_id": "tt1"}, "details": None}, row(6, 1990, language="fr"), row(7, 1999, 9.5)]
-        choose = pc.source_choice({"filter": {"year_to": 2021, "min_rating": 6, "max_rating": 9, "languages": ["en"], "exclude_genres": ["horror"],
-                                              "exclude_certifications": ["NR"]}, "sort": "anniversary"})
-        kept, left = pc.choose_titles(rows, choose, 1, today)
-        self.assertEqual([r["member"] for r in kept], [{"tmdb_id": 2}])  # 42 years isn't round, but it's the only one left
-        self.assertNotIn("details", kept[0])
-        self.assertEqual({l["title"]: l["why"] for l in left}, {
-            "Movie 1": "released after 2021", "Movie 3": "rated below 6 on TMDb", "Movie 4": "in a genre left out",
-            "Movie 5": "rated NR", "Unknown": "no TMDb details", "Movie 6": "in a language left out", "Movie 7": "rated above 9 on TMDb"})
-        kept, left = pc.choose_titles(rows[:5], {"sort": "anniversary"}, 2, today)
-        self.assertEqual([r["member"]["tmdb_id"] for r in kept], [3, 4])  # 20 and 50 years, then the rest in list order
-        self.assertEqual([l["why"] for l in left], ["beyond the collection size"] * 3)
-        kept, left = pc.choose_titles(rows[:5], {"sort": "anniversary"}, 2, today, exclude=[{"tmdb_id": 3}])
-        self.assertEqual([r["member"]["tmdb_id"] for r in kept], [4, 5])  # A removed title doesn't use up the size
-        self.assertEqual(len(left), 2)
-        # The editor (list-choice.ts) sorts "random" by the same hash; tests/list-choice.test.ts checks these values.
-        self.assertEqual((pc.week_hash("2026-43", {"tmdb_id": 218}), pc.week_hash("2026-43", {"title": "Amélie", "year": 2001})), (2508485222, 773514683))
-        self.assertEqual([r["member"]["tmdb_id"] for r in pc.choose_titles(rows[:5], {"sort": "rating"}, 5, today)[0]], [2, 1, 4, 5, 3])
-        week = [r["member"] for r in pc.choose_titles(rows[:5], {"sort": "random"}, 5, today)[0]]
-        self.assertEqual(week, [r["member"] for r in pc.choose_titles(rows[:5], {"sort": "random"}, 5, date(2026, 10, 21))[0]])  # Same week, same order
-        self.assertEqual(pc.source_choice({"url": "x", "filter": {"exclude_genres": []}, "sort": "list"}), {})
-        with self.assertRaisesRegex(ValueError, "list sort"):
-            pc.source_choice({"sort": "best"})
-        # Reading a list to choose from asks for the whole list, then cuts it.
-        sources = pc.CollectionSources(self.artwork)
-        listed = {"items": [{"title": f"Movie {i}", "year": "2000", "member": {"tmdb_id": i}} for i in range(1, 5)]}
-        with patch.object(sources, "plex_discover", side_effect=lambda path, **params: {"Hub": [{"title": "Released This Week in History", "key": "/hubs/historical-week"}]} if path == "/hubs/sections/home"
-                          else {"Metadata": [{"type": "movie", "ratingKey": str(i), "title": f"Movie {i}", "year": 2000, "Guid": [{"id": f"tmdb://{i}"}]} for i in range(1, 5)]}) as asked, \
-             patch.object(sources, "details", side_effect=lambda kind, tmdb_id: {"year": 2000, "rating": tmdb_id, "genres": [], "certification": "PG", "language": "en"}):
-            result = sources.fetch("https://watch.plex.tv/discover/list/historical-week", "movie", 2, choose={"sort": "rating"})
-        self.assertEqual(asked.call_args_list[1].kwargs["limit"], 250)
-        self.assertEqual([r["member"]["tmdb_id"] for r in result["items"]], [4, 3])
-        self.assertEqual((result["limit"], len(result["left_out"])), (2, 2))
-
-    def test_a_seasonal_collection_asks_tkbox_for_its_movies_then_lets_them_go_after_its_season(self):
-        acquire, journal = self.artwork.base / "collections-acquire.json", self.artwork.base / "collections-tkbox.json"
-        halloween = [{"name": "Halloween", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "remove-delete", "schedule": "10/01-10/31",
-                      "members": [{"tmdb_id": 1}, {"tmdb_id": 2}]}]
-        # Movie 1 is already in Plex (never the collection's); 2 is missing.
-        items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}}]
-        with patch.object(self.artwork.http, "request", side_effect=AssertionError("Nothing is fetched")), redirect_stdout(io.StringIO()):
-            pc.seasonal_acquire(self.artwork, halloween, items, True, date(2026, 10, 5))
-        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [2], "remove_ids": []})
-        self.assertEqual(json.loads(journal.read_text())["movies"], {"2": {"owners": ["Movies:" + pc.collection_key("Halloween")]}})
-        acquire.unlink()
-        # A plan (not applied) changes nothing.
-        with redirect_stdout(io.StringIO()) as planned:
-            pc.seasonal_acquire(self.artwork, halloween, items, False, date(2026, 11, 5))
-        self.assertIn("PLAN TK.BOX REMOVE", planned.getvalue())
-        self.assertFalse(acquire.exists())
-        # After the season, tk.box is asked to remove 2 (it downloaded it), never 1.
-        items.append({"type": "movie", "tmdb_id": 2, "rating_key": "200", "library": "Movies", "title": "Two", "year": "2000", "genres": [], "media": {}})
-        with redirect_stdout(io.StringIO()):
-            pc.seasonal_acquire(self.artwork, halloween, items, True, date(2026, 11, 5))
-        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [], "remove_ids": [2]})
-        self.assertEqual(json.loads(journal.read_text())["movies"], {})
-
-    def test_a_rotating_collection_lets_go_of_downloads_that_left_its_list_unless_watched(self):
-        owner = "Movies:" + pc.collection_key("Week")
-        acquire, journal = self.artwork.base / "collections-acquire.json", self.artwork.base / "collections-tkbox.json"
-        def start(listed):
-            journal.write_text(json.dumps({"version": 1, "lists": {owner: listed}, "movies": {str(k): {"owners": [owner]} for k in (2, 3, 4)}}))
-        # This week's list holds movie 1, which is in Plex; 2, 3 and 4 left it, and 4 is playing.
-        self.http.replies[self.artwork.plex.url + "/status/sessions"] = b'<MediaContainer><Video ratingKey="400"/></MediaContainer>'
-        items = [{"type": "movie", "tmdb_id": 1, "rating_key": "100", "library": "Movies", "title": "One", "year": "2000", "genres": [], "media": {}},
-                 {"type": "movie", "tmdb_id": 4, "rating_key": "400", "library": "Movies", "title": "Movie 4", "year": "2000", "genres": [], "media": {}}]
-        week = [{"name": "Week", "library": "Movies", "type": "movie", "acquire": True, "cleanup": "rotate",
-                 "source": {"url": "https://watch.plex.tv/discover/list/historical-week/"}, "members": [{"tmdb_id": 1}]}]
-        start(1)
-        with redirect_stdout(io.StringIO()) as output:
-            pc.seasonal_acquire(self.artwork, week, items, True, date.today())
-        self.assertEqual(json.loads(acquire.read_text()), {"tmdb_ids": [], "remove_ids": [2, 3]})
-        self.assertEqual(sorted(json.loads(journal.read_text())["movies"]), ["4"])
-        self.assertIn("someone is watching it", output.getvalue())
-        # A list that came back less than half as long as last time removes nothing.
-        acquire.unlink()
-        start(10)
-        with redirect_stdout(io.StringIO()) as warned:
-            pc.seasonal_acquire(self.artwork, week, items, True, date.today())
-        self.assertFalse(acquire.exists())
-        self.assertIn("down from 10", warned.getvalue())
-        self.assertEqual(json.loads(journal.read_text())["lists"][owner], 1)
-
-    def test_partly_owned_reads_the_discover_index_which_runs_and_newly_added_movies_keep(self):
-        plex = "http://plex.invalid:32400"
-        def video(key, title, tmdb):
-            return f'<Video ratingKey="{key}" title="{title}" type="movie"><Guid id="tmdb://{tmdb}"/></Video>'
-        def library(*videos):
-            return f'<MediaContainer totalSize="{len(videos)}">{"".join(videos)}</MediaContainer>'.encode()
-        self.http.replies.update({
-            plex + "/library/sections": b'<MediaContainer><Directory key="1" title="Movies" type="movie"/></MediaContainer>',
-            plex + "/library/sections/1/all": library(video(1, "Alien", 10), video(2, "Aliens", 11), video(3, "Heat", 20), video(4, "Solo", 30)),
-            common.TMDB + "/movie/10": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
-            common.TMDB + "/movie/11": {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}},
-            common.TMDB + "/movie/20": {"belongs_to_collection": {"id": 200, "name": "Heat Collection"}},
-            common.TMDB + "/movie/30": {"belongs_to_collection": None},
-            common.TMDB + "/collection/100": {"name": "Alien Collection", "parts": [
-                {"id": 10, "title": "Alien", "release_date": "1979-05-25"}, {"id": 11, "title": "Aliens", "release_date": "1986-07-18"},
-                {"id": 12, "title": "Alien 3", "release_date": "1992-05-22"}, {"id": 13, "title": "Alien 5", "release_date": "2030-01-01"},
-                {"id": 14, "title": "Untitled", "release_date": ""}]},
-            common.TMDB + "/collection/200": {"name": "Heat Collection", "parts": [{"id": 20, "title": "Heat", "release_date": "1995-12-15"}]}})
-        today = date(2026, 10, 25)
-        # Before the index is built, nothing is looked up while you wait: every movie is just not read yet.
-        self.assertEqual(pc.partly_owned(self.artwork, today=today, index=pc.load_index(self.artwork)), ([], 4))
-        with patch.object(pc, "index_universes", return_value=0), redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.build_index(self.artwork, now=1000), 0)
-        index = pc.load_index(self.artwork)
-        self.assertEqual(index["built"], 1000)
-        self.assertEqual(index["movies"], {"10": [100, 1000], "11": [100, 1000], "20": [200, 1000], "30": [None, 1000]})
-        rows, unread = pc.partly_owned(self.artwork, today=today, index=index)
-        self.assertEqual(unread, 0)
-        # Heat is complete; unreleased and undated parts aren't missing.
-        self.assertEqual(rows, [{"name": "Alien", "url": "https://www.themoviedb.org/collection/100/", "type": "movie", "provider": "tmdb",
-                                 "library": "Movies", "owned": 2, "total": 3, "description": "2 of 3 in Movies. Missing Alien 3 (1992)"}])
-        self.assertEqual(pc.partly_owned(self.artwork, "heat", today=today, index=index)[0], [])
-        self.assertEqual(pc.franchise_counts(self.artwork, index), [{"library": "Movies", "name": "Alien", "items": 2}, {"library": "Movies", "name": "Heat", "items": 1}])
-
-        # A movie added since is matched with Plex at once but needs the index to join a collection...
-        self.http.replies[plex + "/library/sections/1/all"] = library(video(1, "Alien", 10), video(2, "Aliens", 11), video(3, "Heat", 20), video(5, "Alien 3", 12))
-        self.http.replies[plex + "/library/metadata/5"] = b'<MediaContainer>' + video(5, "Alien 3", 12).encode() + b'</MediaContainer>'
-        self.http.replies[common.TMDB + "/movie/12"] = {"belongs_to_collection": {"id": 100, "name": "Alien Collection"}}
-        self.assertEqual(pc.partly_owned(self.artwork, today=today, index=pc.load_index(self.artwork))[1], 1)
-        # ...which newly added movies join straight away, and then it's complete.
-        with redirect_stdout(io.StringIO()):
-            pc.index_added(self.artwork, [5], now=2000)
-        index = pc.load_index(self.artwork)
-        self.assertEqual(index["movies"]["12"], [100, 2000])
-        self.assertEqual(index["collections"]["100"]["read"], 2000)
-        self.assertEqual(pc.partly_owned(self.artwork, today=today, index=index), ([], 0))
-
-        # A later build asks only for what is stale, and drops movies no longer in Plex.
-        self.http.replies[common.TMDB + "/movie/10"] = {"belongs_to_collection": None}
-        with patch.object(pc, "index_universes", return_value=0), redirect_stdout(io.StringIO()):
-            pc.build_index(self.artwork, now=3000)
-        index = pc.load_index(self.artwork)
-        self.assertEqual(index["movies"]["10"], [100, 1000])
-        self.assertNotIn("30", index["movies"])
-        with patch.object(pc, "index_universes", return_value=0), redirect_stdout(io.StringIO()):
-            pc.build_index(self.artwork, now=1000 + (pc.MOVIE_DAYS + 1) * 86400)
-        self.assertEqual(pc.load_index(self.artwork)["movies"]["10"][0], None)
-
-    def test_streaming_collections_group_shows_and_skip_smart_collections(self):
-        plex = "http://plex.invalid:32400"
-        def show(key, title, tmdb):
-            return f'<Directory ratingKey="{key}" title="{title}" type="show"><Guid id="tmdb://{tmdb}"/></Directory>'
-        def container(*parts, **attributes):
-            fields = "".join(f' {name}="{value}"' for name, value in attributes.items())
-            return f"<MediaContainer{fields}>{''.join(parts)}</MediaContainer>".encode()
-        def tv(network, provider, region="US"):
-            return {"networks": [{"name": network}], "watch/providers": {"results": {region: {"flatrate": [{"provider_id": provider}], "rent": [{"provider_id": 9}]}}}}
-        self.config["plex"]["libraries"] = ["Movies", "TV"]
-        self.http.replies.update({
-            plex + "/library/sections": container('<Directory key="1" title="Movies" type="movie"/>', '<Directory key="2" title="TV" type="show"/>'),
-            plex + "/library/sections/1/all": container(totalSize=0),
-            plex + "/library/sections/1/collections": container(totalSize=0),
-            plex + "/library/sections/2/all": container(show(11, "Stranger Things", 1), show(12, "The Witcher", 2), show(13, "Show A", 3),
-                                                        show(14, "Show B", 4), show(15, "Lonely", 5), totalSize=5),
-            plex + "/library/sections/2/collections": container(
-                '<Directory ratingKey="800" title="Hulu Shows" type="collection" subtype="show" smart="1"/>', totalSize=1),
-            plex + "/": container(machineIdentifier="MID"),
-            common.TMDB + "/tv/1": tv("Netflix", 8), common.TMDB + "/tv/2": tv("Netflix", 8),
-            common.TMDB + "/tv/3": tv("Hulu", 15), common.TMDB + "/tv/4": tv("Hulu", 15), common.TMDB + "/tv/5": tv("The CW", 0)})
-        calls = []
-        class Created(Response):
-            content = b'<MediaContainer><Directory ratingKey="950"/></MediaContainer>'
-        self.http.request = lambda method, url, **kwargs: (calls.append((method, url.removeprefix(plex), kwargs.get("params"))), Created({}))[1]
-
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(pc.build_collections(self.artwork, True, streaming="originals"), 0)
-        uri = "server://MID/com.plexapp.plugins.library/library/metadata/"
-        self.assertEqual([call for call in calls if call[0] == "POST"],
-                         [("POST", "/library/collections", {"type": 2, "title": "Netflix Shows", "smart": 0, "sectionId": "2", "uri": uri + "11,12"})])
-        self.assertIn("SKIP Hulu Shows [TV]: a smart collection", output.getvalue())  # Kometa's own can't be edited
-        self.assertEqual([call for call in calls if call[0] in ("PUT", "DELETE")], [("PUT", "/library/metadata/950/prefs", {"collectionSort": 0})])
-
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True)  # Streaming is off by default: movies only, so no TV collection is touched
-        self.assertEqual(calls, [])
-
-        data = tv("Hulu", 15, "GB")
-        self.assertEqual(sp.streaming_services(data, "originals", "US"), ["Hulu"])
-        self.assertEqual(sp.streaming_services(data, "available", "GB"), ["Hulu"])  # flatrate only; the rental (Prime 9) doesn't count
-        self.assertEqual(sp.streaming_services(data, "available", "US"), [])
-        self.assertEqual(sp.streaming_services({"networks": [{"name": "Disney Plus"}]}, "originals", "US"), ["Disney+"])  # "+" and "plus" agree
-        self.assertEqual(sp.streaming_services({"networks": [{"name": "Disney Channel"}]}, "originals", "US"), [])
 
 
     def test_streaming_collection_posters_use_the_logo_over_a_color_gradient(self):
@@ -1746,7 +1262,8 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(json.loads((folders[0] / ".artwork.json").read_text(encoding="utf-8"))["rating_key"], "78")
 
 
-    def test_recent_collections_are_created_once_and_get_chart_posters(self):
+    def test_chart_collections_get_chart_posters(self):
+        # Making them is the collections engine's (apps/server/src/services/collections); drawing them is ours.
         plex = "http://plex.invalid:32400"
         def container(*parts, **attributes):
             fields = "".join(f' {name}="{value}"' for name, value in attributes.items())
@@ -1754,107 +1271,13 @@ class ArtworkTests(unittest.TestCase):
         self.config["plex"]["libraries"] = ["Movies", "TV"]
         self.http.replies.update({
             plex + "/library/sections": container('<Directory key="1" title="Movies" type="movie"/>', '<Directory key="2" title="TV" type="show"/>'),
-            plex + "/library/sections/1/all": container(totalSize=0),
             plex + "/library/sections/1/collections": container(
                 '<Directory ratingKey="5" title="Newly Released" type="collection" subtype="movie" smart="1"/>', totalSize=1),
-            plex + "/library/sections/2/collections": container(totalSize=0),
-            plex + "/library/metadata/5": container('<Directory ratingKey="5" content="/library/sections/1/all?type=1&amp;sort=originallyAvailableAt%3Adesc&amp;originallyAvailableAt%3E%3E=-90d"/>'),
-            plex + "/": container(machineIdentifier="MID")})
-        calls = []
-        class Created(Response):
-            content = b"<MediaContainer/>"
-        self.http.request = lambda method, url, **kwargs: (calls.append((method, url.removeprefix(plex), kwargs.get("params"))), Created({}))[1]
-
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(pc.build_collections(self.artwork, False, recent=True), 0)
-        self.assertEqual(calls, [])  # A plan never writes
-        self.assertIn("PLAN CREATE New Episodes [TV]: smart collection of episodes aired in the last 7 days", output.getvalue())
-        self.assertNotIn("CREATE Newly Released", output.getvalue())  # Kometa's own is already there, so it's left alone
-        self.assertIn("PLAN SORT Newly Released [Movies]: first in the collections list", output.getvalue())
-
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(pc.build_collections(self.artwork, True, recent=True), 0)
-        uri = "server://MID/com.plexapp.plugins.library/library/sections/2/all?type=4&sort=originallyAvailableAt%3Adesc&episode.originallyAvailableAt%3E%3E=-7d"
-        # The existing one is moved to the front of the list; the missing one is created
-        self.assertEqual(calls, [("PUT", "/library/sections/1/all", {"type": 18, "id": "5", "titleSort.value": "!001 Newly Released", "titleSort.locked": 1}),
-                                 ("POST", "/library/collections", {"type": 4, "title": "New Episodes", "smart": 1, "sectionId": "2", "uri": uri})])
-
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True)  # Off unless asked for, and turned off they come out of Plex
-        self.assertEqual(calls, [("DELETE", "/library/collections/5", None)])
-
-        # A different window changes the existing collection's filter...
-        calls.clear()
-        output = io.StringIO()
-        with redirect_stdout(output):
-            pc.build_collections(self.artwork, True, recent=True, days={"movie": 30, "show": 7})
-        window = "server://MID/com.plexapp.plugins.library/library/sections/1/all?type=1&sort=originallyAvailableAt%3Adesc&originallyAvailableAt%3E%3E=-30d"
-        self.assertIn(("PUT", "/library/collections/5/items", {"uri": window}), calls)
-        self.assertIn("UPDATE Newly Released [Movies]: last 90 days -> last 30 days", output.getvalue())
-        # ...but a filter we can't read is left exactly as it is
-        self.http.replies[plex + "/library/metadata/5"] = container('<Directory ratingKey="5"/>')
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True, recent=True, days={"movie": 30, "show": 7})
-        self.assertFalse([call for call in calls if call[1] == "/library/collections/5/items"])
-
-        self.http.replies[plex + "/library/sections/1/collections"] = container(totalSize=0)
-        calls.clear()
-        with redirect_stdout(io.StringIO()):
-            pc.build_collections(self.artwork, True, recent=True)
-        movie_uri = "server://MID/com.plexapp.plugins.library/library/sections/1/all?type=1&sort=originallyAvailableAt%3Adesc&originallyAvailableAt%3E%3E=-90d"
-        self.assertIn(("POST", "/library/collections", {"type": 1, "title": "Newly Released", "smart": 1, "sectionId": "1", "uri": movie_uri}), calls)
-
-        # Posters: the existing smart collection is a chart item, drawn from the bundled Plex logo
-        self.http.replies[plex + "/library/sections/1/collections"] = container(
-            '<Directory ratingKey="5" title="Newly Released" type="collection" subtype="movie" smart="1"/>', totalSize=1)
-        # Plex lists a smart collection of episodes with subtype "episode", not "show"
-        self.http.replies[plex + "/library/sections/2/collections"] = container(
-            '<Directory ratingKey="6" title="New Episodes" type="collection" subtype="episode" smart="1"/>', totalSize=1)
+            # Plex lists a smart collection of episodes with subtype "episode", not "show"
+            plex + "/library/sections/2/collections": container(
+                '<Directory ratingKey="6" title="New Episodes" type="collection" subtype="episode" smart="1"/>', totalSize=1)})
         found = self.artwork.plex.poster_collections()
         self.assertEqual([(item["title"], item["chart"]) for item in found], [("Newly Released", "Newly Released"), ("New Episodes", "New Episodes")])
-
-        # ...so a run finds it and does not make a second one, and a sort title already in place isn't set again
-        self.http.replies[plex + "/library/metadata/6"] = container(
-            '<Directory ratingKey="6" titleSort="!001 New Episodes" content="/library/sections/2/all?type=4&amp;episode.originallyAvailableAt%3E%3E=-7d"/>')
-        self.http.replies[plex + "/library/metadata/5"] = container(
-            '<Directory ratingKey="5" titleSort="!001 Newly Released" content="/library/sections/1/all?type=1&amp;originallyAvailableAt%3E%3E=-90d"/>')
-        calls.clear()
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(pc.build_collections(self.artwork, True, recent=True), 0)
-        self.assertEqual(calls, [])
-        self.assertNotIn("CREATE", output.getvalue())
-
-        # Two of the same name (made by an earlier run): the oldest is kept, the extra is deleted, and a plan only says so
-        self.http.replies[plex + "/library/sections/2/collections"] = container(
-            '<Directory ratingKey="7" title="New Episodes" type="collection" subtype="episode" smart="1"/>',
-            '<Directory ratingKey="6" title="New Episodes" type="collection" subtype="episode" smart="1"/>', totalSize=2)
-        output = io.StringIO()
-        with redirect_stdout(output):
-            pc.build_collections(self.artwork, False, recent=True)
-        self.assertIn("PLAN DELETE New Episodes [TV]: extra copy (id 7); keeping id 6", output.getvalue())
-        self.assertIn("1 extra to delete", output.getvalue())
-        self.assertEqual(calls, [])
-        output = io.StringIO()
-        with redirect_stdout(output):
-            pc.build_collections(self.artwork, True, recent=True)
-        self.assertIn("DELETE New Episodes [TV]: extra copy (id 7); keeping id 6", output.getvalue())
-        self.assertEqual(calls, [("DELETE", "/library/collections/7", None)])
-        # A same-named collection that isn't smart is somebody's own: it is never deleted
-        calls.clear()
-        self.http.replies[plex + "/library/sections/2/collections"] = container(
-            '<Directory ratingKey="6" title="New Episodes" type="collection" subtype="episode" smart="1"/>',
-            '<Directory ratingKey="8" title="New Episodes" type="collection" subtype="show"/>', totalSize=2)
-        output = io.StringIO()
-        with redirect_stdout(output):
-            pc.build_collections(self.artwork, True, recent=True)
-        self.assertIn("another collection with this name isn't a smart collection", output.getvalue())
-        self.assertEqual(calls, [])
-        self.http.replies[plex + "/library/sections/2/collections"] = container(
-            '<Directory ratingKey="6" title="New Episodes" type="collection" subtype="episode" smart="1"/>', totalSize=1)
         (self.base / "resources" / "charts").mkdir(parents=True)
         Image.new("RGBA", (40, 20), "white").save(self.base / "resources" / "charts" / "Plex.png")
         background, logo, stock = self.artwork.select(dict(found[1]), sp.Style())
@@ -1868,146 +1291,6 @@ class ArtworkTests(unittest.TestCase):
         one = sp.Renderer(sp.Style(width=400, height=600, text_overlay_enabled=True, custom_text="{title}", font_size=60)).render(
             Image.new("RGB", (40, 60), "black"), None, False, {"title": "New Episodes"})
         self.assertGreater(lines.getbbox()[3] - lines.getbbox()[1], one.getbbox()[3] - one.getbbox()[1])  # Two lines are taller
-
-
-class CleanupTests(unittest.TestCase):
-    """plex_cleanup.py against a fake Plex data folder and database; nothing touches a real server."""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name).resolve()  # The cleanup reports real paths; the temp folder may be a symlink
-        self.data = self.base / "plex data"
-        self.uploads = self.data / "Metadata/Movies/a/abc.bundle/Uploads/posters"
-        self.uploads.mkdir(parents=True)
-        self.files = {}
-        def make(name, folder=None, overlay=True, software=True, hours=5, suffix=""):
-            path = (folder or self.uploads) / (name + suffix)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            exif = Image.Exif()
-            if overlay:
-                exif[0x04BC] = "overlay"
-            if software:
-                exif[0x0131] = "tk.box"
-            Image.new("RGB", (8, 8), "red").save(path, format="JPEG", exif=exif)
-            old = path.stat().st_mtime - hours * 3600
-            os.utime(path, (old, old))
-            self.files[name] = path
-        make("in_use")
-        make("orphan")
-        make("orphan_two", folder=self.data / "Metadata/Shows/b/xyz.bundle/Uploads/posters")
-        make("kometa", software=False)                       # Kometa's overlay: only the overlay tag
-        make("manual", overlay=False, software=False)        # Something you uploaded by hand
-        make("recent", hours=0)                              # Too new for the snapshot to be trusted
-        make("contents", folder=self.data / "Metadata/Movies/a/abc.bundle/Contents/_combined/posters")
-        make("elsewhere", folder=self.data / "Metadata/Movies/a/abc.bundle/Other")
-        make("with_extension", suffix=".jpg")
-        (self.data / "Plug-in Support/Databases").mkdir(parents=True)
-        self.database = self.base / "snapshot.db"
-        self.write_database({"user_thumb_url": "upload://posters/in_use"})
-        config = configured(plex={"url": "http://plex.invalid:32400", "token": "t", "libraries": [], "data_dir": str(self.data)})
-        self.config_path = self.base / "config.json"
-        self.config_path.write_text(json.dumps(config), encoding="utf-8")
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def write_database(self, row, columns=("user_thumb_url", "user_art_url", "user_banner_url", "user_clear_logo_url", "user_square_art_url")):
-        self.database.unlink(missing_ok=True)
-        connection = sqlite3.connect(self.database)
-        connection.execute(f"CREATE TABLE metadata_items (id INTEGER, {', '.join(c + ' TEXT' for c in columns)})")
-        connection.execute("INSERT INTO metadata_items (id, " + ", ".join(row) + ") VALUES (1, " + ", ".join("?" * len(row)) + ")", list(row.values()))
-        connection.commit()
-        connection.close()
-
-    def cleanup(self, mode="report"):
-        output = io.StringIO()
-        with patch.object(cleanup, "plex_snapshot", return_value=self.database), redirect_stdout(output):
-            result = cleanup.cleanup(self.config_path, mode)
-        return result, output.getvalue()
-
-    def present(self):
-        return {name for name, path in self.files.items() if path.exists()}
-
-    def test_report_lists_only_unused_engine_posters_and_changes_nothing(self):
-        result, text = self.cleanup()
-        self.assertEqual(result, 0)
-        listed = {line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("UNUSED ")}
-        self.assertEqual(listed, {str(self.files["orphan"]), str(self.files["orphan_two"])})
-        self.assertIn("Found 2 unused", text)
-        self.assertEqual(self.present(), set(self.files))
-
-    def test_move_is_reversible_and_remove_deletes_only_the_unused_ones(self):
-        self.cleanup("move")
-        kept = set(self.files) - {"orphan", "orphan_two"}
-        self.assertEqual(self.present(), kept)
-        restored = self.data / "tk.box Restore/Movies/a/abc.bundle/Uploads/posters/orphan"
-        self.assertTrue(restored.is_file())
-        self.assertIn("Restored 2 files", self.cleanup("restore")[1])
-        self.assertEqual(self.present(), set(self.files))
-        self.assertFalse((self.data / "tk.box Restore").exists())
-        self.cleanup("remove")
-        self.assertEqual(self.present(), kept)
-        self.assertFalse((self.data / "tk.box Restore").exists())
-
-    def test_posters_in_use_stay_even_when_selected_for_other_fields(self):
-        self.write_database({"user_thumb_url": "upload://posters/in_use", "user_art_url": "upload://art/orphan"})
-        self.cleanup("remove")
-        self.assertIn("orphan", self.present())
-        self.assertNotIn("orphan_two", self.present())
-
-    def test_age_limit_is_configurable(self):
-        config = json.loads(self.config_path.read_text(encoding="utf-8"))
-        config["plex"]["cleanup_min_age_minutes"] = 600  # Everything under ten hours old is left alone
-        self.config_path.write_text(json.dumps(config), encoding="utf-8")
-        self.assertEqual(self.cleanup()[1].count("UNUSED "), 0)
-
-    def test_refuses_to_guess_when_the_database_or_settings_look_wrong(self):
-        self.write_database({"user_thumb_url": None})  # Nothing in use at all: a broken snapshot
-        with self.assertRaisesRegex(ValueError, "refusing"):
-            self.cleanup("remove")
-        self.write_database({"user_banner_url": "upload://posters/in_use"}, columns=("user_banner_url",))  # Required columns missing
-        with self.assertRaisesRegex(ValueError, "refusing"):
-            self.cleanup("remove")
-        self.assertEqual(self.present(), set(self.files))
-        config = json.loads(self.config_path.read_text(encoding="utf-8"))
-        del config["plex"]["data_dir"]
-        self.config_path.write_text(json.dumps(config), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "data_dir"):
-            self.cleanup()
-
-    def test_cleanup_is_its_own_script(self):
-        self.cleanup("move")
-        result = subprocess.run([sys.executable, str(STANDALONE / "plex_cleanup.py"), str(self.config_path), "restore"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Restored 2 files", result.stdout)
-        self.assertEqual(self.present(), set(self.files))
-        result = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(self.config_path), "--cleanup"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2)  # The artwork engine no longer has it
-
-    def test_snapshot_download_accepts_zip_or_raw_database(self):
-        import zipfile
-        class Download(FixtureHTTP):
-            payload = b""
-            def request(self, method, url, **kwargs):
-                outer = self
-                class Streamed(Response):
-                    def iter_content(self, size):
-                        yield outer.payload
-                return Streamed(None)
-        http = Download(self.base)
-        artwork = sp.Artwork(http, configured(plex={"url": "http://plex.invalid:32400", "token": "t"}), self.base)
-        folder = self.base / "tmp"
-        folder.mkdir()
-        http.payload = self.database.read_bytes()
-        self.assertEqual(cleanup.images_in_use(cleanup.plex_snapshot(artwork.plex, folder)), {"in_use"})
-        archive = self.base / "backup.zip"
-        with zipfile.ZipFile(archive, "w") as handle:
-            handle.write(self.database, "databaseBackup-2026")
-        http.payload = archive.read_bytes()
-        self.assertEqual(cleanup.images_in_use(cleanup.plex_snapshot(artwork.plex, folder)), {"in_use"})
-        http.payload = b"<html>nope</html>"
-        with self.assertRaisesRegex(ValueError, "not a database"):
-            cleanup.plex_snapshot(artwork.plex, folder)
 
 
 class ArtworkFileTests(unittest.TestCase):
@@ -2184,6 +1467,36 @@ class ArtworkFileTests(unittest.TestCase):
 
 
 class CLIAndHTTPTests(unittest.TestCase):
+    def test_batch_runs_jobs_in_one_process_each_with_its_output_status_and_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            Image.new("RGB", (20, 30), "red").save(base / "poster.png")
+            Image.new("RGBA", (20, 5), "white").save(base / "logo.png")
+            config = configured(layouts={"custom": {"width": 200, "height": 300}}, items=[
+                {"title": "Movie A", "year": 1999, "rating_key": "1", "poster": "poster.png", "logo": "logo.png", "output": "a.png"}])
+            path = base / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            jobs = [["--item", "1", "--remake"], ["--item", "1", "--changed-only"], ["--item", "1", "--with-seasons"], ["--bogus"], ["--worker"]]
+            result = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(path), "--batch"], cwd=base,
+                                    input="".join(json.dumps({"args": args}) + "\n" for args in jobs), capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")  # Warnings and errors come in order with each job's output
+            outputs, current = [], []
+            for line in result.stdout.split("\n"):  # Not splitlines(): it breaks lines at BATCH_DONE's \x1e too
+                if line.startswith(sp.BATCH_DONE):
+                    outputs.append((json.loads(line[len(sp.BATCH_DONE):])["code"], current))
+                    current = []
+                else:
+                    current.append(line)
+            self.assertEqual([code for code, _ in outputs], [0, 0, 1, 2, 2], result.stdout)
+            made, unchanged, refused = (lines for _, lines in outputs[:3])
+            self.assertTrue(any(line.startswith("LAYOUT custom") for line in made))
+            self.assertTrue(any(line.startswith("TIME Movie A (1999): ") for line in made), made)
+            self.assertRegex(next(line for line in made if line.startswith("TIMES:")), r"^TIMES: start \d+\.\d\ds, setup ")
+            self.assertTrue(any(line.startswith("UNCHANGED") for line in unchanged))
+            self.assertRegex(next(line for line in unchanged if line.startswith("TIMES:")), r"^TIMES: setup ")  # Python started once
+            self.assertTrue(any("requires a show" in line for line in refused))
+
     def test_cli_force_selects_one_configured_job_by_title_or_id(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -2195,7 +1508,7 @@ class CLIAndHTTPTests(unittest.TestCase):
             path = base / "config.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             command = [sys.executable, str(STANDALONE / "artwork_engine.py"), str(path)]
-            result = subprocess.run(command + ["--title", "movie a", "--type", "movie", "--year", "1999", "--remake"], cwd=base.parent, capture_output=True, text=True)
+            result = subprocess.run(command + ["--item", "1", "--remake"], cwd=base.parent, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             a = base / "assets/movies/Movie A (1999) {plex-1}/a.png"
             b = base / "assets/movies/Movie B {plex-2}/b.png"
@@ -2215,21 +1528,18 @@ class CLIAndHTTPTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(a.stat().st_mtime_ns, timestamp)
 
-    def test_config_credentials_override_environment(self):
+    def test_provider_keys_come_from_the_environment_and_the_config_takes_none(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-            "TMDB_API_KEY": "env-tmdb", "TVDB_API_KEY": "env-tvdb", "PLEX_TOKEN": "env-plex",
-            "CUSTOM_FANART_KEY": "custom-fanart"}, clear=True):
+            "TMDB_API_KEY": "env-tmdb", "FANART_API_KEY": "env-fanart", "PLEX_TOKEN": "env-plex"}, clear=True):
             base = Path(directory)
             path = base / "config.json"
-            config = configured(plex={"token": "config-plex"},
-                                api={"tmdb_key": "config-tmdb", "tvdb_key": "",
-                                     "fanart_key": "${CUSTOM_FANART_KEY}"})
-            path.write_text(json.dumps(config), encoding="utf-8")
+            path.write_text(json.dumps(configured()), encoding="utf-8")
             artwork = sp.Artwork(FixtureHTTP(base), sp.read_config(path), base)
-            self.assertEqual(artwork.plex.headers["X-Plex-Token"], "config-plex")
-            self.assertEqual(artwork.keys["tmdb_key"], "config-tmdb")
-            self.assertEqual(artwork.keys["tvdb_key"], "")
-            self.assertEqual(artwork.keys["fanart_key"], "custom-fanart")
+            self.assertEqual(artwork.plex.headers["X-Plex-Token"], "env-plex")
+            self.assertEqual((artwork.keys["tmdb_key"], artwork.keys["fanart_key"], artwork.keys["tvdb_key"]), ("env-tmdb", "env-fanart", ""))
+            path.write_text(json.dumps(configured(api={"tmdb_key": "config-tmdb"})), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unknown config keys: api"):
+                sp.read_config(path)
 
     def test_missing_keys_stay_empty(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
@@ -2275,27 +1585,11 @@ class CLIAndHTTPTests(unittest.TestCase):
             config = configured(layouts={"custom": {"width": 200, "height": 300}},
                                 collections=[{"name": "Empty", "library": "Movies", "type": "movie"}])
             path.write_text(json.dumps(config), encoding="utf-8")
-            artwork = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(path), "--check"], capture_output=True, text=True)
-            self.assertEqual(artwork.returncode, 0, artwork.stderr)  # Collection definitions aren't the artwork engine's to judge
-            collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
-            self.assertEqual(collections.returncode, 1)
-            self.assertIn("Empty needs titles, a list or a rule before it can be turned on", collections.stderr)
-            # Off, it is a draft; downloads need nothing else configured.
-            config["collections"] = [{"name": "Empty", "library": "Movies", "type": "movie", "enabled": False, "acquire": True},
-                                     {"name": "Picks", "library": "Movies", "type": "movie", "acquire": True, "members": [{"tmdb_id": 948}]}]
-            path.write_text(json.dumps(config), encoding="utf-8")
-            collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
-            self.assertEqual(collections.returncode, 0, collections.stderr)
+            sp.read_config(path)  # Collection definitions aren't the artwork engine's to judge
             config["layouts"], config["collections"], config["workers"] = {}, [], 2
             path.write_text(json.dumps(config), encoding="utf-8")
-            collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
-            self.assertEqual(collections.returncode, 0, collections.stderr)  # Nor are layouts the collections engine's
-            artwork = subprocess.run([sys.executable, str(STANDALONE / "artwork_engine.py"), str(path), "--check"], capture_output=True, text=True)
-            self.assertIn("Define at least one named layout", artwork.stderr)
-            config["workers"] = 0
-            path.write_text(json.dumps(config), encoding="utf-8")
-            collections = subprocess.run([sys.executable, str(STANDALONE / "plex_collections.py"), str(path), "check"], capture_output=True, text=True)
-            self.assertIn("workers must be an integer", collections.stderr)  # The shared checks are both engines'
+            with self.assertRaisesRegex(ValueError, "Define at least one named layout"):
+                sp.read_config(path)
 
     def test_reject_bad_config_and_input_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2348,11 +1642,7 @@ class CLIAndHTTPTests(unittest.TestCase):
                 url = f"http://127.0.0.1:{server.server_port}"
                 self.assertEqual(http.json(url + "/retry"), {"ok": True})
                 self.assertEqual(http.json(url + "/retry"), {"ok": True})
-                self.assertEqual(counts["/retry"], 2)
-                http.refresh = True
-                http.json(url + "/retry")
-                self.assertEqual(counts["/retry"], 3)
-                http.refresh = False
+                self.assertEqual(counts["/retry"], 2)  # A retried failure, then the cached answer
                 http.json(url + "/scope", headers={"Authorization": "Bearer first"}, cache_scope="same-account")
                 http.json(url + "/scope", headers={"Authorization": "Bearer second"}, cache_scope="same-account")
                 self.assertEqual(counts["/scope"], 1)
@@ -2426,7 +1716,8 @@ class SafeguardTests(unittest.TestCase):
 
     def test_tvdb_answers_from_cache_without_logging_in(self):
         http = sp.HTTP(self.base / "cache")
-        artwork = sp.Artwork(http, {"api": {"tvdb_key": "key"}}, self.base)
+        with patch.dict(os.environ, {"TVDB_API_KEY": "key"}):
+            artwork = sp.Artwork(http, {}, self.base)
         scope = {key: artwork.keys.get(key) for key in ("tvdb_key", "tvdb_pin")}
         (self.base / "cache").mkdir()
         (self.base / "cache" / http.digest(common.TVDB + "/artwork/types", None, None, scope)).write_text('{"data": [1]}')
@@ -2448,7 +1739,7 @@ class SafeguardTests(unittest.TestCase):
         config = configured(plex={"url": "http://plex.invalid", "upload": True})
         artwork = sp.Artwork(sp.HTTP(self.base / "cache"), config, self.base)
         batch = sp.Batch(artwork, None, config, self.base, set(), force=False, changed_only=True,
-                         refresh=False, refetch=False, upload=True)
+                         refresh=False, upload=True)
         batch.server = "server-id"
         item, style = {"type": "movie", "rating_key": "9", "poster": str(poster)}, sp.Style(logo_mode="none")
         signature = sp.render_signature(item, style, config, self.base, "server-id")

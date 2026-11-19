@@ -6,13 +6,26 @@ import { PlexPlaybackMonitor } from '../services/plex-playback-monitor.js';
 import { registerHistory } from '../history-api.js';
 import { HistoryReports } from '../persistence/history-reports.js';
 import type { PlexIndex } from '../services/plex-index.js';
-import type { HistoryMedia } from '../persistence/history-store.js';
+import type { HistoryEnd, HistoryMedia } from '../persistence/history-store.js';
+import type { SessionEnd } from '../services/playback-sessions.js';
 import { errorDetail } from '../lib/every.js';
+import type { EventBus } from './bus.js';
 
 type Deps = {
   // The title identity: each movie's and episode's TMDB/TVDB ids are saved with it.
   plexIndex: Pick<PlexIndex, 'resolve' | 'onChange'>;
 };
+
+// How a playback session's end is recorded. A server-side end (channel removed, relay failed, shutting down) may
+// still reattach when the viewer's player starts again.
+export const historyEnd = (reason: SessionEnd): HistoryEnd => reason === 'removed' || reason === 'closing' ? 'interrupted' : reason;
+
+// tk.box's own streams, from the playback session registry: recorded from their start, ended however they end.
+// Observations (the player's evidence of watching) still come straight from the progress routes.
+export function recordSessions(bus: Pick<EventBus, 'on'>, history: Pick<PlaybackHistory, 'open' | 'end'>) {
+  bus.on('session.started', ({ history: h }) => { if (h) history.open(h.entry, h.previousId, Date.now(), h.sameStation); });
+  bus.on('session.ended', ({ id, reason }) => history.end(id, historyEnd(reason)));
+}
 
 // A movie's or episode's TMDB/TVDB ids (an episode's: its show's) from the title identity. Only this server's media:
 // the index is of this server.
@@ -62,7 +75,7 @@ export function serverWatches(store: Pick<HistoryStore, 'latestWatches' | 'accou
   return [...own, ...saved].filter(w => seasons || w.scope !== 'season');
 }
 
-// Watch history: what each account watched, in tk.box (reported by the playback modules) and in Plex's own apps (read
+// Watch history: what each account watched, in tk.box (the playback session registry's streams) and in Plex's own apps (read
 // by the Plex playback monitor), and Admin › History, which reports on it. Each movie and episode is saved with its
 // TMDB/TVDB ids (an episode's: its show's), so other modules can join history to titles without asking Plex.
 export const watchHistoryModule = defineModule({
@@ -83,10 +96,10 @@ export const watchHistoryModule = defineModule({
     // Plex's own apps. The Plex notifications module feeds it playback states (bus); Admin › Activity and the artwork
     // schedule read its sessions.
     const monitor = new PlexPlaybackMonitor(plex, history, () => plexOwner.grant(), () => config.PLEX_MACHINE_ID, message => log.warn(message));
-    // A live or custom channel viewer the server ended (reaped, channel removed) may still reattach.
-    bus.on('live.viewer.ended', ({ sessionId }) => history.end(sessionId, 'interrupted'));
+    recordSessions(bus, history);
     bus.on('plex.playback.states', ({ states }) => monitor.states(states));
     bus.on('plex.playback.connection', ({ connected }) => monitor.connection(connected));
+    // The registry has ended this browser's open streams by now (it mounts first); this ends the ones that may still reattach.
     bus.on('session.signed-out', ({ hash }) => history.endOwner(hash));
     registerHistory(routes, new HistoryReports(db));
     return {

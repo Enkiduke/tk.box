@@ -11,7 +11,7 @@ export class PlaybackService {
   private store: PlaybackStore;
   constructor(db: Db, private plex: PlexAdapter) { this.store = new PlaybackStore(db); }
   createVod(sessionHash: string, ratingKey: string, startOffsetMs = 0, delivery: VodDelivery = 'direct') {
-    requireThat(this.store.active(sessionHash, Date.now()) < 20, 'PLAYBACK_SESSION_LIMIT', 'Too many active playback sessions. Stop an existing session first.', 429);
+    // How many streams a viewer may hold is the playback session registry's (services/playback-sessions.ts).
     const id = opaque();
     this.store.insert({ id, session_hash: sessionHash, mode: 'plex_vod', rating_key: ratingKey, expires: Date.now() + 2 * 60 * 60 * 1000 });
     return { id, mode: 'plex_vod' as const, startOffsetMs, delivery, streamUrl: `/api/v1/playback/sessions/${id}/${delivery === 'direct' ? 'file' : 'hls/start.m3u8'}` };

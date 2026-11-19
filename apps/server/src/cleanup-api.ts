@@ -4,14 +4,15 @@ import {CleanupStore,cleanupSettings,holdKey} from './persistence/cleanup-store.
 import type {CleanupEngine} from './services/cleanup-engine.js';
 import {viewer} from './modules/access.js';
 
-// Admin › Server › Clean Up: the purge script's settings and its jobs. Administrators only (the cleanup module's default access). A job runs with the Plex token of the administrator
+// Admin › Server › Clean Up: its settings and its jobs. Administrators only (the cleanup module's default access). A job runs with the Plex token of the administrator
 // who started it.
 const revision=z.number().int().nonnegative();
 
 export function registerCleanup(app:FastifyInstance,store:CleanupStore,engine:CleanupEngine) {
   app.get('/api/v1/admin/cleanup',async request=>{
-    const {grant}=viewer(request),query=z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
-    return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(!!query.recheck),missing:engine.missing(),
+    const {grant}=viewer(request);
+    z.object({recheck:z.enum(['1']).optional()}).strict().parse(request.query);
+    return {settings:store.settings(),libraries:grant.libraries.filter(l=>['movie','show'].includes(l.type)),engine:await engine.status(),missing:engine.missing(),
       schedule:engine.scheduleState(),busy:engine.pending()};
   });
   app.put('/api/v1/admin/cleanup/settings',async request=>{

@@ -1,8 +1,9 @@
 import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
-import type {CalendarEntry, CalendarEpisodeLabel, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
+import type {CalendarEntry, CalendarPage, ExploreItem} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice, Icon, Loading} from './components.js';
 import {link, useApi} from './hooks.js';
-import {episodeRanges, groupCalendarEntries} from './calendar-episodes.js';
+import {episodeRanges, episodeReleaseLabel, groupCalendarEntries} from './calendar-episodes.js';
+import {bindCalendarWheel} from './calendar-scroll.js';
 import './calendar.css';
 
 const dayFormat = new Intl.DateTimeFormat(undefined, {dateStyle: 'full', timeZone: 'UTC'});
@@ -22,10 +23,6 @@ const addDays = (day: string, days: number) => {
 const validDay = (value: string | null) => value && /^(?:19|20|21)\d{2}-\d{2}-\d{2}$/.test(value) &&
   Number.isFinite(+dayAt(value)) && isoDay(dayAt(value)) === value ? value : undefined;
 const releaseLabels = {theatrical: 'In theaters', digital: 'Digital release', physical: 'Disc release'};
-const episodeLabels: Record<CalendarEpisodeLabel, string> = {
-  'series-premiere': 'Series premiere', 'season-premiere': 'Season premiere',
-  'season-finale': 'Season finale', 'series-finale': 'Series finale',
-};
 const weekOf = (day: string) => addDays(day, -((dayAt(day).getUTCDay() + 6) % 7));
 const batchDays = 28;
 const matchesFilter = (entry: CalendarEntry, filter: string | null) =>
@@ -84,35 +81,32 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
   const playable = entries.filter(item => item.plexItemId);
   const available = playable.length === entries.length, unknown = entries.some(item => item.availabilityUnknown);
   const availabilityLabel = available ? 'In Library' : playable.length ? `${playable.length} of ${entries.length} episodes in Library` : 'Not in Library';
-  const milestones = [...new Set(entries.flatMap(item => item.episodeLabel ? [episodeLabels[item.episodeLabel]] : []))];
-  const label = episode ? milestones[0] ?? 'New episode' : release;
-  const times = [...new Set(entries.map(item => item.airTime ? timeFormat.format(new Date(item.airTime)) : 'All day'))].join(' · ');
-  const caption = stacked ? episodeRanges(entries) : [release, entry.episodeTitle].filter(Boolean).join(' · ');
+  const label = episode ? episodeReleaseLabel(entries) : release;
+  const times = [...new Set(entries.flatMap(item => item.airTime ? [timeFormat.format(new Date(item.airTime))] : []))].join(' · ');
+  const episodeDetail = stacked ? episodeRanges(entries) : [release, entry.episodeTitle].filter(Boolean).join(' · ');
+  const caption = [label !== 'New episode' && label !== 'New episodes' && label, episode && episodeDetail,
+    unknown && 'Availability unknown'].filter(Boolean).join(' · ');
   return <li>
     <button type="button" className="calendar-entry" data-stack={stacked || undefined}
       onClick={() => onOpen(entry, stacked ? playable.find(item => item.plexShowId)?.plexShowId ?? playable[0]?.plexItemId : entry.plexItemId)}>
-      {!list && entries.slice(1, 3).reverse().map((item, index) => <span className="calendar-stack-layer" key={item.key}
-        data-rear={entries.length > 2 && index === 0 || undefined} aria-hidden="true">
-        <CardArtwork entries={entries} list={false} layer={item}/>
-      </span>)}
-      <span className="calendar-art" data-available={available || undefined}>
-        <CardArtwork entries={entries} list={list}/>
-        <span className="calendar-card-label" title={milestones.length > 1 ? milestones.join(' · ') : undefined}>{label}
-          {milestones.length > 1 && <span className="sr-only">, {milestones.slice(1).join(', ')}</span>}
+      <span className="calendar-cover">
+        {!list && entries.slice(1, 3).reverse().map((item, index) => <span className="calendar-stack-layer" key={item.key}
+          data-rear={entries.length > 2 && index === 0 || undefined} aria-hidden="true">
+          <CardArtwork entries={entries} list={false} layer={item}/>
+        </span>)}
+        <span className="calendar-art" data-available={available || undefined}>
+          <CardArtwork entries={entries} list={list}/>
+          {(playable.length > 0 || !unknown) && <span className="calendar-availability" title={availabilityLabel}>
+            <Icon name={available ? 'check' : playable.length ? 'info' : 'close'} size={16}/><span className="sr-only">{availabilityLabel}</span>
+          </span>}
+          {stacked && <span className="calendar-episode-count" title={`${entries.length} episodes`}>
+            {entries.length}<span className="sr-only"> episodes</span>
+          </span>}
         </span>
-        {(playable.length > 0 || !unknown) && <span className="calendar-availability" title={availabilityLabel}>
-          <Icon name={available ? 'check' : playable.length ? 'info' : 'close'} size={16}/><span className="sr-only">{availabilityLabel}</span>
-        </span>}
-        <strong>{entry.title}</strong>
-        {stacked && <span className="calendar-episode-count" title={`${entries.length} episodes`}>
-          {entries.length}<span className="sr-only"> episodes</span>
-        </span>}
       </span>
-      <span className="calendar-caption">
-        <span className="calendar-airtime">{times}</span>
-        {episode && <span className="calendar-episode" title={stacked ? caption : undefined}>{caption}</span>}
-        {unknown && <span>Availability unknown</span>}
-      </span>
+      <strong className="calendar-title" title={entry.title}>{entry.title}</strong>
+      <span className="calendar-caption" title={caption}>{caption}</span>
+      {times && <span className="calendar-airtime" title={times}>{times}</span>}
     </button>
   </li>;
 }
@@ -137,6 +131,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
   const restore = useRef<{element: HTMLElement; top: number}>(null);
   const from = weekOf(active), previousWeek = validDay(addDays(from, -7)), nextWeek = validDay(addDays(from, 7));
   const view = params.get('view') === 'list' ? 'list' : 'cards';
+  const previousView = useRef(view);
   const filter = params.get('titles');
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const path = (from: string | undefined) => from && `/calendar?${new URLSearchParams({from, to: addDays(from, batchDays), zone, account: accountId})}`;
@@ -165,6 +160,25 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
     return new Map([...groups].map(([day, entries]) => [day, groupCalendarEntries(entries)]));
   }, [pages, filter]);
   const viewportTop = () => (controls.current?.getBoundingClientRect().bottom ?? 0) + 10;
+
+  useLayoutEffect(() => {
+    const toolbar = controls.current;
+    const page = toolbar?.parentElement;
+    if (!ready || !toolbar || !page) return;
+    const root = document.documentElement;
+    const measure = () => root.style.setProperty('--calendar-toolbar-height', `${toolbar.offsetHeight}px`);
+    measure();
+    root.classList.add('calendar-scroll');
+    const observer = new ResizeObserver(measure);
+    observer.observe(toolbar);
+    const releaseWheel = bindCalendarWheel(page, viewportTop);
+    return () => {
+      releaseWheel();
+      observer.disconnect();
+      root.classList.remove('calendar-scroll');
+      root.style.removeProperty('--calendar-toolbar-height');
+    };
+  }, [ready]);
 
   useLayoutEffect(() => {
     if (!earlier || !before.data || earlierUnavailable) return;
@@ -200,6 +214,11 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
   useLayoutEffect(() => {
     if (ready) scrollToDay(pickedDay, true);
   }, [ready, pickedDay]);
+
+  useLayoutEffect(() => {
+    if (previousView.current !== view && ready) scrollToDay(active, true);
+    previousView.current = view;
+  }, [view]);
 
   // Read only the nearest date markers during scrolling. Prepending keeps the previous content in place.
   useEffect(() => {
@@ -295,7 +314,7 @@ function Agenda({accountId, params, onOpen, onSelect, start, current}: CalendarP
           return <div className="calendar-week" key={week} data-week={week}>
             {!days.length && <p className="calendar-empty-week"><strong>{shortFormat.formatRange(dayAt(week), dayAt(addDays(end, -1)))}</strong>
               <span>{hasSource(page) ? 'No releases scheduled' : 'Release schedule unavailable'}</span></p>}
-            {days.map(day => <section className="calendar-day" key={day} data-day={day} aria-label={dayFormat.format(dayAt(day))}>
+            {days.map(day => <section className="calendar-day" key={day} data-day={day} data-active={day === active || undefined} aria-label={dayFormat.format(dayAt(day))}>
               <h2><time dateTime={day} aria-current={day === current ? 'date' : undefined}><span className="sr-only">{dayFormat.format(dayAt(day))}</span>
                 <span aria-hidden="true" className="calendar-date-stamp"><span>{weekdayFormat.format(dayAt(day))}</span><strong>{Number(day.slice(-2))}</strong><span>{monthName.format(dayAt(day))}</span></span>
                 {day === current && <span className="calendar-date-today">Today</span>}</time></h2>

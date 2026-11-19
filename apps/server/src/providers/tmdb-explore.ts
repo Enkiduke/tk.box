@@ -76,13 +76,15 @@ export function tmdbCandidate(raw: Title | null, type: TitleKind): Candidate | u
   const kind = type === 'movie' ? 'movie' : 'show';
   const released = type === 'movie' ? raw.release_date : raw.first_air_date;
   const day = typeof released === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(released) ? released : undefined;
+  const rating = number(raw.vote_average);
   return {
     item: {key:`${kind}:tmdb:${id}`, kind, source:'tmdb', title, ids:{tmdb:id}, year:day ? Number(day.slice(0, 4)) : undefined,
       summary:typeof raw.overview === 'string' ? raw.overview : undefined,
       posterUrl:tmdbImage(typeof raw.poster_path === 'string' ? raw.poster_path : undefined, 'w342'),
       backdropUrl:tmdbImage(typeof raw.backdrop_path === 'string' ? raw.backdrop_path : undefined, 'w1280'),
       language:typeof raw.original_language === 'string' ? raw.original_language : undefined,
-      genres:tmdbGenres(Array.isArray(raw.genre_ids) ? raw.genre_ids : []), rating:number(raw.vote_average) || undefined},
+      genres:tmdbGenres(Array.isArray(raw.genre_ids) ? raw.genre_ids : []), rating:rating || undefined,
+      ratings:rating > 0 && rating <= 10 ? [{source:'tmdb',score:rating}] : undefined},
     votes:number(raw.vote_count), popularity:number(raw.popularity), date:day
   };
 }

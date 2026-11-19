@@ -5,9 +5,8 @@ import { AppError } from '../errors.js';
 import { scheduled, toScheduled, type Scheduled } from '../../../../packages/contracts/src/schedule.js';
 import { prepared } from './statements.js';
 
-// Admin › Server › Clean Up: the settings of the purge script (apps/cleanup/purge_requests.py) and its job history.
-// Who watched what is watch history's. The script reads none of this directly: before each run tk.box writes its JSON config
-// (cleanupConfig). The titles come from tk.box's requests.
+// Admin › Server › Clean Up: its settings, holds, keeps and job history. Who watched what is watch history's; the titles
+// come from tk.box's requests.
 const libraryId = z.string().regex(/^\d{1,10}$/);
 const days = z.number().int().min(0).max(3650);
 const label = z.string().trim().max(60).refine(value => ![...value].some(c => c.charCodeAt(0) < 32), 'No control characters');

@@ -4,7 +4,9 @@ import type { HistoryAiring, HistoryDay, HistoryEnd, HistorySession, HistoryStor
 import { digest } from '../security/vault.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
-type Delivery = Pick<HistorySession, 'source' | 'accountId' | 'accountName' | 'media' | 'client' | 'stream'> & { id: string; owner: string };
+// One delivery to record: a tk.box stream (from `session.started`, modules/watch-history.ts) or a Plex app's.
+export type PlaybackEntry = Pick<HistorySession, 'source' | 'accountId' | 'accountName' | 'media' | 'client' | 'stream'> & { id: string; owner: string };
+type Delivery = PlaybackEntry;
 type LiveObservation = { epoch: number; airings?: Airings; stream?: HistorySession['stream']; replacing?: boolean };
 type Sample = PlaybackObservation & { receivedAt: number; epoch: number };
 type View = {
@@ -21,6 +23,8 @@ type Resume = { session: HistorySession; detachedAt: number; view?: View };
 const CHECKPOINT_MS = 30000;
 const MAX_INTERVAL_MS = 20000;
 const RESUME_MS = 180000;
+const PLEX_IDLE_MS = 150000;
+const BACKSTOP_IDLE_MS = 300000;
 const MAX_VIEWS = 512;
 const BATCH_SIZE = 32;
 const MAX_PENDING_DAYS = 4;
@@ -219,16 +223,14 @@ export class PlaybackHistory {
   }
 
   tick(now = Date.now()) {
+    // tk.box's own streams end through the playback session registry's idle rule (session.ended). Plex's apps, which
+    // report no session to it, time out here; so, much later, does a tk.box view the registry no longer holds (a
+    // direct play that reattached after a server restart).
     for (const [id, view] of this.active) {
-      if (now - view.seen > this.idleTimeout(view)) this.end(id, 'idle', now);
+      if (now - view.seen > (view.delivery.source === 'plex' ? PLEX_IDLE_MS : BACKSTOP_IDLE_MS)) this.end(id, 'idle', now);
     }
     for (const [id, resume] of this.resumable) if (now - resume.detachedAt > RESUME_MS) this.resumable.delete(id);
     this.flush(now);
-  }
-
-  private idleTimeout(view: View) {
-    if (view.delivery.source === 'plex') return 150000;
-    return view.previous?.state === 'playing' ? 35000 : 150000;
   }
 
   private canReattach(saved: Resume, owner: string, sequence: number, epoch: number, now: number) {

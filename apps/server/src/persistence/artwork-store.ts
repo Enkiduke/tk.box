@@ -42,10 +42,10 @@ export const layoutValue = z.record(z.string().regex(/^[a-z_]{1,60}$/), z.unknow
 type OldSchedules = { seasonal?: Scheduled; collections?: Scheduled };
 // `keys` held the sealed provider keys until they moved to the service keys (artwork migration provider-keys-to-service-keys).
 type Stored = ArtworkSettings & { keys?: unknown; schedules: Partial<ArtworkSettings['schedules']> & OldSchedules };
-// Collections: custom and seasonal definitions in the engine's own format (it validates them), how franchise, streaming and
+// Collections: custom and seasonal definitions (services/collections checks them), how franchise, streaming and
 // chart collections are kept in step. Seasonal collections' missing movies are added by tk.box's library.
 export const artworkCollections = z.object({
-  // null until first saved: the engine then offers its seasonal presets, all off.
+  // null until first saved: the seasonal presets (services/collections/presets.ts), all off, stand in.
   definitions: z.array(z.record(z.string(), z.unknown())).max(300).nullable(),
   // The franchise and streaming collections set apart from how they're made: turned off, where they show in Plex, or titles taken out.
   automatic: z.array(z.object({ name: z.string().trim().min(1).max(200), library: z.string().trim().min(1).max(200), kind: z.enum(['franchise', 'streaming']), enabled: z.boolean().optional(),
@@ -268,7 +268,7 @@ export class ArtworkStore {
   pruneJobs(keep = 200) { prepared(this.db, 'DELETE FROM artwork_jobs WHERE id NOT IN (SELECT id FROM artwork_jobs ORDER BY id DESC LIMIT ?)').run(keep); }
   private audit(actor: string, event: string, detail: unknown, now: number) { prepared(this.db, 'INSERT INTO audit(actor,event,at,detail) VALUES(?,?,?,?)').run(actor, event, now, JSON.stringify(detail)); }
 }
-// The collections engine's commands; every artwork engine job starts with an option (or has none).
+// The collections jobs' commands; every artwork engine job starts with an option (or has none).
 const COLLECTION_COMMANDS = new Set(['all', 'custom', 'added', 'index']);
 const job = (r: Record<string, unknown>): JobRow => {
   const args = JSON.parse(r.args as string) as string[];

@@ -72,23 +72,22 @@ export function viewedAirings(segments: readonly Segment[], airings: readonly Ai
 // or delayed viewer needs them (up to the pause retention setting, the byte cap and a free-space floor). Each viewer
 // gets its own manifest: the live edge, or a window starting at its own cursor. The station's clock never pauses.
 export class CustomTv {
+  // Told of every viewer that stops, whoever stopped it (its session's end, the channel removed, the station failed).
+  // An idle viewer is ended by the playback session registry (services/playback-sessions.ts), as is the per-viewer limit.
   onViewerEnded?: (id: string) => void;
   historyServerId?: string;
   private stations = new Map<string, Station>();
   private viewers = new Map<string, Viewer>();
   private root: string;
-  private timer: Repeating;
   constructor(private store: CustomChannelStore, private plex: PlexAdapter, private local: LocalMedia, private parts: PartProxy, private budget: EncoderBudget, cacheDir: string,
     private retentionMs: () => number, private maxBytes: number, private ffmpeg = 'ffmpeg', private log: (message: string, detail: Record<string, unknown>) => void = () => {},
-    private options = { maxStations: 6, maxPerViewer: 4, idleMs: 45000, readyMs: 30000, indexMs: 1000, freeBytes: (dir: string) => statfs(dir).then(s => s.bavail * s.bsize) }) {
+    private options = { maxStations: 6, readyMs: 30000, indexMs: 1000, freeBytes: (dir: string) => statfs(dir).then(s => s.bavail * s.bsize) }) {
     this.root = join(cacheDir, 'custom', `${process.pid}-${opaque().slice(0, 8)}`);
     void this.reapStale(join(cacheDir, 'custom'));
-    this.timer = every(10000, () => this.sweep(), e => this.log('custom channel sweep failed', errorDetail(e)));
   }
   has(id: string) { return this.viewers.has(id); }
   async start(hash: string, grant: PlexGrant, channelId: string) {
     const channel = this.store.tune(channelId);
-    requireThat([...this.viewers.values()].filter(v => v.hash === hash).length < this.options.maxPerViewer, 'PLAYBACK_SESSION_LIMIT', 'Too many live channels are open. Stop one first.', 429);
     let station = this.stations.get(channelId);
     if (!station) {
       requireThat(this.stations.size < this.options.maxStations, 'LIVE_CAPACITY_REACHED', 'Too many channels are being watched right now. Please try again shortly.', 503);
@@ -180,8 +179,7 @@ export class CustomTv {
     if (station && !station.viewers.size) this.destroy(station);
   }
   stopWhere(matches: (v: { id: string; hash: string }) => boolean) { for (const v of [...this.viewers.values()]) if (matches(v)) this.stop(v.id, v.hash); }
-  close() { this.timer.stop(); for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
-  sweep(now = Date.now()) { for (const v of [...this.viewers.values()]) if (now - v.seen > this.options.idleMs) this.stop(v.id, v.hash); }
+  close() { for (const s of [...this.stations.values()]) this.destroy(s); void rm(this.root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}); }
   get count() { return this.stations.size; }
   // Administrator activity: the program a viewer is seeing (at its own cursor when paused or behind) and how far into it.
   watching(id: string, now = Date.now()) {

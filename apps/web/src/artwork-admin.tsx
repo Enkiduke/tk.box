@@ -45,17 +45,10 @@ export function ArtworkAdmin({params}:{params:URLSearchParams}) {
     </div>
   </>;
 }
-// Admin › Collections: its own section, though it shares the artwork engine (and its setup notice) with Artwork.
+// Admin › Collections: its own section. Collections are kept by tk.box itself, so they need no artwork engine (only their
+// posters do, which Artwork makes).
 export function CollectionsAdmin() {
-  const overview=useApi<Overview>('/admin/artwork');
-  const head=<SectionHead title="Collections"/>;
-  if(overview.loading&&!overview.data)return <>{head}<Loading/></>;
-  if(overview.error&&!overview.data)return <>{head}<ErrorNotice message={overview.error.message} retry={overview.reload}/></>;
-  const data=overview.data!;
-  return <>{head}
-    <EngineStatus engine={data.engine} recheck={()=>void api<Overview>('/admin/artwork?recheck=1').then(overview.reload,overview.reload)}/>
-    <ArtworkCollections engineReady={data.engine.ready}/>
-  </>;
+  return <><SectionHead title="Collections"/><ArtworkCollections/></>;
 }
 const used=(settings:Settings,name:string)=>[settings.defaultLayout,...Object.values(settings.layoutByLibrary),...Object.values(settings.layoutByType)].includes(name);
 function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {

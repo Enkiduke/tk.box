@@ -1,9 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
-import { AppError } from '../errors.js';
+import { AppError, readOnly } from '../errors.js';
 import type { CleanupHold, CleanupKept, CleanupSettings, CleanupStore } from '../persistence/cleanup-store.js';
 import type { PlexGrant } from '../providers/plex.js';
 import { dueAt } from '../../../../packages/contracts/src/schedule.js';
@@ -12,19 +10,17 @@ import { collectionKey } from './hidden-downloads.js';
 import type { KeptCollections } from './artwork-engine.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 import type { CleanupRequest } from './requests.js';
+import type { PlexIndex } from './plex-index.js';
+import type { CleanupCollection, CleanupLevel, CleanupTitle, CleanupWatch } from './cleanup-rules.js';
+import { runCleanup, type CleanupPlex } from './cleanup-run.js';
+export type { CleanupCollection, CleanupTitle, CleanupWatch } from './cleanup-rules.js';
 
-// Admin › Server › Clean Up: runs the purge script (apps/cleanup/purge_requests.py) as its own Python process, one job at
-// a time. tk.box writes the script's JSON config from its settings and passes the Plex token in the
-// environment for that run only; they are redacted from the job output. The daily schedule reads Plex with the Plex
-// admin token, like Artwork's, and waits while there is no working one.
-type Paths = { python: string; script: string; poster: string; dataDir: string; plexUrl: string };
-// Each title the last finished run looked at (Clean Up › Status); the script writes it with --status. `deletion_date` is
-// the rule's own date and `held_until` a later one an administrator's hold keeps it until. `key` names its hold and
-// `rating_key` its Plex item, for the poster.
-export type CleanupTitle = { title: string; year: number | null; kind: 'movie' | 'show' | 'season'; library: string; status: 'due' | 'deleted' | 'leaving' | 'kept' | 'protected' | 'not_found' | 'error';
-  rule: string | null; reason: string; deletion_date: string | null; held_until?: string | null; key?: string | null; rating_key?: string | null; show_rating_key?: string | null; holdable?: boolean };
+// Admin › Server › Clean Up, one job at a time. A run decides in TypeScript (services/cleanup-rules.ts) and acts with
+// the owner's grant (services/cleanup-run.ts). The daily schedule waits while there is no working Plex admin token.
+type Paths = { poster: string; dataDir: string };
+// Each title the last finished run looked at (Clean Up › Status), written as status.json.
 export type CleanupTitles = { updated: string | null; dryRun: boolean; complete: boolean; items: CleanupTitle[] };
-type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
+type Running = { id: number; lines: string[]; dropped: number; canceled: boolean };
 const MAX_LINES = 5000, SAVED_LINES = 2000, LATE_MS = 2 * 3600000, DAY = 86400000;
 // Only titles still waiting on a date can be held; the rest are gone, protected or were never checked.
 const waiting = new Set<CleanupTitle['status']>(['due', 'leaving', 'kept']);
@@ -60,77 +56,29 @@ export function holdUntil(item: CleanupTitle, settings: CleanupSettings, now = D
   return now + (settings[setting] as number) * DAY;
 }
 
-// tk.box's own collections, by kind, so the script can tell which of a title's collections protect it. A custom
+// tk.box's own collections, by kind, so a run can tell which of a title's collections protect it. A custom
 // collection with a Shown from–to range is seasonal; any collection not listed here is "other".
-export type CleanupCollection = { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom' | 'seasonal' };
 export function cleanupCollections(kept: KeptCollections['collections'], definitions: Record<string, unknown>[] | null): CleanupCollection[] {
   const seasonal = new Set((definitions ?? []).filter(d => d.schedule && typeof d.name === 'string' && typeof d.library === 'string').map(d => `${d.library as string}:${collectionKey(d.name as string)}`));
   return kept.map(({ name, library, kind }) => ({ name, library, kind: kind === 'custom' && seasonal.has(`${library}:${collectionKey(name)}`) ? 'seasonal' : kind }));
 }
 
-// A watch date, by scope and Plex rating key; account is a Plex account id, or '' for anyone (watch history's `watches`).
-export type CleanupWatch = { scope: 'movie' | 'show' | 'season'; ratingKey: string; account: string; at: number };
-// Each movie's, show's and season's latest watch by anyone and by each of `users` (Plex account ids), from watch
-// history (tk.box's own and the saved dates, account '' is anyone), the later of each.
-type WatchScope = CleanupWatch['scope'];
-export type CleanupWatches = { server_id: string } & Record<WatchScope, Record<string, { any: string; users: Record<string, string> }>>;
-export function cleanupWatches(serverId: string, rows: CleanupWatch[], users: Set<string>): CleanupWatches {
-  const latest: Record<WatchScope, Record<string, { any: number; users: Record<string, number> }>> = { movie: {}, show: {}, season: {} };
-  for (const { scope, ratingKey, account, at } of rows) {
-    const entry = latest[scope][ratingKey] ??= { any: at, users: {} };
-    entry.any = Math.max(entry.any, at);
-    if (account && users.has(account)) entry.users[account] = Math.max(entry.users[account] ?? at, at);
-  }
-  const iso = (ms: number) => new Date(ms).toISOString();
-  const out = (scope: WatchScope) => Object.fromEntries(Object.entries(latest[scope]).map(([key, e]) =>
-    [key, { any: iso(e.any), users: Object.fromEntries(Object.entries(e.users).map(([user, at]) => [user, iso(at)])) }]));
-  return { server_id: serverId, movie: out('movie'), show: out('show'), season: out('season') };
-}
 // Movies and shows are tk.box's own: a run deletes them from Plex only (tk.box then forgets them; a show whole or
-// season by season), and a title is kept by the library's Keep (library_titles.keep), sent as each of its requests'
-// `keep`. `kept` holds those movies' TMDB ids, `shows.kept` those shows'.
+// season by season), and a title is kept by the library's Keep (library_titles.keep). `kept` holds those movies' TMDB
+// ids, `shows.kept` those shows'.
 export type CleanupMovies = { kept: Set<number>; shows: { kept: Set<number> } };
-// The script's config: everything but the keys, which it reads from the environment.
-export function cleanupConfig(settings: CleanupSettings, paths: Pick<Paths, 'plexUrl' | 'poster'>, holds: Record<string, CleanupHold> = {}, collections: CleanupCollection[] = [], requests: CleanupRequest[] = [], watches?: CleanupWatches,
-  movies: CleanupMovies = { kept: new Set(), shows: { kept: new Set() } }) {
-  return {
-    plex: { url: paths.plexUrl },
-    movie_libraries: settings.movieLibraries, tv_libraries: settings.tvLibraries, dry_run: settings.dryRun,
-    days_after_watched: settings.daysAfterWatched, days_after_unwatched: settings.daysAfterUnwatched,
-    days_after_any_watch_exempt: settings.daysAfterAnyWatchExempt, days_after_exempt_watch: settings.daysAfterExemptWatch,
-    exempt_user_ids: settings.exemptUserIds, exempt_if_in_collection: settings.exemptIfInCollection,
-    protecting_collection_kinds: Object.entries(settings.collectionKinds).filter(([, on]) => on).map(([kind]) => kind), tkbox_collections: collections,
-    enable_season_retention: settings.seasons.enabled, protect_latest_season: settings.seasons.protectLatest, protect_specials_season: settings.seasons.protectSpecials,
-    create_leaving_soon_collection: settings.leavingSoon.enabled, leaving_soon_name: settings.leavingSoon.name, leaving_soon_days: settings.leavingSoon.days,
-    leaving_soon_poster: settings.leavingSoon.poster ? paths.poster : '', http_timeout_seconds: 30,
-    holds: Object.fromEntries(Object.entries(holds).map(([key, hold]) => [key, new Date(hold.until).toISOString()])),
-    // The titles a run looks at: tk.box's requests now on the server.
-    requests: requests.map(r => (r.kind === 'movie' ? movies.kept : movies.shows.kept).has(r.tmdb) ? { ...r, keep: true } : r),
-    // Each title's latest watches; the script refuses to run without them.
-    ...(watches ? { watches } : {})
-  };
-}
-// What has to be set before a run can start, in the words the page shows. The script checks it again.
+// What has to be set before a run can start, in the words the page shows. The run checks it again.
 export function cleanupMissing(settings: CleanupSettings) {
   const missing: string[] = [];
   if (!settings.movieLibraries.length && !settings.tvLibraries.length) missing.push('Choose at least one movie or TV library.');
   return missing;
 }
-// Only what Python needs, plus this run's credentials; never the server's own environment.
-function childEnv(secrets: Record<string, string | undefined> = {}) {
-  const pass = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'VIRTUAL_ENV', 'TKBOX_READ_ONLY'];
-  const env: NodeJS.ProcessEnv = Object.fromEntries(pass.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
-  Object.assign(env, { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' });
-  for (const [name, value] of Object.entries(secrets)) if (value) env[name] = value;
-  return env;
-}
-const redact = (line: string, secrets: string[]) => secrets.reduce((text, secret) => secret.length >= 6 ? text.replaceAll(secret, '•••') : text, line);
+// Log lines: local time, level, message.
+const logLine = (level: CleanupLevel, message: string, at = new Date()) => `${[at.getHours(), at.getMinutes(), at.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')} ${level} ${message}`;
 
 export class CleanupEngine {
   private queue: { id: number; args: string[]; token: string }[] = [];
   private current?: Running;
-  private known?: { at: number; ready: boolean; version?: string; error?: string };
-  private checking?: Promise<NonNullable<CleanupEngine['known']>>;
   private timer?: Repeating;
   private ticking = false;
   readonly workDir: string;
@@ -148,6 +96,9 @@ export class CleanupEngine {
   // This Plex server's id, and its watches (watch history's, the saved dates included), read as each run starts.
   serverId: () => string | undefined = () => undefined;
   watches: (serverId: string) => CleanupWatch[] = () => [];
+  // A run's title identity and Plex calls (the plex-index module's index, the Plex adapter).
+  plexIndex?: Pick<PlexIndex, 'resolve' | 'copy'>;
+  plex?: CleanupPlex;
   constructor(private store: CleanupStore, readonly paths: Paths, private adminGrant: () => Promise<PlexGrant | undefined>,
     private log: (message: string, detail: Record<string, unknown>) => void = () => {}) {
     this.workDir = join(paths.dataDir, 'cleanup');
@@ -159,13 +110,11 @@ export class CleanupEngine {
     if (!this.serverId()) missing.push('Set PLEX_MACHINE_ID: watch history is kept per Plex server.');
     return missing;
   }
-  // Whether Python and the script's packages are installed. Asked again at most once a minute unless forced.
-  status(force = false) {
-    if (!force && this.known && Date.now() - this.known.at < 60000) return Promise.resolve(this.known);
-    this.checking ??= this.capture(['-c', 'import sys, plexapi, requests; print(sys.version.split()[0])'], 20000)
-      .then(r => ({ at: Date.now(), ready: r.code === 0, ...(r.code === 0 ? { version: r.output.trim() } : { error: r.output.trim().split('\n').at(-1) || 'Python could not be started.' }) }))
-      .then(known => { this.known = known; return known; }).finally(() => { this.checking = undefined; });
-    return this.checking;
+  // Ready to run unless the Plex index or the owner's grant is missing.
+  async status(): Promise<{ ready: boolean; error?: string }> {
+    if (!this.plexIndex || !this.plex) return { ready: false, error: 'Clean Up has no Plex index.' };
+    if (!await this.adminGrant().catch(() => undefined)) return { ready: false, error: 'No Plex admin token in Admin › Connections.' };
+    return { ready: true };
   }
   // A preview always runs with --dry-run; a run follows the Preview only setting.
   enqueue(actor: string, preview: boolean, token: string, scheduled = false) {
@@ -183,7 +132,7 @@ export class CleanupEngine {
     const waiting = this.queue.findIndex(j => j.id === id);
     if (waiting >= 0) { this.queue.splice(waiting, 1); this.store.jobFinished(id, 'canceled', null, 'Canceled before it started.'); return; }
     if (this.current?.id !== id) throw new AppError('JOB_NOT_RUNNING', 'That job has already finished.', 409);
-    this.current.canceled = true; this.current.child?.kill();
+    this.current.canceled = true;
   }
   // A job's state, with the running job's output from line `since` on (line numbers keep counting as old lines drop).
   job(id: number, since = 0) {
@@ -223,9 +172,9 @@ export class CleanupEngine {
       ? [{ tmdb: Number(i.key.split(':')[1]), season: Number(i.key.split(':')[2]) }] : []);
     if (titles.length || seasons.length) try { this.deleted?.(titles, seasons); } catch (e) { this.log('clean up: could not mark requests removed', errorDetail(e)); }
   }
-  private lastRun(): CleanupTitles {
+  private lastRun(name = 'status.json'): CleanupTitles {
     try {
-      const file = JSON.parse(readFileSync(join(this.workDir, 'status.json'), 'utf8')) as { updated?: unknown; dry_run?: unknown; complete?: unknown; items?: unknown };
+      const file = JSON.parse(readFileSync(join(this.workDir, name), 'utf8')) as { updated?: unknown; dry_run?: unknown; complete?: unknown; items?: unknown };
       return { updated: typeof file.updated === 'string' ? file.updated : null, dryRun: file.dry_run !== false, complete: file.complete !== false, items: Array.isArray(file.items) ? file.items as CleanupTitle[] : [] };
     } catch { return { updated: null, dryRun: true, complete: true, items: [] }; }
   }
@@ -237,7 +186,7 @@ export class CleanupEngine {
     return job;
   }
   start() { this.timer = every(60000, () => this.tick(), e => this.log('clean up schedule failed', errorDetail(e))); }
-  close() { this.timer?.stop(); this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
+  close() { this.timer?.stop(); this.queue = []; if (this.current) this.current.canceled = true; }
   // On its schedule (server local time), or up to two hours late if tk.box was down then.
   async tick(now = new Date()) {
     if (this.ticking) return; this.ticking = true;
@@ -257,53 +206,49 @@ export class CleanupEngine {
     if (this.current) return;
     const job = this.queue.shift(); if (!job) return;
     const settings = this.store.settings();
-    const secrets = { PLEX_TOKEN: job.token };
-    const running: Running = this.current = { id: job.id, lines: [], dropped: 0, canceled: false, secrets: Object.values(secrets).filter((v): v is string => !!v) };
-    const say = (line: string) => { running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
-    let code: number | null = null;
+    const running: Running = this.current = { id: job.id, lines: [], dropped: 0, canceled: false };
+    const say = (line: string) => { running.lines.push(line); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; } };
+    const preview = job.args.includes('--dry-run'), dryRun = preview || settings.dryRun || readOnly();
+    let code: number | null = null, wrote = false;
     const started = Date.now();
     try {
       this.store.jobStarted(job.id);
       const engine = await this.status();
-      if (!engine.ready) throw new Error(`The clean up script is not set up: ${engine.error}`);
+      if (!engine.ready) throw new Error(engine.error);
       const requests = await this.requests();
-      const file = this.writeConfig(settings, requests);
-      say(`> purge_requests ${job.args.join(' ')}`.trim());
-      if (!requests.length) say('No requested titles on Plex in tk.box. Check Admin › Requests for the request inventory.');
-      const child = running.child = spawn(this.paths.python, [this.paths.script, file, '--status', join(this.workDir, 'status.json'), ...job.args], { cwd: this.workDir, env: childEnv(secrets), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-      for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);
-      code = await done;
+      if (!running.canceled) ({ code, wrote } = await this.runTypescript(running, settings, requests, preview, dryRun, say));
     } catch (e) { say(`ERROR: ${(e as Error).message}`); }
     const status = running.canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed';
     if (running.canceled) say('Canceled.');
     this.store.jobFinished(job.id, status, code, running.lines.slice(-SAVED_LINES).join('\n'));
     this.log('clean up job finished', { jobId: job.id, status, code });
     // Even a failed run may have deleted some titles first; the status file lists those it did. One left from an
-    // earlier run (this one stopped before writing its own) is not read.
-    if (!running.canceled && !job.args.includes('--dry-run') && !settings.dryRun) this.reportDeleted(started);
+    // earlier run (this one stopped before writing its own) is not read. A run writes its file even when canceled,
+    // listing only what it did delete.
+    if ((wrote || !running.canceled) && !dryRun) this.reportDeleted(started);
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
-  // Written whole and then moved into place, so the script never reads a half-written config.
-  private writeConfig(settings: CleanupSettings, requests: CleanupRequest[]) {
-    mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
-    const file = join(this.workDir, 'config.json'), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    const serverId = this.serverId();
-    const users = new Set([...settings.exemptUserIds, ...requests.flatMap(r => r.requester_plex_id === null ? [] : [r.requester_plex_id])].map(String));
-    const watches = serverId ? cleanupWatches(serverId, this.watches(serverId), users) : undefined;
+  // A run, with the owner's grant. Writes status.json (`wrote`) once it has decided.
+  private async runTypescript(running: Running, settings: CleanupSettings, requests: CleanupRequest[], preview: boolean, dryRun: boolean, say: (line: string) => void) {
+    say(`> clean up${preview ? ' --dry-run' : dryRun ? ' (Preview only)' : ''}`);
+    if (!requests.length) say('No requested titles on Plex in tk.box. Check Admin › Requests for the request inventory.');
+    const serverId = this.serverId(), grant = await this.adminGrant().catch(() => undefined);
+    if (!serverId) throw new Error('Set PLEX_MACHINE_ID: watch history is kept per Plex server.');
+    if (!grant) throw new Error('No Plex admin token in Admin › Connections.');
+    if (!this.plexIndex || !this.plex) throw new Error('Clean Up has no Plex index.');
+    const holds = Object.fromEntries(Object.entries(this.store.holds()).map(([key, hold]) => [key, hold.until]));
     const { kept, shows } = this.movies();
-    writeFileSync(temporary, JSON.stringify(cleanupConfig(settings, this.paths, this.store.holds(), this.collections(), requests, watches, { kept, shows }), null, 2), { mode: 0o600 });
-    renameSync(temporary, file);
-    return file;
+    const result = await runCleanup({ requests: async () => requests, index: this.plexIndex, watches: id => this.watches(id),
+      kept: kind => kind === 'movie' ? kept : shows.kept, collections: () => this.collections(), holds },
+    { settings, dryRun, serverId, grant, plex: this.plex, ...(settings.leavingSoon.poster ? { poster: this.paths.poster } : {}),
+      say: (level, message) => say(logLine(level, message)), canceled: () => running.canceled });
+    this.writeStatus('status.json', { dry_run: dryRun, complete: result.plan.complete, items: result.items });
+    return { code: result.code, wrote: true };
   }
-  private capture(args: string[], timeoutMs: number) {
-    return new Promise<{ code: number | null; output: string }>(resolve => {
-      let output = '';
-      const child = spawn(this.paths.python, args, { cwd: this.paths.dataDir, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: timeoutMs });
-      const add = (chunk: Buffer) => { if (output.length < 65536) output += chunk.toString('utf8'); };
-      child.stdout.on('data', add); child.stderr.on('data', add);
-      child.once('error', e => resolve({ code: null, output: (e as NodeJS.ErrnoException).code === 'ENOENT' ? `${this.paths.python} was not found. Set PYTHON_PATH.` : e.message }));
-      child.once('close', code => resolve({ code, output }));
-    });
+  private writeStatus(name: string, data: { dry_run: boolean; complete: boolean; items: CleanupTitle[] }) {
+    mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
+    const file = join(this.workDir, name), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+    writeFileSync(temporary, JSON.stringify({ updated: new Date().toISOString(), ...data }), { mode: 0o600 });
+    renameSync(temporary, file);
   }
 }

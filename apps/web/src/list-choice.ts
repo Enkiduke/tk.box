@@ -1,5 +1,5 @@
 // Which of a list's titles a collection keeps, as the editor shows it while you change the filters, the sort and the
-// collection size: the same rules, in the same order, as the engine's choose_titles (plex_collections.py), which is
+// collection size: the same rules, in the same order, as the collections engine's chooseTitles (apps/server/src/services/collections/rules.ts), which is
 // what each collection run actually uses.
 import type {ListFilter,ListSort,Member} from './collection-files.js';
 

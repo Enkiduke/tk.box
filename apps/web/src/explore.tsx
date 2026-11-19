@@ -1,6 +1,6 @@
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {exploreGenres,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,mergeRatings,type ExternalRating,type ExploreBrowseSource,type ExploreGenre,type ExploreDetails,type ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSource,ExploreSources,ExploreStatus,type StreamingRow} from '../../../packages/contracts/src/index.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,replaceRoute,invalidate} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} from './components.js';
@@ -21,7 +21,6 @@ import {toast} from './toasts.js';
 // A title's dialog opens this server's copy when there is one, requests it (tk.box's library), or watchlists it on Plex.
 const names:Record<ExploreSource,string>={plex:'Plex',tmdb:'TMDB'};
 const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
-const cardMeta=(item:ExploreItem)=>[item.rating?`${item.rating.toFixed(1)}★`:undefined,item.year,item.kind==='show'?(item.episodeCount?`${item.episodeCount} eps`:'TV series'):item.durationMs?duration(item.durationMs):undefined].filter(Boolean).join(' · ');
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
 const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.ListFormat(undefined,{type}).format(parts);
 
@@ -57,14 +56,21 @@ const yearLabel=(f:Filters)=>f.from&&f.to?(f.from===f.to?f.from:`${f.from}–${f
 
 const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;onSelect:(item:ExploreItem)=>void}) {
   const kindLabel=item.kind==='show'?'Show':'Movie';
-  return <div className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
+  const [ref,visible]=useNearViewport<HTMLDivElement>('0px');
+  const complete=(['imdb','tomatometer','tmdb'] as const).every(source=>item.ratings?.some(r=>r.source===source));
+  const query=new URLSearchParams({kind:item.kind});
+  if(item.ids.plex)query.set('plex',item.ids.plex);
+  if(item.ids.tmdb)query.set('tmdb',String(item.ids.tmdb));
+  const extra=useApi<ExternalRating[]>(visible&&!complete&&(item.ids.plex||item.ids.tmdb)?`/explore/ratings?${query}`:undefined);
+  const ratings=mergeRatings(item.ratings,extra.data);
+  return <div ref={ref} className={`poster-card explore-card${item.status?` is-${item.status}`:''}`}>
     <div className="card-frame"><button className="poster-art" onClick={()=>onSelect(item)} aria-label={`${item.title}, ${kindLabel}${item.year?`, ${item.year}`:''}${item.status?`, ${statusNames[item.status]}`:''}`}>
       <Artwork src={item.posterUrl} fallback={<><Icon name={item.kind==='movie'?'movies':'shows'}/><span>{item.title}</span></>}/>
       {item.status&&<span className={`explore-badge ${item.status}`}>{statusNames[item.status]}</span>}
-      <span className="explore-kind" aria-hidden="true">{kindLabel}</span>
+      <span className="explore-kind" aria-hidden="true">{kindLabel}{item.year&&<span className="explore-year"> · {item.year}</span>}</span>
     </button></div>
     <span className="poster-title"><span className="card-plain">{item.title}</span></span>
-    <span className="poster-meta"><span className="card-plain">{cardMeta(item)}</span></span>
+    <Ratings ratings={ratings} compact/>
   </div>;
 });
 const Cards=({items,onSelect}:{items:ExploreItem[];onSelect:(item:ExploreItem)=>void})=><div className="poster-grid">{items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</div>;

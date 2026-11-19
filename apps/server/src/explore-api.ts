@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {exploreGenres,exploreBrowseSources,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,exploreBrowseSources,mergeRatings,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
 import {viewerCopies,type PlexAdapter,type PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
@@ -76,7 +76,7 @@ export function interleave(lists:ExploreItem[][]) {
     const found=merged.get(item.key);if(!found){merged.set(item.key,item);continue;}
     const next:Record<string,unknown>={...found};
     for(const [key,value] of Object.entries(item))if(next[key]===undefined&&value!==undefined)next[key]=value;
-    merged.set(item.key,{...next,ids:{...item.ids,...found.ids}} as ExploreItem);
+    merged.set(item.key,{...next,ratings:mergeRatings(found.ratings,item.ratings),ids:{...item.ids,...found.ids}} as ExploreItem);
   }
   return [...merged.values()];
 }
@@ -181,6 +181,27 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const items=interleave(results.map(r=>r.status==='fulfilled'?r.value:[]));
     return {items:filtering(filter)?await filtered(items,filter):items,failed} satisfies ExploreSearchResult;
   });
+  // Visible posters need only scores. Opening a title also reads its watchlist, library and request state.
+  app.get('/api/v1/explore/ratings',{config:{access:'viewer',rateLimit:{max:600,timeWindow:60000}}},async request=>{
+    const input=ids.pick({plex:true,tmdb:true}).extend({kind}).strict().parse(request.query);
+    requireThat(input.plex||input.tmdb,'INVALID_REQUEST','Choose a title.',400);
+    const {account,token}=await viewer(request);
+    return cache.get(account,`ratings:${tmdbClient.credentialGeneration()}:${JSON.stringify(input)}`,DETAILS_MS,async()=>{
+      const meta=input.plex?await discover.metadata(token,input.plex):await discover.match(token,input.kind,{tmdb:input.tmdb});
+      let ratings=meta?externalRatings(meta)??[]:[];
+      if(!input.plex&&meta?.ratingKey&&(!ratings.some(r=>r.source==='imdb')||!ratings.some(r=>r.source==='tomatometer'))){
+        const full=await discover.metadata(token,meta.ratingKey).catch(()=>undefined);
+        if(full)ratings=mergeRatings(externalRatings(full),ratings);
+      }
+      const tmdb=input.tmdb??(meta&&discoverIds(meta).tmdb);
+      if(input.plex&&tmdb&&tmdbClient.configured()&&!ratings.some(r=>r.source==='tmdb')){
+        const title=await tmdbClient.get(`/${input.kind==='show'?'tv':'movie'}/${tmdb}`).catch(()=>undefined) as {vote_average?:number}|undefined;
+        const score=title?.vote_average;
+        if(typeof score==='number'&&score>0&&score<=10)ratings.push({source:'tmdb',score});
+      }
+      return ratings;
+    });
+  });
   app.get('/api/v1/explore/details',{config:{access:'viewer'}},async request=>{
     const input=ids.extend({kind,title:z.string().max(300).default(''),year:z.coerce.number().int().optional(),
       region:regionCode.default('US'),library:z.enum(['true','false']).default('false')}).strict().parse(request.query),{grant,account,token}=await viewer(request);
@@ -276,7 +297,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const filled=await Promise.all(items.filter(item=>!filter.kind||item.kind===filter.kind).map(async item=>{
       if(!lacking(item,filter)||!item.ids.tmdb||!tmdbClient.configured())return item;
       const facts=(await titleDiscovery.details(item.kind==='show'?'tv':'movie',item.ids,'US').catch(()=>undefined))?.item;
-      return facts?{...item,language:item.language??facts.language,genres:item.genres?.length?item.genres:facts.genres,year:item.year??facts.year,rating:item.rating??facts.rating}:item;
+      return facts?{...item,language:item.language??facts.language,genres:item.genres?.length?item.genres:facts.genres,year:item.year??facts.year,rating:item.rating??facts.rating,ratings:mergeRatings(item.ratings,facts.ratings)}:item;
     }));
     return filled.filter(item=>passes(item,filter));
   }
@@ -324,7 +345,7 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const contentRating=tmdbInfo?.contentRating??meta?.contentRating,tagline=tmdbInfo?.tagline??meta?.tagline,network=tmdbInfo?.network??meta?.studio;
     // IMDb and Rotten Tomatoes scores are available only when Plex supplies them.
     const scores=new Map<ExternalRating['source'],ExternalRating>();
-    for(const rating of [...(meta?externalRatings(meta as Parameters<typeof externalRatings>[0])??[]:[]),...(tmdbInfo?.item.rating?[{source:'tmdb' as const,score:tmdbInfo.item.rating}]:[])])if(!scores.has(rating.source))scores.set(rating.source,rating);
+    for(const rating of mergeRatings(meta?externalRatings(meta):undefined,tmdbInfo?.item.ratings))scores.set(rating.source,rating);
     const ratings=(['imdb','tomatometer','popcornmeter','tmdb'] as const).flatMap(source=>scores.get(source)??[]);
     const links:ExploreDetails['links']=[
       ...(merged.tmdb?[{site:'tmdb' as const,url:`https://www.themoviedb.org/${type}/${merged.tmdb}`}]:[]),

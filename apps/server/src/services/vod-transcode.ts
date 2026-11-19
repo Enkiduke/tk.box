@@ -13,6 +13,8 @@ export type TranscodeResult = { kind: 'playlist'; body: string } | { kind: 'medi
 // video stream copy; CPU sessions hold one shared encoder permit until stopped.
 export class VodTranscodes {
   private active = new Map<string, Active>();
+  // Told of every transcode that stops, whoever stopped it (its session's end, the idle sweep, lost access).
+  onStopped?: (id: string) => void;
   private timer: NodeJS.Timeout;
   constructor(private plex: PlexAdapter, private budget: EncoderBudget, private revalidate: (a: ActiveTranscode) => Promise<PlexGrant>, private idleMs = 300000, intervalMs = 15000) {
     this.timer = setInterval(() => void this.sweep(), intervalMs); this.timer.unref();
@@ -80,6 +82,7 @@ export class VodTranscodes {
   stop(id: string) {
     const a = this.active.get(id); if (!a) return;
     this.active.delete(id); a.release();
+    this.onStopped?.(id);
     void this.plex.transcodeControl(a.grant, 'stop', a.plexSession).catch(() => {});
   }
   stopWhere(matches: (a: ActiveTranscode) => boolean) { for (const a of [...this.active.values()]) if (matches(a)) this.stop(a.id); }

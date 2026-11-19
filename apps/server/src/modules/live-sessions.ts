@@ -7,6 +7,7 @@ import { playbackObservation } from '../../../../packages/contracts/src/index.js
 import { describeClient } from '../services/activity.js';
 import type { ActivityApi } from './activity.js';
 import type { PlaybackHistory } from '../services/playback-history.js';
+import type { PlaybackSessions } from '../services/playback-sessions.js';
 import type { SubtitleService } from '../services/subtitles.js';
 import type { LiveTv } from '../services/live-tv.js';
 import type { CustomTv } from '../services/custom-tv.js';
@@ -15,8 +16,9 @@ import type { CustomChannelStore } from '../persistence/custom-channels.js';
 
 type Deps = {
   live: LiveTv; iptv: IptvStore; customTv: CustomTv; custom: CustomChannelStore;
-  // Admin › Activity and watch history, which every live and custom channel viewer reports to.
-  activity: ActivityApi; history: PlaybackHistory; subtitles: SubtitleService;
+  // The playback session registry (start, touches, end; watch history hears it from there), Admin › Activity's row
+  // details, and watch history's observations from the player.
+  sessions: PlaybackSessions; activity: Pick<ActivityApi, 'source'>; history: Pick<PlaybackHistory, 'observe' | 'suspend'>; subtitles: SubtitleService;
 };
 type Params = { Params: { id: string } };
 
@@ -25,8 +27,13 @@ type Params = { Params: { id: string } };
 // lists and subtitles exist only on custom channels; IPTV stays strictly live.
 export const liveSessionsModule = defineModule({
   name: 'live-sessions',
-  setup(routes, { plex, bus }, { live, iptv, customTv, custom, activity: { activity, source }, history, subtitles }: Deps) {
-    bus.on('session.signed-out', ({ hash }) => { live.stopWhere(v => v.hash === hash); customTv.stopWhere(v => v.hash === hash); });
+  setup(routes, { plex }, { live, iptv, customTv, custom, sessions, activity: { source }, history, subtitles }: Deps) {
+    // Every end of a channel session (the viewer's stop, idle, Admin › Activity's Stop, sign-out) stops its viewer; a
+    // viewer the service ended itself (channel removed or disabled, the relay or station failed) ends its session.
+    sessions.kind('live', { stop: s => live.stop(s.id, s.hash) });
+    sessions.kind('custom', { stop: s => customTv.stop(s.id, s.hash) });
+    live.onViewerEnded = id => { sessions.end(id, 'removed'); };
+    customTv.onViewerEnded = id => { sessions.end(id, 'removed'); };
     // Admin › Activity rows: an IPTV viewer shows the guide's current program, a custom one the title airing for them.
     const program = (channelId: string, now: number) => {
       try {
@@ -35,22 +42,18 @@ export const liveSessionsModule = defineModule({
       } catch { return undefined; }
     };
     source('live', {
-      delivering: s => !!live.watching(s.id),
       describe: (s, now) => {
-        const w = live.watching(s.id)!, p = program(s.channelId!, now);
-        return { state: 'playing', delivery: w.delivery, source: w.source, program: p?.title, positionMs: p ? now - p.start : undefined, durationMs: p ? p.end - p.start : undefined };
-      },
-      stop: s => live.stop(s.id, s.hash)
+        const w = live.watching(s.id), p = program(s.channelId!, now);
+        return { state: 'playing', delivery: w?.delivery ?? s.delivery, source: w?.source ?? s.source, program: p?.title, positionMs: p ? now - p.start : undefined, durationMs: p ? p.end - p.start : undefined };
+      }
     });
     source('custom', {
-      delivering: (s, now) => !!customTv.watching(s.id, now),
       describe: async (s, now, title) => {
-        const w = customTv.watching(s.id, now)!, media = await title(w.mediaId);
-        return { state: w.state === 'PAUSED' ? 'paused' : 'playing', delivery: w.delivery, source: w.source, behindLiveMs: w.behindLiveMs, media, positionMs: media ? w.mediaMs : undefined, durationMs: media?.durationMs };
-      },
-      stop: s => customTv.stop(s.id, s.hash)
+        const w = customTv.watching(s.id, now), media = await title(w?.mediaId);
+        return { state: w?.state === 'PAUSED' ? 'paused' : 'playing', delivery: w?.delivery ?? s.delivery, source: w?.source ?? s.source, behindLiveMs: w?.behindLiveMs, media, positionMs: media ? w?.mediaMs : undefined, durationMs: media?.durationMs };
+      }
     });
-    const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only Plex channels can be paused.', 409); activity.touch(id); return run(); };
+    const timeshift = <T>(id: string, run: () => T) => { requireThat(customTv.has(id), 'NOT_SUPPORTED', 'Only Plex channels can be paused.', 409); sessions.touch(id); return run(); };
     const asViewer = { config: { access: 'viewer' as const } };
     routes.get<Params>('/api/v1/live/sessions/:id/state', asViewer, async req => { const { hash } = viewer(req); return timeshift(req.params.id, () => customTv.state(req.params.id, hash)); });
     routes.post<Params>('/api/v1/live/sessions/:id/pause', asViewer, async req => {
@@ -79,10 +82,10 @@ export const liveSessionsModule = defineModule({
     routes.post('/api/v1/live/sessions', { config: { access: 'viewer', rateLimit: { max: 30, timeWindow: 60000 } } }, async req => {
       const input = z.object({ channelId: z.string().uuid(), previousDeliveryId: z.string().regex(/^[\w-]{43}$/).optional() }).strict().parse(req.body);
       const { hash, grant } = viewer(req), own = custom.exists(input.channelId);
-      const started = await (own ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId));
+      // The viewer's place is held (or refused over the limit) before the channel tunes.
+      const ticket = sessions.reserve(own ? 'custom' : 'live', hash);
+      const started = await (own ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId)).catch((e: unknown) => { sessions.release(ticket); throw e; });
       const browser = { ip: req.ip, userAgent: req.headers['user-agent']?.slice(0, 400) };
-      activity.open({ id: started.id, kind: own ? 'custom' : 'live', hash, accountId: grant.accountId, user: grant.name, delivery: started.delivery, ...browser,
-        channelId: input.channelId, channel: { name: started.channel.name, number: started.channel.number }, source: started.source });
       const entry = {
         id: started.id, owner: hash, accountId: grant.accountId, accountName: grant.name, client: describeClient(browser.userAgent),
         media: { type: 'channel' as const, serverId: own ? 'custom' as const : 'iptv' as const, ratingKey: input.channelId,
@@ -90,10 +93,12 @@ export const liveSessionsModule = defineModule({
         stream: { delivery: started.delivery, video: started.delivery === 'remux' ? 'copy' : 'transcode', audio: 'transcode',
           sourceHeight: started.source.height, sourceWidth: started.source.width }
       };
-      history.open(entry, input.previousDeliveryId, Date.now(), own ? undefined : (from, to) => {
-        try { return iptv.sameHistoryStation(from, to); }
-        catch { return false; }
-      });
+      sessions.open(ticket, { id: started.id, kind: own ? 'custom' : 'live', hash, accountId: grant.accountId, user: grant.name, delivery: started.delivery, ...browser,
+        channelId: input.channelId, channel: { name: started.channel.name, number: started.channel.number }, source: started.source,
+        history: { entry, previousId: input.previousDeliveryId, sameStation: own ? undefined : (from, to) => {
+          try { return iptv.sameHistoryStation(from, to); }
+          catch { return false; }
+        } } });
       return started;
     });
     const recordLive = (id: string, hash: string, observation: z.infer<typeof playbackObservation>, epoch: number, replacing = false) => {
@@ -125,31 +130,30 @@ export const liveSessionsModule = defineModule({
     };
     routes.patch<Params>('/api/v1/live/sessions/:id/progress', { config: { access: 'session' } }, async req => {
       const { observation, epoch } = z.object({ observation: playbackObservation, epoch: z.number().int().nonnegative() }).strict().parse(req.body);
-      recordLive(req.params.id, session(req), observation, epoch);
+      const hash = session(req);
+      if (sessions.get(req.params.id)?.hash === hash) sessions.touch(req.params.id);
+      recordLive(req.params.id, hash, observation, epoch);
       return { status: 'accepted' };
     });
     // Playlists reauthorize fully, like VOD; segments use the local session check.
     routes.get<{ Params: { id: string; file: string } }>('/api/v1/live/sessions/:id/:file', { config: { access: 'session', rateLimit: { max: 1200, timeWindow: 60000 } } }, async (req, reply) => {
       const service = customTv.has(req.params.id) ? customTv : undefined;
-      activity.touch(req.params.id);
+      sessions.touch(req.params.id);
       if (req.params.file === 'index.m3u8') {
         const { hash, grant } = await authorize(req, 'viewer');
         return reply.type('application/vnd.apple.mpegurl').send(await (service ? service.playlist(req.params.id, hash, grant) : live.playlist(req.params.id, hash)));
       }
       const segment = await (service ?? live).segment(req.params.id, session(req), req.params.file);
-      activity.touch(req.params.id, segment.size);
+      sessions.touch(req.params.id, segment.size);
       return reply.type('video/mp2t').header('content-length', String(segment.size)).send(segment.body);
     });
     routes.delete<Params>('/api/v1/live/sessions/:id', asViewer, async req => {
       const { hash } = viewer(req), { id } = req.params;
       const { replacing, observation, epoch } = z.object({ replacing: z.boolean().optional(), observation: playbackObservation.optional(),
         epoch: z.number().int().nonnegative().default(0) }).parse(req.body ?? {});
-      if (history.ownsChannel(id, hash)) {
-        if (observation?.state === 'stopped' && (customTv.has(id) || live.watching(id))) recordLive(id, hash, observation, epoch, replacing);
-        history.end(id, replacing ? 'replacing' : 'stopped');
-      }
-      live.stop(id, hash); customTv.stop(id, hash);
-      if (activity.get(id)?.hash === hash) activity.close(id);
+      // The player's last observation is recorded before the session ends (the registry tells watch history).
+      if (observation?.state === 'stopped' && sessions.get(id)?.hash === hash && (customTv.has(id) || live.watching(id))) recordLive(id, hash, observation, epoch, replacing);
+      if (!sessions.end(id, replacing ? 'replacing' : 'stopped', { hash })) { live.stop(id, hash); customTv.stop(id, hash); }
       return { status: 'stopped' };
     });
     return { api: {} };

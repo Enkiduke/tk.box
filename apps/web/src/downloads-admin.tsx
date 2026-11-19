@@ -6,7 +6,7 @@ import {replaceRoute,link,useApi} from './hooks.js';
 import {ErrorNotice,Icon} from './components.js';
 import {SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
-import {ACTIONS,Dash,GrabPill,IconAction,Loaded,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
+import {ACTIONS,Dash,GrabPill,IconAction,Loaded,MediaStatusPill,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
   useSorted,type Tone} from './manage-ui.js';
 
 // Admin › Downloads › Queue and Wanted (docs/PHASE-3.5.md, docs/UI.md). A show's grab names its episodes (S02,
@@ -72,7 +72,7 @@ function ItemStatus({item,now}:{item:DownloadItem;now:number}) {
     ?[item.ratio!==undefined&&`Ratio ${item.ratio.toFixed(2)}`,duration(item.seedingSeconds)].filter(Boolean).join(' · '):'';
   const line=seeded?<span title={item.grab?.removeAt?`Removed ${relative(item.grab.removeAt,now)}`:undefined}>{seeded}</span>
     :item.detail??(item.position?`#${item.position} in line`:undefined);
-  return <><Pill tone={tone}>{word}</Pill>{line&&<small>{line}</small>}</>;
+  return <><MediaStatusPill tone={tone}>{word}</MediaStatusPill>{line&&<small>{line}</small>}</>;
 }
 // Download health (docs/STALLS.md): Only source, or Slow while it has strikes, in place of the client's word; and
 // under it the strikes, when the next look for a faster release is, or that it was just swapped in.
@@ -87,7 +87,7 @@ function HealthStatus({item,now}:{item:DownloadItem;now:number}) {
   const health=grabHealth(item,now);
   if(!health)return <ItemStatus item={item} now={now}/>;
   const [word,tone]=health.pill??stateWords[item.state];
-  return <><Pill tone={tone}>{word}</Pill>{health.line&&<small>{health.line}</small>}</>;
+  return <><MediaStatusPill tone={tone}>{word}</MediaStatusPill>{health.line&&<small>{health.line}</small>}</>;
 }
 const Requested=({item}:{item:DownloadItem})=>item.requestedBy?<span title={item.requestedBy}>{item.requestedBy}</span>:fromTkbox(item)?<span>tk.box</span>:<span className="ui-dash">Outside</span>;
 const Swarm=({item}:{item:DownloadItem})=>item.protocol!=='torrent'||item.seeds===undefined?<Dash/>
@@ -209,7 +209,7 @@ function OutcomeLine({g}:{g:DownloadsHistoryGrab}) {
 }
 function Steps({g}:{g:DownloadsHistoryGrab}) {
   return <ol className="ui-steps">{g.steps.map(s=>{const [word,tone]=stepWords[s.kind],note=stepNote(s);return <li key={s.id}>
-    <time dateTime={new Date(s.at).toISOString()}>{exactTime.format(s.at)}</time><Pill tone={tone}>{word}</Pill>
+    <time dateTime={new Date(s.at).toISOString()}>{exactTime.format(s.at)}</time><MediaStatusPill tone={tone}>{word}</MediaStatusPill>
     {note?<span className={s.kind==='failed'?'danger-text':undefined} title={s.note}>{note}</span>:<span/>}</li>;})}</ol>;
 }
 
@@ -243,7 +243,7 @@ export function DownloadHistoryPage() {
                   <Icon name={expanded?'down':'next'} size={14}/></button>
                 <TitleCell id={g.titleId} title={g.title} year={g.year} tags={<>{g.episodes&&<Tag>{g.episodes}</Tag>}{g.upgrade&&<Tag>Upgrade</Tag>}</>}
                   sub={`${g.swappedFrom?'Swapped in · ':''}${g.releaseName} · ${protocol(g.protocol)} · ${g.indexer}`}/></div></td>
-              <td><Pill tone={tone}>{word}</Pill><OutcomeLine g={g}/></td>
+              <td><MediaStatusPill tone={tone}>{word}</MediaStatusPill><OutcomeLine g={g}/></td>
               <td>{g.quality}</td><td className="num">{bytes(g.size)??<Dash/>}</td>
               <td><When at={g.startedAt} now={now}/></td>
               <td>{g.endedAt!==undefined?<><When at={g.endedAt} now={now}/>{took&&<small>Took {took}</small>}</>:<Dash/>}</td>
@@ -292,7 +292,7 @@ export function WantedPage() {
             :<>{scopeWords(w)?`${scopeWords(w)} · `:''}{w.quality?`Have ${w.quality} · `:''}{w.lastAt?<>Searched <When at={w.lastAt} now={now}/></>:'Not searched yet'}</>}/></td>
           <td>{w.paused||w.grab?<Dash/>:<When at={w.nextAt} now={now} due="Due" empty="Not yet"/>}</td>
           <td className="num">{w.misses}</td>
-          <td>{w.paused?<Pill tone="bad">Failing</Pill>:w.grab?<GrabPill state={w.grab}/>:<Pill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</Pill>}</td>
+          <td>{w.paused?<MediaStatusPill tone="bad">Failing</MediaStatusPill>:w.grab?<GrabPill state={w.grab}/>:<MediaStatusPill tone="wait">{w.why==='missing'?'Missing':'Below cutoff'}</MediaStatusPill>}</td>
           <td><RowActions>
             {!w.paused&&<IconAction icon="search" label={`Automatic search for ${w.title}${w.scope?` ${w.scope}`:''}`} disabled={mutation.busy||!!w.grab} onClick={()=>search(w)}/>}
             <IconAction icon="list" label={`Interactive search for ${w.title}${w.scope?` ${w.scope}`:''}`} onClick={()=>openMovie(w.id,'search',w.scope)}/>

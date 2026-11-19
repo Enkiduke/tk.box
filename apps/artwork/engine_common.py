@@ -1,8 +1,8 @@
-"""What tk.box's artwork engine (artwork_engine.py) and collections engine (plex_collections.py) share: the config and its
-defaults, the HTTP cache, the Plex client, TMDb and TVDB lookups, the public-link downloader and the run lock.
+"""The artwork engine's (artwork_engine.py) config and its defaults, the HTTP cache, the Plex client, TMDb and TVDB lookups,
+the public-link downloader and the run lock. Nothing here draws or decodes an image. Requires requests and urllib3.
 
-Nothing here draws or decodes an image, so the collections engine runs without Pillow or NumPy loaded. Requires
-requests and urllib3.
+Plex collections are made and kept by tk.box itself (apps/server/src/services/collections); this engine only draws their
+posters, and reads the collection definitions tk.box writes into the config to know which ones are custom.
 """
 
 import contextlib
@@ -40,126 +40,14 @@ PLEX_RESOLUTIONS = {"sd": "480p", "480": "480p", "576": "576p", "720": "720p", "
 
 # Settings left out of the config, top level and under plex: (no name is used in both).
 DEFAULTS = {"assets_dir": "assets", "cache_dir": ".cache", "workers": 2, "quality": 95, "language": "en", "missing_art": "stock",
-            "overlay_marker": True, "completion_label": "tk.box", "collection_min_items": 2, "collection_sync": "sync",
-            "franchise_collections": True, "collection_streaming": "off", "collection_region": "US", "recent_movie_days": 90, "recent_episode_days": 7,
-            "cleanup_min_age_minutes": 60, "upload_logo": True, "collections":[{'name': 'Halloween - All-Time Classics',
-  'library': 'Movies',
-  'type': 'movie',
-  'enabled': False,
-  'schedule': '10/01-10/31',
-  'members': [{'title': 'Halloween', 'year': 1978},
-              {'title': 'The Exorcist', 'year': 1973},
-              {'title': 'Psycho', 'year': 1960},
-              {'title': 'Alien', 'year': 1979},
-              {'title': 'The Shining', 'year': 1980},
-              {'title': 'The Thing', 'year': 1982},
-              {'title': 'Night of the Living Dead', 'year': 1968},
-              {'title': 'Poltergeist', 'year': 1982},
-              {'title': 'A Nightmare on Elm Street', 'year': 1984},
-              {'title': 'The Texas Chain Saw Massacre', 'year': 1974},
-              {'title': 'Scream', 'year': 1996},
-              {'title': 'The Blair Witch Project', 'year': 1999},
-              {'title': 'The Conjuring', 'year': 2013},
-              {'title': 'The Witch', 'year': 2015},
-              {'title': "Trick 'r Treat", 'year': 2007},
-              {'title': 'Get Out', 'year': 2017},
-              {'title': 'Hereditary', 'year': 2018},
-              {'title': 'The Ring', 'year': 2002},
-              {'title': 'An American Werewolf in London', 'year': 1981},
-              {'title': 'The Fly', 'year': 1986},
-              {'title': 'Hocus Pocus', 'year': 1993},
-              {'title': 'The Nightmare Before Christmas', 'year': 1993},
-              {'title': 'Beetlejuice', 'year': 1988},
-              {'title': 'Ghostbusters', 'year': 1984},
-              {'title': 'The Addams Family', 'year': 1991},
-              {'title': 'The Witches', 'year': 1990},
-              {'title': 'Halloweentown', 'year': 1998},
-              {'title': 'Casper', 'year': 1995},
-              {'title': 'E.T. the Extra-Terrestrial', 'year': 1982},
-              {'title': 'Coraline', 'year': 2009}],
-  'visibility': {'home': True, 'shared': True, 'recommended': True},
-  'acquire': False,
-  'cleanup': 'keep'},
- {'name': 'Thanksgiving - Classics & Comforts',
-  'library': 'Movies',
-  'type': 'movie',
-  'enabled': False,
-  'schedule': '11/01-11/30',
-  'members': [{'title': 'Planes, Trains and Automobiles', 'year': 1987},
-              {'title': 'Home for the Holidays', 'year': 1995},
-              {'title': 'Pieces of April', 'year': 2003},
-              {'title': 'The Ice Storm', 'year': 1997},
-              {'title': 'Dutch', 'year': 1991},
-              {'title': 'Hannah and Her Sisters', 'year': 1986},
-              {'title': 'Prisoners', 'year': 2013},
-              {'title': 'Scent of a Woman', 'year': 1992},
-              {'title': 'Spider-Man', 'year': 2002},
-              {'title': 'Rocky', 'year': 1976},
-              {'title': 'Tower Heist', 'year': 2011},
-              {'title': 'Addams Family Values', 'year': 1993},
-              {'title': 'Free Birds', 'year': 2013},
-              {'title': 'Son in Law', 'year': 1993},
-              {'title': 'Meet the Parents', 'year': 2000},
-              {'title': "You've Got Mail", 'year': 1998},
-              {'title': 'Knives Out', 'year': 2019},
-              {'title': 'Fantastic Mr. Fox', 'year': 2009},
-              {'title': 'Rudy', 'year': 1993},
-              {'title': 'Mrs. Doubtfire', 'year': 1993},
-              {'title': 'The Blind Side', 'year': 2009},
-              {'title': 'The Big Chill', 'year': 1983},
-              {'title': 'Love at the Thanksgiving Day Parade', 'year': 2012},
-              {'title': 'A Family Thanksgiving', 'year': 2010},
-              {'title': 'Pumpkin Pie Wars', 'year': 2016},
-              {'title': 'An Old Fashioned Thanksgiving', 'year': 2008},
-              {'title': 'The Thanksgiving House', 'year': 2013}],
-  'visibility': {'home': True, 'shared': True, 'recommended': True},
-  'acquire': False,
-  'cleanup': 'keep'},
- {'name': 'Christmas - All-Time Classics',
-  'library': 'Movies',
-  'type': 'movie',
-  'enabled': False,
-  'schedule': '12/01-12/31',
-  'members': [{'title': "It's a Wonderful Life", 'year': 1946},
-              {'title': 'Miracle on 34th Street', 'year': 1947},
-              {'title': 'White Christmas', 'year': 1954},
-              {'title': 'A Christmas Story', 'year': 1983},
-              {'title': "National Lampoon's Christmas Vacation", 'year': 1989},
-              {'title': 'Home Alone', 'year': 1990},
-              {'title': 'Home Alone 2: Lost in New York', 'year': 1992},
-              {'title': 'Elf', 'year': 2003},
-              {'title': 'The Muppet Christmas Carol', 'year': 1992},
-              {'title': 'The Santa Clause', 'year': 1994},
-              {'title': 'How the Grinch Stole Christmas!', 'year': 1966},
-              {'title': 'How the Grinch Stole Christmas', 'year': 2000},
-              {'title': 'A Charlie Brown Christmas', 'year': 1965},
-              {'title': 'Rudolph the Red-Nosed Reindeer', 'year': 1964},
-              {'title': 'Frosty the Snowman', 'year': 1969},
-              {'title': 'Gremlins', 'year': 1984},
-              {'title': 'Die Hard', 'year': 1988},
-              {'title': 'Love Actually', 'year': 2003},
-              {'title': 'The Nightmare Before Christmas', 'year': 1993},
-              {'title': 'Arthur Christmas', 'year': 2011},
-              {'title': 'Klaus', 'year': 2019},
-              {'title': 'The Polar Express', 'year': 2004},
-              {'title': 'Deck the Halls', 'year': 2006},
-              {'title': 'Edward Scissorhands', 'year': 1990},
-              {'title': 'The Holdovers', 'year': 2023},
-              {'title': 'Little Women', 'year': 1994},
-              {'title': 'Bad Santa', 'year': 2003},
-              {'title': 'Jingle All the Way', 'year': 1996},
-              {'title': 'Scrooged', 'year': 1988},
-              {'title': 'The Christmas Chronicles', 'year': 2018}],
-  'visibility': {'home': True, 'shared': True, 'recommended': True},
-  'acquire': False,
-  'cleanup': 'keep'}], "search": False, "collection_source_limit": 50, "collection_source_refresh": True}
+            "overlay_marker": True, "completion_label": "tk.box", "collection_region": "US", "upload_logo": True, "collections": []}
 
 
 SHOW_FIELDS = ("type", "title", "year", "tmdb_id", "tvdb_id", "imdb_id", "layout", "library", "logo")  # Seasons/episodes inherit these
 # ImageMaid/Overlay-Reset recognize overlay posters by this EXIF tag (0x04bc == "overlay"), so tagging ours lets
 # ImageMaid's --overlays-only remove only our orphaned posters from Plex.
 OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE = 0x04BC, "overlay"
-# plex_cleanup.py only touches posters that also say they are ours (EXIF Software tag); Kometa's overlays carry just the one above.
+# Posters also say they are ours (EXIF Software tag), so they can be told from Kometa's, which carry just the one above.
 SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE = 0x0131, "tk.box"
 # Posters already in Plex from before the engine was renamed carry its former name there; they are still ours.
 SOFTWARE_EXIF_VALUES = (SOFTWARE_EXIF_VALUE, "Overlayrr")
@@ -212,12 +100,79 @@ def secret(value):
                   lambda match: os.environ.get(match[1], ""), str(value or ""))
 
 
-class HTTP:
-    """Per-worker connection pools and a disk cache shared between runs."""
+class Timings:
+    """How long a run's titles spent on each kind of work, for the job's TIME and TIMES lines. Each title's work is
+    timed on its own thread (and the helper threads it hands work to, through carry()); a phase inside another counts
+    toward the outer one, so an upload's label checks are upload time, not Plex reads."""
 
-    def __init__(self, cache, refresh=False):
+    KINDS = ("plex", "lookups", "downloads", "render", "save", "upload")
+
+    def __init__(self):
+        self.local, self.lock = threading.local(), threading.Lock()
+        self.totals = dict.fromkeys(self.KINDS, 0.0)
+
+    def current(self):
+        return getattr(self.local, "record", None)
+
+    @contextlib.contextmanager
+    def title(self, total=True):
+        """Time one title's work: yields its record ({kind: seconds}), added to the run's totals when it ends (unless
+        `total` is false: the run's setup)."""
+        record, previous = dict.fromkeys(self.KINDS, 0.0), self.current()
+        self.local.record = record
+        try:
+            yield record
+        finally:
+            self.local.record = previous
+            with self.lock:
+                for kind, seconds in record.items() if total else ():
+                    self.totals[kind] += seconds
+
+    @contextlib.contextmanager
+    def phase(self, kind):
+        record = self.current()
+        if record is None or getattr(self.local, "phase", None):
+            yield
+            return
+        self.local.phase, started = kind, time.perf_counter()
+        try:
+            yield
+        finally:
+            self.local.phase = None
+            with self.lock:
+                record[kind] += time.perf_counter() - started
+
+    def carry(self, function):
+        """`function`, timed toward the calling thread's title wherever it runs (a helper pool's thread)."""
+        record = self.current()
+
+        def run(*args, **kwargs):
+            previous, self.local.record = self.current(), record
+            try:
+                return function(*args, **kwargs)
+            finally:
+                self.local.record = previous
+        return run
+
+    @staticmethod
+    def describe(record):
+        """`plex 0.31s, lookups 1.20s, ...`, leaving out kinds that took no time to speak of."""
+        return ", ".join(f"{kind} {record[kind]:.2f}s" for kind in Timings.KINDS if record[kind] >= 0.005) or "nothing timed"
+
+
+# Connection pools shared by every HTTP object (and thread) in this process, so a batch of jobs (artwork_engine.py
+# --batch) and the worker keep their connections to Plex and the providers open from one title to the next.
+_RETRY = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504],
+               allowed_methods=["GET"], respect_retry_after_header=True)
+_ADAPTER = HTTPAdapter(max_retries=_RETRY, pool_connections=16, pool_maxsize=16)
+
+
+class HTTP:
+    """Per-thread sessions over shared connection pools, and a disk cache shared between runs."""
+
+    def __init__(self, cache):
         self.cache = cache
-        self.refresh = refresh
+        self.times = Timings()
         self.local = threading.local()
         self.locks = [threading.Lock() for _ in range(64)]
         # Parsed JSON recently used in this run: one item asks for the same TMDb details several times, close together.
@@ -227,20 +182,29 @@ class HTTP:
     def session(self):
         if not hasattr(self.local, "session"):
             session = requests.Session()
-            retry = Retry(total=3, backoff_factor=0.5,
-                          status_forcelist=[429, 500, 502, 503, 504],
-                          allowed_methods=["GET"], respect_retry_after_header=True)
             for scheme in ("http://", "https://"):
-                session.mount(scheme, HTTPAdapter(max_retries=retry))
+                session.mount(scheme, _ADAPTER)
             session.headers["User-Agent"] = "tk.box/1.0"
             self.local.session = session
         return self.local.session
 
+    @staticmethod
+    def kind(method, headers):
+        """What a request counts as in the job's timings: Plex (its token says so) reads or uploads, else a provider lookup."""
+        if headers and "X-Plex-Token" in headers:
+            return "plex" if method == "GET" else "upload"
+        return "lookups"
+
     def request(self, method, url, **kwargs):
+        with self.times.phase(self.kind(method, kwargs.get("headers"))):
+            return self.send_request(method, url, **kwargs)
+
+    def send_request(self, method, url, **kwargs):
         if READ_ONLY and method != "GET" and url not in READ_POSTS:
             print(f"READ-ONLY: skipped {method} {urlparse(url).hostname}{urlparse(url).path}", flush=True)
             skipped = requests.Response()
             skipped.status_code, skipped._content, skipped.url = 200, b"<MediaContainer/>", url
+            skipped._content_consumed = True  # Nothing to close: it was never sent
             return skipped
         # Exception strings from requests can contain API keys in query strings.
         try:
@@ -254,6 +218,10 @@ class HTTP:
         return response
 
     def get(self, url, *, params=None, headers=None, ttl=None, cache_scope=None):
+        with self.times.phase(self.kind("GET", headers)):
+            return self.cached_get(url, params=params, headers=headers, ttl=ttl, cache_scope=cache_scope)
+
+    def cached_get(self, url, *, params, headers, ttl, cache_scope):
         if ttl is None:
             with self.request("GET", url, params=params, headers=headers) as response:
                 return response.content
@@ -270,7 +238,7 @@ class HTTP:
     def hit(self, path, ttl):
         """Cached bytes younger than `ttl` seconds, or None."""
         try:
-            if not self.refresh and time.time() - path.stat().st_mtime < ttl:
+            if time.time() - path.stat().st_mtime < ttl:
                 return path.read_bytes()
         except OSError:
             pass
@@ -284,7 +252,7 @@ class HTTP:
 
     def recall(self, key):
         with self.parsed_lock:
-            if self.refresh or key not in self.parsed:
+            if key not in self.parsed:
                 return None
             self.parsed.move_to_end(key)
             return self.parsed[key]
@@ -424,7 +392,7 @@ def custom_collection(item, config):
 
 class Plex:
     """The Plex server: library listings, collection listings, posters and labels. Its answers are never cached.
-    Making and changing collections is plex_collections.py's."""
+    Making and changing collections is tk.box's (apps/server/src/services/collections)."""
 
     def __init__(self, http, config):
         self.http, self.settings = http, config.get("plex", {})
@@ -697,15 +665,14 @@ def read_config(path):
         config = json.load(handle)
     if not isinstance(config, dict):
         raise ValueError("Config must be a JSON object")
-    allowed = {"api", "plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections", "automatic_collections"}
+    allowed = {"plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections"}
     unknown = set(config) - allowed
     if unknown:
         raise ValueError(f"Unknown config keys: {', '.join(sorted(map(str, unknown)))}")
-    for name in ("api", "plex", "overrides"):
+    for name in ("plex", "overrides"):
         if not isinstance(config.get(name, {}), dict):
             raise ValueError(f"{name} must be a mapping")
-    for name, keys in (("api", {"tmdb_key", "tvdb_key", "tvdb_pin", "fanart_key", "fanart_client_key", "mdblist_key"}),
-                       ("plex", {"url", "token", "libraries", "upload", "include_seasons", "include_episodes", "include_collections", "sync_collections", "franchise_collections", "collection_min_items", "collection_sync", "collection_streaming", "collection_region", "recent_collections", "recent_movie_days", "recent_episode_days", "completion_label", "data_dir", "cleanup_min_age_minutes", "upload_logo"})):
+    for name, keys in (("plex", {"url", "token", "libraries", "upload", "include_seasons", "include_episodes", "include_collections", "collection_region", "completion_label", "upload_logo"}),):
         unknown = set(config.get(name, {})) - keys
         if unknown:
             raise ValueError(f"Unknown {name} keys: {', '.join(sorted(map(str, unknown)))}")
@@ -722,17 +689,12 @@ def read_config(path):
     plex = config.get("plex", {})
     if not isinstance(plex.get("libraries", []), list):
         raise ValueError("plex.libraries must be a list of names or IDs")
-    for name in ("upload", "upload_logo", "include_seasons", "include_episodes", "include_collections", "sync_collections", "franchise_collections", "recent_collections"):
+    for name in ("upload", "upload_logo", "include_seasons", "include_episodes", "include_collections"):
         if type(plex.get(name, False)) is not bool:
             raise ValueError(f"plex.{name} must be true or false")
     region = option(plex, "collection_region")
     if not isinstance(region, str) or not re.fullmatch(r"[A-Z]{2}", region):
         raise ValueError("plex.collection_region must be a two-letter country code such as US")
-    data_dir, min_age = plex.get("data_dir"), option(plex, "cleanup_min_age_minutes")
-    if data_dir is not None and (not isinstance(data_dir, str) or not data_dir.strip()):
-        raise ValueError("plex.data_dir must be the path of Plex's data folder")
-    if isinstance(min_age, bool) or not isinstance(min_age, (int, float)) or min_age < 0:
-        raise ValueError("plex.cleanup_min_age_minutes must be a number of minutes, 0 or more")
     label = option(plex, "completion_label")
     if not isinstance(label, str) or any(ord(character) < 32 for character in label):
         raise ValueError("plex.completion_label must be a string without control characters; use an empty string to disable")
@@ -741,40 +703,15 @@ def read_config(path):
     return config
 
 
-def select_item(artwork, config, *, rating_key=None, title=None, media_type=None, year=None):
-    """Resolve one exact target; never turn a failed selection into a batch run."""
-    configured = [dict(item) for item in config.get("items", [])]
-    if rating_key is not None:
-        candidates = [item for item in configured if str(item.get("rating_key", "")) == str(rating_key)]
-        if not candidates:
-            candidates = [artwork.plex.get_item(rating_key)]
-    else:
-        candidates = artwork.plex.scan(media_type=media_type) if media_type != "collection" else []
-        if media_type == "collection" or (media_type is None and config.get("plex", {}).get("include_collections")):
-            candidates += artwork.plex.poster_collections()
-        for item in configured:
-            key = item.get("rating_key")
-            existing = next((candidate for candidate in candidates if key is not None and
-                             str(candidate.get("rating_key")) == str(key)), None)
-            if existing is not None:
-                existing.update(item)
-            else:
-                candidates.append(item)
-        candidates = [item for item in candidates if str(item.get("title", "")).strip().casefold() == title.strip().casefold()]
-    if media_type is not None:
-        kind = {"show": "tv", "collection": "collection"}.get(media_type, "movie")
-        candidates = [item for item in candidates if item.get("type", "movie") == kind]
-    if year is not None:
-        candidates = [item for item in candidates if str(item.get("year", "")) == str(year)]
-    # A show request targets its series poster; season jobs are expanded separately.
-    candidates = [item for item in candidates if item.get("season") is None]
+def select_item(artwork, config, rating_key):
+    """The one title an --item run is for: a configured item with that key (the engine tests feed titles this way), else
+    Plex's. A show request targets its series poster; season jobs are expanded separately."""
+    candidates = [dict(item) for item in config.get("items", []) if str(item.get("rating_key", "")) == str(rating_key)]
+    candidates = [item for item in candidates or [artwork.plex.get_item(rating_key)] if item.get("season") is None]
     if not candidates:
-        raise ValueError(f"No movie/show matches the requested item: {rating_key if rating_key is not None else title!r}")
+        raise ValueError(f"No movie/show matches the requested item: {rating_key}")
     if len(candidates) != 1:
-        matches = "; ".join(f"{item.get('title', '?')} ({item.get('year', '?')}), "
-                            f"{ {'tv': 'show'}.get(item.get('type'), item.get('type', 'movie')) }, Plex ID {item.get('rating_key', 'not set')}"
-                            for item in candidates[:10])
-        raise ValueError(f"Ambiguous item selection: {matches}. Use --item PLEX_ID, --type, or --year to select one")
+        raise ValueError(f"More than one configured item has Plex ID {rating_key}")
     candidates[0].setdefault("type", "movie")
     return candidates
 
@@ -852,7 +789,7 @@ class Metadata:
     def __init__(self, http, config, base):
         self.http, self.config, self.base = http, config, base
         self.plex = Plex(http, config)
-        self.keys = {key: secret(config.get("api", {}).get(key, os.environ.get(variable, "")))
+        self.keys = {key: os.environ.get(variable, "")
                      for key, variable in {"tmdb_key": "TMDB_API_KEY", "tvdb_key": "TVDB_API_KEY",
                                            "tvdb_pin": "TVDB_PIN", "fanart_key": "FANART_API_KEY",
                                            "fanart_client_key": "FANART_CLIENT_KEY"}.items()}
@@ -866,7 +803,7 @@ class Metadata:
         with self.pool_lock:
             if self.pool is None:
                 self.pool = ThreadPoolExecutor(max_workers=6)
-        return list(self.pool.map(function, items))
+        return list(self.pool.map(self.http.times.carry(function), items))
 
     def tmdb(self, path, *, stale=None, **params):
         key = self.keys.get("tmdb_key")

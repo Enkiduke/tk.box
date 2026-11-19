@@ -2,37 +2,34 @@ import { defineModule } from './module.js';
 import { viewer } from './access.js';
 import { requireThat } from '../errors.js';
 import { plexRow, type Title } from '../activity-api.js';
-import { Activity, describeClient, isLocalAddress, PlexFreshness, type Stream, type StreamDelivery, type StreamKind, type StreamSource } from '../services/activity.js';
+import { describeClient, isLocalAddress, PlexFreshness } from '../services/activity.js';
+import { sessionPosition, sessionRate, type PlaybackSessions, type Session, type StreamDelivery, type StreamKind, type StreamSource } from '../services/playback-sessions.js';
 import type { PlexGrant, PlexSession } from '../providers/plex.js';
-import type { PlaybackHistory } from '../services/playback-history.js';
 
-export type ActivityStream = ReturnType<Activity['list']>[number];
+export type ActivityStream = Session & { positionMs?: number; rateKbps?: number };
 // What a stream's own module adds to its Admin › Activity row.
 export type ActivityDetail = {
   state: 'playing' | 'paused'; delivery: StreamDelivery; source?: StreamSource; media?: Title; positionMs?: number; durationMs?: number;
   behindLiveMs?: number; program?: string;
 };
-// The module that delivers a kind of stream: whether a session is still delivering (one it already ended is dropped),
-// its row's details, and how Admin › Activity's Stop ends it.
+// The module that delivers a kind of stream: its row's details. (Ending one, Stop included, is the session registry's.)
 export type ActivitySource = {
-  delivering: (s: Stream, now: number) => boolean;
   describe: (s: ActivityStream, now: number, title: (mediaId: string | undefined) => Promise<Title | undefined> | undefined) => ActivityDetail | Promise<ActivityDetail>;
-  stop: (s: { id: string; hash: string }) => void;
 };
 // `streaming`: how many streams are playing, in tk.box or any Plex app (anyone streaming holds back Artwork's nightly
 // full collections run).
-export type ActivityApi = { activity: Activity; source: (kind: StreamKind, source: ActivitySource) => void; streaming: (grant: PlexGrant) => Promise<number> };
-// `monitor`: Plex's own apps' sessions (watch history's Plex playback monitor).
-type Deps = { history: PlaybackHistory; monitor: { sessions(grant: PlexGrant): Promise<PlexSession[]> } };
+export type ActivityApi = { source: (kind: StreamKind, source: ActivitySource) => void; streaming: (grant: PlexGrant) => Promise<number> };
+// `sessions`: tk.box's own streams (the playback session registry); `monitor`: Plex's own apps' sessions (watch
+// history's Plex playback monitor).
+type Deps = { sessions: PlaybackSessions; monitor: { sessions(grant: PlexGrant): Promise<PlexSession[]> } };
 
-// Admin › Activity: who is watching what, how it is delivered, and a way to end a stream. Playback
-// modules report their sessions to `activity` and register a source for each kind they deliver.
+// Admin › Activity: who is watching what, how it is delivered, and a way to end a stream. tk.box's streams are the
+// playback session registry's; each playback module registers a source that describes its kind's rows.
 export const activityModule = defineModule({
   name: 'activity',
-  setup(routes, { plex, bus }, { history, monitor }: Deps) {
+  setup(routes, { plex }, { sessions, monitor }: Deps) {
     const plexSessions = (grant: PlexGrant) => monitor.sessions(grant);
-    const activity = new Activity(), sources = new Map<StreamKind, ActivitySource>();
-    bus.on('session.signed-out', ({ hash }) => activity.closeWhere(s => s.hash === hash));
+    const sources = new Map<StreamKind, ActivitySource>();
     // Titles are read with the administrator's grant, which reaches every library; a failed lookup just shows no title.
     const titles = new Map<string, Promise<Title | undefined>>(), fresh = new PlexFreshness();
     const title = (grant: PlexGrant, id: string | undefined) => {
@@ -48,7 +45,7 @@ export const activityModule = defineModule({
     };
     routes.get('/api/v1/admin/activity', { config: { access: 'admin' } }, async req => {
       const { grant } = viewer(req), now = Date.now();
-      const streams = activity.list(s => !!sources.get(s.kind)?.delivering(s, now), now);
+      const streams = sessions.list().map((s): ActivityStream => ({ ...s, positionMs: sessionPosition(s, now), rateKbps: sessionRate(s, now) }));
       const rows = await Promise.all(streams.map(async s => {
         const base = { id: s.id, kind: s.kind, user: s.user ?? 'Plex user', accountId: s.accountId, client: describeClient(s.userAgent), ip: s.ip, local: isLocalAddress(s.ip),
           startedAt: s.started, quality: s.quality, target: s.target, rateKbps: s.rateKbps ?? 0, channel: s.channel, channelId: s.channelId };
@@ -69,19 +66,15 @@ export const activityModule = defineModule({
         await plex.terminateSession(grant, id, 'This stream was stopped by the server administrator.');
         return { status: 'stopped' };
       }
-      const s = activity.get(req.params.id);
-      requireThat(s, 'SESSION_NOT_FOUND', 'That stream has already ended.', 404);
-      history.end(s.id, 'admin');
-      sources.get(s.kind)?.stop(s); activity.close(s.id);
+      requireThat(sessions.end(req.params.id, 'admin'), 'SESSION_NOT_FOUND', 'That stream has already ended.', 404);
       return { status: 'stopped' };
     });
     const api: ActivityApi = {
-      activity,
       source(kind, source) {
         if (sources.has(kind)) throw new Error(`Activity source ${kind} is already registered.`);
         sources.set(kind, source);
       },
-      streaming: async grant => activity.list(() => true, Date.now()).length + (await plexSessions(grant)).length,
+      streaming: async grant => sessions.count + (await plexSessions(grant)).length,
     };
     return { api };
   }

@@ -12,8 +12,7 @@ import {pipeline} from 'node:stream/promises';
 // .local/plex-preview like the server's own state.
 
 // State files the pages read; the rest of the server's data folder (artwork assets, run configs) is left behind.
-const FILES=['secret.key','client-id','cleanup/status.json','artwork/collections-tkbox.json','artwork/collections-state.json',
-  'artwork/kept_collections.json','artwork/discover-index.json'];
+const FILES=['secret.key','client-id','cleanup/status.json','artwork/collections-state.json'];
 
 if(existsSync('.env'))process.loadEnvFile('.env');
 const host=process.env.PREVIEW_SSH_HOST||'tkbox',remote=process.env.PREVIEW_REMOTE_DATA_DIR??'';

@@ -4,7 +4,7 @@ import type {MovieList,MovieRow} from '../../../packages/contracts/src/downloads
 import {useApi} from './hooks.js';
 import {SectionHead} from './settings-ui.js';
 import {SourceCell,sourceLabel} from './movie-source.js';
-import {ACTIONS,Dash,FavoriteStar,IconAction,Loaded,Panel,Pill,RowActions,SelectCell,Segmented,Table,TitleCell,Toolbar,WhenDay,gb,matches,openMovie,qualityRank,usePaged,useRefresh,
+import {ACTIONS,Dash,FavoriteStar,IconAction,Loaded,MediaStatusPill,Panel,RowActions,SelectCell,Segmented,Table,TitleCell,Toolbar,WhenDay,gb,matches,openMovie,qualityRank,usePaged,useRefresh,
   selectColumn,useSelection,useSorted,type Tone} from './manage-ui.js';
 
 // Admin › Manage › Movies (docs/PHASE-3.5.md, docs/UI.md): every movie in the library. A movie opens as a dialog
@@ -50,7 +50,7 @@ export function MoviesPage() {
         {rows.map(m=>{const s=status(m);return <tr key={m.id} className={[!m.monitored?'is-off':'',sel.has(m.id)?'is-picked':''].join(' ').trim()||undefined}>
           <SelectCell sel={sel} id={m.id} label={m.title}/><td><TitleCell id={m.id} title={m.title} year={m.year} tags={m.keep&&<FavoriteStar/>}/></td>
           <td>{m.quality??<Dash/>}</td><td className="num">{gb(m.size)??<Dash/>}</td><td>{m.profile}</td><td><SourceCell source={m.source}/></td>
-          <td><Pill tone={s.tone}>{s.label}</Pill></td><td>{m.release?<><WhenDay day={m.release.day} now={now}/><small>{releaseNames[m.release.kind]}</small></>:<Dash/>}</td>
+          <td><MediaStatusPill tone={s.tone}>{s.label}</MediaStatusPill></td><td>{m.release?<><WhenDay day={m.release.day} now={now}/><small>{releaseNames[m.release.kind]}</small></>:<Dash/>}</td>
           <td><RowActions><IconAction icon="list" label={`Interactive search for ${m.title}`} onClick={()=>openMovie(m.id,'search')}/></RowActions></td>
         </tr>;})}
       </Table></Panel>;}}</Loaded>

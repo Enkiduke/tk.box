@@ -33,7 +33,6 @@ export const iptvModule = defineModule({
     refresh.published = sourceId => bus.emit('iptv.source.published', { sourceId });
     registerIptv(routes, iptv, refresh, { custom, plexArtwork: async (req, id, kind) => plex.artwork(viewer(req).grant, id, kind) });
     const live = new LiveTv(iptv, budget, config.CACHE_DIR, config.FFMPEG_PATH, config.FFPROBE_PATH, (message, detail) => log.warn(message, detail));
-    live.onViewerEnded = sessionId => bus.emit('live.viewer.ended', { sessionId });
     // Channel checks hide channels that fail to play or show a provider's offline screen.
     const healthStore = new HealthStore(db), health = new ChannelHealth(iptv, healthStore, config.CACHE_DIR, config.FFMPEG_PATH,
       (message, detail) => log.info(message, detail), { enabled: config.CHANNEL_HEALTH_CHECKS });

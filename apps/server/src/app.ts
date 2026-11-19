@@ -31,6 +31,7 @@ import { liveSessionsModule } from './modules/live-sessions.js';
 import { vodPlaybackModule } from './modules/vod-playback.js';
 import { watchHistoryModule } from './modules/watch-history.js';
 import { activityModule } from './modules/activity.js';
+import { playbackSessionsModule } from './modules/playback-sessions.js';
 import { artworkModule } from './modules/artwork.js';
 import { cleanupModule } from './modules/cleanup.js';
 import { requestsModule } from './modules/requests.js';
@@ -188,14 +189,17 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   // What Plex holds, and the one title identity (plexIndex.resolve): read by watch history, the library, requests,
   // Explore and the calendar. It needs nothing else, so it mounts first.
   const plexIndex = await mountModule(app, ctx, plexIndexModule, undefined);
-  // Watch history and Admin › Activity come next: every playback module reports to them.
+  // The one registry of playback sessions (VOD, IPTV, custom channels) comes before everything that hears or reads it:
+  // watch history records its sessions from its events, Admin › Activity lists them, and the playback modules open them.
+  // It also hears sign-out first, so a browser's streams end before watch history closes the rest.
+  const sessions = await mountModule(app, ctx, playbackSessionsModule, undefined);
   const watchHistory = await mountModule(app, ctx, watchHistoryModule, {plexIndex}), {history, monitor} = watchHistory;
-  const activityApi = await mountModule(app, ctx, activityModule, {history, monitor});
+  const activityApi = await mountModule(app, ctx, activityModule, {sessions, monitor});
   // Custom channels share the live session routes with IPTV; their sessions belong to CustomTv.
   const {store: custom, tv: customTv} = await mountModule(app, ctx, customChannelsModule, {localMedia, settings});
   const {store: iptv, live} = await mountModule(app, ctx, iptvModule, {custom});
-  await mountModule(app, ctx, liveSessionsModule, {live, iptv, customTv, custom, activity: activityApi, history, subtitles});
-  await mountModule(app, ctx, vodPlaybackModule, {identity, activity: activityApi, history, subtitles, localMedia});
+  await mountModule(app, ctx, liveSessionsModule, {live, iptv, customTv, custom, sessions, activity: activityApi, history, subtitles});
+  await mountModule(app, ctx, vodPlaybackModule, {identity, sessions, activity: activityApi, history, subtitles, localMedia});
   await mountModule(app, ctx, clientEventsModule, {identity});
   await mountModule(app, ctx, notificationsModule, {identity});
   // The durable work queue, NZBGeek and SABnzbd (docs/ARR-REPLACEMENT.md, phase 1). The library module uses them.
@@ -211,7 +215,7 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
   const library = await mountModule(app, ctx, libraryModule, {queue, indexers, downloaders, artwork, plexIndex});
   await mountModule(app, ctx, subtitleFinderModule, {queue, library});
   const {requests} = await mountModule(app, ctx, requestsModule, {site, library, plexIndex});
-  await mountModule(app, ctx, cleanupModule, {artwork, requests, watchHistory, identity, library});
+  await mountModule(app, ctx, cleanupModule, {artwork, requests, watchHistory, identity, library, plexIndex});
   await mountModule(app, ctx, exploreModule, {identity, requests, plexTitles: plexIndex, watchHistory, transports: exploreTransports});
   await mountModule(app, ctx, plexNotificationsModule, undefined);
   await mountModule(app, ctx, calendarModule, {library, plexTitles: plexIndex});

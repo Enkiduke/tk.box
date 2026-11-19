@@ -43,8 +43,8 @@ const kindLabel=(k:Kind)=>kinds.find(([id])=>id===k)![1];
 // 10/01-10/31 as "Oct 1 – Oct 31".
 const season=(schedule:string)=>schedule.split('-').map(part=>{const [m,d]=part.split('/').map(Number);return new Date(2000,m!-1,d).toLocaleDateString(undefined,{month:'short',day:'numeric'});}).join(' – ');
 
-export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
-  const view=useApi<View>(engineReady?'/admin/artwork/collections':undefined),[draft,setDraft]=useState<Draft>();
+export function ArtworkCollections() {
+  const view=useApi<View>('/admin/artwork/collections'),[draft,setDraft]=useState<Draft>();
   const [editing,setEditing]=useState<number>(),[opened,setOpened]=useState<string>(),[discover,setDiscover]=useState(false),[importing,setImporting]=useState(false),[dirty,setDirty]=useState(false),[tab,setTabState]=useState(()=>(t=>tabs.some(([id])=>id===t)?t:'collections')(remembered('collectionsTab','collections')));
   const setTab=(t:string)=>{setTabState(t);remember('collectionsTab',t);};
   const mutation=useMutation(view.reload);
@@ -56,7 +56,6 @@ export function ArtworkCollections({engineReady}:{engineReady:boolean}) {
     void api<{results:{library:string;name:string;items:number}[];index:{built:number|null}}>('/admin/artwork/collections/discover','POST',{mode:'franchises'})
       .then(r=>{if(current&&r.index.built!==null)setLive(new Map(r.results.map(c=>[idOf(c),c.items])));},()=>{});
     return ()=>{current=false;};},[!!view.data,view.data?.kept.updated]);
-  if(!engineReady)return <Empty title="The artwork engine isn’t set up">Set it up (above) to manage collections.</Empty>;
   if(view.loading&&!view.data)return <Loading/>;
   if(view.error)return <ErrorNotice message={view.error.message} retry={view.reload}/>;
   if(!view.data||!draft)return null;

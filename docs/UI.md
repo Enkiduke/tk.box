@@ -38,7 +38,7 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
 - Lists over 100 rows show 100, then "Show 100 more". Movies and Shows load the next 100 on their own as you scroll near the end (`usePaged(…, {auto:true})`).
 
 ## Status (`Pill`)
-One coloured pill (dot + word) per state, the same everywhere:
+Use one coloured pill per state. Library availability and grab states pair their label with the same icon across lists and detail views. Other pills can use a dot.
 
 | Tone | Colour | States |
 | --- | --- | --- |

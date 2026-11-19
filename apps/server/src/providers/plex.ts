@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import {createHash} from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import {ArtworkCache} from './artwork-cache.js';
 import {remoteJson} from './remote-json.js';
 import type { Config } from '../config.js';
@@ -12,7 +14,9 @@ import { readPlexUsers } from './plex-users.js';
 export type ExploreLibraryTitle = Pick<CatalogItem,'title'|'year'|'genres'|'addedAt'|'tmdbId'> & {kind:'movie'|'show'};
 export type ExploreWatchedTitle = ExploreLibraryTitle & {tmdbId:number};
 // Plex dates are seconds since 1970.
-export type PlexAvailability = {titles:{kind:'movie'|'show';ratingKey:string;section?:string;tmdbId?:number;tvdbId?:number;addedAt?:number}[];seasons:{showKey:string;season:number;addedAt?:number}[];complete:boolean};
+export type PlexAvailability = {titles:{kind:'movie'|'show';ratingKey:string;section?:string;tmdbId?:number;tvdbId?:number;addedAt?:number}[];seasons:{showKey:string;season:number;addedAt?:number;ratingKey?:string}[];complete:boolean};
+// A collection in a Plex library, for Clean Up's Leaving Soon collection.
+export type PlexSectionCollection = {ratingKey:string;title:string;smart:boolean;addedAt?:number};
 export type ExploreLocalWatch = ExploreWatchedTitle & {lastViewedAt:number};
 // One of Plex's copies of a title (the Plex index's `copies`), and the library it is in.
 export type PlexCopy = {ratingKey:string;section?:string};
@@ -111,7 +115,7 @@ const plexId = z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative(
 const leafContainer = z.object({ MediaContainer: z.object({ librarySectionID: plexId.optional(), totalSize: z.coerce.number().int().nonnegative().optional(), Metadata: z.array(z.object({
   ratingKey: plexId, type: z.string(), title: z.string().max(500), librarySectionID: plexId.optional(), duration: z.number().nonnegative().optional(),
   year: z.number().int().optional(), originallyAvailableAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), index: z.number().int().nonnegative().optional(), parentIndex: z.number().int().nonnegative().optional(),
-  grandparentTitle: z.string().max(500).optional(), grandparentRatingKey: plexId.optional(), parentRatingKey: plexId.optional(),
+  grandparentTitle: z.string().max(500).optional(), grandparentRatingKey: plexId.optional(), parentRatingKey: plexId.optional(), addedAt: z.number().int().optional().catch(undefined),
   Media: z.array(z.object({ duration: z.number().nonnegative().optional(), videoCodec: z.string().max(40).optional(), width: z.number().positive().optional(), height: z.number().positive().optional(), container: z.string().max(40).optional() })).default([]),
 })).default([]) }) });
 type Leaf = z.infer<typeof leafContainer>['MediaContainer']['Metadata'][number];
@@ -532,10 +536,27 @@ export class PlexAdapter {
       Location: z.array(z.object({ path: z.string() })).default([]) })).default([]) }) })
       .parse(await this.json(new URL('/library/sections', this.config.PLEX_URL), serverToken)).MediaContainer.Directory;
     const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, ''), target = norm(folder);
-    const section = sections.find(d => d.Location.some(l => target === norm(l.path) || target.startsWith(`${norm(l.path)}/`)));
-    if (!section) return false;
-    const url = new URL(`/library/sections/${section.key}/refresh`, this.config.PLEX_URL);
-    url.searchParams.set('path', folder);
+    const locations = sections.flatMap(section => section.Location.map(location => ({ key: section.key, path: location.path })));
+    let location = locations.find(l => target === norm(l.path) || target.startsWith(`${norm(l.path)}/`));
+    let scanPath = folder;
+    if (!location) {
+      // A same-host import and Plex can reach the same library through different symlinks.
+      // Compare physical paths, then send the folder under the location Plex registered.
+      const physicalFolder = await realpath(folder).catch(() => undefined);
+      if (!physicalFolder) return false;
+      for (const candidate of locations) {
+        const root = await realpath(candidate.path).catch(() => undefined);
+        if (!root) continue;
+        const suffix = relative(root, physicalFolder);
+        if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`)) continue;
+        location = candidate;
+        scanPath = join(candidate.path, suffix);
+        break;
+      }
+    }
+    if (!location) return false;
+    const url = new URL(`/library/sections/${location.key}/refresh`, this.config.PLEX_URL);
+    url.searchParams.set('path', scanPath);
     await this.json(url, serverToken);
     return true;
   }
@@ -564,7 +585,7 @@ export class PlexAdapter {
         const {job,nodes}=r.value;
         for(const node of nodes){
           if(job.type==='3'){
-            if(node.type==='season'&&node.parentRatingKey&&node.index!==undefined&&(node.leafCount??1)>0)result.seasons.push({showKey:node.parentRatingKey,season:node.index,addedAt:node.addedAt});
+            if(node.type==='season'&&node.parentRatingKey&&node.index!==undefined&&(node.leafCount??1)>0)result.seasons.push({showKey:node.parentRatingKey,season:node.index,addedAt:node.addedAt,ratingKey:node.ratingKey});
             continue;
           }
           const {tmdbId,tvdbId}=catalogDto(node,job.library.key);
@@ -574,19 +595,100 @@ export class PlexAdapter {
     }
     return result;
   }
-  // The episodes Plex has of one show (the Plex index reads the library's followed shows), as season and episode numbers with their rating keys.
-  async showEpisodes(grant:PlexGrant,ratingKey:string):Promise<{season:number;episode:number;ratingKey:string}[]> {
-    const out:{season:number;episode:number;ratingKey:string}[]=[];
+  // The episodes Plex has of one show (the Plex index reads the library's followed shows), as season and episode numbers with their rating keys
+  // and added dates (seconds).
+  async showEpisodes(grant:PlexGrant,ratingKey:string):Promise<{season:number;episode:number;ratingKey:string;addedAt?:number}[]> {
+    const out:{season:number;episode:number;ratingKey:string;addedAt?:number}[]=[];
     for(let offset=0;offset<20000;){
       const url=new URL(`/library/metadata/${encodeURIComponent(ratingKey)}/allLeaves`,this.config.PLEX_URL);
       for(const [key,value] of Object.entries({excludeElements:'Media,Role,Director,Writer,Country,Guid,Collection,Producer,Genre,Similar,Field,Image',
         'X-Plex-Container-Start':String(offset),'X-Plex-Container-Size':'1000'}))url.searchParams.set(key,value);
       const page=leafContainer.parse(await this.json(url,grant.serverToken)).MediaContainer;
-      for(const leaf of page.Metadata)if(leaf.type==='episode'&&leaf.parentIndex!==undefined&&leaf.index!==undefined)out.push({season:leaf.parentIndex,episode:leaf.index,ratingKey:leaf.ratingKey});
+      for(const leaf of page.Metadata)if(leaf.type==='episode'&&leaf.parentIndex!==undefined&&leaf.index!==undefined)out.push({season:leaf.parentIndex,episode:leaf.index,ratingKey:leaf.ratingKey,...(leaf.addedAt?{addedAt:leaf.addedAt}:{})});
       offset+=page.Metadata.length;
       if(page.Metadata.length<1000||(page.totalSize!==undefined&&offset>=page.totalSize))break;
     }
     return out;
+  }
+  // Clean Up (services/cleanup-run.ts), with the owner's token: a title's collections, deleting a title or season from
+  // Plex (with its files), and the Leaving Soon collection. Never by title search: every call names a rating key.
+  async itemCollections(token:string,ratingKey:string):Promise<string[]> {
+    requireThat(/^\d+$/.test(ratingKey),'INVALID_MEDIA','Invalid Plex media identifier.');
+    const node=catalogContainer.parse(await this.json(new URL(`/library/metadata/${ratingKey}`,this.config.PLEX_URL),token)).MediaContainer.Metadata[0];
+    requireThat(node?.ratingKey===ratingKey,'MEDIA_NOT_FOUND','Media is unavailable.',404);
+    return (node.Collection??[]).map(c=>c.tag).filter(Boolean);
+  }
+  async deleteMetadata(token:string,ratingKey:string) {
+    requireWritable();requireThat(/^\d+$/.test(ratingKey),'INVALID_MEDIA','Invalid Plex media identifier.');
+    await this.json(new URL(`/library/metadata/${ratingKey}`,this.config.PLEX_URL),token,'DELETE');
+  }
+  async sectionCollectionList(token:string,section:string):Promise<PlexSectionCollection[]> {
+    requireThat(/^\d+$/.test(section),'INVALID_LIBRARY','Invalid Plex library identifier.');
+    const container=z.object({MediaContainer:z.object({Metadata:z.array(z.object({ratingKey:plexId,title:z.string(),smart:z.union([z.boolean(),z.string(),z.number()]).optional(),
+      addedAt:z.number().optional().catch(undefined)})).default([])})}).parse(await this.json(new URL(`/library/sections/${section}/collections`,this.config.PLEX_URL),token)).MediaContainer;
+    return container.Metadata.map(c=>({ratingKey:c.ratingKey,title:c.title,smart:c.smart===true||c.smart==='1'||c.smart===1,...(c.addedAt?{addedAt:c.addedAt}:{})}));
+  }
+  async collectionChildren(token:string,ratingKey:string):Promise<string[]> {
+    requireThat(/^\d+$/.test(ratingKey),'INVALID_MEDIA','Invalid Plex collection identifier.');
+    const url=new URL(`/library/collections/${ratingKey}/children`,this.config.PLEX_URL);
+    url.searchParams.set('excludeElements','Media,Role,Director,Writer,Country,Guid,Collection,Producer,Genre,Image');
+    return z.object({MediaContainer:z.object({Metadata:z.array(z.object({ratingKey:plexId})).default([])})}).parse(await this.json(url,token)).MediaContainer.Metadata.map(m=>m.ratingKey);
+  }
+  private async libraryUri(token:string,ratingKeys:string[]) {
+    requireThat(ratingKeys.length>0&&ratingKeys.every(k=>/^\d+$/.test(k)),'INVALID_MEDIA','Invalid Plex media identifier.');
+    const machine=this.config.PLEX_MACHINE_ID??await this.serverIdentity(token);
+    return `server://${machine}/com.plexapp.plugins.library/library/metadata/${ratingKeys.join(',')}`;
+  }
+  // A manual collection of `ratingKeys` in `section`; returns its rating key.
+  async createCollection(token:string,section:string,title:string,kind:'movie'|'show',ratingKeys:string[]) {
+    requireWritable();requireThat(/^\d+$/.test(section),'INVALID_LIBRARY','Invalid Plex library identifier.');
+    const url=new URL('/library/collections',this.config.PLEX_URL);
+    for(const [key,value] of Object.entries({type:kind==='movie'?'1':'2',title,smart:'0',sectionId:section,uri:await this.libraryUri(token,ratingKeys)}))url.searchParams.set(key,value);
+    const made=z.object({MediaContainer:z.object({Metadata:z.array(z.object({ratingKey:plexId})).default([])})}).parse(await this.json(url,token,'POST')).MediaContainer.Metadata[0];
+    if(made)return made.ratingKey;
+    const found=(await this.sectionCollectionList(token,section)).find(c=>c.title===title);
+    if(!found)throw new AppError('PLEX_UNAVAILABLE','Plex did not create the collection.',502);
+    return found.ratingKey;
+  }
+  async addCollectionItems(token:string,collection:string,ratingKeys:string[]) {
+    requireWritable();requireThat(/^\d+$/.test(collection),'INVALID_MEDIA','Invalid Plex collection identifier.');
+    const url=new URL(`/library/collections/${collection}/items`,this.config.PLEX_URL);url.searchParams.set('uri',await this.libraryUri(token,ratingKeys));
+    await this.json(url,token,'PUT');
+  }
+  async removeCollectionItem(token:string,collection:string,ratingKey:string) {
+    requireWritable();requireThat(/^\d+$/.test(collection)&&/^\d+$/.test(ratingKey),'INVALID_MEDIA','Invalid Plex media identifier.');
+    await this.json(new URL(`/library/collections/${collection}/items/${ratingKey}`,this.config.PLEX_URL),token,'DELETE');
+  }
+  async editSortTitle(token:string,section:string,collection:string,sortTitle:string) {
+    requireWritable();requireThat(/^\d+$/.test(section)&&/^\d+$/.test(collection),'INVALID_MEDIA','Invalid Plex collection identifier.');
+    const url=new URL(`/library/sections/${section}/all`,this.config.PLEX_URL);
+    for(const [key,value] of Object.entries({type:'18',id:collection,'titleSort.value':sortTitle,'titleSort.locked':'1'}))url.searchParams.set(key,value);
+    await this.json(url,token,'PUT');
+  }
+  // The collections engine (services/collections/plex.ts), with the token of the run: any read of the server's own API
+  // as JSON, and the changes collections make (create, add, remove, sort, visibility, delete), which need writes allowed.
+  // The path is always one the engine built; it stays on the configured Plex server.
+  serverRead(token:string,path:string,params:Record<string,string|number>={}) {
+    const url=new URL(path,this.config.PLEX_URL);
+    requireThat(url.origin===new URL(this.config.PLEX_URL).origin,'INVALID_REQUEST','Plex requests stay on the Plex server.');
+    for(const [key,value] of Object.entries(params))url.searchParams.set(key,String(value));
+    return this.json(url,token);
+  }
+  async serverSend(token:string,method:'POST'|'PUT'|'DELETE',path:string,params:Record<string,string|number>={}) {
+    requireWritable();
+    const url=new URL(path,this.config.PLEX_URL);
+    requireThat(url.origin===new URL(this.config.PLEX_URL).origin,'INVALID_REQUEST','Plex requests stay on the Plex server.');
+    for(const [key,value] of Object.entries(params))url.searchParams.set(key,String(value));
+    return this.json(url,token,method);
+  }
+  async uploadPoster(token:string,ratingKey:string,image:Buffer) {
+    requireWritable();requireThat(/^\d+$/.test(ratingKey),'INVALID_MEDIA','Invalid Plex media identifier.');
+    const url=new URL(`/library/metadata/${ratingKey}/posters`,this.config.PLEX_URL),started=performance.now();
+    try {
+      const r=await this.transport(url,{method:'POST',headers:this.headers(token),body:new Uint8Array(image),redirect:'error',signal:AbortSignal.timeout(30000)});
+      await r.body?.cancel();this.observe?.(performance.now()-started,r.ok);
+      if(!r.ok)throw new Error(String(r.status));
+    } catch {throw new AppError('PLEX_UNAVAILABLE','Plex could not take the poster.',502);}
   }
   // Date Viewed is Plex's watch state for the token making the request. Query episodes in TV libraries
   // so a recently watched episode can seed its series even when the series is still in progress.

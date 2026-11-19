@@ -2,6 +2,7 @@ import type { ExploreItem, ExplorePage, ExploreRowInfo } from '../../../../packa
 import type { PlexAdapter } from './plex.js';
 import { requireThat } from '../errors.js';
 import { plexPhoto } from './explore-images.js';
+import { externalRatings } from './plex-catalog.js';
 import { exploreGenresOf } from './explore-genres.js';
 
 // Plex Discover: the viewer's universal watchlist and the shelves Plex shows on its own Discover page.
@@ -34,7 +35,7 @@ export function discoverItem(m: DiscoverMetadata): ExploreItem | undefined {
   const ids = discoverIds(m), rating = m.audienceRating ?? m.rating, genres = exploreGenresOf((m.Genre ?? []).map(g => g.tag));
   return { key: ids.tmdb ? `${kind}:tmdb:${ids.tmdb}` : `${kind}:plex:${m.ratingKey}`, source: 'plex', kind, title: m.title,
     ...(m.year ? { year: m.year } : {}), ...(m.summary ? { summary: m.summary } : {}),
-    posterUrl: plexPhoto(m.thumb, 300, 450), backdropUrl: plexPhoto(m.art, 1280, 720), ...(rating ? { rating } : {}),
+    posterUrl: plexPhoto(m.thumb, 300, 450), backdropUrl: plexPhoto(m.art, 1280, 720), ...(rating ? { rating } : {}), ratings:externalRatings(m),
     ...(m.duration ? { durationMs: m.duration } : {}), ...(kind === 'show' && m.leafCount ? { episodeCount: m.leafCount } : {}), ...(genres.length ? { genres } : {}), ids };
 }
 const items = (list: DiscoverMetadata[] = []) => { const seen = new Set<string>(); return list.flatMap(m => { const item = discoverItem(m); if (!item || seen.has(item.key)) return []; seen.add(item.key); return [item]; }); };

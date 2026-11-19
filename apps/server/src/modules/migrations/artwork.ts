@@ -26,5 +26,14 @@ export const artworkMigrations: Migration[] = [
       db.prepare('INSERT INTO service_keys VALUES(?,?) ON CONFLICT(name) DO NOTHING').run(name, vault!.seal(vault!.open(sealed, `artwork:${name}-key`), `service-key:${name}`));
     delete value.keys;
     db.prepare('UPDATE artwork_settings SET value=? WHERE id=1').run(JSON.stringify(value));
-  } }
+  } },
+  // The collections engine's files become tables (persistence/collections-store.ts): what the last applying run kept,
+  // the movies collections downloaded and which collections wanted each, and Discover's index (each movie's TMDb
+  // collection, those collections' parts, each universe's list). The old files are imported once at startup.
+  { name: 'collections-tables', up: `CREATE TABLE artwork_kept_collections(library TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('franchise','streaming','custom')),
+          items INTEGER NOT NULL, rating_key TEXT, off INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL);
+        CREATE TABLE artwork_collection_downloads(tmdb_id INTEGER PRIMARY KEY, owners TEXT NOT NULL);
+        CREATE TABLE artwork_discover_movies(tmdb_id INTEGER PRIMARY KEY, collection_id INTEGER, checked_at INTEGER NOT NULL);
+        CREATE TABLE artwork_discover_collections(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parts TEXT NOT NULL, checked_at INTEGER NOT NULL);
+        CREATE TABLE artwork_discover_universes(key TEXT PRIMARY KEY, members TEXT NOT NULL, checked_at INTEGER NOT NULL, imdb_series INTEGER NOT NULL DEFAULT 0);` }
 ];

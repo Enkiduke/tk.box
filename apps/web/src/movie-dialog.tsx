@@ -10,7 +10,7 @@ import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {RequestsTable,SourceLine} from './movie-source.js';
 import {ShowDialogBody} from './show-dialog.js';
-import {ACTIONS,Dash,FavoriteStar,IconAction,RowActions,GrabPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
+import {ACTIONS,Dash,FavoriteStar,IconAction,RowActions,GrabPill,MediaStatusPill,Panel,Pill,Poster,Table,Tabs,Tag,When,WhenDay,changed,gb,qualityRank,useRefresh,useSorted,type TitlePane,type Tone} from './manage-ui.js';
 
 // A movie or show in the library (docs/UI.md), as a dialog over whichever Admin page opened it (`&title=<id>`, and
 // `&pane=` for a tab): its head holds what it has, its settings and the searches; the tabs hold its files, grabs,
@@ -52,7 +52,7 @@ function Head({t,path,mutation,onDeleted}:{t:LibraryTitleView;path:string;mutati
     <div className="ui-movie-main">
       <div>
         <h2 className="ui-movie-title">{t.title}{t.year?<span> {t.year}</span>:null}</h2>
-        <div className="ui-movie-line"><Pill tone={s.tone}>{s.label}</Pill>{have&&<span>{have.quality} · {gb(have.size)}</span>}{t.keep&&<FavoriteStar/>}
+        <div className="ui-movie-line"><MediaStatusPill tone={s.tone}>{s.label}</MediaStatusPill>{have&&<span>{have.quality} · {gb(have.size)}</span>}{t.keep&&<FavoriteStar/>}
           {t.pausedReason&&<span className="danger-text">{t.pausedReason}</span>}</div>
         <div className="ui-movie-source"><SourceLine source={t.source} addedAt={t.addedAt}/></div>
       </div>

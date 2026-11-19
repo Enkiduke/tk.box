@@ -3,6 +3,7 @@ import type { PlexGrant } from '../providers/plex.js';
 import type { RequestChange } from '../services/requests.js';
 import type { NewNotification, NotificationTarget, Resolution } from '../persistence/notifications-store.js';
 import type { GrabState } from '../persistence/library-store.js';
+import type { SessionEnd, SessionHistory, StreamKind } from '../services/playback-sessions.js';
 
 export type TitleChange = 'added' | 'monitor' | 'file' | 'removed';
 
@@ -15,8 +16,6 @@ export type BusEvents = {
   'service-keys.changed': { plex: boolean };
   // Plex finished processing titles in these library sections, or 'any' after a scan or a dropped connection.
   'plex.library.changed': { sections: Finished };
-  // A live or custom channel viewer's session ended without the viewer stopping it.
-  'live.viewer.ended': { sessionId: string };
   // An artwork or cleanup job finished and may have changed titles, posters or collections in Plex.
   'library.edited': { by: 'artwork' | 'cleanup' };
   // The Plex notification feed is about to connect with the owner's grant (artwork reads which libraries to watch).
@@ -26,6 +25,10 @@ export type BusEvents = {
   'plex.playback.connection': { connected: boolean };
   // A browser session signed out: everything it was watching stops.
   'session.signed-out': { hash: string };
+  // A playback session (VOD, IPTV or custom channel) started or ended, from the one session registry
+  // (modules/playback-sessions.ts). `media`: the title's rating key, or the channel. `history`: what watch history records.
+  'session.started': { id: string; kind: StreamKind; hash: string; accountId: string; media?: string; history?: SessionHistory };
+  'session.ended': { id: string; kind: StreamKind; hash: string; accountId: string; media?: string; reason: SessionEnd };
   // A request was made, sent, moved on (Plex, the library), cancelled or removed. `accountId` is the requester's.
   'requests.changed': RequestChange;
   // Post a notification, or close an open condition (modules/notifications.ts), without depending on that module.

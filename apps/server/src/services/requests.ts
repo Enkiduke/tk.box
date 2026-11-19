@@ -72,7 +72,7 @@ export class Requests {
     return this.labelCache = labels;
   }
 
-  // Clean Up's titles, in the purge script's shape: the requested titles Plex holds now (a movie, or a show with any of
+  // Clean Up's titles:the requested titles Plex holds now (a movie, or a show with any of
   // the seasons asked for), one record per request not failed or removed, so every requester counts. Read from the
   // Plex index when asked, not from statuses saved earlier: a title Plex has lost drops out. Only requested titles
   // (Admin- and Collections-added ones are not candidates, a choice made with the user). A requester is named by their

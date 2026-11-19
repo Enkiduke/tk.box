@@ -116,6 +116,10 @@ export type CatalogItem = {
 };
 // A third-party score from the item's Plex agent, on Plex's 0–10 scale. `fresh` is Rotten Tomatoes' fresh/upright state.
 export type ExternalRating = {source: 'imdb' | 'tomatometer' | 'popcornmeter' | 'tmdb'; score: number; fresh?: boolean};
+// Keep the preferred score when multiple providers report the same meter.
+export function mergeRatings(preferred: ExternalRating[] = [], extra: ExternalRating[] = []) {
+  return [...preferred, ...extra.filter(rating => !preferred.some(first => first.source === rating.source))];
+}
 export type CatalogPage = {items: CatalogItem[]; offset: number; limit: number; total?: number; hasMore: boolean};
 
 // Explore: titles from catalog sources outside the Plex server (Plex Discover, TMDB).
@@ -168,7 +172,7 @@ export const exploreGenres = ['Action', 'Adventure', 'Animation', 'Comedy', 'Cri
 export type ExploreGenre = typeof exploreGenres[number];
 export type ExploreItem = {
   key: string; source: ExploreSource; kind: 'movie' | 'show'; title: string; year?: number; summary?: string;
-  posterUrl?: string; backdropUrl?: string; rating?: number; durationMs?: number; episodeCount?: number;
+  posterUrl?: string; backdropUrl?: string; rating?: number; ratings?: ExternalRating[]; durationMs?: number; episodeCount?: number;
   // Original language (ISO 639-1, TMDB's codes). Plex Discover does not send it.
   language?: string;
   // Genres in Explore's own names (`exploreGenres`), whatever each source calls them.

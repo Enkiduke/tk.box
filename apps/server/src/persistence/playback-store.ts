@@ -6,10 +6,6 @@ import type { PlaybackMode } from '../../../../packages/contracts/src/index.js';
 export type PlaybackRecord = { id: string; session_hash: string; mode: PlaybackMode; rating_key: string; expires: number };
 export class PlaybackStore {
   constructor(private db: Db) {}
-  // Unexpired sessions this sign-in holds.
-  active(sessionHash: string, now: number) {
-    return (prepared(this.db, 'SELECT count(*) AS n FROM playback_sessions WHERE session_hash=? AND expires>?').get(sessionHash, now) as { n: number }).n;
-  }
   insert(record: PlaybackRecord) {
     prepared(this.db, 'INSERT INTO playback_sessions(id, session_hash, mode, rating_key, expires) VALUES(?,?,?,?,?)')
       .run(record.id, record.session_hash, record.mode, record.rating_key, record.expires);

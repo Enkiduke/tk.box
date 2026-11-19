@@ -13,7 +13,7 @@ import {toast} from './toasts.js';
 // itself, and the logo, come from there.
 type Role='poster'|'season'|'episode';
 type TemplateLayout={name:string;base:string|null;role:Role;uses:string[];media?:string[]|null;values:V;inherited?:V};
-type Template={version:string;default:string;layouts:TemplateLayout[];fonts:string[];banners:Record<string,V>;glows:Record<string,string>};
+type Template={version:string;default:string;layouts:TemplateLayout[];fonts:string[];banners:Record<string,V>};
 type Title={id:string;cat:string;title:string;year?:number;thumb:string|null;kind?:string;service?:string};
 // What a title is, as a layout's `media` names it: movies, tv, or collections:<kind> for each kind of collection.
 const sortOf=(t:Title)=>t.cat==='collections'?`collections:${t.kind??'collection'}`:t.cat;
@@ -122,17 +122,15 @@ function Studio({data,layout,reload,titles,edits,setEdits,setName,sample,setSamp
   const save=()=>void mutation.run(async()=>{await api<Template>('/admin/artwork/template/save','POST',{layout:layout.name,values:mine});
     setEdits(all=>{const rest={...all};delete rest[key];return rest;});reload();
     toast.success('Layout saved',{detail:`${MADE[current]} using ${layout.name}${children.length?`, and the ${children.join(' and ')} settings that follow it,`:''} change the next time they’re made (Update changed titles, or push a title).`});});
-  const row=(f:Field)=>f.glows?<Glows key={f.k} f={f} values={values} saved={savedValues} defaults={data.glows} set={set}/>
-    :f.banners?<Banners key={f.k} f={f} values={values} saved={savedValues} defaults={data.banners} banner={banner} setBanner={setBanner} set={set}/>
+  const row=(f:Field)=>f.banners?<Banners key={f.k} f={f} values={values} saved={savedValues} defaults={data.banners} banner={banner} setBanner={setBanner} set={set}/>
     :f.anchor?<AnchorRow key={f.k} f={f} values={values} changed={differs(f,values,savedValues)} set={set} reset={()=>reset(f)} inherit={inherit(f)}/>
     :<FieldRow key={f.k+(f.badge??'')} f={f} value={values[f.k]} fonts={data.fonts} changed={differs(f,values,savedValues)} set={v=>set(f.k,v)} reset={()=>reset(f)} inherit={inherit(f)}/>;
   const ratio=preview.boxes?preview.boxes.w/preview.boxes.h:Number(values.width??(current==='episode'?3200:2000))/Number(values.height??(current==='episode'?1800:3000));
-  // Clicking the preview opens the smallest layer drawn there; the border is wherever the poster itself isn't.
+  // Clicking the preview opens the smallest layer drawn there.
   const drawn=preview.boxes,inside=([l,t,r,b]:Box,x:number,y:number)=>x>=l&&x<=r&&y>=t&&y<=b,area=([l,t,r,b]:Box)=>(r-l)*(b-t);
   const hitAt=(e:{clientX:number;clientY:number;currentTarget:HTMLElement})=>{
     if(!drawn)return undefined;const rect=e.currentTarget.getBoundingClientRect(),x=(e.clientX-rect.left)/rect.width*drawn.w,y=(e.clientY-rect.top)/rect.height*drawn.h;
-    const {artwork,border}=drawn.boxes;if(border&&artwork&&!inside(artwork,x,y)&&layers.some(l=>l.id==='border'))return 'border';
-    return Object.entries(drawn.boxes).filter(([n,box])=>n!=='border'&&inside(box,x,y)&&layers.some(l=>l.id===n)).sort((a,b)=>area(a[1])-area(b[1]))[0]?.[0];
+    return Object.entries(drawn.boxes).filter(([n,box])=>inside(box,x,y)&&layers.some(l=>l.id===n)).sort((a,b)=>area(a[1])-area(b[1]))[0]?.[0];
   };
   // An outline for a layer that doesn't fill the whole preview.
   const outline=(id:string|undefined,kind:string)=>{const box=id&&drawn?.boxes[id];if(!box||!drawn||area(box)>=drawn.w*drawn.h*0.95)return null;const [l,t,r,b]=box;
@@ -244,14 +242,6 @@ function AnchorRow({f,values,changed,set,reset,inherit}:{f:Field;values:V;change
       {down.flatMap(d=>across.map(h=>{const at=values[f.k]===h&&values[v]===d,name=d===h?d:`${d} ${h}`;
         return <button key={`${d}-${h}`} type="button" aria-pressed={at} aria-label={name} title={name[0]!.toUpperCase()+name.slice(1)} onClick={()=>{set(f.k,h);set(v,d);}}><span/></button>;}))}
     </div></Row>;
-}
-// Each streaming service's glow: its own color unless the layout picks another. Saved as the layout's streaming_colors
-// mapping, which holds only the services whose color differs.
-function Glows({f,values,saved,defaults,set}:{f:Field;values:V;saved:V;defaults:Record<string,string>;set:(k:string,v:unknown)=>void}) {
-  const pick=(all:unknown,name:string)=>((all??{}) as Record<string,string>)[name]??defaults[name]!;
-  const put=(name:string,v:unknown)=>{const all={...((values[f.k]??{}) as Record<string,string>)};if(same(v,defaults[name]))delete all[name];else all[name]=String(v);set(f.k,all);};
-  return <div className="artwork-glows">{Object.keys(defaults).map(name=><FieldRow key={name} f={{k:`streaming_colors.${name}`,label:name,color:true}} value={pick(values[f.k],name)} fonts={[]}
-    changed={!same(pick(values[f.k],name),pick(saved[f.k],name))} set={v=>put(name,v)} reset={()=>put(name,pick(saved[f.k],name))}/>)}</div>;
 }
 // The status banner's categories: pick one (the preview shows it too) to edit its words, colors, bar, window and priority.
 // They are saved as the layout's status_banners mapping, which holds only what differs from the defaults.

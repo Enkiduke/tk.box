@@ -4,6 +4,8 @@ import { defineModule } from './module.js';
 import { artworkMigrations } from './migrations/artwork.js';
 import { ArtworkStore } from '../persistence/artwork-store.js';
 import { ArtworkEngine } from '../services/artwork-engine.js';
+import { CollectionsStore } from '../persistence/collections-store.js';
+import { CollectionsRunner } from '../services/collections/runner.js';
 import { ArtworkWorker } from '../services/artwork-worker.js';
 import { ArtworkSchedule, type ScheduleState, type Task } from '../services/artwork-schedule.js';
 import type { Job } from '../services/jobs.js';
@@ -15,8 +17,8 @@ type Deps = {
   streaming: (grant: PlexGrant) => Promise<number>;
 };
 
-// Admin › Artwork: posters, logos and collections made by the artwork engine, which runs as a separate Python process,
-// apart from every playback path. TMDB is the shared client (ctx.tmdb); every provider key (TMDB, TVDB, Fanart.tv, MDBList)
+// Admin › Artwork: posters and logos made by the artwork engine, which runs as a separate Python process apart from every
+// playback path, and the Plex collections tk.box keeps (services/collections, in the server). TMDB is the shared client (ctx.tmdb); every provider key (TMDB, TVDB, Fanart.tv, MDBList)
 // is a service key in Admin › Connections.
 export const artworkModule = defineModule({
   name: 'artwork',
@@ -24,10 +26,14 @@ export const artworkModule = defineModule({
   access: 'admin',
   setup(routes, { config, db, vault, plex, bus, plexOwner, serviceKeys, tmdb, jobs, log }, { streaming }: Deps) {
     const store = new ArtworkStore(db, vault, resolve('apps/artwork/defaults.json'));
-    const engine = new ArtworkEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'), collectionsScript: resolve('apps/artwork/plex_collections.py'),
+    const engine = new ArtworkEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/artwork/artwork_engine.py'),
       dataDir: config.DATA_DIR, cacheDir: config.CACHE_DIR, get plexUrl() { return config.PLEX_URL; } }, (message, detail) => log.info(message, detail), () => serviceKeys.providers());
     const worker = new ArtworkWorker(engine, (message, detail) => log.warn(message, detail));
     engine.useWorker(worker);
+    // Files left by the collections engine before it moved into the server become table rows, once.
+    const collections = new CollectionsStore(db);
+    collections.importFiles(engine.workDir, (message, detail) => log.warn(message, detail));
+    engine.useCollections(new CollectionsRunner({ plex, tmdb, mdblistKey: () => serviceKeys.providers().mdblist, artwork: store, store: collections }), collections);
     const schedule = new ArtworkSchedule(store, engine, plex, () => plexOwner.grant(), (message, detail) => log.warn(message, detail), streaming);
     bus.on('plex.library.changed', ({ sections }) => schedule.finished(sections));
     bus.on('plex.notifications.connecting', ({ grant }) => schedule.notificationLibraries(grant));

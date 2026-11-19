@@ -1,4 +1,24 @@
-import type {CalendarEntry} from '../../../packages/contracts/src/index.js';
+import type {CalendarEntry, CalendarEpisodeLabel} from '../../../packages/contracts/src/index.js';
+
+const episodeLabels: Record<CalendarEpisodeLabel, string> = {
+  'series-premiere': 'Series premiere', 'season-premiere': 'Season premiere',
+  'season-finale': 'Season finale', 'series-finale': 'Series finale',
+};
+
+export function episodeReleaseLabel(entries: CalendarEntry[]): string {
+  if (entries.length === 1) {
+    const milestone = entries[0]!.episodeLabel;
+    return milestone ? episodeLabels[milestone] : 'New episode';
+  }
+  const finale = entries.find(entry => entry.episodeLabel === 'season-finale' || entry.episodeLabel === 'series-finale');
+  if (!finale?.season || !finale.episode || entries.some(entry => entry.season !== finale.season)) return 'New episodes';
+  const episodes = new Set(entries.map(entry => entry.episode));
+  if (episodes.size !== finale.episode) return 'New episodes';
+  for (let number = 1; number <= finale.episode; number++) {
+    if (!episodes.has(number)) return 'New episodes';
+  }
+  return 'Full season';
+}
 
 // Group by the movie or series (titleKey) and local day.
 export function groupCalendarEntries(entries: CalendarEntry[]): CalendarEntry[][] {

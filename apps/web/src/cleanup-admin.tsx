@@ -11,10 +11,9 @@ import {CleanupStatus} from './cleanup-status.js';
 import {toast} from './toasts.js';
 
 // Admin › Server › Clean Up: deletes requested titles once everyone who asked for them has had their time with them,
-// by the purge script (apps/cleanup/purge_requests.py), which tk.box runs with these settings. Movies and shows are
-// tk.box's own.
+// by tk.box's own rules. Movies and shows are tk.box's own.
 type Library={key:string;title:string;type:string};
-type Engine={ready:boolean;version?:string;error?:string};
+type Engine={ready:boolean;error?:string};
 type Settings={movieLibraries:string[];tvLibraries:string[];dryRun:boolean;
   daysAfterWatched:number;daysAfterUnwatched:number;daysAfterAnyWatchExempt:number;daysAfterExemptWatch:number;exemptUserIds:number[];exemptIfInCollection:boolean;collectionKinds:Record<CollectionKind,boolean>;
   seasons:{enabled:boolean;protectLatest:boolean;protectSpecials:boolean};leavingSoon:{enabled:boolean;name:string;days:number;poster:boolean};schedule:Scheduled};
@@ -36,15 +35,8 @@ export function CleanupAdmin() {
   </>;
 }
 function EngineStatus({engine,recheck}:{engine:Engine;recheck:()=>void}) {
-  if(engine.ready)return <p className="muted small" role="status"><span className="status-dot ok" aria-hidden="true"/> Clean up script ready · Python {engine.version}</p>;
-  return <Card title="Set up the clean up script" description="Uses the same Python as Artwork." actions={<button onClick={recheck}><Icon name="restart" size={16}/>Check again</button>}>
-    <div className="notice error"><span>{engine.error}</span></div>
-    <ol className="artwork-steps">
-      <li>Set up Artwork’s Python first (Admin › Artwork shows the steps), or any Python 3.10 or later.</li>
-      <li>From the tk.box folder, install the script’s packages into it: <code>artwork-venv/bin/pip install -r apps/cleanup/requirements.txt</code></li>
-      <li>Make sure <code>PYTHON_PATH</code> points at that Python, and restart tk.box if you changed it.</li>
-    </ol>
-  </Card>;
+  if(engine.ready)return <p className="muted small" role="status"><span className="status-dot ok" aria-hidden="true"/> Clean up ready</p>;
+  return <div className="notice error"><span>{engine.error}</span><button onClick={recheck}><Icon name="restart" size={16}/>Check again</button></div>;
 }
 
 // The section's header: a preview and a real run, whose output opens in the Console.

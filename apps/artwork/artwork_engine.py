@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """tk.box's artwork engine: Plex -> artwork APIs -> layouts -> disk/Plex.
 
-Posters, season posters and title cards; making and changing Plex collections is plex_collections.py's.
+Posters, season posters and title cards; making and changing Plex collections is tk.box's own (apps/server/src/services/collections).
 
-tk.box writes the config as JSON from its database and runs this script for each job; credentials arrive in the
-environment (PLEX_TOKEN, TMDB_API_KEY, TVDB_API_KEY, FANART_API_KEY). Requires Python 3.10+, Pillow, NumPy, PyYAML
-(for Kometa/MediUX imports) and requests. Shares engine_common.py with plex_collections.py; no app imports.
+tk.box writes the config as JSON from its database before each job and runs its jobs through one --batch process
+(serve_batch); credentials arrive in the environment (PLEX_TOKEN, TMDB_API_KEY, TVDB_API_KEY, FANART_API_KEY). Requires Python 3.10+, Pillow, NumPy
+and requests. Its Plex, TMDb and HTTP code is in engine_common.py; no app imports.
 """
+
+import time
+STARTED = time.perf_counter()  # Before the imports below, which are most of Python's start-up (the TIMES line's "start")
 
 import argparse
 import base64
@@ -20,9 +23,8 @@ import os
 from pathlib import Path
 import re
 import sys
-import textwrap
 import threading
-import time
+import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields, replace
@@ -37,20 +39,16 @@ for _variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_variable, "1")
 
 import numpy as np
-from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps
-import yaml
+from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
 
 from engine_common import (FANART, HTTP as SharedHTTP, IMAGE_BASE, IMAGE_TTL, OVERLAY_EXIF_TAG, OVERLAY_EXIF_VALUE,
                            SOFTWARE_EXIF_TAG, SOFTWARE_EXIF_VALUE, STREAMING, STREAMING_LOGOS, THUMB_TTL, WEB_UPLOAD_LIMIT,
-                           Metadata, Plex, atomic_write, custom_collection, is_url, local_path, option,
-                           plex_item, read_config as read_shared_config, run_lock, select_item, streaming_services,
+                           Metadata, Plex, Timings, atomic_write, custom_collection, is_url, local_path, option,
+                           plex_item, read_config as read_shared_config, run_lock, select_item,
                            web_download)
 
 
-BADGES = ("gradients", "gradient_top", "gradient_bottom", "resolution", "edition", "codec", "status", "audience_score", "streaming", "status_banner")
-# The white logos Kometa lays over posters, bundled in resources/streaming_overlay/ (its defaults/overlays/images/streaming/white):
-# the file name of each service in STREAMING where it isn't the service's own name.
-STREAMING_OVERLAY = {"Apple TV": "AppleTV", "Tubi": "tubi"}
+BADGES = ("gradient_top", "resolution", "edition", "codec", "audience_score", "status_banner")
 # Ported from Kometa's media_info.yml; TRaSH-style tags in the Plex file path drive these.
 VIDEO_TAGS = (("DV-HDR", r"\[(DV HDR10)\]"), ("DV-Plus", r"\[(DV HDR10Plus)\]"),
               ("DV", r"\[(?!.*HDR)(DV)\]"), ("HDR", r"\[(HDR10)\]"), ("Plus", r"\[(HDR10Plus)\]"))
@@ -72,7 +70,6 @@ EDITIONS = (("IMAX", r"\{edition-IMAX[^}]*\}"), ("Unrated-Edition", r"\{edition-
             ("Ultimate-Edition", r"\{edition-Ultimate(?! Director)[^}]*\}"))
 CAM = r"(?:^|[\\\/\[\]\(\)\s._-])(CAMRIP|TELESYNC|TELECINE|WORKPRINT|SCREENER|DVDSCR|BDSCR|SYNCUP|CAM|TS|TC|WP|SCR|DDC|R5|R6)(?:$|[\\\/\[\]\(\)\s._-])"
 RESOLUTION_FILES = {"480p": "SD", "576p": "SD", "720p": "HD", "1080p": "FHD", "4k": "UHD"}
-STATUS_FILES = {"new": "New", "airing": "Airing", "returning": "Returning", "canceled": "Cancelled", "ended": "Ended"}
 # The status banner (the `status_banner` badge), after TSSK (TV Show Status for Kometa): a bar of text along the bottom of a show's poster
 # for the one thing most worth saying about it. Per category: text, text color, backdrop color (False = none), days of its window
 # (None = no window) and weight. {season}, {episode} and {date} in the text are the event's own. The heaviest weight wins, the earlier
@@ -91,6 +88,7 @@ BANNERS = {"new_show": ("RECENTLY ADDED", "#FFFFFF", "#EB3233", 7, 50),
 BANNER_KEYS = ("text", "color", "backdrop", "opacity", "days", "weight", "enabled")
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+AUDIENCE_SCORE_TIERS = (8.5, 7.0, 5.5, 3.0)  # The scores where the art becomes excellent, good, average and bad (below the last: worst)
 AUDIENCE_TIERS = ((8.5, "excellent"), (7.0, "good"), (5.5, "average"), (3.0, "bad"), (0, "worst"))
 # The score's box is drawn: 140x80 with 15px corners on a 1000px poster, filled by tier. A PNG in resources/audience_score replaces it.
 AUDIENCE_COLORS = {"excellent": (0, 133, 198), "good": (92, 184, 92), "average": (245, 197, 24), "bad": (255, 145, 56), "worst": (226, 49, 51)}
@@ -212,7 +210,8 @@ class HTTP(SharedHTTP):
 
     def image(self, source, base, headers=None):
         if is_url(source):
-            data = self.get(source, headers=headers, ttl=IMAGE_TTL)
+            with self.times.phase("downloads"):
+                data = self.get(source, headers=headers, ttl=IMAGE_TTL)
         else:
             data = local_path(source, base).read_bytes()
         with Image.open(io.BytesIO(data)) as image:
@@ -369,15 +368,6 @@ class ArtworkFiles:
             raise ValueError(f"Keep exactly one {name} file in {folder}; found {len(matches)}")
         return matches[0] if matches else None
 
-    def discard(self, item, keep=()):
-        """--refetch: delete the item's own saved poster and logo (not ones the config names) so they are picked again."""
-        with self.lock:
-            folder = self.folder(item)
-            for name in ("poster", "logo"):
-                path = self.source(folder, name)
-                if path and path.resolve() not in keep:
-                    path.unlink()
-
     def apply(self, item):
         folder = self.folder(item)
         metadata = self.metadata(folder) if folder and folder.exists() else {}
@@ -484,23 +474,6 @@ class ArtworkFiles:
             return folder
 
 
-def label_map(name, value, allowed, hexes=False):
-    """A mapping (or the pairs it was stored as) from known names to text, as a sorted tuple of pairs so Style stays
-    hashable. Names match the allowed ones in any case; with `hexes` the values must be #RRGGBB."""
-    pairs = tuple(value.items()) if isinstance(value, dict) else tuple(value)
-    known, result = {key.lower(): key for key in allowed}, {}
-    for pair in pairs:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise ValueError(f"{name} must be a mapping")
-        key, text = pair
-        if str(key).lower() not in known:
-            raise ValueError(f"{name}: unknown name {key!r}; use one of: {', '.join(allowed)}")
-        if not isinstance(text, str) or not text.strip() or (hexes and not re.fullmatch(r"#[0-9a-fA-F]{6}", text)):
-            raise ValueError(f"{name}.{key} must be {'#RRGGBB' if hexes else 'some text'}")
-        result[known[str(key).lower()]] = text
-    return tuple(sorted(result.items()))
-
-
 def banner_options(value):
     """The `status_banners` mapping (category -> some of BANNER_KEYS) as sorted tuples so Style stays hashable. Categories match
     BANNERS in any case; a backdrop of false or "none" is stored as False."""
@@ -550,33 +523,50 @@ def banner_settings(overrides):
             for name, (text, color, backdrop, days, weight) in BANNERS.items()}
 
 
+# Layout settings retired on 2026-11-18 because no layout used them, with the defaults they had. A saved layout may still
+# hold them: make_style reads past them (drawing as these defaults always did), and render_signature puts the ones it
+# recorded back in, at the layout's own values, so every signature recorded before stays valid.
+RETIRED = {"poster_zoom": 1.0, "poster_shift_x": 0.0, "matte_opacity": 1.0, "matte_color": "#000000", "vignette_mode": "classic",
+           "vignette_color": "#000000", "vignette_size": 1.0, "vignette_falloff": 2.0, "grain_amount": 0.0, "grain_mode": "blend", "grain_size": 1.5,
+           "grain_seed": None, "uniform_logo_center_below": 0, "border_enabled": False, "border_px": 0, "border_color": "#FFFFFF", "border_radius": 0,
+           "position_x": 0.5, "text_stroke_width": 0, "text_stroke_opacity": 1.0, "text_stroke_color": "#000000", "text_shadow_strength": 0.0,
+           "text_shadow_blur": 10, "text_shadow_offset_y": 0, "text_shadow_color": "#000000", "badge_layout": "kometa", "badge_gap": 14, "badge_fit": False,
+           "badge_art_scale": 1.0, "audience_score_tiers": (8.5, 7.0, 5.5, 3.0), "resolution_labels": (), "status_labels": (), "edition_labels": (),
+           "badge_gradient_bottom_height": None, "badge_gradient_bottom_strength": None, "streaming_logo_source": "any", "streaming_logo_max_w": 285,
+           "streaming_logo_max_h": 80, "streaming_logo_h": "left", "streaming_logo_v": "top", "streaming_logo_offset_x": 0, "streaming_logo_offset_y": 0,
+           "streaming_logo_shadow_enabled": False, "streaming_logo_shadow_opacity": 60, "streaming_logo_shadow_angle": 135, "streaming_logo_shadow_distance": 4,
+           "streaming_logo_shadow_size": 8, "streaming_logo_shadow_spread": 0, "streaming_logo_shadow_color": "#000000", "status_banner_border_width": 0,
+           "status_banner_border_color": "#FFFFFF", "status_banner_letter_spacing": 0, "status_banner_stroke_width": 0, "status_banner_stroke_opacity": 1.0,
+           "status_banner_stroke_color": "#000000", "status_banner_shadow_strength": 0.0, "status_banner_shadow_blur": 5, "status_banner_shadow_offset_y": 0,
+           "status_banner_shadow_color": "#000000", "streaming_colors": ()}
+RETIRED_BADGES = ("gradients", "gradient_bottom", "status", "streaming")
+
+
+def make_style(options):
+    """A Style from a layout's settings: retired settings and badges are set aside (Style.retired keeps the settings, for
+    render_signature), so layouts saved before they were retired still load and draw as they did."""
+    own = {key: value for key, value in options.items() if key not in RETIRED and key != "retired"}
+    if isinstance(own.get("badges"), (list, tuple)):
+        own["badges"] = [name for name in own["badges"] if name not in RETIRED_BADGES]
+    kept = tuple(sorted((key, json.dumps(value)) for key, value in options.items() if key in RETIRED))
+    return Style(**own, retired=kept)
+
+
 @dataclass(frozen=True)
 class Style:
     width: int = 2000
     height: int = 3000
-    poster_zoom: float = 1.0
     poster_shift_y: float = 0.0
-    poster_shift_x: float = 0.0  # Moves the picture sideways as poster_shift_y moves it up and down (a fraction of the width)
     matte_height_ratio: float = 0.0
     fade_height_ratio: float = 0.0
     fade_smoothness: float = 0.0  # 0 = straight ramp; 1 = eased at both ends, so there's no visible edge where the fade starts or meets the matte
-    matte_opacity: float = 1.0  # How solid the matte is (the fade ramps up to it); lower lets the poster show through
-    matte_color: str = "#000000"  # What the poster fades to
     vignette_strength: float = 0.0
-    vignette_mode: str = "classic"  # classic dims the whole picture evenly (as the parent app does); radial is a real vignette, clear in the middle and darkest at the corners
-    vignette_color: str = "#000000"
-    vignette_size: float = 1.0  # radial: how far in it reaches (smaller darkens nearer the center, larger keeps it to the corners)
-    vignette_falloff: float = 2.0  # radial: the shape of the ramp (1 = straight; higher stays clear longer, then darkens toward the edges)
-    grain_amount: float = 0.0
-    grain_mode: str = "blend"  # blend (as in Simposter) pulls blacks up and whites down toward grey; film adds visible grain that fades out in the darkest and brightest areas
-    grain_size: float = 1.5  # Blur of the noise, in pixels on a 2000px-wide poster: larger is coarser; 0 = none
     uniform_logo_max_w: int = 600
     uniform_logo_max_h: int = 240
     uniform_logo_offset_x: float = 0.5
     uniform_logo_offset_y: float = 0.5
     uniform_logo_h_align: str = "center"
     uniform_logo_v_align: str = "center"
-    uniform_logo_center_below: int = 0  # Logos shorter than this (px on a 3000px-tall poster) are centered in their box; 0 = off
     uniform_logo_trim: bool = False  # Trim the logo's transparent padding before fitting it, so every logo fills its box alike
     uniform_logo_shadow_enabled: bool = False  # Drop shadow behind the logo, as in Simposter (same names and meanings), plus spread
     uniform_logo_shadow_opacity: float = 60  # Percent
@@ -585,10 +575,6 @@ class Style:
     uniform_logo_shadow_size: float = 15  # Blur, in pixels on a 2000px-wide poster
     uniform_logo_shadow_spread: float = 0  # Percent of the size that is grown solid before the blur; 0 = a plain blurred copy
     uniform_logo_shadow_color: str = "#000000"
-    border_enabled: bool = False
-    border_px: int = 0
-    border_color: str = "#FFFFFF"
-    border_radius: int = 0  # Rounds the picture's corners inside the border (px on a 2000px-wide poster); 0 = square
     poster_filter: str = "all"
     logo_preference: str = "any"
     logo_mode: str = "original"
@@ -601,24 +587,11 @@ class Style:
     text_transform: str = "none"
     letter_spacing: int = 0
     position_y: float = 0.5
-    position_x: float = 0.5  # Where the text is centered across the poster (0-1)
     text_line_spacing: float = 0.2  # Gap between lines, as a fraction of the font size
-    text_stroke_width: float = 0  # Outline around the text, in pixels on a 2000px-wide poster; 0 = none
-    text_stroke_opacity: float = 1.0
-    text_stroke_color: str = "#000000"
-    text_shadow_strength: float = 0.0  # Soft shadow behind the text: 0 = none, 1 = solid
-    text_shadow_blur: float = 10  # How far it spreads (pixels on a 2000px-wide poster)
-    text_shadow_offset_y: float = 0  # Pixels to shift it down; 0 centers it on the text
-    text_shadow_color: str = "#000000"
-    grain_seed: int | None = None
     badges: tuple = ()
     resource_dir: str = "resources"
-    badge_layout: str = "kometa"  # kometa: top-left badges sit in Kometa's fixed boxes; flow: left to right from the margin, each after the previous one's real width
     badge_margin: float = 25  # Distance from the poster's edges, in pixels on a 1000px-wide poster
-    badge_gap: float = 14  # With flow: space between the top-left badges (same units)
-    badge_fit: bool = False  # Shrink resolution, edition and status text that would run past the margins
     badge_text_transform: str = "uppercase"  # none (as written), uppercase or lowercase: the resolution, edition and status text
-    badge_art_scale: float = 1.0  # Size of the IMAX, codec and score art (the text badges have their own sizes)
     badge_art_shadow_enabled: bool = False  # Drop shadow behind that art, with the streaming logo's settings and meanings
     badge_art_shadow_opacity: float = 60  # Percent
     badge_art_shadow_angle: float = 135  # Light from the upper left, so the shadow falls down and to the right
@@ -630,16 +603,10 @@ class Style:
     audience_score_text_color: str = "#111111"
     audience_score_font_size: float = 68  # Pixels on a 1000px-wide poster
     audience_score_font_file: str | None = None  # null = resources/fonts/centurygothic_bold.ttf
-    audience_score_tiers: tuple = (8.5, 7.0, 5.5, 3.0)  # The scores where the art becomes excellent, good, average and bad (below the last: worst)
-    resolution_labels: tuple = ()  # A mapping, e.g. {4k: "4K"}: resolution (480p, 576p, 720p, 1080p, 4k, cam) to the text shown
-    status_labels: tuple = ()  # Same for new, airing, returning, canceled and ended
-    edition_labels: tuple = ()  # Same for the editions, e.g. {Directors-Cut: "DC"}; the names are in the README
     badge_gradient_height: float = 0.25  # How far the top and bottom gradients fade in, as a fraction of the height (both edges, unless set below)
     badge_gradient_strength: float = 0.67  # How black they are at the edge
     badge_gradient_top_height: float | None = None  # null = badge_gradient_height
     badge_gradient_top_strength: float | None = None  # null = badge_gradient_strength
-    badge_gradient_bottom_height: float | None = None
-    badge_gradient_bottom_strength: float | None = None
     resolution_font_file: str | None = None  # null = resources/fonts/Poppins/Poppins-ExtraBold.ttf
     resolution_font_size: int = 60  # Pixels on a 1000px-wide poster
     edition_font_file: str | None = None  # Edition and status text; null = resources/fonts/Poppins/Poppins-Regular.ttf
@@ -653,20 +620,6 @@ class Style:
     badge_shadow_offset_y: float = 0  # Pixels to shift it down (1000px-wide poster); 0 centers it on the text
     badge_shadow_color: str = "#000000"
     # The streaming service's logo on a TV show's poster (the `streaming` badge), Kometa's white ones. Sizes are pixels on a 1000px-wide poster.
-    streaming_logo_source: str = "any"  # Which service: originals (the network it aired on), available (where it streams now, in plex.collection_region) or any (its network, else where it streams)
-    streaming_logo_max_w: float = 285  # The box the logo is fitted in (Kometa's logos are at most 285 x 85)
-    streaming_logo_max_h: float = 80  # Also the height the top-left text badges are centered in
-    streaming_logo_h: str = "left"  # The corner it sits in; the top left is where a movie's resolution text goes
-    streaming_logo_v: str = "top"
-    streaming_logo_offset_x: float = 0  # Pixels in from the badge margin along the top or bottom edge (negative moves it out)
-    streaming_logo_offset_y: float = 0
-    streaming_logo_shadow_enabled: bool = False  # Drop shadow behind the logo, with the poster logo's settings and meanings
-    streaming_logo_shadow_opacity: float = 60  # Percent
-    streaming_logo_shadow_angle: float = 135  # Light from the upper left, so the shadow falls down and to the right (the poster logo's default falls up and left)
-    streaming_logo_shadow_distance: float = 4
-    streaming_logo_shadow_size: float = 8  # Blur
-    streaming_logo_shadow_spread: float = 0
-    streaming_logo_shadow_color: str = "#000000"
     # The status banner (the `status_banner` badge): TSSK's bar of text for a TV show's poster. Sizes are pixels on a 1000px-wide poster.
     # Where the bar is: against a side and an edge (center = middle), moved in from them by the offsets (with center, positive moves right and down).
     status_banner_h_align: str = "center"  # left, center or right
@@ -677,25 +630,15 @@ class Style:
     status_banner_height: float = 90
     status_banner_radius: float = SCORE_RADIUS  # Rounds the bar's corners; the default is the audience score badge's, so the two match
     status_banner_backdrop_opacity: float = 1.0  # How solid the bar is (a category's own `opacity` wins)
-    status_banner_border_width: float = 0  # An outline inside the bar's edge; 0 = none (only on categories that have a bar)
-    status_banner_border_color: str = "#FFFFFF"
     # The words
     status_banner_font_file: str | None = None  # null = resources/fonts/Poppins/Poppins-Bold.ttf
     status_banner_font_size: int = 70
-    status_banner_letter_spacing: float = 0  # Added after every character; negative is tighter
     status_banner_text_transform: str = "uppercase"  # none (as written), uppercase or lowercase
     status_banner_text_opacity: float = 1.0
     status_banner_text_align: str = "center"  # Where they sit in the bar: left, center or right
     status_banner_padding: float = 20  # Between the bar's ends and the words, which shrink to fit between them
     status_banner_text_offset_x: float = 0  # Nudges the words inside the bar
     status_banner_text_offset_y: float = 0
-    status_banner_stroke_width: float = 0  # Their outline; 0 = none
-    status_banner_stroke_opacity: float = 1.0
-    status_banner_stroke_color: str = "#000000"
-    status_banner_shadow_strength: float = 0.0  # Their soft shadow: 0 = none, 1 = solid
-    status_banner_shadow_blur: float = 5
-    status_banner_shadow_offset_y: float = 0  # Pixels to shift it down; 0 centers it on the words
-    status_banner_shadow_color: str = "#000000"
     status_banner_date_format: str = "ddd dd/mm"  # What {date} shows: d, dd, ddd (weekday), dddd, m, mm, mmm, mmmm, yy and yyyy are replaced
     status_banner_simplify_dates: bool = False  # A date up to seven days ahead reads today, tomorrow or the weekday
     status_banners: tuple = ()  # A mapping, category to text, color, backdrop, opacity, days, weight and enabled; see BANNERS
@@ -755,21 +698,20 @@ class Style:
     collection_gradient_radius: float = 1.25  # How far the glow reaches from the center
     collection_gradient_strength: float = 0.55  # How much the edges darken
     collection_gradient_corner: float = 0.4  # Extra darkening toward the bottom left
-    streaming_colors: tuple = ()  # A mapping of service name to #RRGGBB, overriding the built-in colors
     chart_color: str = "#8a5a10"  # The glow of "Newly Released" and "New Episodes"
+    retired: tuple = ()  # Retired settings this layout still holds, as (name, JSON): see RETIRED
 
     def __post_init__(self):
-        for side in ("top", "bottom"):  # An edge's gradient follows the shared setting unless it has its own
-            for what in ("height", "strength"):
-                if getattr(self, f"badge_gradient_{side}_{what}") is None:
-                    object.__setattr__(self, f"badge_gradient_{side}_{what}", getattr(self, f"badge_gradient_{what}"))
+        for what in ("height", "strength"):  # The top gradient follows the shared setting unless it has its own
+            if getattr(self, f"badge_gradient_top_{what}") is None:
+                object.__setattr__(self, f"badge_gradient_top_{what}", getattr(self, f"badge_gradient_{what}"))
         limits = {
-            "width": (64, 8000), "height": (64, 8000), "poster_zoom": (0.1, 3),
+            "width": (64, 8000), "height": (64, 8000), 
             "poster_shift_y": (-0.5, 0.5), "matte_height_ratio": (0, 0.5),
-            "fade_height_ratio": (0, 1), "fade_smoothness": (0, 1), "matte_opacity": (0, 1), "vignette_strength": (0, 1),
-            "grain_amount": (0, 0.6), "uniform_logo_max_w": (1, 8000),
+            "fade_height_ratio": (0, 1), "fade_smoothness": (0, 1), "vignette_strength": (0, 1),
+            "uniform_logo_max_w": (1, 8000),
             "uniform_logo_max_h": (1, 8000), "uniform_logo_offset_x": (0, 1),
-            "uniform_logo_offset_y": (0, 1), "uniform_logo_center_below": (0, 8000),
+            "uniform_logo_offset_y": (0, 1), 
             "font_size": (1, 1000), "letter_spacing": (0, 10), "position_y": (0, 1),
             "title_font_size": (1, 1000), "index_font_size": (1, 1000),
             "title_max_line_width": (1, 200), "title_max_lines": (1, 10),
@@ -777,20 +719,20 @@ class Style:
             "gradient_radius_y": (0.01, 5), "gradient_softness": (0.5, 20), "gradient_strength": (0, 1),
             "gradient_corner_strength": (0, 1), "logo_min_brightness": (0, 255), "title_min_brightness": (0, 255),
             "stroke_opacity": (0, 1), "title_stroke_width": (0, 60), "index_stroke_width": (0, 60), "shadow_strength": (0, 1), "shadow_blur": (0, 200), "shadow_offset_y": (-200, 200), "badge_gradient_height": (0.01, 1), "badge_gradient_strength": (0, 1),
-            "resolution_font_size": (1, 500), "edition_font_size": (1, 500), "border_radius": (0, 1000),
+            "resolution_font_size": (1, 500), "edition_font_size": (1, 500),
             "badge_gradient_top_height": (0.01, 1), "badge_gradient_top_strength": (0, 1),
-            "badge_gradient_bottom_height": (0.01, 1), "badge_gradient_bottom_strength": (0, 1),
+            
             "badge_stroke_width": (0, 20), "badge_stroke_opacity": (0, 1), "badge_shadow_strength": (0, 1),
             "badge_shadow_blur": (0, 60), "badge_shadow_offset_y": (-60, 60),
             "uniform_logo_shadow_opacity": (0, 100), "uniform_logo_shadow_angle": (-180, 180), "uniform_logo_shadow_distance": (0, 100),
             "uniform_logo_shadow_size": (0, 250), "uniform_logo_shadow_spread": (0, 100),
-            "poster_shift_x": (-0.5, 0.5), "vignette_size": (0.2, 3), "vignette_falloff": (0.2, 5), "grain_size": (0, 10),
-            "position_x": (0, 1), "text_line_spacing": (0, 2), "text_stroke_width": (0, 40), "text_stroke_opacity": (0, 1),
-            "text_shadow_strength": (0, 1), "text_shadow_blur": (0, 100), "text_shadow_offset_y": (-100, 100),
-            "badge_margin": (0, 200), "badge_gap": (0, 200), "badge_art_scale": (0.2, 4), "audience_score_font_size": (1, 500),
-            "streaming_logo_max_w": (1, 1000), "streaming_logo_max_h": (1, 500), "streaming_logo_offset_x": (-200, 1000), "streaming_logo_offset_y": (-200, 1000),
-            "streaming_logo_shadow_opacity": (0, 100), "streaming_logo_shadow_angle": (-180, 180), "streaming_logo_shadow_distance": (0, 50),
-            "streaming_logo_shadow_size": (0, 125), "streaming_logo_shadow_spread": (0, 100),
+            
+            "text_line_spacing": (0, 2),
+            
+            "badge_margin": (0, 200), "audience_score_font_size": (1, 500),
+            
+            
+            
             "badge_art_shadow_opacity": (0, 100), "badge_art_shadow_angle": (-180, 180), "badge_art_shadow_distance": (0, 50),
             "badge_art_shadow_size": (0, 125), "badge_art_shadow_spread": (0, 100),
             "collection_gradient_radius": (0.2, 5), "collection_gradient_strength": (0, 1), "collection_gradient_corner": (0, 1),
@@ -799,39 +741,31 @@ class Style:
             "title_letter_spacing": (-50, 100), "title_line_spacing": (-300, 300), "title_x": (0, 8000), "title_bottom": (0, 8000),
             "index_letter_spacing": (-50, 100), "index_gap": (0, 1000), "index_x": (0, 8000), "index_bottom": (0, 8000),
             "status_banner_font_size": (1, 500), "status_banner_width": (50, 1000), "status_banner_height": (10, 500), "status_banner_offset_x": (-1000, 1000),
-            "status_banner_offset_y": (-1000, 1000), "status_banner_radius": (0, 500), "status_banner_backdrop_opacity": (0, 1), "status_banner_border_width": (0, 50),
-            "status_banner_letter_spacing": (-50, 100), "status_banner_text_opacity": (0, 1), "status_banner_padding": (0, 500),
-            "status_banner_text_offset_x": (-500, 500), "status_banner_text_offset_y": (-500, 500), "status_banner_stroke_width": (0, 20),
-            "status_banner_stroke_opacity": (0, 1), "status_banner_shadow_strength": (0, 1), "status_banner_shadow_blur": (0, 60), "status_banner_shadow_offset_y": (-60, 60),
+            "status_banner_offset_y": (-1000, 1000), "status_banner_radius": (0, 500), "status_banner_backdrop_opacity": (0, 1),
+            "status_banner_text_opacity": (0, 1), "status_banner_padding": (0, 500),
+            "status_banner_text_offset_x": (-500, 500), "status_banner_text_offset_y": (-500, 500),
+            
         }
         for name, (low, high) in limits.items():
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
                 raise ValueError(f"style.{name} must be a number from {low} to {high}")
-        for name in ("width", "height", "uniform_logo_max_w", "uniform_logo_max_h", "uniform_logo_center_below", "font_size", "letter_spacing",
+        for name in ("width", "height", "uniform_logo_max_w", "uniform_logo_max_h", "font_size", "letter_spacing",
                      "title_font_size", "index_font_size", "title_max_line_width", "title_max_lines", "logo_min_brightness",
-                     "title_min_brightness", "resolution_font_size", "edition_font_size", "border_radius", "status_banner_font_size"):
+                     "title_min_brightness", "resolution_font_size", "edition_font_size", "status_banner_font_size"):
             if not isinstance(getattr(self, name), int):
                 raise ValueError(f"style.{name} must be an integer")
         if self.width * self.height > 24_000_000:
             raise ValueError("Canvas must have at most 24 million pixels")
-        if self.grain_seed is not None and (type(self.grain_seed) is not int or self.grain_seed < 0):
-            raise ValueError("style.grain_seed must be a nonnegative integer or null")
         for name, choices in (("uniform_logo_h_align", ("left", "center", "right")),
                               ("uniform_logo_v_align", ("top", "center", "bottom")),
                               ("poster_filter", ("all", "textless", "text")),
                               ("logo_preference", ("white", "any", "color")),
                               ("logo_mode", ("original", "none")),
                               ("text_transform", ("none", "uppercase", "lowercase")),
-                              ("badge_layout", ("kometa", "flow")),
                               ("badge_text_transform", ("none", "uppercase", "lowercase")),
-                              ("grain_mode", ("blend", "film")),
-                              ("vignette_mode", ("classic", "radial")),
                               ("card_logo_h_align", ("left", "center", "right")),
                               ("card_logo_v_align", ("top", "center", "bottom")),
-                              ("streaming_logo_source", ("any", "originals", "available")),
-                              ("streaming_logo_h", ("left", "right")),
-                              ("streaming_logo_v", ("top", "bottom")),
                               ("status_banner_text_transform", ("none", "uppercase", "lowercase")),
                               ("status_banner_text_align", ("left", "center", "right")),
                               ("status_banner_h_align", ("left", "center", "right")),
@@ -840,16 +774,13 @@ class Style:
             if value not in choices:
                 raise ValueError(f"{name} must be one of: {', '.join(choices)}")
             object.__setattr__(self, name, value)
-        if type(self.border_enabled) is not bool or type(self.border_px) is not int or not 0 <= self.border_px <= 300:
-            raise ValueError("border_enabled must be boolean; border_px must be an integer from 0 to 300")
-        for name in ("uniform_logo_shadow_enabled", "uniform_logo_trim", "badge_fit", "card_logo_trim", "card_logo_shadow_enabled", "streaming_logo_shadow_enabled", "badge_art_shadow_enabled",
+        for name in ("uniform_logo_shadow_enabled", "uniform_logo_trim", "card_logo_trim", "card_logo_shadow_enabled", "badge_art_shadow_enabled",
                      "status_banner_simplify_dates"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be boolean")
-        for name in ("border_color", "text_color", "badge_text_color", "matte_color", "badge_stroke_color", "badge_shadow_color", "uniform_logo_shadow_color",
-                     "vignette_color", "text_stroke_color", "text_shadow_color", "badge_gradient_color", "audience_score_text_color", "chart_color",
-                     "card_logo_shadow_color", "index_stroke_color", "shadow_color", "streaming_logo_shadow_color", "status_banner_border_color",
-                     "status_banner_stroke_color", "status_banner_shadow_color", "badge_art_shadow_color"):
+        for name in ("text_color", "badge_text_color", "badge_stroke_color", "badge_shadow_color", "uniform_logo_shadow_color",
+                     "badge_gradient_color", "audience_score_text_color", "chart_color", "card_logo_shadow_color", "index_stroke_color", "shadow_color",
+                     "badge_art_shadow_color"):
             if not isinstance(getattr(self, name), str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", getattr(self, name)):
                 raise ValueError(f"{name} must be #RRGGBB")
         if type(self.text_overlay_enabled) is not bool or not isinstance(self.custom_text, str):
@@ -880,14 +811,6 @@ class Style:
         if not isinstance(self.season_text, str) or not isinstance(self.episode_text, str):
             raise ValueError("season_text and episode_text must be strings")
         object.__setattr__(self, "badge_margin", int(self.badge_margin) if float(self.badge_margin).is_integer() else self.badge_margin)  # 25.0 hashes as 25
-        tiers = self.audience_score_tiers
-        if (not isinstance(tiers, (list, tuple)) or len(tiers) != 4 or any(isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 10 for t in tiers)
-                or list(tiers) != sorted(tiers, reverse=True)):
-            raise ValueError("audience_score_tiers must be four scores from 0 to 10, highest first")
-        object.__setattr__(self, "audience_score_tiers", tuple(tiers))
-        for name, allowed, hexes in (("resolution_labels", ("480p", "576p", "720p", "1080p", "4k", "cam"), False), ("status_labels", tuple(STATUS_FILES), False),
-                                     ("edition_labels", tuple(key for key, _ in EDITIONS), False), ("streaming_colors", tuple(row[0] for row in STREAMING), True)):
-            object.__setattr__(self, name, label_map(name, getattr(self, name), allowed, hexes))
         if not isinstance(self.status_banner_date_format, str) or not self.status_banner_date_format.strip():
             raise ValueError("status_banner_date_format must be some text, such as ddd dd/mm")
         object.__setattr__(self, "status_banners", banner_options(self.status_banners))
@@ -895,7 +818,12 @@ class Style:
     @property
     def plain_matte(self):
         """The original matte (a straight ramp into solid black), which keeps its exact pixels and signature."""
-        return not self.fade_smoothness and self.matte_opacity == 1 and self.matte_color == "#000000"
+        return not self.fade_smoothness
+
+    def old(self, name):
+        """A retired setting as this layout saved it, else its old default (see RETIRED)."""
+        saved = dict(self.retired)
+        return json.loads(saved[name]) if name in saved else RETIRED[name]
 
     def edge_gradient(self, side):
         """(height, strength) of the badge gradient on the "top" or "bottom" edge."""
@@ -903,7 +831,7 @@ class Style:
 
 
 # Every status banner setting is drawn from its layer (see banner_layer), which render_signature records, so none is hashed on its own.
-SIGNATURE_ELSEWHERE += tuple(field.name for field in fields(Style) if field.name.startswith("status_banner"))
+SIGNATURE_ELSEWHERE += tuple(name for name in [field.name for field in fields(Style)] + list(RETIRED) if name.startswith("status_banner"))
 
 
 def cover(background, width, height, zoom=1.0):
@@ -942,18 +870,6 @@ def effect_masks(width, height, matte_height_ratio, fade_height_ratio, vignette_
     return black, matte, vignette
 
 
-@lru_cache(maxsize=2)
-def radial_vignette(width, height, strength, size, falloff):
-    """The real vignette (vignette_mode radial): 0 in the middle rising to `strength` at the corners, along an ellipse that
-    follows the picture's frame. `size` scales how far in it reaches; `falloff` shapes the ramp (above 1 stays clear longer)."""
-    x = (np.arange(width, dtype=np.float32) - (width - 1) / 2) / (width / 2)
-    y = (np.arange(height, dtype=np.float32) - (height - 1) / 2) / (height / 2)
-    mask = np.minimum(np.sqrt(x[None, :] ** 2 + y[:, None] ** 2) / math.sqrt(2) / size, 1) ** falloff * strength
-    mask = mask.astype(np.float32)
-    mask.flags.writeable = False  # Shared between renders
-    return mask
-
-
 @lru_cache(maxsize=8)
 def matte_ramp(height, matte_height_ratio, fade_height_ratio, fade_smoothness, matte_opacity):
     """(first row of the fade, first row of the matte block, the fade's opacity per row) for the matte used when
@@ -979,8 +895,8 @@ def codec_key(files):
 
 
 def gradient_sides(badges):
-    """The edges the gradient badges shade, top first (`gradients` is both)."""
-    return tuple(side for side in ("top", "bottom") if "gradients" in badges or f"gradient_{side}" in badges)
+    """The edges the gradient badges shade: the top one, or none."""
+    return ("top",) if "gradient_top" in badges else ()
 
 
 def to_date(text):
@@ -1073,11 +989,12 @@ def banner_layer(banner, style, base):
     font, opacity = style.status_banner_font_file, settings["opacity"]
     look = {"bar": (style.status_banner_width, style.status_banner_height), "radius": style.status_banner_radius,
             "opacity": style.status_banner_backdrop_opacity if opacity is None else opacity,
-            "border": (style.status_banner_border_width, style.status_banner_border_color),
-            "spacing": style.status_banner_letter_spacing, "text_opacity": style.status_banner_text_opacity, "align": style.status_banner_text_align,
+            "border": (style.old("status_banner_border_width"), style.old("status_banner_border_color")),
+            "spacing": style.old("status_banner_letter_spacing"), "text_opacity": style.status_banner_text_opacity, "align": style.status_banner_text_align,
             "pad": style.status_banner_padding, "dx": style.status_banner_text_offset_x, "dy": style.status_banner_text_offset_y,
-            "stroke": (style.status_banner_stroke_width, style.status_banner_stroke_opacity, style.status_banner_stroke_color),
-            "shadow": (style.status_banner_shadow_strength, style.status_banner_shadow_blur, style.status_banner_shadow_offset_y, style.status_banner_shadow_color)}
+            "stroke": (style.old("status_banner_stroke_width"), style.old("status_banner_stroke_opacity"), style.old("status_banner_stroke_color")),
+            "shadow": (style.old("status_banner_shadow_strength"), style.old("status_banner_shadow_blur"), style.old("status_banner_shadow_offset_y"),
+                       style.old("status_banner_shadow_color"))}
     return {"banner": transform_text(text, style.status_banner_text_transform).strip(), "h": style.status_banner_h_align, "v": style.status_banner_v_align,
             "x": style.status_banner_offset_x, "y": style.status_banner_offset_y, "backdrop": settings["backdrop"] or None,
             "size": style.status_banner_font_size, "color": settings["color"], "look": look,
@@ -1095,7 +1012,7 @@ def badge_layers(item, style, base):
         return []
     root, media, movie = local_path(style.resource_dir, base), item.get("media") or {}, item.get("type", "movie") == "movie"
     files, resolution, layers, margin = media.get("files", []), media.get("resolution"), [], style.badge_margin
-    start = margin  # Where the top-left text badges begin: after the streaming logo, when that sits there
+    start = margin  # Where the top-left text badges begin
 
     def add(folder, name, h="left", v="top", x=None, **extra):
         layers.append({"file": root / folder / f"{name}.png", "h": h, "v": v, "x": margin if x is None else x, "y": margin, "id": folder, **extra})
@@ -1108,19 +1025,10 @@ def badge_layers(item, style, base):
 
     def words(kind, key, default):
         """A badge's text: the layout's own wording for `key` if it has some, else `default`, in badge_text_transform's case."""
-        text = dict(getattr(style, f"{kind}_labels")).get(key) or default
+        text = default
         return text.upper() if style.badge_text_transform == "uppercase" else text.lower() if style.badge_text_transform == "lowercase" else text
 
     layers += [{"gradient": side, "h": "fill", "v": side, "x": 0, "y": 0} for side in gradient_sides(style.badges)]
-    service = media.get("streaming")
-    if "streaming" in style.badges and item.get("type") == "tv" and service:
-        file = root / "streaming_overlay" / f"{STREAMING_OVERLAY.get(service, service)}.png"
-        if file.is_file():
-            box, x = (style.streaming_logo_max_w, style.streaming_logo_max_h), margin + style.streaming_logo_offset_x
-            layers.append({"file": file, "h": style.streaming_logo_h, "v": style.streaming_logo_v, "x": x, "y": margin + style.streaming_logo_offset_y, "box": box, "id": "streaming"})
-            if style.streaming_logo_h == "left" and style.streaming_logo_v == "top":  # The text badges follow it
-                width, height = badge_image(file, 1).size
-                start = x + width * min(box[0] / width, box[1] / height) + style.badge_gap
     shifted = False
     if "resolution" in style.badges:
         cam = movie and any(re.search(CAM, path, re.I) for path in files)
@@ -1139,11 +1047,9 @@ def badge_layers(item, style, base):
         key = codec_key(files)
         if key:
             add("codec", key, v="bottom")
-    if "status" in style.badges and media.get("status"):
-        label("edition", words("status", media["status"], STATUS_FILES[media["status"]]), x=second, id="status")
     rating = media.get("audience")
     if "audience_score" in style.badges and rating is not None:
-        tier = next(name for floor, (_, name) in zip(style.audience_score_tiers + (0,), AUDIENCE_TIERS) if rating >= floor)
+        tier = next(name for floor, (_, name) in zip(AUDIENCE_SCORE_TIERS + (0,), AUDIENCE_TIERS) if rating >= floor)
         art = root / "audience_score" / f"audience_score_{tier}.png"
         layers.append({"h": "right", "v": "bottom", "x": margin, "y": margin, "text": f"{rating:.1f}", "id": "audience_score",
                        "font": local_path(style.audience_score_font_file, base) if style.audience_score_font_file else root / "fonts" / "centurygothic_bold.ttf",
@@ -1165,15 +1071,32 @@ def dither_noise(width, height):
     return noise
 
 
+DITHER_CHUNK = 1 << 18  # Values dither_shade works on at a time: a few hundred KB of float32, so each pass stays in cache
+
+
 def dither_shade(pixels, shade, lift=None, noise=None):
-    """Darken float32 RGB `pixels` (changed in place) by `shade`, per row or per pixel, add `lift` (the color faded to),
-    dither (with `noise`, a matching piece of dither_noise's picture-sized pattern, if given), and round once to 8 bits."""
-    pixels *= shade.reshape(shade.shape + (1,) * (pixels.ndim - shade.ndim))
-    if lift is not None:
-        pixels += lift
-    pixels += (dither_noise(pixels.shape[1], pixels.shape[0]) if noise is None else noise)[..., None]
-    np.clip(np.rint(pixels, out=pixels), 0, 255, out=pixels)
-    return Image.fromarray(pixels.astype(np.uint8))
+    """Darken RGB `pixels` (uint8 or float32; not changed) by `shade`, per row or per pixel, add `lift` (the color faded
+    to), dither (with `noise`, a matching piece of dither_noise's picture-sized pattern, if given), and round once to 8 bits.
+
+    It works through a few rows at a time, in float32 with the same operations in the same order for every value as one
+    pass over the whole picture would, so the result is the same to the bit; it only stays in the CPU's cache and never
+    holds the whole picture in float."""
+    height, width = pixels.shape[:2]
+    shade = np.broadcast_to(shade.reshape(shade.shape + (1,) * (pixels.ndim - shade.ndim)), pixels.shape)
+    lift = None if lift is None else np.broadcast_to(lift, pixels.shape)
+    noise = np.broadcast_to((dither_noise(width, height) if noise is None else noise)[..., None], pixels.shape)
+    result = np.empty(pixels.shape, np.uint8)
+    step = max(1, DITHER_CHUNK // max(1, pixels[0].size))
+    for top in range(0, height, step):
+        rows = slice(top, top + step)
+        part = pixels[rows].astype(np.float32)
+        part *= shade[rows]
+        if lift is not None:
+            part += lift[rows]
+        part += noise[rows]
+        np.clip(np.rint(part, out=part), 0, 255, out=part)
+        result[rows] = part
+    return Image.fromarray(result)
 
 
 def running_max(pixels, window):
@@ -1187,17 +1110,6 @@ def running_max(pixels, window):
     head = np.maximum.accumulate(shaped, axis=-1).reshape(padded.shape)  # Largest so far in each block
     tail = np.maximum.accumulate(shaped[..., ::-1], axis=-1)[..., ::-1].reshape(padded.shape)  # Largest from here to its end
     return np.maximum(tail[..., :n], head[..., window - 1:window - 1 + n])
-
-
-def film_grain(noise, blur, amount):
-    """The noise of grain_mode film, as float32 levels: `noise` (uniform 0-1) blurred to the grain size, then scaled to a
-    standard deviation of 20 x `amount` levels whatever the size, so a coarser grain isn't a fainter one."""
-    grain = Image.fromarray((noise * 255).astype(np.uint8))
-    if blur:
-        grain = grain.filter(ImageFilter.GaussianBlur(blur))
-    values = np.asarray(grain, dtype=np.float32)
-    values = values - values.mean()
-    return values * (20 * amount / max(float(values.std()), 1e-6))
 
 
 def grow_mask(mask, radius):
@@ -1253,13 +1165,12 @@ def badge_font(path, size):
         raise ValueError(f"Cannot open font file {path}") from None
 
 
-def badge_label(layer, scale, left=None, bounds=None):
-    """Where a text badge goes, as (x, baseline, glyphs, font, right), where `right` is where its ink ends. Normally it sits in
-    Kometa's 80px badge box: vertically centered, resolution right-aligned and edition/status (with a leading bullet)
-    left-aligned, by their ink rather than their advance widths. With `left` its ink starts there instead (the flow
-    layout). With `bounds` = (low, high) the ink must stay between them, and the text shrinks until it does."""
+def badge_label(layer, scale):
+    """Where a text badge goes, as (x, baseline, glyphs, font, right), where `right` is where its ink ends. It sits in Kometa's
+    80px badge box: vertically centered, resolution right-aligned and edition (with a leading bullet) left-aligned, by their
+    ink rather than their advance widths."""
     resolution, size = layer["kind"] == "resolution", layer["size"]
-    for _ in range(12):
+    if True:
         font = badge_font(layer["font"], max(1, size * scale))
         glyphs, advance = spaced_glyphs(font, layer["label"], (BADGE_RESOLUTION_KERNING if resolution else BADGE_LABEL_KERNING) * scale)
         if not resolution:
@@ -1271,12 +1182,7 @@ def badge_label(layer, scale, left=None, bounds=None):
         draw_spaced(ImageDraw.Draw(probe), pad, pad * 1.5, glyphs, font, 255)
         ink_left, _, ink_right, _ = probe.getbbox()
         ink_left, ink_right = ink_left - pad, ink_right - pad
-        x = (left - ink_left if left is not None else (layer["x"] + BADGE_RESOLUTION_EDGE) * scale - ink_right if resolution
-             else (layer["x"] + BADGE_LABEL_INSET) * scale - ink_left)
-        over = 0 if bounds is None else max(bounds[0] - (x + ink_left), (x + ink_right) - bounds[1], 0)
-        if not over or size <= 6:
-            break
-        size = max(6, size * max(0.5, 1 - over / (ink_right - ink_left)) * 0.99)
+        x = (layer["x"] + BADGE_RESOLUTION_EDGE) * scale - ink_right if resolution else (layer["x"] + BADGE_LABEL_INSET) * scale - ink_left
     cap = -font.getbbox("H", anchor="ls")[1]
     return x, (layer["y"] + BADGE_BOX_HEIGHT / 2) * scale + cap / 2, glyphs, font, x + ink_right
 
@@ -1293,7 +1199,7 @@ def banner_shape(layer, scale, width, height):
     room = max(1, bar_w - 2 * pad)
     for _ in range(8):
         font = badge_font(layer["font"], max(1, size * scale))
-        glyphs, advance = spaced_glyphs(font, layer["banner"], look["spacing"] * scale)
+        glyphs, advance = spaced_glyphs(font, layer["banner"], 0.0)
         margin = font.size  # Rasterize once to find where the ink really starts and ends
         probe = Image.new("L", (max(1, int(advance + 2 * margin)), max(1, int(2 * margin))), 0)
         draw_spaced(ImageDraw.Draw(probe), margin, margin * 1.5, glyphs, font, 255)
@@ -1346,32 +1252,12 @@ class Renderer:
 
     def __init__(self, style, base=Path(".")):
         self.style, self.base = style, base
-        radial = style.vignette_strength and style.vignette_mode == "radial"
         self.black, self.matte, self.vignette = effect_masks(
-            style.width, style.height, style.matte_height_ratio,
-            style.fade_height_ratio, 0 if radial else style.vignette_strength)
-        self.vignette_color = None if style.vignette_color == "#000000" else Image.new("RGB", (style.width, style.height), style.vignette_color)
-        self.radial = radial_vignette(style.width, style.height, style.vignette_strength, style.vignette_size, style.vignette_falloff) if radial else None
-        self.vignette_rgb = np.array(ImageColor.getrgb(style.vignette_color), dtype=np.float32)
+            style.width, style.height, style.matte_height_ratio, style.fade_height_ratio, style.vignette_strength)
         self.ramp = None if style.plain_matte else matte_ramp(
-            style.height, style.matte_height_ratio, style.fade_height_ratio, style.fade_smoothness, style.matte_opacity)
-        self.font = self.grain = None
+            style.height, style.matte_height_ratio, style.fade_height_ratio, style.fade_smoothness, 1.0)
+        self.font = None
         self.boxes = {}
-        if style.grain_amount:
-            # Made once per layout: with grain_seed every render used the same noise anyway, and without one the
-            # posters of a run now share a single random pattern instead of paying ~90 ms each for a new one.
-            # Float32 noise uses half the temporary memory of the app's float64 noise.
-            noise = np.random.default_rng(style.grain_seed).random((style.height, style.width), dtype=np.float32)
-            blur = style.grain_size * style.width / 2000
-            if style.grain_mode == "film":
-                self.grain = film_grain(noise, blur, style.grain_amount)
-            else:
-                noise *= 256 * style.grain_amount
-                noise += 128 - 128 * style.grain_amount
-                grain = Image.fromarray(noise.clip(0, 255).astype(np.uint8))
-                if blur:
-                    grain = grain.filter(ImageFilter.GaussianBlur(blur))
-                self.grain = Image.merge("RGB", (grain, grain, grain))
         if style.text_overlay_enabled:
             size = max(1, round(style.font_size * style.width / 2000))
             self.font = ImageFont.truetype(str(local_path(style.font_file, base)), size) if style.font_file else ImageFont.load_default(size=size)
@@ -1387,28 +1273,17 @@ class Renderer:
             text_stroke(canvas, [(x, y, glyphs, font, stroke, style.badge_stroke_color) for x, y, glyphs, font in shapes], style.badge_stroke_opacity)
 
     def paint_bar(self, canvas, layer, box, scale):
-        """The status banner's bar: rounded, at its opacity, with its border (solid) drawn inside its edge. No backdrop, no bar."""
+        """The status banner's bar: rounded, at its opacity. No backdrop, no bar."""
         left, top, right, bottom = box
         width, height, look = right - left, bottom - top, layer["look"]
         if not layer["backdrop"] or width < 1 or height < 1:
             return
-        radius, border = round(look["radius"] * scale), round(look["border"][0] * scale)
-        outer = rounded_mask(width, height, radius)
+        outer = rounded_mask(width, height, round(look["radius"] * scale))
         canvas.paste(layer["backdrop"], (left, top), outer if look["opacity"] >= 1 else outer.point(lambda value: round(value * look["opacity"])))
-        if border and width > 2 * border and height > 2 * border:
-            inner = Image.new("L", (width, height), 0)
-            inner.paste(rounded_mask(width - 2 * border, height - 2 * border, max(0, radius - border)), (border, border))
-            canvas.paste(look["border"][1], (left, top), ImageChops.subtract(outer, inner))
 
     def banner_text(self, canvas, layer, shape, scale):
-        """The status banner's words: the shadow, then the outline, then the letters at their opacity."""
+        """The status banner's words, at their opacity."""
         look, (x, y, glyphs, font, _) = layer["look"], shape
-        (stroke_width, stroke_opacity, stroke_color), (strength, blur, offset, shadow_color) = look["stroke"], look["shadow"]
-        stroke = max(1, round(stroke_width * scale)) if stroke_width and stroke_opacity else 0
-        if strength:
-            text_shadow(canvas, [(x, y, glyphs, font, stroke)], blur * scale, strength, round(offset * scale), ImageColor.getrgb(shadow_color))
-        if stroke:
-            text_stroke(canvas, [(x, y, glyphs, font, stroke, stroke_color)], stroke_opacity)
         if look["text_opacity"] >= 1:
             draw_spaced(ImageDraw.Draw(canvas), x, y, glyphs, font, layer["color"])
             return
@@ -1418,58 +1293,26 @@ class Renderer:
         if found:
             canvas.paste(layer["color"], found, mask.crop(found).point(lambda value: round(value * look["text_opacity"])))
 
-    def streaming_placement(self, layer, scale, width, height):
-        """The streaming logo as (image, x, y): fitted in its box, against the corner it names, centered along the box's height."""
-        box_w, box_h = layer["box"]
-        native = badge_image(layer["file"], 1)
-        image = badge_image(layer["file"], scale * min(box_w / native.width, box_h / native.height))
-        x = width - image.width - round(layer["x"] * scale) if layer["h"] == "right" else round(layer["x"] * scale)
-        top = height - round(box_h * scale) - round(layer["y"] * scale) if layer["v"] == "bottom" else round(layer["y"] * scale)
-        return image, x, top + (round(box_h * scale) - image.height) // 2
-
-    def paste_streaming(self, canvas, layer, scale):
-        style = self.style
-        image, x, y = self.streaming_placement(layer, scale, *canvas.size)
-        mark(self.boxes, "streaming", x, y, x + image.width, y + image.height)
-        if style.streaming_logo_shadow_enabled and style.streaming_logo_shadow_opacity:
-            logo_shadow(canvas, image, x, y, scale, style.streaming_logo_shadow_opacity, style.streaming_logo_shadow_angle,
-                        style.streaming_logo_shadow_distance, style.streaming_logo_shadow_size, style.streaming_logo_shadow_spread, style.streaming_logo_shadow_color)
-        canvas.paste(image, (x, y), image)
-
     def paste_badges(self, canvas, layers):
         style = self.style
         width, height = canvas.size
         scale = width / 1000
-        art = scale * style.badge_art_scale  # The IMAX, codec and score art; the text badges have their own sizes
+        art = scale  # The IMAX, codec and score art; the text badges have their own sizes
         draw = ImageDraw.Draw(canvas)
         edges = tuple((layer["gradient"], *style.edge_gradient(layer["gradient"])) for layer in layers if layer.get("gradient"))
         if edges:
             shade = badge_gradient(height, edges)
             color = ImageColor.getrgb(style.badge_gradient_color)
             lift = None if color == (0, 0, 0) else (1 - shade)[:, None, None] * np.array(color, dtype=np.float32)
-            canvas.paste(dither_shade(np.asarray(canvas.convert("RGB"), dtype=np.float32), shade, lift))
-        flow, margin = style.badge_layout == "flow", style.badge_margin * scale
-        bounds = (margin, width - margin) if style.badge_fit else None
-        shapes, art_x, cursor, bars = {}, {}, None, {}  # The flow layout chains the top-left badges: each starts after the previous one's ink
+            canvas.paste(dither_shade(np.asarray(canvas.convert("RGB")), shade, lift))
+        shapes, bars = {}, {}
         for index, layer in enumerate(layers):
             if layer.get("gradient"):
                 continue
-            if layer.get("banner"):  # Centered along the bottom: no part of the top-left flow
+            if layer.get("banner"):
                 bars[index], shapes[index] = banner_shape(layer, scale, width, height)
-                continue
-            start = margin if cursor is None else cursor + style.badge_gap * scale
-            if layer.get("label"):
-                shapes[index] = badge_label(layer, scale, start if flow else None, bounds)
-                cursor = shapes[index][4]
-            elif layer.get("box"):  # The streaming logo
-                if flow and layer["h"] == "left" and layer["v"] == "top":
-                    image, x, _ = self.streaming_placement(layer, scale, width, height)
-                    cursor = x + image.width
-            elif flow and layer["h"] == "left" and layer["v"] == "top":
-                image = badge_image(layer["file"], art)
-                box = image.getchannel("A").getbbox() or (0, 0, image.width, image.height)
-                art_x[index] = start - box[0]  # So the visible art, not its transparent margin, starts there
-                cursor = art_x[index] + box[2]
+            elif layer.get("label"):
+                shapes[index] = badge_label(layer, scale)
         for index, box in bars.items():
             self.paint_bar(canvas, layers[index], box, scale)
         self.badge_text_effects(canvas, [shape[:4] for index, shape in shapes.items() if index not in bars], scale)
@@ -1486,12 +1329,9 @@ class Renderer:
                 draw_spaced(draw, x, y, glyphs, font, layer["color"])
                 mark(self.boxes, layer["id"], x, layer["y"] * scale, right, (layer["y"] + BADGE_BOX_HEIGHT) * scale)
                 continue
-            if layer.get("box"):
-                self.paste_streaming(canvas, layer, scale)
-                continue
             image = score_box(layer["fill"], art) if "fill" in layer else badge_image(layer["file"], art)
             offset_x, offset_y = round(layer["x"] * scale), round(layer["y"] * scale)
-            x = width - image.width - offset_x if layer["h"] == "right" else round(art_x[index]) if index in art_x else offset_x
+            x = width - image.width - offset_x if layer["h"] == "right" else offset_x
             y = height - image.height - offset_y if layer["v"] == "bottom" else offset_y
             if style.badge_art_shadow_enabled and style.badge_art_shadow_opacity:
                 logo_shadow(canvas, image, x, y, scale, style.badge_art_shadow_opacity, style.badge_art_shadow_angle,
@@ -1504,37 +1344,15 @@ class Renderer:
                 draw.text((x + (image.width - (right - left)) / 2 - left, y + (image.height - (bottom - top)) / 2 - top),
                           layer["text"], font=font, fill=style.audience_score_text_color)
 
-    def text_effects(self, canvas, rows):
-        """The shadow, then the outline, under the custom text (rows are (x, top, line)), in the title card's order."""
-        style, k = self.style, canvas.width / 2000
-        stroke = max(1, round(style.text_stroke_width * k)) if style.text_stroke_width and style.text_stroke_opacity else 0
-        if style.text_shadow_strength:
-            text_shadow(canvas, [(x, top, line, self.font, stroke) for x, top, line in rows], style.text_shadow_blur * k, style.text_shadow_strength,
-                        round(style.text_shadow_offset_y * k), ImageColor.getrgb(style.text_shadow_color))
-        if stroke:
-            text_stroke(canvas, [(x, top, line, self.font, stroke, style.text_stroke_color) for x, top, line in rows], style.text_stroke_opacity)
-
-    def add_film_grain(self, canvas):
-        """Add the film grain, weighted by brightness so it fades out toward pure black and pure white: a black matte stays black."""
-        pixels = np.asarray(canvas, dtype=np.float32)
-        light = pixels @ np.array([0.299, 0.587, 0.114], dtype=np.float32) / 255
-        pixels += (self.grain * np.minimum(1, np.minimum(light, 1 - light) / 0.2))[..., None]
-        return Image.fromarray(np.rint(pixels).clip(0, 255).astype(np.uint8))
-
     def paint_matte(self, canvas):
-        """Fade to `matte_color`: the fade is darkened in float and dithered so it can't band; the block below it is one blend."""
+        """Fade to black: the fade is darkened in float and dithered so it can't band; the block below it is solid black."""
         start, end, alpha = self.ramp
-        color, opacity = ImageColor.getrgb(self.style.matte_color), self.style.matte_opacity
         width, height = canvas.size
         if end > start:
-            band = np.asarray(canvas.crop((0, start, width, end)), dtype=np.float32)
-            canvas.paste(dither_shade(band, 1 - alpha, alpha[:, None, None] * np.array(color, dtype=np.float32)), (0, start))
+            band = np.asarray(canvas.crop((0, start, width, end)))
+            canvas.paste(dither_shade(band, 1 - alpha), (0, start))  # Fading to black adds nothing (the color it fades to is 0)
         if end < height:
-            if opacity == 1:
-                canvas.paste(color, (0, end, width, height))
-            else:
-                block = canvas.crop((0, end, width, height))
-                canvas.paste(Image.blend(block, Image.new("RGB", block.size, color), opacity), (0, end))
+            canvas.paste((0, 0, 0), (0, end, width, height))
         return canvas
 
     def logo_shadow(self, canvas, logo, x, y):
@@ -1555,23 +1373,17 @@ class Renderer:
             return canvas
         # Pasting RGBA into RGB drops alpha, exactly as compositing in RGBA and converting afterwards did.
         canvas = Image.new("RGB", (width, height), 0)
-        canvas.paste(cover(background, width, height, style.poster_zoom),
-                     (int(style.poster_shift_x * width), int(style.poster_shift_y * height)))
+        canvas.paste(cover(background, width, height), (0, int(style.poster_shift_y * height)))
         if style.matte_height_ratio or style.fade_height_ratio:  # Otherwise the matte mask is all zero
             canvas = Image.composite(self.black, canvas, self.matte) if self.ramp is None else self.paint_matte(canvas)
             top = self.ramp[0] if self.ramp else height * (1 - style.matte_height_ratio - style.fade_height_ratio)
             mark(self.boxes, "matte", 0, max(0, top), width, height)
         if self.vignette is not None:
-            canvas = Image.composite(self.black if self.vignette_color is None else self.vignette_color, canvas, self.vignette)
-        elif self.radial is not None:  # In float and dithered, like the other fades, so a faint vignette can't band
-            canvas = dither_shade(np.asarray(canvas, dtype=np.float32), 1 - self.radial, self.radial[..., None] * self.vignette_rgb)
-        if self.grain is not None:
-            canvas = Image.blend(canvas, self.grain, style.grain_amount) if style.grain_mode == "blend" else self.add_film_grain(canvas)
+            canvas = Image.composite(self.black, canvas, self.vignette)
         self.paste_badges(canvas, backdrops)  # Behind the logo and text so they stay crisp.
         if logo is not None and style.logo_mode != "none":
             logo = logo.convert("RGBA")
-            center_below = 0 if (item or {}).get("season") is not None else style.uniform_logo_center_below  # Series posters only
-            if center_below or style.uniform_logo_trim:  # Transparent padding would make the visible art smaller and off-center
+            if style.uniform_logo_trim:  # Transparent padding would make the visible art smaller and off-center
                 trim = logo.getchannel("A").getbbox()
                 if trim:
                     logo = logo.crop(trim)
@@ -1584,9 +1396,6 @@ class Renderer:
             box_w, box_h = int(max_w), int(max_h)
             x = center[0] - box_w // 2 if style.uniform_logo_h_align == "left" else center[0] + box_w // 2 - size[0] if style.uniform_logo_h_align == "right" else center[0] - size[0] // 2
             v_align = style.uniform_logo_v_align
-            if size[1] < center_below * height / 3000:  # Short logo: center in the matte band, else its box
-                center = (center[0], int(height * (1 - style.matte_height_ratio / 2)) if style.matte_height_ratio else center[1])
-                v_align = "center"
             y = center[1] - box_h // 2 if v_align == "top" else center[1] + box_h // 2 - size[1] if v_align == "bottom" else center[1] - size[1] // 2
             if style.uniform_logo_shadow_enabled and style.uniform_logo_shadow_opacity:
                 self.logo_shadow(canvas, logo, x, y)
@@ -1616,23 +1425,12 @@ class Renderer:
             for line, box in zip(lines, boxes):
                 if box[2] - box[0] > width * 0.9:
                     raise ValueError("Text exceeds the canvas width; reduce font_size or letter_spacing, or add a newline")
-                rows.append((int(width * style.position_x - (box[2] - box[0]) / 2) - box[0], y - box[1], line))
+                rows.append((int(width * 0.5 - (box[2] - box[0]) / 2) - box[0], y - box[1], line))
                 y += box[3] - box[1] + gap
-            self.text_effects(canvas, rows)
             for x, top, line in rows:
                 draw.text((x, top), line, font=self.font, fill=style.text_color)
                 mark(self.boxes, "text", *draw.textbbox((x, top), line, font=self.font))
         self.paste_badges(canvas, badges)
-        if style.border_enabled and style.border_px:
-            border, radius = max(1, round(style.border_px * width / 2000)), round(style.border_radius * width / 2000)
-            if radius:  # The border color shows in the rounded-off corners; the poster itself stays rectangular
-                framed = Image.new("RGB", (width + 2 * border, height + 2 * border), style.border_color)
-                framed.paste(canvas, (border, border), rounded_mask(width, height, radius))
-                canvas = framed
-            else:
-                canvas = ImageOps.expand(canvas, border=border, fill=style.border_color)
-            self.boxes = {name: [box[0] + border, box[1] + border, box[2] + border, box[3] + border] for name, box in self.boxes.items()}
-            self.boxes["border"] = [0, 0, canvas.width, canvas.height]
         return canvas
 
 
@@ -1731,7 +1529,7 @@ def logo_shadow(canvas, logo, x, y, k, opacity, angle, distance, size, spread, c
     alpha *= opacity / 25500  # 0-255 mask, percent opacity
     color = np.array(ImageColor.getrgb(color), dtype=np.float32)
     noise = dither_noise(*canvas.size)[box[1]:box[3], box[0]:box[2]]
-    canvas.paste(dither_shade(np.asarray(canvas.crop(box), dtype=np.float32), 1 - alpha, alpha[..., None] * color, noise), box[:2])
+    canvas.paste(dither_shade(np.asarray(canvas.crop(box)), 1 - alpha, alpha[..., None] * color, noise), box[:2])
 
 
 def text_shadow(canvas, shapes, blur, strength, offset, color=(0, 0, 0)):
@@ -1804,7 +1602,7 @@ class CardRenderer:
         margin = round(CARD_MARGIN * scale)
         canvas = cover(background, width, height)
         if self.shade is not None:
-            canvas = dither_shade(np.asarray(canvas.convert("RGB"), dtype=np.float32), self.shade).convert("RGBA")
+            canvas = dither_shade(np.asarray(canvas.convert("RGB")), self.shade).convert("RGBA")
         canvas = canvas.convert("RGB")
         if style.logo_mode == "none":
             logo = None
@@ -1889,7 +1687,7 @@ def streaming_background(color, width=1000, height=1500, radius=1.25, strength=0
     t = np.clip(np.sqrt((x[None, :] - 0.5) ** 2 + (y[:, None] - 0.5) ** 2) * 2 / radius, 0, 1)
     nearness = np.clip(1 - np.sqrt(x[None, :] ** 2 + (1 - y[:, None]) ** 2) / math.sqrt(2), 0, 1) ** 2  # 1 at bottom left
     shade = 1 - (strength + corner * nearness) * t * t * (3 - 2 * t)
-    return dither_shade(np.broadcast_to(base, (height, width, 3)).copy(), shade).convert("RGBA")
+    return dither_shade(np.broadcast_to(base, (height, width, 3)), shade).convert("RGBA")
 
 
 HOLIDAY_COLORS = (("halloween", "#9b430c"), ("thanksgiving", "#865025"), ("christmas", "#17633c"),
@@ -1900,7 +1698,7 @@ def default_background_color(item, style):
     """The color a collection's generated background glows in unless one is chosen for it: the service's, the chart
     color, or for a custom or curated collection a holiday's when its title names one, else the chart color."""
     if item.get("service"):
-        return dict(style.streaming_colors).get(item["service"]) or next(color for name, _, _, color in STREAMING if name == item["service"])
+        return next(color for name, _, _, color in STREAMING if name == item["service"])
     title = str(item.get("title") or "").casefold()
     return next((color for name, color in HOLIDAY_COLORS if not item.get("chart") and name in title), style.chart_color)
 
@@ -2121,28 +1919,6 @@ class Artwork(Metadata):
             print(f"WARN {item.get('title', '?')}: TVDB next episode: {error}", file=sys.stderr)
         return data
 
-    def show_status(self, item):
-        """Kometa's status overlays from TMDb, with TVDB as the upcoming-episode fallback."""
-        self.identify(item)
-        if not item.get("tmdb_id") or not self.keys.get("tmdb_key"):
-            return None
-        data = self.show_details(item)
-        status, today = data.get("status"), date.today()
-        if status == "Canceled":
-            return "canceled"
-        if status == "Ended":
-            return "ended"
-        if status not in ("Returning Series", "Planned", "In Production"):
-            return None
-        first = data.get("first_air_date") or ""
-        upcoming = (data.get("next_episode_to_air") or {}).get("air_date") or ""
-        if (today - timedelta(days=90)).isoformat() <= first <= today.isoformat():
-            return "new"
-        # TMDb's "on the air" list is shows with an episode in the next 7 days.
-        if today.isoformat() <= upcoming <= (today + timedelta(days=7)).isoformat():
-            return "airing"
-        return "returning"
-
     def show_banner(self, item, style):
         """The status banner of a show (banner_pick's answer, by the layout's status_banners), or None without a TMDb key and ID."""
         self.identify(item)
@@ -2150,16 +1926,6 @@ class Artwork(Metadata):
             return None
         added = (item.get("media") or {}).get("added")
         return banner_pick(self.show_details(item), date.fromtimestamp(added) if added else None, date.today(), banner_settings(style.status_banners))
-
-    def show_streaming(self, item, style):
-        """The service whose logo goes on a show's poster, as streaming_logo_source picks it (one of STREAMING), or None."""
-        self.identify(item)
-        if not item.get("tmdb_id") or not self.keys.get("tmdb_key"):
-            return None
-        data = self.tmdb(f"/tv/{item['tmdb_id']}", append_to_response="watch/providers")
-        region = option(self.config.get("plex", {}), "collection_region")
-        modes = ("originals", "available") if style.streaming_logo_source == "any" else (style.streaming_logo_source,)
-        return next((found[0] for found in (streaming_services(data, mode, region) for mode in modes) if found), None)
 
     def badge_facts(self, item, style):
         """Fill item['media'] with what the enabled badges need beyond the Plex listing."""
@@ -2172,12 +1938,8 @@ class Artwork(Metadata):
             if item["type"] == "tv":
                 if "resolution" in style.badges and item.get("rating_key") and self.plex.url:
                     media["resolution"] = self.plex.show_resolution(item["rating_key"])
-                if "status" in style.badges:
-                    media["status"] = self.show_status(item)
                 if "status_banner" in style.badges:
                     media["banner"] = self.show_banner(item, style)
-                if "streaming" in style.badges:
-                    media["streaming"] = self.show_streaming(item, style)
         except (ValueError, RuntimeError, ET.ParseError) as error:
             print(f"WARN {item.get('title', item.get('rating_key', '?'))}: badge data: {error}", file=sys.stderr)
 
@@ -2358,37 +2120,6 @@ class Artwork(Metadata):
         seen = set()  # Plex lists the same TMDb/TVDB images its agents found
         found["posters"] = [row for row in found["posters"] if not (row[1]["url"] in seen or seen.add(row[1]["url"]))]
         return found
-
-    def alternates(self, item, style, posters, icons):
-        """Ranked extra artwork for one item as (kind, provider, art) rows; `posters`/`icons` are a count or "all".
-
-        Follows the layout's rules: poster_filter for posters; raster logos with real transparency for
-        icons, and under logo_preference "white" or "color" only the white or colored ones when any exist.
-        """
-        found = self.found_art(item)
-        rows = []
-        if posters:
-            # Plex's posters aren't labeled with or without text (has_text None), so only "all" includes them.
-            wanted = [row for row in found["posters"] if style.poster_filter == "all"
-                      or (row[1]["has_text"] is not None and row[1]["has_text"] == (style.poster_filter == "text"))]
-            if found["posters"] and not wanted:
-                print(f"NOTE {item.get('title', '?')}: {len(found['posters'])} posters found, but none are {style.poster_filter}; "
-                      "use --poster-filter all to see them", flush=True)
-            wanted.sort(key=lambda row: (self.language_rank(row[1]), -int(row[1].get("width") or 0)))
-            rows += [("posters", name, art) for name, art in (wanted if posters == "all" else wanted[:posters])]
-        if icons and item.get("season") is None:  # Seasons share their show's logos
-            logos = [row for row in found["logos"] if not urlparse(row[1]["url"]).path.lower().endswith(".svg") and self.language_rank(row[1]) < 3]
-            stats = self.parallel(lambda row: self.logo_stats(row[1]), logos)
-            floor = style.logo_min_brightness or (COLOR_MIN_BRIGHTNESS if style.logo_preference == "color" else 0)
-            usable = [(row, self.logo_score(style.logo_preference, stat[1], stat[2])) for row, stat in zip(logos, stats)
-                      if stat is not None and stat[0] >= floor]
-            if any(score is not None for _, score in usable):  # Only the ones that fit, when any do
-                usable = [pair for pair in usable if pair[1] is not None]
-            else:
-                usable = [(row, 0) for row, _ in usable]
-            usable.sort(key=lambda pair: (self.language_rank(pair[0][1]), -pair[1], -int(pair[0][1].get("width") or 0)))
-            rows += [("logos", name, art) for (name, art), _ in (usable if icons == "all" else usable[:icons])]
-        return rows
 
     def pick_logo(self, logos, preference="white", minimum=0):
         # Examine at most six raster logos, preferring the requested language.
@@ -2621,15 +2352,15 @@ def layout_styles(config):
         if clash and "extends" in options:
             raise ValueError(f"layouts.{name}: {', '.join(sorted(clash))} must be set on {options['extends']}; "
                              "seasons and episodes always use their series' logo")
-        unknown = own - allowed
+        unknown = own - allowed - set(RETIRED) | ({"retired"} & own)
         if unknown:
             raise ValueError(f"Unknown settings in layout {name}: {', '.join(sorted(map(str, unknown)))}")
     styles = {}
     for name, tier in tiers.items():
-        styles[name, False] = Style(**layouts[name])
-        styles[name, True] = Style(**layout_options(layouts, tier["season"])) if tier["season"] else styles[name, False]
+        styles[name, False] = make_style(layouts[name])
+        styles[name, True] = make_style(layout_options(layouts, tier["season"])) if tier["season"] else styles[name, False]
         if tier["episode"]:
-            styles[name, "episode"] = Style(**layout_options(layouts, tier["episode"]))
+            styles[name, "episode"] = make_style(layout_options(layouts, tier["episode"]))
     default = config.get("default_layout")
     if default is not None and (not isinstance(default, str) or default not in tiers):
         raise ValueError("default_layout must name a layout defined in layouts (not a season or episode template)")
@@ -2705,7 +2436,7 @@ def prepare_items(artwork, config, selected=None, include_seasons=None, include_
         # One Plex request (or a few pages) per show, so ask for several shows at once; results keep the show order.
         with ThreadPoolExecutor(max_workers=6) as pool:
             for listing in listings:
-                items.extend(child for children in pool.map(listing, shows) for child in children)
+                items.extend(child for children in pool.map(artwork.http.times.carry(listing), shows) for child in children)
     styles = layout_styles(config)
     seen = set()
     for index, item in enumerate(items):
@@ -2781,6 +2512,8 @@ def render_signature(item, style, config, base, server=None, legacy=False):
         inputs["font"] = file_digest(local_path(style.font_file, base))
     # Only settings that can change this image are hashed, so editing an unrelated one doesn't rebuild and re-upload it.
     recipe_style = asdict(style)
+    del recipe_style["retired"]
+    recipe_style.update({name: style.old(name) for name in RETIRED})  # As every signature recorded them (most are dropped below)
     del recipe_style["logo_min_brightness"]  # Only picks which logo file is fetched; the file itself is hashed
     episode = item.get("episode") is not None
     if episode:
@@ -2808,16 +2541,12 @@ def render_signature(item, style, config, base, server=None, legacy=False):
         if not (has_text and used):  # Nothing drawn on this item, or as recorded before they existed
             for name in names:
                 del recipe_style[name]
-    shared = (style.badge_gradient_height, style.badge_gradient_strength)
-    shared_only = "gradients" in style.badges and all(style.edge_gradient(side) == shared for side in ("top", "bottom"))
-    if not shared_only:  # `gradients` at the shared settings is as recorded before each edge had its own
-        del recipe_style["badge_gradient_height"], recipe_style["badge_gradient_strength"]
+    del recipe_style["badge_gradient_height"], recipe_style["badge_gradient_strength"]  # Only the retired `gradients` badge recorded them
     drawn = gradient_sides(style.badges) if item.get("season") is None else ()  # Seasons and episodes get no badges
     for side in ("top", "bottom"):
-        if shared_only or side not in drawn:
+        if side not in drawn:
             del recipe_style[f"badge_gradient_{side}_height"], recipe_style[f"badge_gradient_{side}_strength"]
-    if not (style.border_enabled and style.border_px and style.border_radius):  # Square corners: as recorded before it existed
-        del recipe_style["border_radius"]
+    del recipe_style["border_radius"]  # Square corners: as recorded before it existed
     if style.plain_matte or episode or not (style.matte_height_ratio or style.fade_height_ratio):  # As recorded before they existed; title cards draw no matte
         for name in ("fade_smoothness", "matte_opacity", "matte_color"):
             del recipe_style[name]
@@ -2826,11 +2555,8 @@ def render_signature(item, style, config, base, server=None, legacy=False):
             del recipe_style[name]
     elif not style.uniform_logo_shadow_distance:
         del recipe_style["uniform_logo_shadow_angle"]  # No distance, no direction
-    if not (style.streaming_logo_shadow_enabled and style.streaming_logo_shadow_opacity and any(layer.get("box") for layer in layers)):
-        for name in STREAMING_SHADOW_FIELDS:  # No shadowed streaming logo on this item
-            del recipe_style[name]
-    elif not style.streaming_logo_shadow_distance:
-        del recipe_style["streaming_logo_shadow_angle"]
+    for name in STREAMING_SHADOW_FIELDS:  # No streaming logo (retired)
+        del recipe_style[name]
     art_drawn = any(("file" in layer or "fill" in layer) and "box" not in layer for layer in layers)  # IMAX, codec or score art
     if not (style.badge_art_shadow_enabled and style.badge_art_shadow_opacity and art_drawn):  # No shadowed art on this item
         for name in BADGE_ART_SHADOW_FIELDS:
@@ -2846,27 +2572,21 @@ def render_signature(item, style, config, base, server=None, legacy=False):
         for name in names:
             if not used or getattr(style, name) == getattr(Style, name):
                 del recipe_style[name]
-    corner = any(layer["h"] != "fill" and not layer.get("banner") for layer in layers)
     text_drawn = style.text_overlay_enabled and style.custom_text and not episode
-    keep(corner, "badge_layout")
-    keep(corner and style.badge_layout == "flow", "badge_gap")
-    keep(has_text, "badge_fit")
-    keep(art_drawn, "badge_art_scale")
     keep(any(layer.get("gradient") for layer in layers), "badge_gradient_color")
     keep(any(layer.get("text") for layer in layers), "audience_score_text_color", "audience_score_font_size")
-    keep(style.grain_amount and not episode, "grain_mode", "grain_size")
-    keep(style.vignette_strength and not episode, "vignette_mode", "vignette_color")
-    keep(style.vignette_strength and style.vignette_mode == "radial" and not episode, "vignette_size", "vignette_falloff")
-    keep(not episode, "poster_shift_x")
     keep(inputs["logo"] and not episode, "uniform_logo_trim")
     if episode:  # A card's own settings (posters dropped them with CARD_FIELDS above); at their defaults they match signatures recorded before they existed
         keep(True, *CARD_TEXT_FIELDS)
         keep(style.shadow_strength, "shadow_color")
         keep(inputs["logo"], *CARD_LOGO_FIELDS)
         keep(inputs["logo"] and style.card_logo_shadow_enabled and style.card_logo_shadow_opacity, *CARD_LOGO_SHADOW_FIELDS)
-    keep(text_drawn, "position_x", "text_line_spacing")
-    keep(text_drawn and style.text_stroke_width and style.text_stroke_opacity, "text_stroke_width", "text_stroke_opacity", "text_stroke_color")
-    keep(text_drawn and style.text_shadow_strength, "text_shadow_strength", "text_shadow_blur", "text_shadow_offset_y", "text_shadow_color")
+    keep(text_drawn, "text_line_spacing")
+    # Retired settings recorded only away from their defaults, which they always are now.
+    for name in ("badge_layout", "badge_gap", "badge_fit", "badge_art_scale", "grain_mode", "grain_size", "vignette_mode", "vignette_color", "vignette_size",
+                 "vignette_falloff", "poster_shift_x", "position_x", "text_stroke_width", "text_stroke_opacity", "text_stroke_color", "text_shadow_strength",
+                 "text_shadow_blur", "text_shadow_offset_y", "text_shadow_color"):
+        del recipe_style[name]
     plex = config.get("plex", {})
     recipe = {"version": 1, "inputs": inputs, "style": recipe_style,
               **({"custom": True} if item.get("custom") else {}),
@@ -2893,178 +2613,67 @@ def plex_server_id(plex, cache):
     return servers[plex.url]
 
 
-def download_alternates(artwork, sources, items, styles, posters, icons, poster_filter=None):
-    """--poster/--logo: save extra candidates beside the title's files as poster2, poster3... and logo2, logo3...
-    (best first; a rerun overwrites those numbers) without rendering or uploading."""
-    failures = 0
-    for item in items:
-        sources.apply(item)
-        name = item.get("title") or item.get("rating_key") or "?"
-        try:
-            folder = sources.folder(item, create=True)
-            saved, numbers = 0, {"posters": 1, "logos": 1}
-            style = styles[item["layout_key"]]
-            if poster_filter:
-                style = replace(style, poster_filter=poster_filter)
-            for kind, provider, art in artwork.alternates(item, style, posters, icons):
-                try:
-                    data = artwork.http.get(art["url"], headers=art.get("headers"), ttl=IMAGE_TTL)
-                    with Image.open(io.BytesIO(data)) as image:
-                        suffix = IMAGE_SUFFIXES.get(image.format, ".png")
-                        image.verify()
-                    # Plex also lists the engine's own finished posters; those aren't sources. (verify() must come first.)
-                    with Image.open(io.BytesIO(data)) as image:
-                        ours = provider == "plex" and image.getexif().get(OVERLAY_EXIF_TAG) == OVERLAY_EXIF_VALUE
-                except (OSError, ValueError, RuntimeError, SyntaxError) as error:
-                    print(f"WARN {name}: {art['url']}: {error}", file=sys.stderr)
-                    continue
-                if ours:
-                    continue
-                numbers[kind] += 1
-                stem = f"{kind[:-1]}{numbers[kind]}"
-                for old in folder.glob(stem + ".*"):  # Same number, maybe another extension
-                    old.unlink()
-                atomic_write(folder / (stem + suffix), data)
-                saved += 1
-                print(f"SAVED {folder / (stem + suffix)}  ({provider}, {art.get('language') or 'no language'}, {art.get('width') or 0}w)", flush=True)
-            label = "season " + str(item["season"]) if item.get("season") is not None else "title"
-            print(f"{name} ({label}): {saved} saved in {folder}", flush=True)
-        except Exception as error:
-            failures += 1
-            print(f"ERROR {name}: {error}", file=sys.stderr, flush=True)
-    return 1 if failures else 0
-
-
-def import_posters(config_path, source):
-    """--import-posters: save the poster URLs of a Kometa/MediUX metadata YAML (TMDb IDs -> url_poster, seasons ->
-    url_poster) as poster files in the titles' asset folders, replacing any poster already saved there. Titles that
-    aren't in your Plex libraries are skipped. Episode and background URLs are ignored: the engine draws its own cards.
-    `source` is a file, or "-" for YAML pasted in at the terminal."""
-    config = read_config(config_path)
-    if not config.get("plex", {}).get("libraries"):
-        raise ValueError("--import-posters matches titles through Plex, so plex.libraries must be set")
-    pasted = str(source) == "-"
-    if pasted:
-        if sys.stdin.isatty():
-            print("Paste the YAML here, then press Ctrl+D on a new line (Ctrl+Z then Enter on Windows):", flush=True)
-        text = sys.stdin.read()
-    else:
-        text = source.read_text(encoding="utf-8")
-    try:
-        data = yaml.safe_load(textwrap.dedent(text))
-    except yaml.YAMLError:
-        # A copy often loses the first line's leading spaces; give it the indent of the next ID line and try again.
-        lines = text.splitlines()
-        first = next((i for i, line in enumerate(lines) if line.strip()), 0)
-        later = next((len(line) - len(line.lstrip()) for line in lines[first + 1:] if re.match(r"\s*(?:\d+|tt\d+)\s*:", line)), 0)
-        if lines:
-            lines[first] = " " * later + lines[first].lstrip()
-        data = yaml.safe_load(textwrap.dedent("\n".join(lines)))
-    entries = data.get("metadata", data) if isinstance(data, dict) else None
-    if not isinstance(entries, dict):
-        raise ValueError(f"{'The pasted text' if pasted else source} is not a metadata YAML: expected TMDb IDs mapped to url_poster (optionally under metadata:)")
-    base = config_path.resolve().parent
-    http = HTTP(local_path(option(config, "cache_dir"), base))
-    sources = ArtworkFiles(local_path(option(config, "assets_dir"), base))
-    by_id = {}
-    for item in Plex(http, config).scan():
-        for field in ("tmdb_id", "imdb_id"):
-            if item.get(field):
-                by_id.setdefault((item["type"], str(item[field])), item)
-    counts = {"saved": 0, "missing": 0, "failed": 0, "episodes": 0}
-
-    def save(folder, url, label):
-        try:
-            if not is_url(url):
-                raise ValueError("not a web address")
-            image = http.image(url, base)
-            folder.mkdir(parents=True, exist_ok=True)
-            existing = sources.source(folder, "poster")
-            if existing:
-                existing.unlink()
-            sources.save_image(folder, "poster", image)
-            counts["saved"] += 1
-            print(f"IMPORT {label}", flush=True)
-        except (OSError, ValueError, RuntimeError) as error:
-            counts["failed"] += 1
-            print(f"ERROR {label}: {error}", file=sys.stderr, flush=True)
-
-    for key, entry in entries.items():
-        if not isinstance(entry, dict):
-            continue
-        key = str(key).strip()
-        seasons = {number: season for number, season in (entry.get("seasons") or {}).items() if isinstance(season, dict)}
-        counts["episodes"] += sum(len((season.get("episodes") or {})) for season in seasons.values())
-        wanted = bool(entry.get("url_poster")) or any(season.get("url_poster") for season in seasons.values())
-        if not wanted:
-            continue
-        kinds = ("tv",) if seasons else ("movie", "tv")
-        item = next((by_id[kind, key] for kind in kinds if (kind, key) in by_id), None)
-        if item is None:
-            counts["missing"] += 1
-            print(f"SKIP {key}: not in your Plex libraries")
-            continue
-        folder = sources.folder(item, create=True)
-        title = f"{item.get('title', key)} ({item['year']})" if item.get("year") else item.get("title", key)
-        if entry.get("url_poster"):
-            save(folder, entry["url_poster"], title)
-        for number, season in seasons.items():
-            if season.get("url_poster"):
-                save(folder / f"Season {int(number):02d}", season["url_poster"], f"{title} season {number}")
-    print(f"Imported {counts['saved']} posters; {counts['missing']} not in your Plex libraries, {counts['failed']} failed."
-          + (f" Ignored {counts['episodes']} episode entries (tk.box draws its own title cards)." if counts["episodes"] else ""))
-    if counts["saved"]:
-        print("Nothing was rendered or uploaded. Run artwork_engine.py with --changed-only to build them.")
-    return 1 if counts["failed"] else 0
-
-
-def check_run_options(*, refresh, changed_only, limit, rating_key, title, media_type, year, force,
-                      with_seasons, with_episodes, season, episode, posters, icons, added, poster_filter):
+def check_run_options(*, refresh, changed_only, rating_key, force, with_seasons, with_episodes, added):
     """Refuse option combinations that make no sense, before anything is read or fetched."""
-    if poster_filter and not posters:
-        raise ValueError("--poster-filter goes with --poster")
-    targeted = rating_key is not None or title is not None
     if added:
-        if not targeted:
-            raise ValueError("--added requires --item or --title")
-        if refresh or force or changed_only or posters or icons or with_seasons or with_episodes:
-            raise ValueError("--added picks what to build by itself; don't combine it with --refresh, --remake, --changed-only, --poster, --logo, --with-seasons or --with-episodes")
-    if rating_key is not None and title is not None:
-        raise ValueError("Choose --item or --title, not both")
-    if not targeted and (with_seasons or with_episodes or media_type is not None or year is not None):
-        raise ValueError("--with-seasons, --with-episodes, --type and --year require --item or --title")
+        if rating_key is None:
+            raise ValueError("--added requires --item")
+        if refresh or force or changed_only or with_seasons or with_episodes:
+            raise ValueError("--added picks what to build by itself; don't combine it with --refresh, --remake, --changed-only, --with-seasons or --with-episodes")
+    if rating_key is None and (with_seasons or with_episodes):
+        raise ValueError("--with-seasons and --with-episodes require --item")
     if refresh and changed_only:
         raise ValueError("--refresh re-sends everything selected to Plex, so it can't be combined with --changed-only")
-    if (season is not None or episode is not None) and not (with_episodes or added):
-        raise ValueError("--season and --episode require --with-episodes")
-    if episode is not None and season is None and added:
-        raise ValueError("--episode needs --season")
-    for flag, value in (("--poster", posters), ("--logo", icons)):
-        if value is not None and value != "all" and (type(value) is not int or value < 1):
-            raise ValueError(f"{flag} must be a positive number or 'all'")
-    if (posters or icons) and not targeted:
-        raise ValueError("--poster and --logo require --item or --title")
-    if targeted and limit is not None:
-        raise ValueError("--limit cannot be combined with --item or --title")
     if rating_key is not None and (not str(rating_key).isdigit() or int(rating_key) < 1):
         raise ValueError("--item must be a positive Plex item ID")
-    if title is not None and not title.strip():
-        raise ValueError("--title must be a nonempty exact title")
-    if media_type is not None and media_type not in ("movie", "show", "collection"):
-        raise ValueError("--type must be movie, show or collection")
-    if year is not None and (type(year) is not int or not 1000 <= year <= 9999):
-        raise ValueError("--year must be a four-digit release year")
+
+
+KEPT_RENDERERS, KEPT_LOCK, KEPT_COUNT = OrderedDict(), threading.Lock(), 4
+
+
+def file_stamp(path):
+    """(path, size, modification time) of a file, or (path, None, None) if it can't be read."""
+    try:
+        stat = path.stat()
+        return str(path), stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return str(path), None, None
+
+
+def kept_renderer(kind, style, base):
+    """A Renderer or CardRenderer for `style`, kept for the next runs in this process (a --batch process runs one job per
+    title): making one costs 0.07-0.2 s (its masks, grain or gradient, and fonts). The last KEPT_COUNT are kept, keyed by
+    the style and the font files it opens, so a changed font file makes a new one. It draws exactly what a new one would."""
+    fonts = (style.font_file,) if kind is Renderer else (style.title_font_file, style.season_font_file, style.episode_font_file)
+    key = kind, style, str(base), tuple(file_stamp(local_path(font, base)) for font in fonts if font)
+    with KEPT_LOCK:
+        if key in KEPT_RENDERERS:
+            KEPT_RENDERERS.move_to_end(key)
+            return KEPT_RENDERERS[key]
+    renderer = kind(style, base)
+    with KEPT_LOCK:
+        renderer = KEPT_RENDERERS.setdefault(key, renderer)
+        while len(KEPT_RENDERERS) > KEPT_COUNT:
+            KEPT_RENDERERS.popitem(last=False)
+    return renderer
+
+
+def forget_files():
+    """Drop what this process remembers of files that can change between jobs (badge art and fonts, read through
+    lru_cache by path), so the next --batch job reads them again as a new process would."""
+    badge_image.cache_clear()
+    badge_font.cache_clear()
 
 
 class Batch:
     """A run's rendering. For each item: reuse or pick its artwork, render it, save it, upload it, and record what was
     made so --changed-only can skip it next time. process() runs on several workers at once."""
 
-    def __init__(self, artwork, sources, config, base, inputs, *, force, changed_only, refresh, refetch, upload, added=False):
+    def __init__(self, artwork, sources, config, base, inputs, *, force, changed_only, refresh, upload, added=False):
         self.artwork, self.http, self.sources, self.config, self.base = artwork, artwork.http, sources, config, base
         self.inputs, self.styles = inputs, layout_styles(config)
         self.force, self.changed_only = force, changed_only
-        self.refresh, self.refetch, self.upload, self.added = refresh, refetch, upload, added
+        self.refresh, self.upload, self.added = refresh, upload, added
         self.server = None  # Plex's ID for the server (plex_server_id); set before an uploading run processes anything
         self.outputs, self.output_lock = {}, threading.Lock()
         self.renderers, self.renderer_lock = {}, threading.Lock()
@@ -3103,10 +2712,12 @@ class Batch:
         return recorded
 
     def renderer(self, item, style):
+        """The renderer for this style (a "No logo" title's differs from its layout's), shared by the run's workers."""
         with self.renderer_lock:
-            if item["layout_key"] not in self.renderers:
-                self.renderers[item["layout_key"]] = (CardRenderer if item.get("episode") is not None else Renderer)(style, self.base)
-            return self.renderers[item["layout_key"]]
+            key = item["layout_key"], style
+            if key not in self.renderers:
+                self.renderers[key] = kept_renderer(CardRenderer if item.get("episode") is not None else Renderer, style, self.base)
+            return self.renderers[key]
 
     def encode(self, image, png):
         options = {"compress_level": 3} if png else {"quality": option(self.config, "quality"), "subsampling": 0}
@@ -3154,6 +2765,14 @@ class Batch:
             print(f"WARN {item.get('title', '?')}: uploading its logo to Plex: {error}", file=sys.stderr)
 
     def process(self, item):
+        """process_item, timed: its status and output, and its TIME line's text."""
+        started = time.perf_counter()
+        with self.http.times.title() as record:
+            status, output = self.process_item(item)
+        return status, output, f"{time.perf_counter() - started:.2f}s ({Timings.describe(record)})"
+
+    def process_item(self, item):
+        times = self.http.times
         artwork, sources, config, base =self.artwork, self.sources, self.config, self.base
         output = item["output_path"]
         resend = self.refresh
@@ -3162,8 +2781,6 @@ class Batch:
                 return "EXISTS", output
             resend = True  # --added: a poster on disk that Plex never got (a failed upload, a re-added title) is sent, not trusted
         style = self.styles[item["layout_key"]]
-        if self.refetch:
-            sources.discard(item, self.inputs)
         saved_stock = sources.apply(item)
         sources.refresh_generated(item, style)
         if item.get("no_logo"):  # "No logo" on the series: its poster, seasons and episode cards are all made as if the layout drew none
@@ -3190,9 +2807,10 @@ class Batch:
             # --refresh (or --added, for a poster Plex doesn't have): send the finished file to Plex again without rendering it.
             is_episode = item.get("episode") is not None
             state.unlink(missing_ok=True)  # Not a success record until the server confirms
-            artwork.plex.upload(item, output.read_bytes(), "image/png" if output.suffix.lower() == ".png" else "image/jpeg")
-            self.send_logo(item)
-            label = None if is_episode else artwork.plex.mark_uploaded(item, saved_stock or (style.logo_mode != "none" and not item.get("logo")))
+            with times.phase("upload"):
+                artwork.plex.upload(item, output.read_bytes(), "image/png" if output.suffix.lower() == ".png" else "image/jpeg")
+                self.send_logo(item)
+                label = None if is_episode else artwork.plex.mark_uploaded(item, saved_stock or (style.logo_mode != "none" and not item.get("logo")))
             atomic_write(state, signature.encode())
             return "RELOAD" + (f" [Plex: {label}]" if label else ""), output
         if item["output_path"] in {local_path(item[field], base) for field in ("poster", "logo")
@@ -3206,7 +2824,8 @@ class Batch:
                 sources.keep(item)
                 return "LEFT (no TMDb collection; choose a poster for it in Artwork to include it)", output
             return "SKIP", output
-        folder = sources.save(item, background, logo, stock)
+        with times.phase("save"):
+            folder = sources.save(item, background, logo, stock)
         output = self.destination(item, folder)
         state = self.record(output)
         # Render the persisted files, including inputs saved by another worker
@@ -3217,17 +2836,21 @@ class Batch:
         is_episode = item.get("episode") is not None  # Title cards have no stock fallback: a missing logo just isn't drawn.
         stock = not is_episode and (saved_stock or (style.logo_mode != "none" and logo is None))
         png = output.suffix.lower() == ".png"
-        payload = self.encode(self.renderer(item, style).render(background, logo, stock, item), png)
-        atomic_write(output, payload)
+        with times.phase("render"):
+            image = self.renderer(item, style).render(background, logo, stock, item)
+        with times.phase("save"):
+            payload = self.encode(image, png)
+            atomic_write(output, payload)
         label = None
         if self.upload:
             # A forced resend can fail even with previously unchanged inputs.
             # Invalidate its old success record before any server mutation.
             state.unlink(missing_ok=True)
-            artwork.plex.upload(item, payload, "image/png" if png else "image/jpeg")
-            self.send_logo(item)
-            if not is_episode:  # Episodes carry no completion label; --changed-only tracks them locally.
-                label = artwork.plex.mark_uploaded(item, stock)
+            with times.phase("upload"):
+                artwork.plex.upload(item, payload, "image/png" if png else "image/jpeg")
+                self.send_logo(item)
+                if not is_episode:  # Episodes carry no completion label; --changed-only tracks them locally.
+                    label = artwork.plex.mark_uploaded(item, stock)
         # Of the files this render used (as the apply() above found them), so a later change to either is noticed.
         signature = render_signature(item, style, config, base, self.server)
         if signature:
@@ -3247,98 +2870,107 @@ class Batch:
                 pending = {pool.submit(self.process, item): item for item in group}
                 for future in as_completed(pending):
                     try:
-                        status, output = future.result()
+                        status, output, took = future.result()
                         skips += status == "SKIP"
                         print(f"{status} {output}", flush=True)
+                        print(f"TIME {title_label(pending[future])}: {took}", flush=True)
                     except Exception as error:
                         failures += 1
                         print(f"ERROR {pending[future]['output_path']}: {error}", file=sys.stderr, flush=True)
         return failures, skips
 
 
-def run(config_path, *, refetch=False, refresh=False, changed_only=False, limit=None,
-        rating_key=None, title=None, media_type=None, year=None, force=False, with_seasons=False,
-        with_episodes=False, season=None, episode=None, posters=None, icons=None, added=False, poster_filter=None):
-    started = time.perf_counter()
-    check_run_options(refresh=refresh, changed_only=changed_only, limit=limit, rating_key=rating_key,
-                      title=title, media_type=media_type, year=year, force=force, with_seasons=with_seasons,
-                      with_episodes=with_episodes, season=season, episode=episode, posters=posters, icons=icons, added=added,
-                      poster_filter=poster_filter)
-    targeted = rating_key is not None or title is not None
+def title_label(item):
+    """A title as the job's TIME lines name it: Title (year), Title S01 or Title S01E02."""
+    name = str(item.get("title") or item.get("identifier") or "?")
+    if item.get("season") is not None:
+        return name + f" S{item['season']:02d}" + (f"E{item['episode']:02d}" if item.get("episode") is not None else "")
+    return name + (f" ({item['year']})" if item.get("year") else "")
+
+
+def python_start():
+    """`start 1.62s, ` for the first run in this process (loading Python and this module), then nothing."""
+    global STARTED
+    if STARTED is None:
+        return ""
+    text, STARTED = f"start {time.perf_counter() - STARTED:.2f}s, ", None
+    return text
+
+
+def run(config_path, *, refresh=False, changed_only=False, rating_key=None, force=False, with_seasons=False, with_episodes=False, added=False):
+    started, loaded = time.perf_counter(), python_start()
+    check_run_options(refresh=refresh, changed_only=changed_only, rating_key=rating_key, force=force, with_seasons=with_seasons,
+                      with_episodes=with_episodes, added=added)
+    targeted, season, episode = rating_key is not None, None, None
     config = read_config(config_path)
     base = config_path.resolve().parent
-    http = HTTP(local_path(option(config, "cache_dir"), base), refetch)
+    http = HTTP(local_path(option(config, "cache_dir"), base))
     artwork = Artwork(http, config, base)
-    if not targeted:  # The nightly run tidies up; hooks and web pushes stay quick
-        prune_cache(http.cache)
-    DIGESTS.load(http.cache / "digests.json")
-    upload = bool(artwork.plex.settings.get("upload"))
-    if refresh and not upload:
-        raise ValueError("--refresh uploads to Plex, so plex.upload must be true")
-    if upload:
-        artwork.plex.require("Uploading to Plex")
-    if added and rating_key is not None and season is None and episode is None and artwork.plex.configured:
-        rating_key, season, episode = artwork.plex.added_target(rating_key)  # A season's or episode's own key works too
-    if targeted:
-        selected = select_item(artwork, config, rating_key=rating_key, title=title, media_type=media_type, year=year)
-        if added and selected[0]["type"] == "tv":
-            with_seasons = with_episodes = True  # Narrowed to what's missing once output paths are known
-            if not selected[0].get("rating_key"):
-                raise ValueError("--added requires the show's Plex rating_key")
-        for flag, wanted in (("--with-seasons", with_seasons), ("--with-episodes", with_episodes)):
-            if wanted and selected[0]["type"] != "tv":
-                raise ValueError(f"{flag} requires a show")
-            if wanted and not selected[0].get("rating_key"):
-                raise ValueError(f"{flag} requires the show's Plex rating_key")
-        items = prepare_items(artwork, config, selected=selected, include_seasons=with_seasons, include_episodes=with_episodes)
-        if (season is not None or episode is not None) and not added:
-            # A season/episode filter selects episodes only, not the show or season posters.
-            items = [item for item in items if item.get("episode") is not None
-                     and season in (None, item["season"]) and episode in (None, item["episode"])]
-            if not items:
-                raise ValueError("No episode matches --season/--episode")
-    else:
-        items = prepare_items(artwork, config)
-    if limit is not None:
-        items = items[:limit]
-    if not items:
-        raise ValueError("No items selected; configure plex.libraries or items")
-    source_root = local_path(option(config, "assets_dir"), base)
-    sources = ArtworkFiles(source_root, full=not targeted)
-    input_items = items + config.get("items", []) + list(config.get("overrides", {}).values())
-    inputs = {local_path(item[field], base) for item in input_items if isinstance(item, dict) for field in ("poster", "logo")
-              if item.get(field) and not is_url(item[field])}
-    batch = Batch(artwork, sources, config, base, inputs, force=force,
-                  changed_only=changed_only, refresh=refresh, refetch=refetch, upload=upload, added=added)
-    for item in items:  # A collection Plex made again (after a reset) carries on in its old folder instead of starting a second one
-        if item["type"] == "collection":
-            try:
-                adopted = sources.adopt(item, artwork.plex.gone)
-            except RuntimeError as error:  # Plex wouldn't say whether the old one is gone, so nothing is taken over
-                print(f"WARN {item.get('title', '?')}: looking for its earlier folder: {error}", file=sys.stderr, flush=True)
-                break
-            if adopted:
-                print(f"COLLECTION {item['title']}: made again in Plex, so it continues in {adopted.name}", flush=True)
-    for item in items:
-        batch.destination(item, sources.folder(item, planned=True))
-    if added and items[0]["type"] == "tv":
-        # A show whose poster isn't in Plex yet (none made, or never sent): build all of it. Known show: only the
-        # requested season/episode, and only the pieces Plex doesn't have yet.
-        show = next(item for item in items if item.get("season") is None)
-        if season is not None and show["output_path"].exists() and batch.delivered(show):
-            # A lone episode also covers its season poster, which is skipped if it's already in Plex.
-            items = [item for item in items if item.get("season") == season and (
-                episode is None or item.get("episode") in (None, episode))]
+    begun = time.perf_counter()
+    with http.times.title(total=False) as setup:  # Finding the titles: Plex's listings, and the run's own checks
+        if not targeted:  # The nightly run tidies up; hooks and web pushes stay quick
+            prune_cache(http.cache)
+        DIGESTS.load(http.cache / "digests.json")
+        upload = bool(artwork.plex.settings.get("upload"))
+        if refresh and not upload:
+            raise ValueError("--refresh uploads to Plex, so plex.upload must be true")
+        if upload:
+            artwork.plex.require("Uploading to Plex")
+        if added and artwork.plex.configured:
+            rating_key, season, episode = artwork.plex.added_target(rating_key)  # A season's or episode's own key works too
+        if targeted:
+            selected = select_item(artwork, config, rating_key)
+            if added and selected[0]["type"] == "tv":
+                with_seasons = with_episodes = True  # Narrowed to what's missing once output paths are known
+                if not selected[0].get("rating_key"):
+                    raise ValueError("--added requires the show's Plex rating_key")
+            for flag, wanted in (("--with-seasons", with_seasons), ("--with-episodes", with_episodes)):
+                if wanted and selected[0]["type"] != "tv":
+                    raise ValueError(f"{flag} requires a show")
+                if wanted and not selected[0].get("rating_key"):
+                    raise ValueError(f"{flag} requires the show's Plex rating_key")
+            items = prepare_items(artwork, config, selected=selected, include_seasons=with_seasons, include_episodes=with_episodes)
+        else:
+            items = prepare_items(artwork, config)
         if not items:
-            raise ValueError("--added matched nothing; is the season/episode in Plex yet?")
-    if posters or icons:
-        return download_alternates(artwork, sources, [item for item in items if item.get("episode") is None],
-                                   batch.styles, posters, icons, poster_filter)
-    if upload:
-        batch.server = plex_server_id(artwork.plex, http.cache)
+            raise ValueError("No items selected; configure plex.libraries or items")
+        source_root = local_path(option(config, "assets_dir"), base)
+        sources = ArtworkFiles(source_root, full=not targeted)
+        input_items = items + config.get("items", []) + list(config.get("overrides", {}).values())
+        inputs = {local_path(item[field], base) for item in input_items if isinstance(item, dict) for field in ("poster", "logo")
+                  if item.get(field) and not is_url(item[field])}
+        batch = Batch(artwork, sources, config, base, inputs, force=force,
+                      changed_only=changed_only, refresh=refresh, upload=upload, added=added)
+        for item in items:  # A collection Plex made again (after a reset) carries on in its old folder instead of starting a second one
+            if item["type"] == "collection":
+                try:
+                    adopted = sources.adopt(item, artwork.plex.gone)
+                except RuntimeError as error:  # Plex wouldn't say whether the old one is gone, so nothing is taken over
+                    print(f"WARN {item.get('title', '?')}: looking for its earlier folder: {error}", file=sys.stderr, flush=True)
+                    break
+                if adopted:
+                    print(f"COLLECTION {item['title']}: made again in Plex, so it continues in {adopted.name}", flush=True)
+        for item in items:
+            batch.destination(item, sources.folder(item, planned=True))
+        if added and items[0]["type"] == "tv":
+            # A show whose poster isn't in Plex yet (none made, or never sent): build all of it. Known show: only the
+            # requested season/episode, and only the pieces Plex doesn't have yet.
+            show = next(item for item in items if item.get("season") is None)
+            if season is not None and show["output_path"].exists() and batch.delivered(show):
+                # A lone episode also covers its season poster, which is skipped if it's already in Plex.
+                items = [item for item in items if item.get("season") == season and (
+                    episode is None or item.get("episode") in (None, episode))]
+            if not items:
+                raise ValueError("--added matched nothing; is the season/episode in Plex yet?")
+        if upload:
+            batch.server = plex_server_id(artwork.plex, http.cache)
+    ready = time.perf_counter()
     failures, skips = batch.run(items)
     DIGESTS.save(prune=not targeted)
-    print(f"Finished {len(items)} items in {time.perf_counter() - started:.2f}s; {failures} failed, {skips} missing artwork.")
+    finished = time.perf_counter()
+    print(f"Finished {len(items)} items in {finished - started:.2f}s; {failures} failed, {skips} missing artwork.")
+    print(f"TIMES: {loaded}setup {ready - begun:.2f}s ({Timings.describe(setup)}), {len(items)} titles {finished - ready:.2f}s "
+          f"on {option(config, 'workers')} workers ({Timings.describe(http.times.totals)})", flush=True)
     return 1 if failures or skips else 0
 
 
@@ -3411,33 +3043,22 @@ def web_crop(data, crop):
 
 
 # The layout settings the page's Template view can change (no paths, canvas size or art choice).
-TEMPLATE_FIELDS = ("poster_zoom", "poster_shift_y", "poster_shift_x", "matte_height_ratio", "fade_height_ratio", "fade_smoothness", "matte_opacity", "matte_color",
-                   "vignette_strength", "vignette_mode", "vignette_color", "vignette_size", "vignette_falloff", "grain_amount", "grain_mode", "grain_size",
-                   "logo_mode", "uniform_logo_max_w", "uniform_logo_max_h", "uniform_logo_offset_x", "uniform_logo_offset_y",
-                   "uniform_logo_h_align", "uniform_logo_v_align", "uniform_logo_center_below", "uniform_logo_trim",
-                   "uniform_logo_shadow_enabled", "uniform_logo_shadow_opacity", "uniform_logo_shadow_angle", "uniform_logo_shadow_distance",
-                   "uniform_logo_shadow_size", "uniform_logo_shadow_spread", "uniform_logo_shadow_color",
-                   "text_overlay_enabled", "custom_text", "font_size", "letter_spacing", "position_y", "position_x", "text_line_spacing", "text_transform", "text_color",
-                   "text_stroke_width", "text_stroke_opacity", "text_stroke_color", "text_shadow_strength", "text_shadow_blur", "text_shadow_offset_y", "text_shadow_color",
-                   "border_enabled", "border_px", "border_color", "border_radius",
-                   "badges", "badge_layout", "badge_margin", "badge_gap", "badge_fit",
-                   "badge_gradient_top_height", "badge_gradient_top_strength", "badge_gradient_bottom_height", "badge_gradient_bottom_strength", "badge_gradient_color",
-                   "resolution_font_size", "edition_font_size", "badge_text_color", "badge_text_transform", "badge_stroke_width", "badge_stroke_opacity", "badge_stroke_color",
-                   "badge_shadow_strength", "badge_shadow_blur", "badge_shadow_offset_y", "badge_shadow_color",
-                   "badge_art_scale", "badge_art_shadow_enabled", "badge_art_shadow_opacity", "badge_art_shadow_angle", "badge_art_shadow_distance",
-                   "badge_art_shadow_size", "badge_art_shadow_spread", "badge_art_shadow_color",
-                   "audience_score_text_color", "audience_score_font_size",
-                   "streaming_logo_source", "streaming_logo_max_w", "streaming_logo_max_h", "streaming_logo_h", "streaming_logo_v",
-                   "streaming_logo_offset_x", "streaming_logo_offset_y", "streaming_logo_shadow_enabled", "streaming_logo_shadow_opacity",
-                   "streaming_logo_shadow_angle", "streaming_logo_shadow_distance", "streaming_logo_shadow_size", "streaming_logo_shadow_spread",
-                   "streaming_logo_shadow_color",
-                   "status_banners", "status_banner_date_format", "status_banner_simplify_dates", "status_banner_h_align", "status_banner_v_align",
-                   "status_banner_offset_x", "status_banner_offset_y", "status_banner_width", "status_banner_height", "status_banner_radius",
-                   "status_banner_backdrop_opacity", "status_banner_border_width", "status_banner_border_color", "status_banner_font_file", "status_banner_font_size",
-                   "status_banner_letter_spacing", "status_banner_text_transform", "status_banner_text_opacity", "status_banner_text_align", "status_banner_padding",
-                   "status_banner_text_offset_x", "status_banner_text_offset_y", "status_banner_stroke_width", "status_banner_stroke_opacity",
-                   "status_banner_stroke_color", "status_banner_shadow_strength", "status_banner_shadow_blur", "status_banner_shadow_offset_y", "status_banner_shadow_color",
-                   "collection_gradient_radius", "collection_gradient_strength", "collection_gradient_corner", "chart_color", "streaming_colors")
+TEMPLATE_FIELDS = ("poster_shift_y", "matte_height_ratio", "fade_height_ratio", "fade_smoothness", "vignette_strength", "logo_mode",
+                   "uniform_logo_max_w", "uniform_logo_max_h", "uniform_logo_offset_x", "uniform_logo_offset_y", "uniform_logo_h_align",
+                   "uniform_logo_v_align", "uniform_logo_trim", "uniform_logo_shadow_enabled", "uniform_logo_shadow_opacity",
+                   "uniform_logo_shadow_angle", "uniform_logo_shadow_distance", "uniform_logo_shadow_size", "uniform_logo_shadow_spread",
+                   "uniform_logo_shadow_color", "text_overlay_enabled", "custom_text", "font_size", "letter_spacing", "position_y",
+                   "text_line_spacing", "text_transform", "text_color", "badges", "badge_margin", "badge_gradient_top_height",
+                   "badge_gradient_top_strength", "badge_gradient_color", "resolution_font_size", "edition_font_size", "badge_text_color",
+                   "badge_text_transform", "badge_stroke_width", "badge_stroke_opacity", "badge_stroke_color", "badge_shadow_strength",
+                   "badge_shadow_blur", "badge_shadow_offset_y", "badge_shadow_color", "badge_art_shadow_enabled", "badge_art_shadow_opacity",
+                   "badge_art_shadow_angle", "badge_art_shadow_distance", "badge_art_shadow_size", "badge_art_shadow_spread",
+                   "badge_art_shadow_color", "audience_score_text_color", "audience_score_font_size", "status_banners", "status_banner_date_format",
+                   "status_banner_simplify_dates", "status_banner_h_align", "status_banner_v_align", "status_banner_offset_x",
+                   "status_banner_offset_y", "status_banner_width", "status_banner_height", "status_banner_radius", "status_banner_backdrop_opacity",
+                   "status_banner_font_file", "status_banner_font_size", "status_banner_text_transform", "status_banner_text_opacity",
+                   "status_banner_text_align", "status_banner_padding", "status_banner_text_offset_x", "status_banner_text_offset_y",
+                   "collection_gradient_radius", "collection_gradient_strength", "collection_gradient_corner", "chart_color")
 # The same for an episode template: every title card setting, plus the few shared ones the card uses (no card size).
 CARD_TEMPLATE_FIELDS = CARD_FIELDS + ("logo_mode", "uniform_logo_max_w", "uniform_logo_max_h", "text_transform")
 
@@ -3583,10 +3204,9 @@ class Worker:
 
     @staticmethod
     def hang_up(client):
-        """Close the worker's pooled connections of a Plex made for one request."""
-        session = getattr(client.http.local, "session", None)
-        if session:
-            session.close()
+        """Drop the session of a Plex made for one request. Its connections are in the process's shared pools
+        (engine_common._ADAPTER), which stay open for the next request, so nothing is closed."""
+        client.http.local.__dict__.pop("session", None)
 
     def target(self, rel):
         """The size of the poster a push makes for this folder, which a backdrop is cropped to."""
@@ -3706,11 +3326,8 @@ class Worker:
             uses.setdefault(name, []).append(kinds[kind])
         def pick(style):
             values = {key: value for key, value in asdict(style).items() if key in TEMPLATE_FIELDS + ("width", "height")}
-            # The page has a switch per edge, so `gradients` shows as both
-            values["badges"] = [name for name in values["badges"] if not name.startswith("gradient")] + [f"gradient_{side}" for side in gradient_sides(values["badges"])]
             values["status_banners"] = {category: dict(entry) for category, entry in values["status_banners"]}  # What the page edits: the overrides only
             values["status_banner_font_file"] = values["status_banner_font_file"] or ""  # The page's empty font is the config's null
-            values["streaming_colors"] = dict(values["streaming_colors"])  # Like status_banners: the overrides, by service
             return values
         def pick_card(style):
             values = {key: value for key, value in asdict(style).items() if key in CARD_TEMPLATE_FIELDS + ("width", "height")}
@@ -3722,13 +3339,12 @@ class Worker:
             base, role = options.get("extends"), options.get("role", "poster")
             shown = pick_card if role == "episode" else pick
             entry = {"name": name, "base": base, "role": role, "uses": uses.get(name, []), "media": media.get(name),
-                     "values": shown(Style(**layout_options(stored, name)))}
+                     "values": shown(make_style(layout_options(stored, name)))}
             if base:
-                entry["inherited"] = shown(Style(**stored[base]))
+                entry["inherited"] = shown(make_style(stored[base]))
             layouts.append(entry)
         return {"version": version, "default": config.get("default_layout"), "layouts": layouts,
-                "fonts": self.template_fonts(config), "banners": banner_settings(()),
-                "glows": {name: color for name, _, _, color in STREAMING}}  # Each streaming service's own glow, for its Background row  # The categories as they are with nothing overridden
+                "fonts": self.template_fonts(config), "banners": banner_settings(())}  # The categories as they are with nothing overridden
 
     def library_kinds(self, config):
         """[(title, "movie" or "show")] for the configured Plex libraries, or None when Plex can't say. Plex gets a few seconds to
@@ -3800,7 +3416,7 @@ class Worker:
         if not isinstance(values, dict) or set(values) - set(CARD_TEMPLATE_FIELDS if role == "episode" else TEMPLATE_FIELDS):
             raise ValueError("Only the Template view's settings can be changed here")
         try:
-            return Style(**{**layout_options(layouts, name), **card_values(values)})
+            return make_style({**layout_options(layouts, name), **card_values(values)})
         except TypeError as error:
             raise ValueError(str(error)) from None
 
@@ -3887,8 +3503,7 @@ class Worker:
             if banner in BANNERS and number is None:  # Previewed as this category, whatever the show is up to
                 item = {**item, "media": {**item.get("media", {}), "banner": sample_banner(banner)}}
         logo_path = ArtworkFiles.source(title, "logo") or (local_path(item["logo"], base) if item.get("logo") and not is_url(item["logo"]) else None)
-        # A fixed grain pattern, so moving a slider doesn't make the grain flicker
-        style = replace(style, width=width, height=round(style.height * width / style.width), grain_seed=style.grain_seed or 0)
+        style = replace(style, width=width, height=round(style.height * width / style.width))
         bound = (2 * style.width, 2 * style.height)
         try:
             with self.rendering:
@@ -4171,9 +3786,9 @@ class Worker:
         layout.update(card_values(values))
         base = layout.get("extends")
         if base:
-            shown = Style(**layouts[base])
-            for key in set(layout) - set(LAYOUT_LINK):
-                if getattr(Style(**{**layouts[base], key: layout[key]}), key) == getattr(shown, key):
+            shown = make_style(layouts[base])
+            for key in set(layout) - set(LAYOUT_LINK) - set(RETIRED):
+                if getattr(make_style({**layouts[base], key: layout[key]}), key) == getattr(shown, key):
                     del layout[key]
         return layout
 
@@ -4220,24 +3835,13 @@ def worker_template_preview(worker, params):
 
 
 def worker_check(worker, params):
-    """Both engines' checks of a config tk.box is about to save (a file it wrote beside the worker's own)."""
-    import plex_collections  # Only the collections engine's own checks and answers; it never imports this script
+    """This engine's checks of a config tk.box is about to save (a file it wrote beside the worker's own). The collection
+    definitions are tk.box's to check."""
     path = Path(str(params.get("config") or ""))
     if path.parent.resolve() != worker.config_path.parent.resolve() or path.suffix != ".json":
         raise ValueError("Unknown config")
     read_config(path)
-    plex_collections.read_collections_config(path)
     return {}
-
-
-def worker_collections(worker, params):
-    """The collections engine's seasonal presets ("defaults") or one Discover answer, from the worker's own config."""
-    import plex_collections
-    if params.get("command") == "defaults":
-        return {"collections": plex_collections.DEFAULTS["collections"]}
-    if params.get("command") == "discover":
-        return plex_collections.discover(worker.config_path, params.get("input") or {})
-    raise ValueError("Unknown request")
 
 
 WORKER_METHODS = {
@@ -4256,7 +3860,6 @@ WORKER_METHODS = {
     "template_preview": worker_template_preview,
     "template_merge": lambda w, p: {"layout": w.template_merge(p.get("layout"), p.get("values") or {})},
     "check": worker_check,
-    "collections": worker_collections,
 }
 # Answered on their own threads, so they never wait behind a preview, a Plex lookup or a provider that's slow to answer.
 WORKER_QUICK = {"thumb", "clear", "template", "template_merge", "check"}
@@ -4298,88 +3901,78 @@ def serve_worker(config_path):
     return 0
 
 
-def count_or_all(value):
-    if value.lower() == "all":
-        return "all"
-    if not value.isdigit() or int(value) < 1:
-        raise argparse.ArgumentTypeError("use a positive number or 'all'")
-    return int(value)
+BATCH_DONE = "\x1eDONE "  # Starts the line that ends each --batch job: BATCH_DONE + {"code": exit status}
+NICE = {"done": False}
 
 
-def main():
+def lower_priority(amount):
+    """os.nice once per process (it adds up, and a --batch process runs many jobs)."""
+    if not NICE["done"] and hasattr(os, "nice"):
+        NICE["done"] = True
+        with contextlib.suppress(OSError):
+            os.nice(amount)
+
+
+def serve_batch(config_path):
+    """--batch: run tk.box's queued jobs one after another in this process, so Python and this module load once for a
+    push of many titles instead of once per title. Each stdin line is a job ({"args": [its options]}, run on this
+    config as if on the command line); its output comes on stdout, warnings and errors included, in order, ended by a
+    BATCH_DONE line with its exit status. Connections to Plex and the providers stay open between jobs. It exits when
+    tk.box closes stdin; tk.box ends it to cancel a job."""
+    lower_priority(10)
+    sys.stderr = sys.stdout  # One stream, so a job's warnings can't arrive after its end line
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+            args = [str(arg) for arg in request["args"]]
+        except (ValueError, TypeError, KeyError):
+            continue
+        if {"--worker", "--batch"} & set(args):
+            code = 2
+            print("ERROR: --worker and --batch can't be run as a batch job", flush=True)
+        else:
+            forget_files()
+            try:
+                code = main([str(config_path), *args])
+            except SystemExit as stop:  # argparse's own errors (it has printed why)
+                code = stop.code if isinstance(stop.code, int) else 1
+            except Exception:  # Never take the batch down: the job fails with the traceback in its output
+                traceback.print_exc(file=sys.stdout)
+                code = 1
+        print(BATCH_DONE + json.dumps({"code": code}), flush=True)
+    return 0
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path, help="The JSON config tk.box writes for the run")
-    parser.add_argument("--refetch", action="store_true", help="Ignore cached API responses and downloaded images, and delete the selected titles' saved poster/logo files so new ones are picked and downloaded (your own files in those folders go too)")
-    parser.add_argument("--refresh", action="store_true", help="Upload everything selected to Plex again (reuses current rendered files; needs plex.upload: true)")
+    parser.add_argument("--item", type=int, metavar="PLEX_ID", help="Process one movie, show or collection by its Plex rating key")
     parser.add_argument("--changed-only", action="store_true", help="Rebuild/upload only items with changed source files or settings")
-    selector = parser.add_mutually_exclusive_group()
-    selector.add_argument("--item", type=int, metavar="PLEX_ID", help="Process one movie/show by its Plex rating key")
-    selector.add_argument("--title", help="Process one movie/show by exact title (case-insensitive)")
-    parser.add_argument("--type", dest="media_type", choices=("movie", "show", "collection"), help="Restrict the selected item's media type")
-    parser.add_argument("--year", type=int, help="Restrict the selected item's release year")
-    parser.add_argument("--remake", dest="force", action="store_true", help="Re-render everything selected (whole library, or one title with --item/--title) even if unchanged, bypassing --changed-only; saved source files are kept")
-    parser.add_argument("--with-seasons", action="store_true", help="Also process the selected show's season posters")
-    parser.add_argument("--with-episodes", action="store_true", help="Also make title cards for the selected show's episodes")
-    parser.add_argument("--import-posters", dest="import_posters", nargs="?", const=Path("-"), type=Path, metavar="YAML",
-                        help="Save the poster URLs in a Kometa/MediUX metadata YAML into your titles' asset folders as poster files (replacing saved ones); renders nothing. Give a file, or no file to paste the YAML in")
-    parser.add_argument("--poster", type=count_or_all, metavar="N|all",
-                        help="With --item/--title: only download the N best (or all) extra posters allowed by the layout as poster2, poster3... in the title's folder")
-    parser.add_argument("--poster-filter", choices=("all", "textless", "text"), help="With --poster: which posters to download, instead of the layout's poster_filter (all = with or without text)")
-    parser.add_argument("--logo", "--icons", dest="icons", type=count_or_all, metavar="N|all",
-                        help="With --item/--title: only download the N best (or all) extra logos allowed by the layout as logo2, logo3... in the title's folder")
-    parser.add_argument("--season", type=int, help="With --with-episodes: only this season's episodes (no show/season posters)")
-    parser.add_argument("--episode", type=int, help="With --with-episodes: only this episode number (no show/season posters)")
-    parser.add_argument("--added", action="store_true", help="For a newly added title (tk.box runs it when Plex adds one): with --item/--title, build and send only what Plex doesn't have yet. --item takes a movie's, show's, season's or episode's own key. A show Plex has no poster for gets everything; a known show gets just --season/--season --episode. Waits if another run is active")
-    parser.add_argument("--limit", type=int, help="Process only the first N items")
-    parser.add_argument("--check", action="store_true", help="Only validate the config and its layouts, then exit (tk.box runs this before saving)")
+    parser.add_argument("--remake", dest="force", action="store_true", help="Re-render everything selected even if unchanged; saved source files are kept")
+    parser.add_argument("--refresh", action="store_true", help="Upload everything selected to Plex again (reuses current rendered files; needs plex.upload: true)")
+    parser.add_argument("--with-seasons", action="store_true", help="With --item: also the show's season posters")
+    parser.add_argument("--with-episodes", action="store_true", help="With --item: also title cards for the show's episodes")
+    parser.add_argument("--added", action="store_true", help="For a newly added title (tk.box's newly-added check): with --item, build and send only what Plex doesn't have yet. --item takes a movie's, show's, season's or episode's own key. Waits if another run is active")
     parser.add_argument("--worker", action="store_true", help="Answer tk.box's Admin › Artwork requests on stdin until it closes (see serve_worker)")
-    args = parser.parse_args()
-    if args.check:
-        try:
-            read_config(args.config)
-        except (OSError, ValueError, TypeError) as error:
-            print(f"ERROR: {error}", file=sys.stderr)
-            return 1
-        print("Config OK")
-        return 0
+    parser.add_argument("--batch", action="store_true", help="Run tk.box's jobs one after another from stdin until it closes (see serve_batch)")
+    args = parser.parse_args(argv)
+    if args.batch:
+        return serve_batch(args.config)
     if args.worker:
-        if hasattr(os, "nice"):
-            with contextlib.suppress(OSError):
-                os.nice(5)  # Previews are interactive, so less than a job's 10; streaming still comes first
+        lower_priority(5)  # Previews are interactive, so less than a job's 10; streaming still comes first
         try:
             return serve_worker(args.config)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"ready": False, "error": str(error)}), flush=True)
             return 1
-    if hasattr(os, "nice"):
-        with contextlib.suppress(OSError):
-            os.nice(10)  # Plex, its transcoder and anyone else on the machine come first; web pushes inherit this
-    if args.limit is not None and args.limit < 1:
-        parser.error("--limit must be positive")
-    if args.import_posters:
-        busy = [flag for flag, value in (("--item", args.item), ("--title", args.title), ("--type", args.media_type), ("--year", args.year),
-                                          ("--remake", args.force), ("--with-seasons", args.with_seasons), ("--with-episodes", args.with_episodes),
-                                          ("--poster", args.poster), ("--logo", args.icons), ("--season", args.season), ("--episode", args.episode),
-                                          ("--limit", args.limit), ("--changed-only", args.changed_only),
-                                          ("--refresh", args.refresh), ("--refetch", args.refetch)) if value]
-        if busy:
-            parser.error(f"--import-posters runs on its own and can't be combined with {', '.join(busy)}")
-        try:
-            with run_lock(args.config):
-                return import_posters(args.config, args.import_posters)
-        except (OSError, ValueError, TypeError, RuntimeError, yaml.YAMLError) as error:
-            print(f"ERROR: {error}", file=sys.stderr)
-            return 1
+    lower_priority(10)  # Plex, its transcoder and anyone else on the machine come first; web pushes inherit this
     try:
         with run_lock(args.config):
-            return run(args.config, refetch=args.refetch, refresh=args.refresh, changed_only=args.changed_only, limit=args.limit,
-                       rating_key=args.item, title=args.title, media_type=args.media_type, year=args.year,
-                       force=args.force, with_seasons=args.with_seasons, with_episodes=args.with_episodes,
-                       season=args.season, episode=args.episode, posters=args.poster, icons=args.icons, added=args.added, poster_filter=args.poster_filter)
-    except (OSError, ValueError, TypeError, RuntimeError, ET.ParseError, yaml.YAMLError) as error:
+            return run(args.config, refresh=args.refresh, changed_only=args.changed_only, rating_key=args.item, force=args.force,
+                       with_seasons=args.with_seasons, with_episodes=args.with_episodes, added=args.added)
+    except (OSError, ValueError, TypeError, RuntimeError, ET.ParseError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

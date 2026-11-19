@@ -44,7 +44,7 @@ const ratingSources:[RegExp,ExternalRating['source'],boolean?][]=[
 const ratingOrder:ExternalRating['source'][]=['imdb','tomatometer','popcornmeter','tmdb'];
 // The item's third-party scores, one per source in a fixed order. Older agents send only the top-level
 // critic and audience pairs instead of the Rating list.
-export function externalRatings(node:CatalogNode):ExternalRating[]|undefined {
+export function externalRatings(node:Pick<CatalogNode,'Rating'|'rating'|'ratingImage'|'audienceRating'|'audienceRatingImage'>):ExternalRating[]|undefined {
   const entries=node.Rating??[{image:node.ratingImage,value:node.rating},{image:node.audienceRatingImage,value:node.audienceRating}];
   const found=new Map<ExternalRating['source'],ExternalRating>();
   for(const {image,value} of entries) {

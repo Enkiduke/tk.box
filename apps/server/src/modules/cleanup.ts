@@ -12,6 +12,7 @@ import type { ArtworkEngine } from '../services/artwork-engine.js';
 import type { Requests } from '../services/requests.js';
 import type { CleanupWatch } from '../services/cleanup-engine.js';
 import type { IdentityService } from '../services/identity.js';
+import type { PlexIndex } from '../services/plex-index.js';
 
 type Deps = {
   // The collections artwork keeps are never purged.
@@ -28,18 +29,21 @@ type Deps = {
     titleId(kind: 'movie' | 'show', tmdbId: number): number | undefined; kept(kind: 'movie' | 'show'): Set<number>;
     forget(titleId: number, by: 'cleanup' | 'admin'): void; keep(titleId: number, keep: boolean): void;
     forgetSeason(titleId: number, season: number): Promise<void> };
+  // The title identity: each request's Plex copies, their seasons and added dates (the TypeScript rules; no title search).
+  plexIndex: Pick<PlexIndex, 'resolve' | 'copy'>;
 };
 
-// Admin › Server › Clean Up: the purge script runs as a separate Python process too. `services` are the connections a
-// run needs.
+// Admin › Server › Clean Up: decides over these deps and writes Plex with the owner's grant.
 export const cleanupModule = defineModule({
   name: 'cleanup',
   migrations: cleanupMigrations,
   access: 'admin',
-  setup(routes, { config, db, vault, bus, plexOwner, jobs, log, plex, serviceKeys }, { artwork, requests, watchHistory, identity, library }: Deps) {
+  setup(routes, { config, db, vault, bus, plexOwner, jobs, log, plex, serviceKeys }, { artwork, requests, watchHistory, identity, library, plexIndex }: Deps) {
     const store = new CleanupStore(db, vault);
-    const engine = new CleanupEngine(store, { python: config.PYTHON_PATH, script: resolve('apps/cleanup/purge_requests.py'), poster: resolve('apps/cleanup/leaving-soon.png'),
-      dataDir: config.DATA_DIR, get plexUrl() { return config.PLEX_URL; } }, () => plexOwner.grant(), (message, detail) => log.info(message, detail));
+    const engine = new CleanupEngine(store, { poster: resolve('apps/server/assets/leaving-soon.png'), dataDir: config.DATA_DIR },
+      () => plexOwner.grant(), (message, detail) => log.info(message, detail));
+    engine.plexIndex = plexIndex;
+    engine.plex = plex;
     registerCleanup(routes, store, engine);
     routes.get('/api/v1/admin/cleanup/users', async (req): Promise<CleanupUsersView> => {
       const { hash, grant } = viewer(req);

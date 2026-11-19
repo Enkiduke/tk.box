@@ -1,29 +1,33 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { AppError, requireThat } from '../errors.js';
 import type { ArtworkCollections, ArtworkSettings, ArtworkStore } from '../persistence/artwork-store.js';
 import type { ProviderKeys } from '../persistence/service-keys.js';
 import { collectionsByMovie, hiddenDownloads } from './hidden-downloads.js';
+import type { CollectionsStore, KeptCollections } from '../persistence/collections-store.js';
+import type { CollectionsRunner } from './collections/runner.js';
+import { SEASONAL_PRESETS } from './collections/presets.js';
+import { ArtworkBatch } from './artwork-batch.js';
 
-// Runs the artwork engine (apps/artwork/artwork_engine.py) and the collections engine (apps/artwork/plex_collections.py) as
-// their own Python processes: tk.box writes their shared JSON config from the database, passes credentials in the
-// environment, and streams the output into the job history. The rendering happens entirely in those processes (which
-// lower their own CPU priority), so the server's event loop and the streaming paths never do image work. One job runs
-// at a time, whichever script it is; the rest wait in order.
+// Runs Artwork's jobs, one at a time, in order, whichever engine they are for. The artwork engine
+// (apps/artwork/artwork_engine.py) runs in its own Python process, which runs one job after another (artwork-batch.ts):
+// before each job tk.box writes its JSON config from the database; credentials go in the process's environment, and
+// each job's output streams into its own history. The rendering happens entirely in that
+// process (which lowers its own CPU priority), so the server's event loop and the streaming paths never do image work.
+// The collections engine (services/collections) runs in the server: it only talks to Plex and the providers.
 export type ArtworkLibrary = { key: string; title: string; type: string };
 export type ArtworkRun = { token: string; libraries: ArtworkLibrary[] };
-type Paths = { python: string; script: string; collectionsScript: string; dataDir: string; cacheDir: string; plexUrl: string };
+type Paths = { python: string; script: string; dataDir: string; cacheDir: string; plexUrl: string };
 export type EngineScript = 'artwork' | 'collections';
 // What the last applying collections run kept: every franchise and streaming collection that qualifies (off: turned off
 // in tk.box, so not in Plex) and every custom one that's on, with its Plex ID once it's in Plex.
-export type KeptCollections = { updated: string | null; collections: { name: string; library: string; kind: 'franchise' | 'streaming' | 'custom'; items: number; rating_key?: string; off?: boolean }[] };
-type Running = { id: number; child?: ChildProcess; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
+export type { KeptCollections };
+type Running = { id: number; batch?: true; abort?: AbortController; lines: string[]; dropped: number; canceled: boolean; secrets: string[] };
 type Inputs = { settings: ArtworkSettings; layouts: Record<string, Record<string, unknown>>; collections?: ArtworkCollections };
 type EngineStatus = { at: number } & ({ ready: true; version: string } | { ready: false; error: string; interrupted?: true });
-// The long-lived worker process (artwork-worker.ts), which answers checks and the collections engine's questions too.
+// The long-lived worker process (artwork-worker.ts), which answers the artwork engine's checks too.
 type Worker = { request<T>(run: ArtworkRun, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> };
 const MAX_LINES = 5000, SAVED_LINES = 2000;
 
@@ -34,16 +38,15 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
   return {
     plex: { url: paths.plexUrl, libraries: settings.libraries, upload: settings.upload, upload_logo: settings.uploadLogo, include_seasons: settings.includeSeasons,
       include_episodes: settings.includeEpisodes, include_collections: settings.includeCollections, completion_label: settings.completionLabel,
-      ...(f ? { sync_collections: f.sync, franchise_collections: f.franchises, collection_min_items: f.minItems, collection_sync: f.mode, collection_streaming: f.streaming, collection_region: f.region,
-        recent_collections: f.recent, recent_movie_days: f.recentMovieDays, recent_episode_days: f.recentEpisodeDays } : {}) },
+      // The streaming logo a show's poster uses ("available") is where it streams in the collections' region.
+      ...(f ? { collection_region: f.region } : {}) },
     assets_dir: 'assets', cache_dir: paths.cacheDir, workers: settings.workers, quality: settings.quality, language: settings.language,
     missing_art: settings.missingArt, overlay_marker: true, default_layout: settings.defaultLayout,
     layout_by_library: Object.fromEntries(Object.entries(settings.layoutByLibrary).flatMap(([id, layout]) => { const name = title(id); return name ? [[name, layout]] : []; })),
     ...(Object.keys(settings.layoutByType).length ? { layout_by_type: settings.layoutByType } : {}),
     layouts,
-    ...(collections?.definitions ? { collections: collections.definitions } : {}),
-    // Seasonal downloads go to tk.box's library: the engine lists them (collections-acquire.json) and tk.box adds them.
-    ...(collections?.automatic?.length ? { automatic_collections: collections.automatic } : {})
+    // Which collections are custom ones, for their posters.
+    ...(collections?.definitions ? { collections: collections.definitions } : {})
   };
 }
 // The engine's provider keys, from Admin › Connections (service keys).
@@ -56,10 +59,12 @@ export function childEnv(run: ArtworkRun | undefined, keys: EngineSecrets) {
   // Match artwork_engine.py's defaults when the dependency check imports NumPy directly.
   Object.assign(env, { OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1' });
   if (run) env.PLEX_TOKEN = run.token;
-  for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY'], ['mdblist', 'MDBLIST_API_KEY']] as const)
+  for (const [name, variable] of [['tmdb', 'TMDB_API_KEY'], ['tvdb', 'TVDB_API_KEY'], ['fanart', 'FANART_API_KEY']] as const)
     if (keys[name]) env[variable] = keys[name];
   return env;
 }
+// Ends an in-server job's step early, past the Python process's.
+class Done extends Error {}
 const redact = (line: string, secrets: string[]) => secrets.reduce((text, secret) => secret.length >= 6 ? text.replaceAll(secret, '•••') : text, line);
 
 export class ArtworkEngine {
@@ -68,12 +73,15 @@ export class ArtworkEngine {
   private known?: EngineStatus;
   private checking?: Promise<EngineStatus>;
   private worker?: Worker;
-  private defaults?: Promise<unknown[]>;
+  private collections?: CollectionsRunner;
+  private collectionsStore?: CollectionsStore;
+  private batch: ArtworkBatch;
   readonly workDir: string;
   // Called after each job that ran, whatever its outcome: even a failed or canceled one may have changed some art in Plex.
   finished?: () => void;
   constructor(private store: ArtworkStore, readonly paths: Paths, private log: (message: string, detail: Record<string, unknown>) => void = () => {}, private keys: () => EngineSecrets = () => ({})) {
     this.workDir = join(paths.dataDir, 'artwork');
+    this.batch = new ArtworkBatch({ python: paths.python, script: paths.script, config: join(this.workDir, 'config.json'), cwd: this.workDir });
     store.abandonJobs();
     this.renameFiles();
   }
@@ -97,6 +105,7 @@ export class ArtworkEngine {
     } catch (e) { this.log('artwork files could not be renamed; trying again at the next start', { error: (e as Error).message }); }
   }
   useWorker(worker: Worker) { this.worker = worker; }
+  useCollections(runner: CollectionsRunner, store: CollectionsStore) { this.collections = runner; this.collectionsStore = store; }
   secrets(): EngineSecrets { return this.keys(); }
   // Cache the dependency check for a minute. An interrupted check can be tried again on the next request.
   status(force = false) {
@@ -108,7 +117,7 @@ export class ArtworkEngine {
     return this.checking;
   }
   private async checkPython(): Promise<EngineStatus> {
-    const args = ['-c', 'import sys, PIL, numpy, requests, yaml; print(sys.version.split()[0])'];
+    const args = ['-c', 'import sys, PIL, numpy, requests; print(sys.version.split()[0])'];
     for (let attempt = 0; attempt < 2; attempt++) {
       const { code, signal, output } = await this.capture(args, 20000);
       if (code === 0) return { at: Date.now(), ready: true, version: output.trim() };
@@ -119,10 +128,11 @@ export class ArtworkEngine {
     }
     return { at: Date.now(), ready: false, interrupted: true, error: 'The Python dependency check was interrupted twice.' };
   }
-  // Both engines' own validation of what is about to be saved (on top of what is saved now), asked of the worker. Until
-  // Python is set up only the database's own checks apply (settings can be saved first); the engines check everything again
-  // when a job runs.
+  // Both engines' own validation of what is about to be saved (on top of what is saved now): the collections' here, the
+  // artwork engine's asked of the worker. Until Python is set up only the database's own checks apply to the artwork side
+  // (settings can be saved first); it checks everything again when a job runs.
   async check(changes: Partial<Inputs>, run: ArtworkRun) {
+    if (changes.collections) { this.collections?.validate(changes.collections); if (!changes.settings && !changes.layouts) return; }
     if (!this.worker || !(await this.status()).ready) return;
     const file = this.writeConfig(run.libraries, `check-${randomUUID()}.json`, changes);
     try { await this.worker.request(run, 'check', { config: file }, 30000); }
@@ -142,25 +152,19 @@ export class ArtworkEngine {
     const same = (job: { script: EngineScript; args: string[] }) => job.script === script && job.args.join('\0') === args.join('\0');
     return (!!this.current && same(this.current)) || this.queue.some(same);
   }
-  // A Discover answer from the collections engine, asked of the worker with this run's credentials. Partly owned and
-  // Universes read the Discover index the collections jobs keep, so none of them waits on TMDb or a list.
+  // A Discover answer from the collections engine, with this run's credentials. Partly owned and Universes read the
+  // Discover index the collections jobs keep, so none of them waits on TMDb or a list.
   async discover(run: ArtworkRun, input: Record<string, unknown>) {
-    requireThat(this.worker, 'ARTWORK_ENGINE_UNAVAILABLE', 'The artwork engine is not set up.', 503);
-    this.writeConfig(run.libraries, 'config.json');
-    return this.worker.request(run, 'collections', { command: 'discover', input });
+    requireThat(this.collections, 'ARTWORK_ENGINE_UNAVAILABLE', 'The collections engine is not set up.', 503);
+    return this.collections.discover(run, input);
   }
-  // The seasonal presets used until collections are first saved; they ship with the engine, so they're asked for once.
-  defaultCollections(run: ArtworkRun) {
-    if (!this.worker) return Promise.resolve([]);
-    const defaults = this.defaults ??= this.worker.request<{ collections: unknown[] }>(run, 'collections', { command: 'defaults' }).then(d => d.collections);
-    defaults.catch(() => { if (this.defaults === defaults) this.defaults = undefined; });
-    return defaults;
-  }
+  // The seasonal presets used until collections are first saved.
+  defaultCollections() { return SEASONAL_PRESETS; }
   cancel(id: number) {
     const waiting = this.queue.findIndex(j => j.id === id);
     if (waiting >= 0) { this.queue.splice(waiting, 1); this.store.jobFinished(id, 'canceled', null, 'Canceled before it started.'); return; }
     if (this.current?.id !== id) throw new AppError('JOB_NOT_RUNNING', 'That job has already finished.', 409);
-    this.current.canceled = true; this.current.child?.kill();
+    this.current.canceled = true; if (this.current.batch) this.batch.cancel(); this.current.abort?.abort();
   }
   // A job's state, with the running job's output from line `since` on (line numbers keep counting as old lines drop).
   job(id: number, since = 0) {
@@ -170,7 +174,7 @@ export class ArtworkEngine {
     return { ...job, output: undefined, lines: live.lines.slice(from), next: live.dropped + live.lines.length };
   }
   busy() { return this.current ? { running: this.current.id, queued: this.queue.length } : { running: null, queued: this.queue.length }; }
-  close() { this.queue = []; if (this.current) { this.current.canceled = true; this.current.child?.kill(); } }
+  close() { this.queue = []; if (this.current) { this.current.canceled = true; this.current.abort?.abort(); } this.batch.close(); }
   private add(actor: string, label: string, args: string[], run: ArtworkRun, script: EngineScript, done?: () => void) {
     const id = this.store.addJob(actor, label, args);
     this.queue.push({ id, script, args, run, ...(done ? { done } : {}) }); void this.next();
@@ -193,24 +197,18 @@ export class ArtworkEngine {
       if (!this.pending(args)) this.add(actor, `Poster for new collection: ${name}`, args, run, 'artwork');
     }
   }
-  // The collections the last applying run kept (the collections engine writes this file).
-  keptCollections(): KeptCollections {
-    try {
-      const file = JSON.parse(readFileSync(join(this.workDir, 'kept_collections.json'), 'utf8')) as Partial<KeptCollections>;
-      return { updated: typeof file.updated === 'string' ? file.updated : null, collections: Array.isArray(file.collections) ? file.collections : [] };
-    } catch { return { updated: null, collections: [] }; }
-  }
-  // Which collections downloaded each movie (Admin › Manage › Movies' source), from both journals; a journal that can't
-  // be read counts as empty.
+  // The collections the last applying run kept.
+  keptCollections(): KeptCollections { return this.collectionsStore?.kept() ?? { updated: null, collections: [] }; }
+  // The journal of downloads, in the shape both journals had ({movies: {tmdb id: {owners}}}).
+  private journal() { return { movies: Object.fromEntries([...(this.collectionsStore?.downloads() ?? new Map<number, string[]>())].map(([id, owners]) => [String(id), { owners }])) }; }
+  // Which collections downloaded each movie (Admin › Manage › Movies' source), from tk.box's journal and the older file
+  // from before tk.box added them itself (collections-state.json, read only).
   collectionMovies() {
-    const read = (file: string) => { try { return JSON.parse(readFileSync(join(this.workDir, file), 'utf8')) as unknown; } catch { return null; } };
-    return collectionsByMovie([read('collections-tkbox.json'), read('collections-state.json')], this.store.collections().definitions);
+    const older = (() => { try { return JSON.parse(readFileSync(join(this.workDir, 'collections-state.json'), 'utf8')) as unknown; } catch { return null; } })();
+    return collectionsByMovie([this.journal(), older], this.store.collections().definitions);
   }
-  // The movies collections downloaded that stay off Recently added; none while the journal can't be read.
-  hiddenFromRecent() {
-    try { return hiddenDownloads(JSON.parse(readFileSync(join(this.workDir, 'collections-tkbox.json'), 'utf8')), this.store.collections().definitions); }
-    catch { return new Set<number>(); }
-  }
+  // The movies collections downloaded that stay off Recently added.
+  hiddenFromRecent() { return hiddenDownloads(this.journal(), this.store.collections().definitions); }
   // The config the worker reads, written again whenever settings, layouts or collections change.
   refreshConfig(libraries: ArtworkLibrary[]) { return this.writeConfig(libraries, 'config.json'); }
   private async next() {
@@ -220,23 +218,25 @@ export class ArtworkEngine {
     const running = this.current = { id: job.id, script: job.script, args: job.args, lines: [] as string[], dropped: 0, canceled: false, secrets: [job.run.token, ...Object.values(keys).filter((v): v is string => !!v)] } as Running & { script: EngineScript; args: string[] };
     const created: { name: string; key: string }[] = [];
     const say = (line: string) => {
-      const made = job.script === 'collections' ? /^CREATED (.+): Plex ID (\d{1,10})$/.exec(line) : null;
-      if (made) created.push({ name: made[1]!, key: made[2]! });
       running.lines.push(redact(line, running.secrets)); if (running.lines.length > MAX_LINES) { running.lines.splice(0, 1000); running.dropped += 1000; }
     };
     let code: number | null = null;
     try {
       this.store.jobStarted(job.id);
+      if (job.script === 'collections') {
+        requireThat(this.collections, 'ARTWORK_ENGINE_UNAVAILABLE', 'The collections engine is not set up.', 503);
+        say(`> collections ${job.args.join(' ')}`);
+        running.abort = new AbortController();
+        code = await this.collections.job({ args: job.args, run: job.run, say, signal: running.abort.signal, created: (name, key) => created.push({ name, key }) });
+        throw new Done();
+      }
       const engine = await this.status();
       if (!engine.ready) throw new Error(`Artwork engine unavailable. ${engine.error}`);
-      const file = this.writeConfig(job.run.libraries, 'config.json');
-      const collections = job.script === 'collections';
-      say(`> ${collections ? 'plex_collections' : 'artwork_engine'} ${job.args.join(' ')}`);
-      const child = running.child = spawn(this.paths.python, [collections ? this.paths.collectionsScript : this.paths.script, file, ...job.args], { cwd: this.workDir, env: childEnv(job.run, keys), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-      for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream, crlfDelay: Infinity }).on('line', say);
-      code = await done;
-    } catch (e) { say(`ERROR: ${(e as Error).message}`); }
+      this.writeConfig(job.run.libraries, 'config.json');
+      say(`> artwork_engine ${job.args.join(' ')}`);
+      running.batch = true;
+      code = await this.batch.run(job.args, childEnv(job.run, keys), createHash('sha256').update(JSON.stringify([job.run.token, keys])).digest('hex'), say);
+    } catch (e) { if (!(e instanceof Done) && !running.canceled) say(`ERROR: ${(e as Error).message}`); }
     const status = running.canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed';
     if (running.canceled) say('Canceled.');
     if (status === 'succeeded') try { job.done?.(); } catch (e) { this.log('artwork job follow-up failed', { jobId: job.id, error: (e as Error).message }); }
@@ -247,17 +247,8 @@ export class ArtworkEngine {
     this.current = undefined; this.store.pruneJobs(); this.finished?.(); void this.next();
   }
   // The movies the last collections run wants tk.box's library to add, and those its seasonal and rotating
-  // collections let go. Read once: the file is removed as it's read.
-  takeAcquisitions(): { add: number[]; remove: number[] } {
-    const file = join(this.workDir, 'collections-acquire.json');
-    if (!existsSync(file)) return { add: [], remove: [] };
-    const ids = (value: unknown) => Array.isArray(value) ? value.filter((n): n is number => Number.isSafeInteger(n) && (n as number) > 0) : [];
-    try {
-      const data = JSON.parse(readFileSync(file, 'utf8')) as { tmdb_ids?: unknown; remove_ids?: unknown };
-      return { add: ids(data.tmdb_ids), remove: ids(data.remove_ids) };
-    } catch { return { add: [], remove: [] }; }
-    finally { rmSync(file, { force: true }); }
-  }
+  // collections let go. Taken once.
+  takeAcquisitions(): { add: number[]; remove: number[] } { return this.collectionsStore?.takeAcquisitions() ?? { add: [], remove: [] }; }
   // Written whole and then moved into place, so the engine never reads a half-written config.
   private writeConfig(libraries: ArtworkLibrary[], name: string, changes: Partial<Inputs> = {}) {
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });

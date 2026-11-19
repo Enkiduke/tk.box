@@ -53,16 +53,24 @@ export function WhenDay({day,now}:{day?:string;now?:number}) {
 // ---- Status ----
 
 export type Tone='ok'|'active'|'wait'|'bad'|'off';
-// `icon` stands in for the dot (a show's own status: Returning, Ended…).
 export const Pill=({tone='off',children,title,icon}:{tone?:Tone;children:ReactNode;title?:string;icon?:string})=>
   <span className={`ui-pill ${tone}${icon?' has-icon':''}`} title={title}>{icon&&<Icon name={icon} size={12}/>}{children}</span>;
+
+// Library availability and the download stages shared by titles, Wanted, Queue and History.
+const mediaStatusIcons:Partial<Record<string,string>>={
+  Available:'check', Failing:'warning', Missing:'unwatched', 'Below cutoff':'below-cutoff',
+  'Not monitored':'eye-off', 'Not aired':'calendar', Downloading:'download', Sending:'upload',
+  Unpacking:'package', Importing:'import', Imported:'check', Seeding:'signal', Done:'check', Failed:'error', Cancelled:'close',
+};
+export const MediaStatusPill=({tone,children}:{tone:Tone;children:string})=>
+  <Pill tone={tone} icon={mediaStatusIcons[children]}>{children}</Pill>;
 // A count as a bar (Shows' Episodes): the share filled in the tone, the count over it.
 export const CountBar=({have,total,tone,title}:{have:number;total:number;tone:Tone;title?:string})=>
   <span className={`ui-countbar ${tone}`} title={title}><span style={{width:`${total?Math.min(100,have/total*100):0}%`}}/><b>{have} / {total}</b></span>;
 export const Tag=({children}:{children:ReactNode})=><span className="ui-tag">{children}</span>;
 export const grabNames:Record<GrabState,string>={sending:'Sending',downloading:'Downloading',unpacking:'Unpacking',importing:'Importing',imported:'Imported',seeding:'Seeding',done:'Done',failed:'Failed',cancelled:'Cancelled'};
 export const grabTones:Record<GrabState,Tone>={sending:'active',downloading:'active',unpacking:'active',importing:'active',seeding:'active',imported:'ok',done:'ok',failed:'bad',cancelled:'off'};
-export const GrabPill=({state}:{state:GrabState})=><Pill tone={grabTones[state]}>{grabNames[state]}</Pill>;
+export const GrabPill=({state}:{state:GrabState})=><MediaStatusPill tone={grabTones[state]}>{grabNames[state]}</MediaStatusPill>;
 
 // ---- Titles ----
 
