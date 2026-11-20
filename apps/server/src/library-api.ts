@@ -55,8 +55,13 @@ export function profileValue(input: z.infer<typeof profileInput>['value'], forma
     seen.add(q);
   }
   requireThat(input.preferred <= input.tiers.length, 'PROFILE_INVALID', 'More preferred tiers than tiers.');
-  requireThat(input.tiers.slice(0, input.preferred).some(t => t.qualities.some(q => !EARLY_COPIES.has(q as Quality))), 'PROFILE_INVALID',
-    'The preferred tiers need a quality besides the early copies.');
+  // Early copies are their own section (Admin › Quality's Early release): tiers of nothing else, after every other tier.
+  const early = input.tiers.map(t => t.qualities.some(q => EARLY_COPIES.has(q as Quality)));
+  requireThat(input.tiers.every((t, i) => !early[i] || t.qualities.every(q => EARLY_COPIES.has(q as Quality))), 'PROFILE_INVALID',
+    'Early copies go in a tier of their own.');
+  requireThat(early.every((e, i) => !e || early.slice(i).every(Boolean)) && early.slice(0, input.preferred).every(e => !e), 'PROFILE_INVALID',
+    'Early copies go after the other tiers, and aren’t preferred.');
+  requireThat(input.preferred >= 1, 'PROFILE_INVALID', 'Preferred needs a tier.');
   const names = new Set(formats.map(f => f.name));
   const unknown = Object.keys(input.scores).find(name => !names.has(name));
   requireThat(!unknown, 'PROFILE_INVALID', `No format is named ${unknown}.`);

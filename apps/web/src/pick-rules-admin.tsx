@@ -1,9 +1,10 @@
-import {useEffect,useRef,useState,type ReactNode} from 'react';
+import {useEffect,useRef,useState,type DragEvent,type ReactNode} from 'react';
 import type {FormatCondition,FormatInput,FormatView,LibrarySettingsView,PickProfile,PickProfileView,PickRules,ProfileTier,TryRelease} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
 import {useApiAll} from './hooks.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
-import {SectionHead,plural,useDragOrder,moveTo} from './settings-ui.js';
+import {SectionHead,plural} from './settings-ui.js';
+import {dropped,join,normalized,split,type DragItem,type DropTarget,type Split} from './profile-tiers.js';
 import {toast} from './toasts.js';
 import {ACTIONS,Dash,Field,FieldError,IconAction,Panel,Pill,RowActions,SaveBar,Segmented,Table,Tabs,Tag,changed,matches,useSave,useSorted} from './manage-ui.js';
 
@@ -16,7 +17,6 @@ const MB=1024**2,GB=1024**3;
 // What a tier's MB/min comes to for a two-hour movie.
 const twoHours=(size?:[number,number])=>size?`${(size[0]*MB*120/GB).toFixed(1)}–${(size[1]*MB*120/GB).toFixed(1)} GB`:undefined;
 const preferredText=(p:PickProfile)=>p.tiers.slice(0,p.preferred).flatMap(t=>t.qualities).join(', ');
-
 export function PickRulesPage() {
   const view=useApiAll<PickRules|LibrarySettingsView>(['/admin/library/rules','/admin/library/settings']);
   const [rules,settings]=view.data as [PickRules|undefined,LibrarySettingsView|undefined];
@@ -87,14 +87,46 @@ const intOf=(text:string)=>text.trim()===''?undefined:Math.trunc(Number(text));
 
 function ProfileEditor({rules,profile,isDefault,close,saved}:{rules:PickRules;profile?:PickProfileView;isDefault:boolean;close:()=>void;saved:(id:number)=>void}) {
   const start={name:profile?.name??'',value:profile?.value??BLANK};
-  const [name,setName]=useState(start.name),[value,setValue]=useState<PickProfile>(start.value),save=useSave(changed),drag=useDragOrder();
+  const [name,setName]=useState(start.name),[value,setValue]=useState<PickProfile>(()=>normalized(start.value,rules.earlyCopies)),save=useSave(changed);
   const [shown,setShown]=useState<'scored'|'all'>(profile?'scored':'all');
   const set=(patch:Partial<PickProfile>)=>setValue(v=>({...v,...patch}));
   const setTier=(i:number,patch:Partial<ProfileTier>)=>setValue(v=>({...v,tiers:v.tiers.map((t,j)=>j===i?{...t,...patch}:t)}));
+  const parts=split(value,rules.earlyCopies),edit=(change:(s:Split)=>Split)=>setValue(v=>join(v,change(split(v,rules.earlyCopies))));
   const used=new Set(value.tiers.flatMap(t=>t.qualities)),free=rules.ladder.filter(q=>!used.has(q)).reverse();
+  const freeRest=free.filter(q=>!rules.earlyCopies.includes(q)),freeEarly=free.filter(q=>rules.earlyCopies.includes(q));
+  const [dragging,setDragging]=useState<DragItem>(),[over,setOver]=useState<DropTarget>();
+  const drop=(target:DropTarget)=>{
+    const item=dragging;setDragging(undefined);setOver(undefined);
+    if(!item||target===item.tier)return;
+    edit(s=>dropped(s,item,target));
+  };
+  const dragTier=(i:number)=>({draggable:true,onDragStart:(e:DragEvent)=>{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i));setDragging({tier:i});},onDragEnd:()=>{setDragging(undefined);setOver(undefined);}});
+  // Heads mark the line under them; a quality dropped on a tier fills it; a tier shows where it lands.
+  const target=(t:DropTarget)=>({'data-drop':dragging&&over===t?(typeof t!=='number'?'after':dragging.quality?'into':t>dragging.tier?'after':'before'):undefined,
+    onDragOver:(e:DragEvent)=>{if(!dragging)return;e.preventDefault();e.dataTransfer.dropEffect='move';if(over!==t)setOver(t);},
+    onDrop:(e:DragEvent)=>{e.preventDefault();drop(t);}});
+  const endDrag=()=>{setDragging(undefined);setOver(undefined);};
+  const head=(label:string,t:'preferred'|'fallback'|undefined,title:string,error?:string)=><tr className="ui-group-row" {...(t?target(t):{})}>
+    <td colSpan={5} title={title}>{label}{error&&<span className="danger-text">{error}</span>}</td></tr>;
+  const tierRow=(t:ProfileTier,i:number)=><tr key={i} {...dragTier(i)} {...target(i)} data-drag={dragging&&!dragging.quality&&dragging.tier===i?'source':undefined}>
+    <td><span className="ui-grip" title="Drag to move"><Icon name="grip" size={16}/></span></td>
+    <td><div className="ui-chips">{t.qualities.map(q=><button type="button" key={q} draggable className="ui-chip on" title={`Remove ${q}, or drag it to another tier`}
+        onDragStart={e=>{e.stopPropagation();e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',q);setDragging({tier:i,quality:q});}} onDragEnd={endDrag}
+        onClick={()=>setTier(i,{qualities:t.qualities.filter(x=>x!==q)})}>{q}<Icon name="close" size={12}/></button>)}
+      {freeRest.length>0&&<select className="ui-chip-add" aria-label="Add a quality" value="" onChange={e=>{if(e.target.value)setTier(i,{qualities:[...t.qualities,e.target.value]});}}>
+        <option value="">Add…</option>{freeRest.map(q=><option key={q} value={q}>{q}</option>)}</select>}</div></td>
+    <td>{t.size?<div className="ui-inline-pair">
+        <input type="number" aria-label="Smallest MB a minute" min={0} max={1000} aria-invalid={!!sizeError(t.size)} value={t.size[0]} onChange={e=>setTier(i,{size:[Number(e.target.value),t.size![1]]})}/>
+        <input type="number" aria-label="Largest MB a minute" min={0} max={1000} aria-invalid={!!sizeError(t.size)} value={t.size[1]} onChange={e=>setTier(i,{size:[t.size![0],Number(e.target.value)]})}/>
+        <IconAction icon="close" label="No size limits" onClick={()=>setValue(v=>({...v,tiers:v.tiers.map((x,j)=>j===i?{qualities:x.qualities}:x)}))}/></div>
+      :<button type="button" onClick={()=>setTier(i,{size:[10,100]})}>Limit sizes</button>}</td>
+    <td className="num">{twoHours(t.size)??<Dash/>}</td>
+    <td><RowActions><IconAction icon="trash" label="Remove tier" disabled={parts.tiers.length<=1}
+      onClick={()=>edit(s=>({...s,tiers:s.tiers.filter((_,j)=>j!==i),preferred:s.preferred-(i<s.preferred?1:0)}))}/></RowActions></td>
+  </tr>;
   const sizeError=(s?:[number,number])=>!s?undefined:!(s[0]>=0&&s[1]<=1000)?'0 to 1000':s[0]>=s[1]?'Smallest first':undefined;
   const errors={name:!name.trim()?'Required':undefined,
-    preferred:value.preferred<1||value.preferred>value.tiers.length?`1 to ${value.tiers.length}`:!value.tiers.slice(0,value.preferred).some(t=>t.qualities.some(q=>!rules.earlyCopies.includes(q)))?'Needs a quality besides the early copies':undefined,
+    preferred:parts.preferred<1?'Needs a tier':undefined,
     tiers:value.tiers.some(t=>!t.qualities.length)?'A tier needs a quality':value.tiers.some(t=>sizeError(t.size))?'Fix the sizes':undefined,
     scores:value.minScore!==undefined&&value.upgradeUntil!==undefined&&value.minScore>value.upgradeUntil?'Minimum over upgrade-until':undefined,
     step:!(value.upgradeStep>=1&&value.upgradeStep<=1000)?'1 to 1000':undefined};
@@ -107,14 +139,12 @@ function ProfileEditor({rules,profile,isDefault,close,saved}:{rules:PickRules;pr
   const setScore=(format:string,points:number|'ban'|undefined)=>setValue(v=>{const scores={...v.scores};if(points===undefined||points===0)delete scores[format];else scores[format]=points;return {...v,scores};});
   const formats=rules.formats.filter(f=>shown==='all'||value.scores[f.name]!==undefined);
   const footer=<SaveBar dirty={dirty} busy={save.busy} error={save.error} invalid={invalid} label={profile?'Save':'Create'} onReload={changed}
-    onCancel={()=>{if(profile){setName(start.name);setValue(start.value);save.clear();}else close();}}/>;
+    onCancel={()=>{if(profile){setName(start.name);setValue(normalized(start.value,rules.earlyCopies));save.clear();}else close();}}/>;
   return <form onSubmit={e=>{e.preventDefault();submit();}}>
     <Panel title={<><button type="button" className="icon-button" aria-label="Back to profiles" title="Back to profiles" onClick={close}><Icon name="back" size={16}/></button>{profile?profile.name:'New profile'}
       {isDefault&&<Pill tone="ok">Default</Pill>}</>}>
       <Field label="Name" hint={profile?plural(profile.used,'title'):undefined}>
         <input required maxLength={40} aria-invalid={!!errors.name} value={name} onChange={e=>setName(e.target.value)}/><FieldError>{errors.name}</FieldError></Field>
-      <Field label="Preferred tiers" hint="Meet the cutoff">
-        <input type="number" min={1} max={value.tiers.length} aria-invalid={!!errors.preferred} value={value.preferred} onChange={e=>set({preferred:Number(e.target.value)})}/><FieldError>{errors.preferred}</FieldError></Field>
       <Field label="Minimum score"><input type="number" placeholder="None" value={intText(value.minScore)} onChange={e=>setValue(v=>{const {minScore:_,...rest}=v,n=intOf(e.target.value);return n===undefined?rest:{...rest,minScore:n};})}/>
         <FieldError>{errors.scores}</FieldError></Field>
       <Field label="Upgrade until" hint="Score upgrades stop here"><input type="number" placeholder="No score upgrades" value={intText(value.upgradeUntil)}
@@ -122,24 +152,20 @@ function ProfileEditor({rules,profile,isDefault,close,saved}:{rules:PickRules;pr
       <Field label="Upgrade step" hint="Smallest rise worth a download"><input type="number" min={1} max={1000} aria-invalid={!!errors.step} value={value.upgradeStep} onChange={e=>set({upgradeStep:Number(e.target.value)})}/>
         <FieldError>{errors.step}</FieldError></Field>
     </Panel>
-    <Panel flush title="Tiers" actions={<button type="button" disabled={value.tiers.length>=20} onClick={()=>set({tiers:[...value.tiers,{qualities:[]}]})}><Icon name="plus" size={15}/>Add tier</button>}>
+    <Panel flush title="Tiers" actions={<button type="button" disabled={value.tiers.length>=20} onClick={()=>edit(s=>({...s,tiers:[...s.tiers,{qualities:[]}]}))}><Icon name="plus" size={15}/>Add tier</button>}>
       {errors.tiers&&<p className="ui-hint danger-text">{errors.tiers}</p>}
-      <Table columns={[{label:<span className="sr-only">Order</span>,width:40},{label:'Qualities'},{label:'',width:110},{label:'MB a minute',width:220},{label:'2 h',width:110,num:true},ACTIONS]}>
-        {value.tiers.map((t,i)=><tr key={i} {...drag('tiers',i,(from,to)=>set({tiers:moveTo(value.tiers,from,to)}))}>
-          <td><span className="ui-grip" title="Drag to reorder"><Icon name="grip" size={16}/></span></td>
-          <td><div className="ui-chips">{t.qualities.map(q=><button type="button" key={q} className="ui-chip on" title={`Remove ${q}`} onClick={()=>setTier(i,{qualities:t.qualities.filter(x=>x!==q)})}>{q}<Icon name="close" size={12}/></button>)}
-            {free.length>0&&<select className="ui-chip-add" aria-label="Add a quality" value="" onChange={e=>{if(e.target.value)setTier(i,{qualities:[...t.qualities,e.target.value]});}}>
-              <option value="">Add…</option>{free.map(q=><option key={q} value={q}>{q}</option>)}</select>}</div></td>
-          <td>{i<value.preferred?<Pill tone="ok">Preferred</Pill>:<Pill tone="wait">Fallback</Pill>}</td>
-          <td>{t.size?<div className="ui-inline-pair">
-              <input type="number" aria-label="Smallest MB a minute" min={0} max={1000} aria-invalid={!!sizeError(t.size)} value={t.size[0]} onChange={e=>setTier(i,{size:[Number(e.target.value),t.size![1]]})}/>
-              <input type="number" aria-label="Largest MB a minute" min={0} max={1000} aria-invalid={!!sizeError(t.size)} value={t.size[1]} onChange={e=>setTier(i,{size:[t.size![0],Number(e.target.value)]})}/>
-              <IconAction icon="close" label="No size limits" onClick={()=>setValue(v=>({...v,tiers:v.tiers.map((x,j)=>j===i?{qualities:x.qualities}:x)}))}/></div>
-            :<button type="button" onClick={()=>setTier(i,{size:[10,100]})}>Limit sizes</button>}</td>
-          <td className="num">{twoHours(t.size)??<Dash/>}</td>
-          <td><RowActions><IconAction icon="trash" label="Remove tier" disabled={value.tiers.length<=1}
-            onClick={()=>setValue(v=>({...v,tiers:v.tiers.filter((_,j)=>j!==i),preferred:Math.max(1,Math.min(v.preferred-(i<v.preferred?1:0),v.tiers.length-1))}))}/></RowActions></td>
-        </tr>)}
+      <Table columns={[{label:<span className="sr-only">Order</span>,width:40},{label:'Qualities'},{label:'MB a minute',width:220},{label:'2 h',width:110,num:true},ACTIONS]}>
+        {head('Preferred','preferred','Meet the cutoff',errors.preferred)}
+        {parts.tiers.slice(0,parts.preferred).map((t,i)=>tierRow(t,i))}
+        {head('Fallback','fallback','Taken until a preferred one is found')}
+        {parts.tiers.slice(parts.preferred).map((t,i)=>tierRow(t,i+parts.preferred))}
+        {head('Early release',undefined,'Only with Early copies on. Upgrading from one re-adds the movie to Recently Added.')}
+        <tr><td/>
+          <td><div className="ui-chips">{parts.early.map(q=><button type="button" key={q} className="ui-chip on" title={`Remove ${q}`} onClick={()=>edit(s=>({...s,early:s.early.filter(x=>x!==q)}))}>{q}<Icon name="close" size={12}/></button>)}
+            {freeEarly.length>0&&<select className="ui-chip-add" aria-label="Add an early copy" value="" onChange={e=>{const q=e.target.value;if(q)edit(s=>({...s,early:[...s.early,q].sort((x,y)=>rules.ladder.indexOf(y)-rules.ladder.indexOf(x))}));}}>
+              <option value="">Add…</option>{freeEarly.map(q=><option key={q} value={q}>{q}</option>)}</select>}
+            {!parts.early.length&&!freeEarly.length&&<Dash/>}</div></td>
+          <td><Dash/></td><td className="num"><Dash/></td><td/></tr>
       </Table>
     </Panel>
     <Panel flush title="Scores" actions={<Segmented label="Formats shown" value={shown} onChange={setShown} options={[['scored','Scored'],['all','All']] as const}/>} footer={footer}>
