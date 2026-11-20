@@ -13,5 +13,11 @@ export const indexersMigrations: Migration[] = [
     );
     CREATE TABLE indexer_usage(indexer TEXT NOT NULL, day TEXT NOT NULL, searches INTEGER NOT NULL DEFAULT 0,
       grabs INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(indexer, day));
-    CREATE TABLE rss_seen(indexer TEXT NOT NULL, guid TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(indexer, guid));` }
+    CREATE TABLE rss_seen(indexer TEXT NOT NULL, guid TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(indexer, guid));` },
+  // Downloads › History › Stats: one row per search sent (how long it took, whether it worked, how many results).
+  // Kept 90 days.
+  { name: 'indexer-queries', up: `
+    CREATE TABLE indexer_queries(id INTEGER PRIMARY KEY, indexer TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL,
+      ok INTEGER NOT NULL, results INTEGER);
+    CREATE INDEX indexer_queries_at ON indexer_queries(at);` }
 ];

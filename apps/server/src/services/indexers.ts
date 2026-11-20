@@ -7,6 +7,7 @@ import { IndexerError, NzbGeek, type NewznabItem } from '../providers/newznab.js
 import { IPT_COOKIE_FORMAT_ERROR, IPT_DEFAULT_CATEGORIES, IPTorrents, isIptCookieHeader, NEWZNAB_CATEGORIES, PASSKEY, type IptItem, type IptSecret } from '../providers/iptorrents.js';
 import type { Candidate } from '../lib/pick-rules.js';
 import { imdbNumber } from '../lib/release-name.js';
+import type { IndexerStats } from '../../../../packages/contracts/src/downloads.js';
 
 // The indexers (docs/ARR-REPLACEMENT.md, "Clients"): their settings and sealed secrets, the hourly and daily search
 // caps, pausing after a 429 or a refused key, the new-release feed with rss_seen, and fetching the NZB or .torrent.
@@ -67,7 +68,7 @@ export type FeedListener = (releases: Release[]) => void | Promise<void>;
 export type NzbFile = { name: string; bytes: Buffer; infoHash?: string };
 
 type Row = { name: IndexerName; enabled: number; sealed_secret: string | null; settings: string; last_ok_at: number | null; last_error: string | null; paused_until: number | null };
-const HOUR = 3600000, DAY = 24 * HOUR, SEEN_DAYS = 14;
+const HOUR = 3600000, DAY = 24 * HOUR, SEEN_DAYS = 14, QUERY_DAYS = 90;
 // NZBGeek's feed is read a page of 100 at a time, back to the newest release seen before, at most this many pages a
 // poll: a busy quarter hour costs a few more calls instead of losing releases.
 const FEED_PAGE = 100, FEED_PAGES = 5;
@@ -240,6 +241,31 @@ export class Indexers {
     if (kind === 'cookie') this.cookieExpired(message);
     return { message, ...(until ? { until } : {}) };
   }
+  // One search sent, for Downloads › History › Stats; rows over 90 days old go as new ones come.
+  private logQuery(name: IndexerName, started: number, ok: boolean, results?: number) {
+    const now = this.now();
+    prepared(this.db, 'INSERT INTO indexer_queries(indexer, at, ms, ok, results) VALUES(?, ?, ?, ?, ?)').run(name, started, Math.max(0, now - started), ok ? 1 : 0, results ?? null);
+    prepared(this.db, 'DELETE FROM indexer_queries WHERE at < ?').run(now - QUERY_DAYS * DAY);
+  }
+
+  // Downloads › History › Stats: each indexer's searches and grabs a day (UTC days, as the caps count them) since
+  // `from`, and how its searches went. Query figures start when the log began (`loggedSince`).
+  stats(from: number): IndexerStats {
+    const day = dayOf(from);
+    const usage = prepared(this.db, 'SELECT indexer, day, searches, grabs FROM indexer_usage WHERE day >= ? ORDER BY day').all(day) as
+      { indexer: string; day: string; searches: number; grabs: number }[];
+    const queries = prepared(this.db, `SELECT indexer, COUNT(*) AS queries, SUM(ok = 0) AS failed, AVG(ms) AS ms, AVG(results) AS results
+      FROM indexer_queries WHERE at >= ? GROUP BY indexer`).all(from) as { indexer: string; queries: number; failed: number; ms: number | null; results: number | null }[];
+    const first = prepared(this.db, 'SELECT MIN(at) AS at FROM indexer_queries').get() as { at: number | null };
+    const indexers = indexerNames.filter(name => this.row(name) || usage.some(u => u.indexer === name)).map(name => {
+      const days = usage.filter(u => u.indexer === name).map(({ day, searches, grabs }) => ({ day, searches, grabs }));
+      const q = queries.find(r => r.indexer === name);
+      return { name, searches: days.reduce((n, d) => n + d.searches, 0), grabs: days.reduce((n, d) => n + d.grabs, 0), queries: q?.queries ?? 0, failed: q?.failed ?? 0,
+        ...(q?.ms != null ? { avgMs: Math.round(q.ms) } : {}), ...(q?.results != null ? { avgResults: Math.round(q.results) } : {}), days };
+    });
+    return { indexers, ...(first.at != null ? { loggedSince: first.at } : {}) };
+  }
+
   private ok(name: IndexerName, now: number) { prepared(this.db, 'UPDATE indexers SET last_ok_at = ?, last_error = NULL WHERE name = ?').run(now, name); }
 
   private release(name: IndexerName, item: NewznabItem): Release {
@@ -273,12 +299,14 @@ export class Indexers {
     report.searched.push(what);
     try {
       const items = await run();
+      this.logQuery(row.name, now, true, Array.isArray(items) ? items.length : undefined);
       this.ok(row.name, this.now());
       if (row.name === 'iptorrents') this.notify.resolve(COOKIE_ALERT);
       delete report.error;
       return items;
     } catch (e) {
       if (signal?.aborted) throw e;
+      this.logQuery(row.name, now, false);
       const failure = this.failed(row.name, e, this.now());
       report.error = failure.message;
       if (failure.until) report.waitUntil = failure.until;

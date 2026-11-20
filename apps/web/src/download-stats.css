@@ -1,0 +1,7 @@
+/* Downloads › History › Stats: the chart series (the bars and legends come from history-admin.css). */
+[data-mode="imported"] { background: var(--history-direct); }
+[data-mode="failed"] { background: var(--danger); }
+[data-mode="other"] { background: var(--surface-3); }
+[data-mode="nzbgeek"] { background: var(--history-remux); }
+[data-mode="iptorrents"] { background: var(--history-transcode); }
+.history-stats .stat small { font-variant-numeric: tabular-nums; }

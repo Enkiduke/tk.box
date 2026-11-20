@@ -20,6 +20,22 @@ export type GrabLink = { id: number; releaseName: string };
 export type DownloadsHistoryGrab = DownloadsGrab & { outcome: GrabOutcome; startedAt: number; lastAt: number; endedAt?: number;
   swappedFrom?: GrabLink; replacedBy?: GrabLink; steps: DownloadsStep[] };
 export type DownloadsHistory = { grabs: DownloadsHistoryGrab[] };
+// Downloads › History › Stats, for the grabs started in the period. `failed`: the download failed (whether or not a
+// later grab took over); `bytes`: the size of the grabs imported. Days are UTC (YYYY-MM-DD), by when the grab started.
+export type DownloadStatsCount = { grabs: number; imported: number; failed: number; bytes: number };
+// `avgMs`: sent to the downloader until it finished, for the finished ones; `avgSpeed` bytes/s over the same.
+export type DownloadStats = {
+  totals: DownloadStatsCount & { cancelled: number; active: number; upgrades: number };
+  days: ({ day: string } & DownloadStatsCount)[];
+  indexers: ({ name: string } & DownloadStatsCount)[];
+  downloaders: ({ name: string; avgMs?: number; avgSpeed?: number } & DownloadStatsCount)[];
+  qualities: { name: string; grabs: number; bytes: number }[];
+};
+// Each indexer's searches and grabs a day (from the daily caps' counts) and how its searches went: `queries` sent,
+// `failed`, the average time (`avgMs`) and results. The search log starts at `loggedSince` and keeps 90 days.
+export type IndexerStatsRow = { name: string; searches: number; grabs: number; queries: number; failed: number; avgMs?: number; avgResults?: number;
+  days: { day: string; searches: number; grabs: number }[] };
+export type IndexerStats = { indexers: IndexerStatsRow[]; loggedSince?: number };
 export type DownloadsJobState = 'queued' | 'running' | 'failed';
 // A queue item: `subject` names the title it is for, when it is for one.
 export type DownloadsJob = { id: number; kind: string; label: string; subject?: string; titleId?: number; state: DownloadsJobState; runAt: number;

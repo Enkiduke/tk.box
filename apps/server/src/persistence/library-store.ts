@@ -386,6 +386,12 @@ export class LibraryStore {
       steps.get(e.grab_id)!.push({ id: e.id, at: e.at, kind: e.kind, ...opt('note', e.note) });
     return rows.map(r => ({ grab: grab(r), steps: steps.get(r.id)! }));
   }
+  // Downloads › History › Stats: every grab whose first step is at or after `from`, with that step's time.
+  grabsStartedSince(from: number): { grab: Grab; startedAt: number }[] {
+    const rows = prepared(this.db, `SELECT g.*, e.started_at FROM grabs g JOIN (SELECT grab_id, MIN(at) AS started_at FROM grab_events GROUP BY grab_id) e ON e.grab_id = g.id
+      WHERE e.started_at >= ? ORDER BY e.started_at, g.id`).all(from) as (GrabRaw & { started_at: number })[];
+    return rows.map(r => ({ grab: grab(r), startedAt: r.started_at }));
+  }
   // A new grab, unless one under way already covers it (then undefined): for a movie any open grab of the title, for a
   // show one covering any of the same episodes. `note`: how it was grabbed ("By hand").
   insertGrab(g: NewGrab, note?: string) {

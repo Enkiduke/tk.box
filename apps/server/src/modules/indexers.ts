@@ -30,6 +30,12 @@ export const indexersModule = defineModule({
       status: () => jobs.tracked('indexers.rss'), run: pollNow });
     const name = z.object({ name: z.enum(indexerNames) }).strict();
     routes.get('/api/v1/admin/indexers', async () => indexers.view());
+    // Downloads › History › Stats: the last `days` days (or everything kept).
+    const period = z.object({ days: z.enum(['7', '30', '90', '365', 'all']).default('30') }).strict();
+    routes.get('/api/v1/admin/indexers/stats', async request => {
+      const { days } = period.parse(request.query);
+      return indexers.stats(days === 'all' ? 0 : Date.now() - Number(days) * 86400000);
+    });
     routes.put('/api/v1/admin/indexers/:name', async request => indexers.configure(connectionActor(request), name.parse(request.params).name, request.body as z.input<typeof indexerInput>));
     routes.post('/api/v1/admin/indexers/:name/test', { config: { access: 'connectionAdmin', rateLimit: { max: 10, timeWindow: 60000 } } },
       async request => indexers.test(name.parse(request.params).name));

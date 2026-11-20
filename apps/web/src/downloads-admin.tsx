@@ -1,4 +1,5 @@
-import {Fragment,useState} from 'react';
+import {Fragment,useState,type ReactNode} from 'react';
+import {DownloadStatsTab,statsPeriods,type StatsPeriod} from './download-stats.js';
 import type {ClientState,DownloadItem,DownloadsActivity,DownloadsHistory,DownloadsHistoryGrab,DownloadsJob,DownloadsStep,GrabEventKind,GrabOutcome,DownloadsLive,WantedItem,
   WantedList} from '../../../packages/contracts/src/downloads.js';
 import {api} from './api.js';
@@ -6,7 +7,7 @@ import {replaceRoute,link,useApi} from './hooks.js';
 import {ErrorNotice,Icon} from './components.js';
 import {SectionHead,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
-import {ACTIONS,Dash,GrabPill,IconAction,Loaded,MediaStatusPill,Panel,Pill,RowActions,Segmented,Table,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
+import {ACTIONS,Dash,GrabPill,IconAction,Loaded,MediaStatusPill,Panel,Pill,RowActions,Segmented,Table,Tabs,Tag,TitleCell,Toolbar,When,changed,grabNames,matches,openMovie,qualityRank,relative,usePaged,useRefresh,
   useSorted,type Tone} from './manage-ui.js';
 
 // Admin › Downloads › Queue and Wanted (docs/PHASE-3.5.md, docs/UI.md). A show's grab names its episodes (S02,
@@ -213,7 +214,17 @@ function Steps({g}:{g:DownloadsHistoryGrab}) {
     {note?<span className={s.kind==='failed'?'danger-text':undefined} title={s.note}>{note}</span>:<span/>}</li>;})}</ol>;
 }
 
-export function DownloadHistoryPage() {
+// Downloads � History: Grabs (one row per grab) and Stats, in `view=stats` with its period in `days`.
+export function DownloadHistoryPage({params}:{params:URLSearchParams}) {
+  const stats=params.get('view')==='stats',period:StatsPeriod=statsPeriods.find(([id])=>id===params.get('days'))?.[0]??'30';
+  const go=(change:Record<string,string|undefined>)=>replaceRoute(link('admin',{section:'download-history',...(stats?{view:'stats',...(period!=='30'?{days:period}:{})}:{}),...change}));
+  const tabs=<Tabs label="History" value={stats?'stats':'grabs'} onChange={v=>go({view:v==='stats'?'stats':undefined,days:undefined})}
+    tabs={[{id:'grabs',label:'Grabs'},{id:'stats',label:'Stats'}]}/>;
+  if(stats)return <><SectionHead title="History"><Segmented label="Period" value={period} options={statsPeriods} onChange={v=>go({days:v==='30'?undefined:v})}/></SectionHead>
+    {tabs}<DownloadStatsTab period={period}/></>;
+  return <GrabHistory tabs={tabs}/>;
+}
+function GrabHistory({tabs}:{tabs:ReactNode}) {
   const view=useApi<DownloadsHistory>('/admin/library/history'),mutation=useMutation(changed);useRefresh(view.reload);
   const [query,setQuery]=useState(''),[filter,setFilter]=useState<OutcomeFilter>('all'),[open,setOpen]=useState<ReadonlySet<number>>(()=>new Set());
   const toggle=(id:number)=>setOpen(o=>{const next=new Set(o);if(next.has(id))next.delete(id);else next.add(id);return next;});
@@ -227,11 +238,12 @@ export function DownloadHistoryPage() {
   const retry=(g:DownloadsHistoryGrab)=>void mutation.run(async()=>{await api(`/admin/library/grabs/${g.id}/retry`,'POST');toast.info(`Retrying ${g.title}`);view.reload();});
   const now=Date.now();
   return <><SectionHead title="History"/>
+    {tabs}
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
-    <Toolbar query={query} setQuery={setQuery} placeholder="Search history" count={view.data?`${shown.length} of ${grabs.length}`:undefined}>
+    <Loaded view={view}>{()=><Panel flush title="Grabs" actions={<>
+      <label className="ui-search"><Icon name="search" size={15}/><input type="search" placeholder="Search history" aria-label="Search history" value={query} onChange={e=>setQuery(e.target.value)}/></label>
       <Segmented label="Status" value={filter} options={outcomes.map(o=>[o,`${outcomeNames[o]} ${counts[o]}`] as const)} onChange={setFilter}/>
-    </Toolbar>
-    <Loaded view={view}>{()=><Panel flush>
+      <span className="ui-count">{`${shown.length} of ${grabs.length}`}</span></>}>
       <Table posters more={more} sort={sort} onSort={onSort} empty={!grabs.length?'Nothing downloaded yet':!shown.length?'Nothing matches':undefined}
         columns={[{label:'Title',sort:'title'},{label:'Status',width:220,sort:'status'},{label:'Quality',width:130,sort:'quality',desc:true},
           {label:'Size',width:90,num:true,sort:'size',desc:true},{label:'Started',width:110,sort:'started',desc:true},{label:'Finished',width:110,sort:'finished',desc:true},{...ACTIONS,width:52}]}>

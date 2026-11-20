@@ -3,7 +3,7 @@ import { RECHECK } from './services/download-health.js';
 import { isAbsolute } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview, PlexKey,
+import type { ClientState, DownloadItem, DownloadsActivity, DownloadsGrab, DownloadsHistory, DownloadStats, DownloadsLive, DownloadsSeeding, InteractiveSearch, LibraryFileView, LibraryTitleView, LibrarySettingsView, MovieList, MovieSource, NamingPreview, PlexKey,
   LibraryBulkResult, PickProfile, PickRules, ShowList, ShowTitleView, TitleRequest, TitleView, TryRelease, WantedList } from '../../../packages/contracts/src/downloads.js';
 import { viewer } from './modules/access.js';
 import { AppError, requireThat } from './errors.js';
@@ -17,6 +17,7 @@ import { parseRelease } from './lib/release-name.js';
 import { movieFileName, movieFolder, videoCodecName } from './lib/naming.js';
 import { IPT_FLOOR, seedingDecision } from './lib/seeding.js';
 import { grabHistoryFacts } from './lib/grab-history.js';
+import { downloadStats } from './lib/download-stats.js';
 import { tmdbImage } from './providers/explore-images.js';
 import type { TmdbTitles } from './providers/tmdb-titles.js';
 import type { Grab, LibraryStore, LibraryTitle } from './persistence/library-store.js';
@@ -104,6 +105,8 @@ export const settingsInput = z.object({
 const SWAPPED_SHOWN = 10 * 60000;
 // How many grabs Downloads › History lists.
 const HISTORY_GRABS = 500;
+// Downloads › History › Stats' period, as Activity's.
+const statsPeriod = z.object({ days: z.enum(['7', '30', '90', '365', 'all']).default('30') }).strict();
 const previewInput = z.object({ release: z.string().trim().min(1).max(300), tmdbId: z.number().int().positive().max(99999999).optional() }).strict();
 // The name a release would get, from what its name says (an import reads the audio, HDR and codec from ffprobe instead).
 export function namingPreview(store: Pick<LibraryStore, 'formats' | 'settings'>, input: z.infer<typeof previewInput>): NamingPreview {
@@ -249,6 +252,11 @@ export function registerLibraryAdmin(app: FastifyInstance, { store, library, que
       return { ...grabView(grab), outcome: f.outcome, startedAt: f.startedAt, lastAt: f.lastAt, ...(f.endedAt !== undefined ? { endedAt: f.endedAt } : {}),
         ...(from ? { swappedFrom: from } : {}), ...(by ? { replacedBy: by } : {}), steps };
     }) } satisfies DownloadsHistory;
+  });
+  // Downloads › History › Stats: the grabs started in the last `days` days (or all of them).
+  app.get('/api/v1/admin/library/stats', admin, async request => {
+    const { days } = statsPeriod.parse(request.query);
+    return downloadStats(store.grabsStartedSince(days === 'all' ? 0 : Date.now() - Number(days) * 86400000)) satisfies DownloadStats;
   });
   // Everything the downloaders hold, live, each matched to its tk.box grab and who asked for it; then the grabs under
   // way that no downloader lists (sending, or importing after SABnzbd let go).
