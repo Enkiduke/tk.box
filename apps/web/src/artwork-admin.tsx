@@ -74,7 +74,7 @@ function ArtworkSettings({data,changed}:{data:Overview;changed:()=>void}) {
   const shows=data.layouts.filter(l=>!l.base).map(l=>l.name);  // Season and episode templates come with their layout
   const layoutOptions=(none:string)=><><option value="">{none}</option>{shows.map(name=><option key={name} value={name}>{name}</option>)}</>;
   const save=()=>void mutation.run(async()=>{
-    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/layout');toast.success('Artwork settings saved');
+    await api('/admin/artwork/settings','PUT',{expectedRevision:data.settings.revision,...draft,schedules:data.settings.schedules});invalidate('/explore/');invalidate('/admin/explore/');toast.success('Artwork settings saved');
   });
   return <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
     <Card title="Libraries">

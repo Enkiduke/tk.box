@@ -1,4 +1,5 @@
-import type {TmdbExploreRow} from './index.js';
+type TmdbExploreRow = 'popular-movies' | 'popular-shows' | 'top-movies' | 'top-shows' | 'trending' | 'because-movie' | 'popular-streaming' | 'because-show' | 'recent-streaming' | 'acclaimed' | 'upcoming-movies' | 'upcoming-shows';
+// Explore's ranking settings as saved before rows became definitions (explore-rows.ts). Kept only to convert them (legacy.ts).
 
 const minimums = {minimumRating:0, minimumVotes:0};
 const audience = {audienceRating:0, ratingPriorVotes:200};

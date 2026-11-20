@@ -1,7 +1,8 @@
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {exploreBrowseSources,exploreGenres,mergeRatings,type ExploreBrowseSource,type ExploreGenre,type ExploreSource,type StreamingRow} from '../../../packages/contracts/src/explore.js';
-import type {ExploreDetails,ExploreItem,ExplorePage,ExploreRowInfo,ExploreSearchResult,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,mergeRatings,type ExploreGenre,type ExploreSource} from '../../../packages/contracts/src/explore.js';
+import type {ExploreDetails,ExploreItem,ExplorePage,ExploreSearchResult,ExploreSources,ExploreStatus} from '../../../packages/contracts/src/index.js';
+import type {ExploreRows,ExploreRowView} from '../../../packages/contracts/src/explore-rows.js';
 import {api} from './api.js';
 import {useApi,useDebounced,useInfinitePages,useNearViewport,duration,link,prefetch,replaceRoute,invalidate} from './hooks.js';
 import {useCardRatings} from './explore-ratings.js';
@@ -9,7 +10,7 @@ import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading,Modal,Row,RowSkeleton} 
 import {ratingLinks,Ratings} from './library.js';
 import {extrasBody,RequestDialog,RequestOptionsPanel,statusNames,type RequestExtras} from './request-dialog.js';
 import {MyRequestsButton} from './my-requests.js';
-import {clearStreamingSelections,rowKey,useExplorePrefs} from './explore-prefs.js';
+import {clearStreamingSelections,rowHidden,useExplorePrefs} from './explore-prefs.js';
 import {StreamingSelector,StreamingStatus,useStreamingSelection} from './explore-streaming.js';
 import {detailsPath,TitleDiscovery,type OpenRelatedTitle} from './title-discovery.js';
 import {displayName,TitleFacts} from './title-facts.js';
@@ -22,7 +23,7 @@ import {toast} from './toasts.js';
 // every source's rows in turn, one search across them all, and filters that narrow both.
 // A title's dialog opens this server's copy when there is one, requests it (tk.box's library), or watchlists it on Plex.
 const names:Record<ExploreSource,string>={plex:'Plex',tmdb:'TMDB'};
-const rowPath=(source:ExploreSource,row:string,page:number,fq:string)=>`/explore/${source}/rows/${encodeURIComponent(row)}?page=${page}${fq}`;
+const rowPath=(key:string,page:number,fq:string)=>`/explore/rows/${encodeURIComponent(key)}?page=${page}${fq}`;
 const results=(n:number)=>`${n.toLocaleString()} result${n===1?'':'s'}`;
 const listed=(parts:string[],type:Intl.ListFormatType='conjunction')=>new Intl.ListFormat(undefined,{type}).format(parts);
 
@@ -74,10 +75,10 @@ const ExploreCard=memo(function ExploreCard({item,onSelect}:{item:ExploreItem;on
 const Cards=({items,onSelect}:{items:ExploreItem[];onSelect:(item:ExploreItem)=>void})=><div className="poster-grid">{items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>)}</div>;
 const SourceTag=({source}:{source:ExploreSource})=><span className="explore-source">{names[source]}</span>;
 
-function ExploreRow({source,row,fq,onSelect}:{source:ExploreBrowseSource;row:ExploreRowInfo;fq:string;onSelect:(item:ExploreItem)=>void}) {
-  const [ref,near]=useNearViewport<HTMLDivElement>();
-  const stream=useStreamingSelection(near&&row.streaming?row.id as StreamingRow:undefined);
-  const data=useApi<ExplorePage>(near&&(!row.streaming||stream.query)?rowPath(source,row.id,1,fq+stream.query):undefined),page=data.data;
+function ExploreRow({row,fq,onSelect}:{row:ExploreRowView;fq:string;onSelect:(item:ExploreItem)=>void}) {
+  const [ref,near]=useNearViewport<HTMLDivElement>(),source=row.source;
+  const stream=useStreamingSelection(near&&row.streaming?row.key:undefined);
+  const data=useApi<ExplorePage>(near&&(!row.streaming||stream.query)?rowPath(row.key,1,fq+stream.query):undefined),page=data.data;
   const cards=useMemo(()=>page?.items.map(item=><ExploreCard key={item.key} item={item} onSelect={onSelect}/>),[page,onSelect]);
   const title=page?.title??row.title;
   const heading=<span className="explore-row-title"><Icon name={row.icon} size={20}/>{title}<SourceTag source={source}/>{page?.total!==undefined&&page.total>0&&<span className="explore-count">{results(page.total)}</span>}</span>;
@@ -94,31 +95,34 @@ function ExploreRow({source,row,fq,onSelect}:{source:ExploreBrowseSource;row:Exp
   return <div ref={ref} className="lazy-row">{!page?(data.error?<section className="row"><div className="row-heading"><h2>{heading}</h2></div><div className="explore-row-error"><ErrorNotice message={data.error.message} retry={data.reload}/></div></section>:<RowSkeleton title={row.title}/>)
     :page.items.length?<Row title={heading} href={link('explore',{source,row:row.id})}>{cards}</Row>:null}</div>;
 }
-// One source's rows, less those the viewer hid in Settings › Explore. A source that fails says so in place and leaves the others.
-function SourceRows({source,hiddenRows,fq,onSelect}:{source:ExploreBrowseSource;hiddenRows:string[];fq:string;onSelect:(item:ExploreItem)=>void}) {
-  const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`);
-  if(rows.error)return <div className="explore-row-error"><ErrorNotice message={`${names[source]}: ${rows.error.message}`} retry={rows.reload}/></div>;
+// Every row in the administrator's order, less those the viewer hid in Settings › Explore. A source that fails says so
+// in place and leaves the others.
+function ExploreRowList({rows,fq,onSelect}:{rows:ReturnType<typeof useApi<ExploreRows>>;fq:string;onSelect:(item:ExploreItem)=>void}) {
+  const prefs=useExplorePrefs();
+  if(rows.error)return <div className="explore-row-error"><ErrorNotice message={rows.error.message} retry={rows.reload}/></div>;
   if(!rows.data)return <RowSkeleton title="Loading"/>;
-  return <>{rows.data.rows.filter(row=>!hiddenRows.includes(rowKey(source,row.id))).map(row=><ExploreRow key={row.id} source={source} row={row} fq={fq} onSelect={onSelect}/>)}</>;
+  const shown=rows.data.rows.filter(row=>!rowHidden(prefs,row.key));
+  return <div className="explore-rows">
+    {rows.data.failed.map(s=><div key={s} className="explore-row-error"><ErrorNotice message={`${names[s]} could not list its rows.`} retry={rows.reload}/></div>)}
+    {shown.length?shown.map(row=><ExploreRow key={row.key} row={row} fq={fq} onSelect={onSelect}/>):<Empty title="No rows to show"><a href="#settings?section=explore">Explore settings</a></Empty>}
+  </div>;
 }
 // "See all": every page of one row.
-function ExploreGrid({source,row,fq,provider,onSelect}:{source:ExploreSource;row:string;fq:string;provider:string|null;onSelect:(item:ExploreItem)=>void}) {
-  const rows=useApi<{rows:ExploreRowInfo[]}>(`/explore/${source}/rows`),info=rows.data?.rows.find(r=>r.id===row);
-  const stream=useStreamingSelection(info?.streaming?row as StreamingRow:undefined,provider);
-  const heading=info?.title??'';
-  const choose=(selected:number|'all')=>{stream.select(selected);replaceRoute(link('explore',{source,row,provider:selected}));};
-  const selector=info?.streaming&&stream.data&&<StreamingSelector title={heading} services={stream.services} selected={stream.selected} onSelect={choose}/>;
+function ExploreGrid({info,fq,provider,onSelect}:{info:ExploreRowView;fq:string;provider:string|null;onSelect:(item:ExploreItem)=>void}) {
+  const stream=useStreamingSelection(info.streaming?info.key:undefined,provider);
+  const heading=info.title,source=info.source;
+  const choose=(selected:number|'all')=>{stream.select(selected);replaceRoute(link('explore',{source,row:info.id,provider:selected}));};
+  const selector=info.streaming&&stream.data&&<StreamingSelector title={heading} services={stream.services} selected={stream.selected} onSelect={choose}/>;
   return <section className="explore-grid">
     <a className="crumb" href={link('explore')}><Icon name="back" size={14}/>Explore</a>
-    {info?.streaming&&<><div className="explore-grid-head"><h1>{heading}<SourceTag source={source}/></h1></div>{selector}</>}
-    {rows.error?<ErrorNotice message={rows.error.message} retry={rows.reload}/>:!rows.data?<Loading cards/>
-      :!info?<Empty title="This row is unavailable"/>
-      :info.streaming&&!stream.query?stream.loading?<Loading cards/>:<StreamingStatus catalog={stream}/>
-      :<ExploreGridPages key={fq+stream.query} source={source} row={row} fq={fq+stream.query} filtered={!!fq} title={info.streaming?undefined:heading} onSelect={onSelect}/>}
+    {info.streaming&&<><div className="explore-grid-head"><h1>{heading}<SourceTag source={source}/></h1></div>{selector}</>}
+    {info.streaming&&!stream.query?stream.loading?<Loading cards/>:<StreamingStatus catalog={stream}/>
+      :<ExploreGridPages key={fq+stream.query} info={info} fq={fq+stream.query} filtered={!!fq} title={info.streaming?undefined:heading} onSelect={onSelect}/>}
   </section>;
 }
-function ExploreGridPages({source,row,fq,filtered,title,onSelect}:{source:ExploreSource;row:string;fq:string;filtered:boolean;title?:string;onSelect:(item:ExploreItem)=>void}) {
-  const list=useInfinitePages<ExplorePage>(index=>rowPath(source,row,index+1,fq),1,`${source}/${row}${fq}`),first=list.pages[0];
+function ExploreGridPages({info,fq,filtered,title,onSelect}:{info:ExploreRowView;fq:string;filtered:boolean;title?:string;onSelect:(item:ExploreItem)=>void}) {
+  const source=info.source;
+  const list=useInfinitePages<ExplorePage>(index=>rowPath(info.key,index+1,fq),1,`${info.key}${fq}`),first=list.pages[0];
   const seen=new Set<string>();
   const unique=list.pages.flatMap(p=>p?.items??[]).filter(item=>{
     if(seen.has(item.key))return false;
@@ -210,13 +214,12 @@ function ActiveFilters({filters,searching,onChange}:{filters:Filters;searching:b
 
 // `requestsButton` false leaves out My requests, for the Requests site, which has its own Requests page.
 export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLSearchParams;admin:boolean;onSelect:(item:ExploreItem)=>void;requestsButton?:boolean}) {
-  // Each source's rows list is asked for alongside the sources rather than after them; SourceRows then reads it from cache.
-  useState(()=>{for(const s of exploreBrowseSources)prefetch(`/explore/${s}/rows`);});
-  const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,prefs=useExplorePrefs();
-  // Sources in the administrator's order, leaving out those switched off (by the administrator or the viewer) or not set up.
-  const offered=data?data.order.filter(s=>s==='plex'?data.plex:data[s].configured):[],available=offered.filter(s=>!prefs.hidden.includes(s));
-  const source=available.find(s=>s===params.get('source'));
-  const row=params.get('row')??'',query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
+  // The rows list is asked for alongside the sources rather than after them.
+  useState(()=>prefetch('/explore/rows'));
+  const sources=useApi<ExploreSources>('/explore/sources'),data=sources.data,rows=useApi<ExploreRows>('/explore/rows');
+  // Search covers the sources that are set up.
+  const available:ExploreSource[]=data?(['plex','tmdb'] as const).filter(s=>s==='plex'?data.plex:data.tmdb.configured):[];
+  const row=params.get('row')??'',info=rows.data?.rows.find(r=>r.source===params.get('source')&&r.id===row),query=params.get('q')??'',[text,setText]=useState(query),q=useDebounced(text.trim(),400);
   const [filters,setFilters]=useState(loadFilters),[contentType,changeContentType]=useState<ContentType>('all');
   const changeFilters=(next:Filters)=>{setFilters(next);saveFilters(next);};
   const kindQuery=contentType==='all'?'':`&kind=${contentType}`,fq=filterQuery(filters)+kindQuery,searchFq=filterQuery(filters,false)+kindQuery;
@@ -239,15 +242,15 @@ export function Explore({params,admin,onSelect,requestsButton=true}:{params:URLS
       <button className="icon-button toolbar-icon" aria-label="Refresh" title="Refresh" onClick={()=>void api('/explore/refresh','POST').catch(()=>undefined).then(()=>invalidate('/explore/'))}><Icon name="restart"/></button>
     </div>
     <ActiveFilters filters={filters} searching={!!query} onChange={changeFilters}/>
-    {!query&&!row&&data.order.includes('tmdb')&&!prefs.hidden.includes('tmdb')&&!data.tmdb.configured&&<p className="explore-note muted">
+    {!query&&!row&&!data.tmdb.configured&&<p className="explore-note muted">
       {admin?<>Add a TMDB key in <a href="#admin?section=connections&category=metadata">Admin › Connections</a> to enable streaming discovery and recommendations.</>:<>Streaming discovery and recommendations require a TMDB key from the server administrator.</>}
     </p>}
     {/* Plex Discover doesn't say a title's language; TMDB is where it is looked up. */}
     {filters.languages.length>0&&!data.tmdb.configured&&<p className="explore-note muted">Plex titles without a language are hidden while a language filter is on.</p>}
     {query?<ExploreSearch key={`${query}${searchable.join()}${searchFq}`} q={query} sources={searchable} fq={searchFq} onSelect={onSelect}/>
-      :row&&source?<ExploreGrid key={`${source}-${row}${fq}`} source={source} row={row} fq={fq} provider={params.get('provider')} onSelect={onSelect}/>
-      :available.length?<div className="explore-rows">{available.map(s=><SourceRows key={s} source={s} hiddenRows={prefs.hiddenRows} fq={fq} onSelect={onSelect}/>)}</div>
-      :<Empty title="No browse sources"><a href="#settings?section=explore">Explore settings</a></Empty>}
+      :row?(info?<ExploreGrid key={`${info.key}${fq}`} info={info} fq={fq} provider={params.get('provider')} onSelect={onSelect}/>
+        :rows.data?<section className="explore-grid"><a className="crumb" href={link('explore')}><Icon name="back" size={14}/>Explore</a><Empty title="This row is unavailable"/></section>:<Loading cards/>)
+      :<ExploreRowList rows={rows} fq={fq} onSelect={onSelect}/>}
   </div>;
 }
 
@@ -304,7 +307,7 @@ export function ExploreDialog({item:start,admin,onClose,onOpen,onOpenRelated}:{i
   const needsWindow=item.kind==='show'&&(request?.seasons.length??0)>1;
   const requestNow=(extras?:RequestExtras)=>void run(async()=>{await api('/requests','POST',{kind:item.kind,tmdb:item.ids.tmdb,...extrasBody(extras)});invalidate('/explore/');invalidate('/requests/mine');},`Requested ${item.title}`);
   const startRequest=(extras?:RequestExtras)=>{if(!needsWindow){requestNow(extras);return;}setError('');setRequesting({extras});};
-  const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate('/explore/plex/rows/watchlist');},add?'Added to your Plex watchlist':'Removed from your Plex watchlist');
+  const watchlist=(add:boolean)=>void run(async()=>{await api('/explore/watchlist','PUT',{plex:item.ids.plex,add});invalidate('/explore/details');invalidate(`/explore/rows/${encodeURIComponent('plex:watchlist')}`);},add?'Added to your Plex watchlist':'Removed from your Plex watchlist');
   const feedback=<>{error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}</>;
   return <Modal title={item.title} onClose={onClose} variant="media">
     <DialogNavBar title={item.title}/>

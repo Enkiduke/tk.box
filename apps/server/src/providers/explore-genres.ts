@@ -14,3 +14,5 @@ const tmdbNames:Record<number,string>={28:'Action',12:'Adventure',16:'Animation'
   36:'History',27:'Horror',10402:'Music',9648:'Mystery',10749:'Romance',878:'Science Fiction',53:'Thriller',10752:'War',37:'Western',
   10759:'Action & Adventure',10762:'Kids',10764:'Reality',10765:'Sci-Fi & Fantasy',10768:'War & Politics'};
 export const tmdbGenres=(ids:number[])=>exploreGenresOf(ids.map(id=>tmdbNames[id]));
+// TMDB's ids for Explore's genres, for a discover query: any id whose TMDB name maps to one of them.
+export const tmdbGenreIds=(genres:readonly string[])=>Object.entries(tmdbNames).filter(([,name])=>exploreGenresOf([name]).some(g=>genres.includes(g))).map(([id])=>Number(id));

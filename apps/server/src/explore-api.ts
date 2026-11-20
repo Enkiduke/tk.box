@@ -1,24 +1,23 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {exploreGenres,exploreBrowseSources,mergeRatings,RATINGS_BATCH,tmdbExploreRows,type ExploreBrowseSource,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExploreLayout,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {exploreGenres,mergeRatings,RATINGS_BATCH,type ExploreDetails,type ExploreGenre,type ExploreItem,type ExploreStatus,ExplorePage,ExploreSearchResult,ExploreSources,ExternalRating} from '../../../packages/contracts/src/index.js';
+import {builtInRows,isBuiltInRow,num,rowIcon,sameRowDef,setSignal,signalActive,signalUse,type ExploreParamValue,type ExploreSignalId,type ExploreAdminRow,type ExploreAdminRows,type ExploreRowDef,type ExploreRowView,type ExploreRows} from '../../../packages/contracts/src/explore-rows.js';
 import {viewerCopies,type PlexAdapter,type PlexGrant} from './providers/plex.js';
 import {PlexDiscover,discoverIds,discoverItem,type DiscoverMetadata} from './providers/plex-discover.js';
 import {externalRatings} from './providers/plex-catalog.js';
 import type {Requests} from './services/requests.js';
 import type {PlexIndex} from './services/plex-index.js';
 import {ExploreImages} from './providers/explore-images.js';
-import {ExploreStore,exploreLayoutInput,exploreRankingInput,exploreRankingOptionsInput,tmdbRowOrder} from './persistence/explore-store.js';
+import {ExploreStore,exploreRowDefInput} from './persistence/explore-store.js';
 import {requireThat} from './errors.js';
 import {viewer as caller} from './modules/access.js';
-import {TmdbExplore,sliceExplore,tmdbRows} from './providers/tmdb-explore.js';
+import {TmdbExplore,sliceExplore} from './providers/tmdb-explore.js';
 import type {TmdbTitles} from './providers/tmdb-titles.js';
 import {TmdbTitleDiscovery} from './providers/tmdb-title-discovery.js';
 import {TmdbPeople} from './providers/tmdb-people.js';
-import {ExploreRecommendations,type WatchedTitle} from './explore-recommendations.js';
+import {ExploreRecommendations,personalRows,type PersonalDefs,type PersonalRow,type WatchedTitle} from './explore-recommendations.js';
 import { TtlCache } from './lib/ttl-cache.js';
 
-const source=z.enum(exploreBrowseSources);
-const tmdbRow=z.enum(tmdbExploreRows);
 const kind=z.enum(['movie','show']);
 // Explore's filters, sent with every row page and search: original languages, genres, a release year range, a minimum
 // score and request labels to leave out.
@@ -48,6 +47,9 @@ ${key}`,ttl,read,now);}
 `));}
 }
 
+// A TMDB row as Explore lists it.
+export const rowView=(key:string,def:ExploreRowDef):ExploreRowView=>({key,source:'tmdb',id:key.slice(5),title:def.title,icon:rowIcon(def.source),
+  ...(def.source.type==='recommendations'&&{personal:true}),...(def.source.type==='tmdb-discover'&&def.source.streaming&&{streaming:true})});
 export const plexRowTtl=(row:string)=>row==='watchlist'?PAGE_MS:PUBLIC_MS;
 
 // `genres`: a title passes with any of them. `hide`: titles with these request labels.
@@ -69,6 +71,21 @@ export function passes(item:ExploreItem,f:ExploreFilter) {
   if(f.from!==undefined||f.to!==undefined){if(!item.year||f.from!==undefined&&item.year<f.from||f.to!==undefined&&item.year>f.to)return false;}
   return f.min===undefined||item.rating!==undefined&&item.rating>=f.min;
 }
+// A viewer's filters added to a TMDB row's own, so TMDB's query carries them and a filtered row still fills. Where the
+// row has its own: year ranges meet and the higher minimum rating holds; the row's own genres and languages stay in the
+// query and the viewer's are checked on what comes back (passes), so both hold.
+export function withViewerFilters(def:ExploreRowDef,f:ExploreFilter):ExploreRowDef {
+  let next=def;
+  const set=(id:ExploreSignalId,params:Record<string,ExploreParamValue>)=>{next=setSignal(next,{id,on:true,params:{...signalUse(next,id).params,...params}});};
+  if(f.genres&&!signalActive(def,'genres'))set('genres',{genres:f.genres});
+  if(f.languages.length&&!signalActive(def,'languages'))set('languages',{languages:f.languages});
+  if(f.from!==undefined||f.to!==undefined){
+    const own=signalActive(def,'years')?signalUse(def,'years').params:undefined;
+    set('years',{from:Math.max(f.from??1870,own?num(own,'from'):1870),to:Math.min(f.to??2100,own?num(own,'to'):2100)});
+  }
+  if(f.min!==undefined)set('minRating',{rating:Math.max(f.min,signalActive(def,'minRating')?num(signalUse(def,'minRating').params,'rating'):0)});
+  return next;
+}
 // One list from several sources' lists, each source's best first: their first titles, then their second, and so on.
 // A title several sources know is listed once, where it first appears, with what the others add.
 export function interleave(lists:ExploreItem[][]) {
@@ -84,9 +101,6 @@ export function interleave(lists:ExploreItem[][]) {
 }
 // A filtered row page reads this many of the source's pages, so filters that leave few titles still fill a row.
 const FILTER_SPAN=3;
-// The sources Explore shows, in the administrator's order, and whether one of a source's rows is hidden.
-export const shownSources=(layout:ExploreLayout)=>layout.order.filter(s=>!layout.hidden.includes(s));
-export const rowShown=(layout:ExploreLayout,from:ExploreBrowseSource,row:string)=>!layout.hidden.includes(from)&&!layout.hiddenRows.includes(`${from}:${row}`);
 
 // Explore: rows, search and details from Plex Discover and TMDB, with tk.box's request labels, and the Plex watchlist.
 // Requests themselves are the requests module's routes.
@@ -114,52 +128,65 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   }
   app.get('/api/v1/explore/sources',{config:{access:'viewer'}},async request=>{
     await viewer(request);
-    return {plex:true,order:shownSources(store.layout()),requests:{movie:requests.connected('movie'),show:requests.connected('show')},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
+    return {plex:true,requests:{movie:requests.connected('movie'),show:requests.connected('show')},tmdb:{configured:tmdbClient.configured()}} satisfies ExploreSources;
   });
   app.get('/api/v1/explore/tmdb/providers',{config:{access:'viewer'}},async request=>{
     await viewer(request);
     const {region}=z.object({region:regionCode.default('US')}).strict().parse(request.query);
     return tmdb.providers(region);
   });
-  app.get('/api/v1/explore/:source/rows',{config:{access:'viewer'}},async request=>{
-    const {source:from}=z.object({source}).parse(request.params),{account,token}=await viewer(request),layout=store.layout();
-    return {rows:(await sourceRows(from,account,token)).filter(row=>rowShown(layout,from,row.id))};
+  // Explore's rows, in the administrator's order, less those switched off and sources not set up or unreachable.
+  app.get('/api/v1/explore/rows',{config:{access:'viewer'}},async request=>{
+    const {account,token}=await viewer(request),failed:ExploreRows['failed']=[];
+    const shelves=await plexShelves(account,token).catch(()=>{failed.push('plex');return undefined;});
+    const byId=new Map(shelves?.map(s=>[s.id,s]));
+    const rows=store.arrange(shelves).flatMap(entry=>{
+      if(!entry.shown||entry.slot||entry.missing)return [];
+      if(entry.key.startsWith('plex:')){const shelf=byId.get(entry.key.slice(5));return shelf?[{key:entry.key,source:'plex' as const,...shelf}]:[];}
+      return tmdbClient.configured()&&entry.definition?[rowView(entry.key,entry.definition)]:[];
+    });
+    return {rows,failed} satisfies ExploreRows;
   });
-  app.get('/api/v1/explore/:source/rows/:row',{config:{access:'viewer'}},async request=>{
-    const params=z.object({source,row:z.string().max(800)}).parse(request.params),{account,token,grant}=await viewer(request);
-    if (params.source==='tmdb') {
-      const parsed=tmdbRow.safeParse(params.row),layout=store.layout();
-      requireThat(parsed.success&&rowShown(layout,'tmdb',params.row),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
-      const row=parsed.data,def=tmdbRows[row];
+  app.get('/api/v1/explore/rows/:key',{config:{access:'viewer'}},async request=>{
+    const {key}=z.object({key:z.string().max(820).regex(/^(plex|tmdb):\S+$/)}).parse(request.params),{account,token,grant}=await viewer(request);
+    const entry=store.arrange().find(e=>e.key===key);
+    if (key.startsWith('tmdb:')) {
+      const def=entry?.shown?entry.definition:undefined;
+      requireThat(def,'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
+      const streamingRow=def.source.type==='tmdb-discover'&&!!def.source.streaming;
       const {page:at,provider,providers,region,...query}=tmdbPage.parse(request.query);
-      requireThat(def.streaming||(provider===undefined&&providers===undefined&&region===undefined),'INVALID_REQUEST','This row has no streaming selector.',400);
+      requireThat(streamingRow||(provider===undefined&&providers===undefined&&region===undefined),'INVALID_REQUEST','This row has no streaming selector.',400);
       requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Admin › Connections.',409);
       const filter=exploreFilter(query);
-      if (def.personal) {
-        const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,layout.ranking))[row];
+      if (def.source.type==='recommendations') {
+        // Filtered, the viewer's filters run before each row is cut to its length, over a wider pool.
+        // (Labelled titles are never in these rows, and each row is one kind, so `hide` and `kind` don't narrow them.)
+        const {kind:_,hide:__,...narrowing}=filter,wide=filtering(narrowing);
+        const defs=wide?Object.fromEntries(Object.entries(personalDefs()).map(([id,d])=>[id,withViewerFilters(d,filter)])) as PersonalDefs:personalDefs();
+        const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,defs,false,wide))[key.slice(5) as PersonalRow];
         if (!result) return {items:[],page:at,hasMore:false} satisfies ExplorePage;
         // Labels are read again here, so a title requested since the day's suggestions were built drops out at once.
         const {items}=await labelled({items:result.items.map(c=>c.item)});
         return sliceExplore(result.items.map((c,index)=>({...c,item:items[index]!})).filter(c=>!c.item.status&&passes(c.item,filter)),at,result.title);
       }
-      const streaming=def.streaming?await streamingScope({region,provider,providers}):undefined;
+      const streaming=streamingRow?await streamingScope({region,provider,providers}):undefined;
       const {kind:mediaKind,...otherFilters}=filter;
-      if (!filtering(otherFilters)) return labelled(await tmdb.page(row,at,streaming,mediaKind,layout.ranking));
-      const pages:ExplorePage[]=[];
+      if (!filtering(otherFilters)) return labelled(await tmdb.page(def,at,streaming,mediaKind));
+      const narrowed=withViewerFilters(def,filter),pages:ExplorePage[]=[];
       for (let i=0;i<FILTER_SPAN;i++) {
-        const result=await tmdb.page(row,(at-1)*FILTER_SPAN+i+1,streaming,mediaKind,layout.ranking);
+        const result=await tmdb.page(narrowed,(at-1)*FILTER_SPAN+i+1,streaming,mediaKind);
         pages.push(result);
         if (!result.hasMore) break;
       }
       const {items}=await labelled({items:interleave([pages.flatMap(p=>p.items)])});
       return {items:items.filter(item=>passes(item,filter)),page:at,hasMore:!!pages.at(-1)?.hasMore} satisfies ExplorePage;
     }
-    const {page:at,...query}=page.parse(request.query),filter=exploreFilter(query);
-    const layout=store.layout(),definition=(await sourceRows('plex',account,token)).find(row=>row.id===params.row);
-    requireThat(definition&&rowShown(layout,'plex',definition.id),'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
+    const {page:at,...query}=page.parse(request.query),filter=exploreFilter(query),id=key.slice(5);
+    const shelf=(await plexShelves(account,token)).find(row=>row.id===id),shown=entry?entry.shown:store.arrange([{id}]).find(e=>e.key===key)?.shown;
+    requireThat(shelf&&shown,'EXPLORE_ROW_MISSING','This Explore row is unavailable.',404);
     const read=async(n:number):Promise<ExplorePage>=>{
-      const key=`row:${params.source}:${params.row}:${n}`;
-      return labelled(await cache.get(account,key,plexRowTtl(params.row),()=>discover.row(token,params.row,n)));
+      const cacheKey=`row:plex:${id}:${n}`;
+      return labelled(await cache.get(account,cacheKey,plexRowTtl(id),()=>discover.row(token,id,n)));
     };
     if(!filtering(filter))return read(at);
     // Filtered page n covers the source's pages (n-1)*span+1 to n*span; the first says whether the rest exist.
@@ -174,8 +201,8 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
     const {q,sources:only,...query}=z.object({q:z.string().trim().min(1).max(120),sources:z.string().max(40).optional(),...filterQuery}).strict().parse(request.query),{account,token}=await viewer(request),filter=exploreFilter(query);
     // `sources` narrows the search to the sources the viewer keeps on; without it every source on offer is searched.
     const wanted=only===undefined?undefined:only.split(',');
-    const key=`search:${q.toLowerCase()}`,layout=store.layout();
-    const from=shownSources(layout).filter(s=>(s==='plex'||tmdbClient.configured())&&(!wanted||wanted.includes(s)));
+    const key=`search:${q.toLowerCase()}`;
+    const from=(['plex','tmdb'] as const).filter(s=>(s==='plex'||tmdbClient.configured())&&(!wanted||wanted.includes(s)));
     const results=await Promise.allSettled(from.map(async s=>s==='plex'?(await labelled({items:await cache.get(account,`plex:${key}`,SEARCH_MS,()=>discover.search(token,q))})).items
       :(await labelled({items:await tmdb.search(q,filter.kind)})).items));
     const failed=from.filter((_,i)=>results[i]!.status==='rejected');
@@ -270,44 +297,78 @@ export function registerExplore(app:FastifyInstance,plex:PlexAdapter,store:Explo
   });
   // Explore's Refresh button rebuilds the viewer's recommendations and Plex shelves.
   app.post('/api/v1/explore/refresh',{config:{access:'viewer',rateLimit:{max:30,timeWindow:60000}}},async request=>{const {account}=await viewer(request);cache.forget(account);personal.forget(account);return {status:'refreshed'};});
-  // Admin › Explore: the source order and what is hidden, with every row each source has (Plex's as the administrator sees them).
-  app.get('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
-    const {hash,grant}=caller(request),account=grant.accountId,token=accountToken(hash);
-    const sources=await Promise.all(exploreBrowseSources.map(async from=>{
-      const configured=from==='plex'||tmdbClient.configured();
-      const rows=await sourceRows(from,account,token).catch(()=>undefined);
-      return {source:from,configured,rows:rows??[],...(rows?{}:{error:'Plex Discover could not list its rows.'})};
-    }));
-    return {layout:store.layout(),sources};
+  // Admin › Explore: every row in order, shown or not, Plex's shelves as the administrator sees them.
+  app.get('/api/v1/admin/explore/rows',{config:{access:'admin'}},async request=>{
+    const {hash,grant}=caller(request),token=accountToken(hash);
+    let plexError:string|undefined;
+    const shelves=await plexShelves(grant.accountId,token).catch(()=>{plexError='Plex Discover could not list its shelves.';return undefined;});
+    if (shelves) store.placeShelves(shelves);
+    const byId=new Map(shelves?.map(s=>[s.id,s])),configured=tmdbClient.configured();
+    const rows=store.arrange(shelves).flatMap((entry):ExploreAdminRow[]=>{
+      if (entry.slot) return [];
+      if (entry.key.startsWith('plex:')) {
+        const shelf=byId.get(entry.key.slice(5));
+        return [{key:entry.key,source:'plex',id:entry.key.slice(5),title:shelf?.title??entry.key.slice(5),icon:shelf?.icon??'trending',shown:entry.shown,builtIn:true,customized:false,
+          ...(shelf?.personal&&{personal:true}),...(entry.missing&&{missing:true})}];
+      }
+      const def=entry.definition!,id=entry.key.slice(5),defaults=isBuiltInRow(id)?builtInRows[id]:undefined;
+      return [{...rowView(entry.key,def),shown:entry.shown,builtIn:!!defaults,customized:!!defaults&&!sameRowDef(def,defaults),definition:def,
+        ...(defaults&&{defaults}),revision:entry.revision,...(!configured&&{unavailable:true})}];
+    });
+    return {rows,tmdbConfigured:configured,...(plexError&&{plexError})} satisfies ExploreAdminRows;
   });
-  app.put('/api/v1/admin/explore/layout',{config:{access:'admin'}},async request=>{
-    const {grant}=caller(request),{expectedRevision,...value}=exploreLayoutInput.extend({expectedRevision:z.number().int().nonnegative()}).strict().parse(request.body);
-    return store.updateLayout(grant.accountId,expectedRevision,value);
+  const rowKey=z.object({key:z.string().max(820).regex(/^(plex|tmdb):\S+$/)});
+  app.put('/api/v1/admin/explore/rows/order',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{keys}=z.object({keys:z.array(z.string().max(820)).max(400)}).strict().parse(request.body);
+    store.setOrder(grant.accountId,keys);cache.forget();
+    return {status:'saved'};
   });
-  app.post('/api/v1/admin/explore/ranking/preview',{config:{access:'admin',rateLimit:{max:30,timeWindow:60000}}},async request=>{
-    const {grant,token}=await viewer(request);
-    const {row,settings}=z.object({row:tmdbRow,settings:exploreRankingOptionsInput}).strict().parse(request.body);
-    const query=streamingQuery.parse(request.query), def=tmdbRows[row];
-    requireThat(def.streaming||!Object.keys(query).length,'INVALID_REQUEST','This row has no streaming selector.',400);
+  app.put('/api/v1/admin/explore/rows/:key',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{key}=rowKey.parse(request.params);
+    const body=z.object({shown:z.boolean().optional(),expectedRevision:z.number().int().nonnegative().optional(),definition:z.unknown().optional()}).strict().parse(request.body);
+    let revision:number|undefined;
+    if (body.definition!==undefined) {
+      requireThat(body.expectedRevision!==undefined,'INVALID_REQUEST','Send the revision you edited.',400);
+      revision=store.setDefinition(grant.accountId,key,body.expectedRevision,body.definition);
+    }
+    if (body.shown!==undefined) store.setShown(grant.accountId,key,body.shown);
+    cache.forget();
+    return {status:'saved',...(revision!==undefined&&{revision})};
+  });
+  app.post('/api/v1/admin/explore/rows',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{definition,after}=z.object({definition:z.unknown(),after:z.string().max(820).optional()}).strict().parse(request.body);
+    const key=store.create(grant.accountId,definition,after);cache.forget();
+    return {key};
+  });
+  app.delete('/api/v1/admin/explore/rows/:key',{config:{access:'admin'}},async request=>{
+    const {grant}=caller(request),{key}=rowKey.parse(request.params);
+    store.remove(grant.accountId,key);cache.forget();
+    return {status:'deleted'};
+  });
+  // The top 20 of a TMDB row as saved and as drafted, for the row dialog. Personal rows use the administrator's own history.
+  app.post('/api/v1/admin/explore/rows/:key/preview',{config:{access:'admin',rateLimit:{max:60,timeWindow:60000}}},async request=>{
+    const {grant,token}=await viewer(request),{key}=rowKey.parse(request.params);
+    const draft=exploreRowDefInput.parse(z.object({definition:z.unknown()}).strict().parse(request.body).definition);
+    const query=streamingQuery.parse(request.query),saved=store.arrange().find(e=>e.key===key)?.definition;
     requireThat(tmdbClient.configured(),'TMDB_KEY_MISSING','Add a TMDB key in Admin › Connections.',409);
-    const current=store.layout().ranking, draft={...current,...exploreRankingInput.parse({[row]:settings})};
-    const streaming=def.streaming?await streamingScope(query):undefined;
-    const read=async (ranking:typeof current,isPreview:boolean)=>{
-      if (!def.personal) return (await tmdb.page(row,1,streaming,undefined,ranking)).items;
-      const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,ranking,isPreview))[row];
+    const streamingOf=(def:ExploreRowDef)=>def.source.type==='tmdb-discover'&&def.source.streaming?streamingScope(query):Promise.resolve(undefined);
+    const read=async (def:ExploreRowDef|undefined,isPreview:boolean)=>{
+      if (!def) return [];
+      if (def.source.type!=='recommendations') return (await labelled(await tmdb.page(def,1,await streamingOf(def)))).items.slice(0,20);
+      const result=(await personal.get(grant,tmdbClient.credentialGeneration(),token,{...personalDefs(),[key.slice(5)]:def},isPreview))[key.slice(5) as PersonalRow];
       const {items}=await labelled({items:result?.items.map(c=>c.item)??[]});
       return items.filter(item=>!item.status).slice(0,20);
     };
-    const [saved,preview]=await Promise.all([read(current,false),read(draft,true)]);
-    return {saved,preview};
+    const [before,after]=await Promise.all([read(saved,false),read(draft,true)]);
+    return {saved:before,draft:after};
   });
 
   // A request changed: details (what can still be requested) are read again.
   const forget=()=>cache.forget();
 
-  async function sourceRows(from:ExploreBrowseSource,account:string,token:string) {
-    if(from==='plex')return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));
-    return tmdbRowOrder(store.layout().tmdbOrder).map(id=>tmdbRows[id]);
+  function plexShelves(account:string,token:string) {return cache.get(account,'plex:rows',ROWS_MS,()=>discover.rows(token));}
+  function personalDefs():PersonalDefs {
+    return Object.fromEntries(personalRows.map(id=>[id,store.definition(`tmdb:${id}`)??builtInRows[id]])) as PersonalDefs;
   }
   // Use the cached TMDB title when Plex omits a field required by the filter.
   async function filtered(items:ExploreItem[],filter:ExploreFilter) {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExploreBrowseSource, ExploreGenre, ExploreSource, ExternalRating, TmdbExploreRow } from './explore.js';
+import type { ExploreGenre, ExploreSource, ExternalRating } from './explore.js';
 import { qualityIds, type Quality } from './playback.js';
 
 export * from './explore.js';
@@ -173,13 +173,8 @@ export type CalendarPage = {
 export type ExploreSearchResult = { items: ExploreItem[]; failed: ExploreSource[] };
 export type ExploreRowInfo = { id: string; title: string; icon: string; personal?: boolean; streaming?: boolean };
 export type ExploreSeason = { number: number; name: string; episodeCount?: number; airDate?: string; status?: ExploreStatus };
-// Server-wide: the order Explore lists its sources in, sources switched off, and single rows hidden (`source:rowId`).
-export type ExploreLayout = { order: ExploreBrowseSource[]; hidden: ExploreBrowseSource[]; hiddenRows: string[]; tmdbOrder?: TmdbExploreRow[];
-  ranking?: import('./explore-ranking.js').ExploreRanking };
 export type ExploreSources = {
   plex: boolean;
-  // Sources shown, in the administrator's order (whether or not each is set up).
-  order: ExploreBrowseSource[];
   // Whether movies and shows can be requested (tk.box's library takes both).
   requests: { movie: boolean; show: boolean };
   tmdb: { configured: boolean };

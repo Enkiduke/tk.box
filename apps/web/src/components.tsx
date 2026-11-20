@@ -55,6 +55,7 @@ const paths:Record<string,ReactNode>={
   logo:<><path d="M4 16 8 6l4 10m-6.5-3.5h5"/><path d="M14 6h3.5a2.5 2.5 0 0 1 0 5H14zm0 5h4a2.5 2.5 0 0 1 0 5h-4z"/></>,
   hd:<><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M7 9v6m0-3h4m0-3v6m3-6v6h1.5a3 3 0 0 0 0-6z"/></>,
 };
+paths.copy=<><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></>;
 paths.settings=<><path d="M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"/><circle cx="15" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/></>;
 export function Icon({name,size=20}:{name:string;size?:number}) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]??paths.movies}</svg>;

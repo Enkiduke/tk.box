@@ -1,4 +1,4 @@
-import type {ExploreWatchProvider,ExploreWatchProviders,StreamingRow} from '../../../packages/contracts/src/index.js';
+import type {ExploreWatchProvider,ExploreWatchProviders} from '../../../packages/contracts/src/index.js';
 import {ErrorNotice} from './components.js';
 import {useApi} from './hooks.js';
 import {selectStreamingService,useExplorePrefs} from './explore-prefs.js';
@@ -10,7 +10,8 @@ export function useStreamingCatalog(enabled:boolean) {
   return {...catalog,region,services:preferred.flatMap(id=>catalog.data?.providers.find(p=>p.id===id)??[])};
 }
 
-export function useStreamingSelection(row:StreamingRow|undefined,requested?:string|null) {
+// `row`: the row's key; undefined for a row without a service picker.
+export function useStreamingSelection(row:string|undefined,requested?:string|null) {
   const prefs=useExplorePrefs(),catalog=useStreamingCatalog(!!row);
   const saved=row?prefs.selections[row]:undefined;
   const wanted=requested==='all'?'all':requested&&/^\d+$/.test(requested)?Number(requested):saved;
