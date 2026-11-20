@@ -84,8 +84,9 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
   const label = episode ? episodeReleaseLabel(entries) : release;
   const times = [...new Set(entries.flatMap(item => item.airTime ? [timeFormat.format(new Date(item.airTime))] : []))].join(' · ');
   const episodeDetail = stacked ? episodeRanges(entries) : [release, entry.episodeTitle].filter(Boolean).join(' · ');
-  const caption = [label !== 'New episode' && label !== 'New episodes' && label, episode && episodeDetail,
-    unknown && 'Availability unknown'].filter(Boolean).join(' · ');
+  const milestone = label !== 'New episode' && label !== 'New episodes' ? label : undefined;
+  // Cards show the milestone as a chip over the art; the list's small poster has no room, so it stays in the caption.
+  const caption = [list && milestone, episode && episodeDetail, unknown && 'Availability unknown'].filter(Boolean).join(' · ');
   return <li>
     <button type="button" className="calendar-entry" data-stack={stacked || undefined}
       onClick={() => onOpen(entry, stacked ? playable.find(item => item.plexShowId)?.plexShowId ?? playable[0]?.plexItemId : entry.plexItemId)}>
@@ -96,6 +97,8 @@ function Entry({entries, list, onOpen}: {entries: CalendarEntry[]; list: boolean
         </span>)}
         <span className="calendar-art" data-available={available || undefined}>
           <CardArtwork entries={entries} list={list}/>
+          {!list && milestone && <span className="calendar-chips"><span className="calendar-chip">{milestone}</span></span>}
+          {!list && <span className="calendar-chip calendar-kind">{episode ? 'Show' : 'Movie'}</span>}
           {(playable.length > 0 || !unknown) && <span className="calendar-availability" title={availabilityLabel}>
             <Icon name={available ? 'check' : playable.length ? 'info' : 'close'} size={16}/><span className="sr-only">{availabilityLabel}</span>
           </span>}
