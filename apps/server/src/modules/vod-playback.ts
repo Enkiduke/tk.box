@@ -67,7 +67,7 @@ export const vodPlaybackModule = defineModule({
           mediaId: item.ratingKey, positionMs: startOffsetMs, durationMs: item.duration, quality: input.quality, source: details.source,
           ...(route.kind === 'cpu' ? { target: { maxHeight: route.maxHeight, maxBitrateKbps: route.maxBitrateKbps } } : {}),
           history: config.PLEX_MACHINE_ID ? { previousId: input.previousDeliveryId, entry: { id: created.id, owner: hash, accountId: grant.accountId, accountName: grant.name,
-            client: describeClient(browser.userAgent), media: plexHistoryMedia(config.PLEX_MACHINE_ID, item),
+            client: describeClient(browser.userAgent), ip: browser.ip, media: plexHistoryMedia(config.PLEX_MACHINE_ID, item),
             stream: { delivery: decision?.video === 'copy' ? 'remux' : created.delivery, video: decision?.video, audio: decision?.audio,
               sourceHeight: media.height, sourceWidth: media.width, maxHeight: route.kind === 'cpu' ? route.maxHeight : undefined } } } : undefined });
       };

@@ -11,8 +11,8 @@ import {ExploreAdmin} from './explore-admin.js';
 import {ArtworkAdmin,CollectionsAdmin} from './artwork-admin.js';
 import {CleanupAdmin} from './cleanup-admin.js';
 import {RequestsAdmin} from './requests-admin.js';
-import {ActivityAdmin} from './activity-admin.js';
-import {HistoryAdmin} from './history-admin.js';
+
+import {ActivityPage} from './history-admin.js';
 import {AdminConsole} from './admin-console.js';
 import {UsersAdmin} from './users-admin.js';
 import {ScheduleAdmin} from './schedule-admin.js';
@@ -80,7 +80,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
   if(title){query.set('title',title);const pane=params.get('pane'),scope=params.get('scope');if(pane)query.set('pane',pane);if(scope)query.set('scope',scope);}
   // Views inside a page: Queue's status filter, and IPTV's Live Events (the old Live Events page).
   const view=section==='sports'?'events':params.get('view');
-  if(view&&(current==='queue'||current==='iptv'))query.set('view',view);
+  if(view&&(current==='queue'||current==='iptv'||current==='download-history'))query.set('view',view);
   const canonicalRoute=section===current?undefined:`#admin?${query}`;
   useEffect(()=>{if(canonicalRoute)replaceRoute(canonicalRoute);},[canonicalRoute]);
   if(me.role!=='admin')return <Empty title="Administrator access required"><a href="#settings">Open your settings</a></Empty>;
@@ -90,7 +90,7 @@ export function Admin({me,params}:{me:Principal;params:URLSearchParams}) {
       <nav className="settings-nav admin-nav" aria-label="Admin sections">{groups.map(([group,items])=><div key={group} className="admin-nav-group"><span className="admin-nav-heading">{group}</span>
         <div className="admin-nav-items">{items.filter(([id])=>me.owner||!ownerOnly.has(id)).map(([id,label,icon])=><button key={id} aria-current={current===id?'page':undefined} onClick={()=>open(id)}><Icon name={icon} size={18}/>{label}</button>)}</div></div>)}</nav>
       <div className="settings-main">{current==='channels'?<CustomChannelSettings/>:current==='iptv'?<IptvPage params={params}/>
-        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin params={params}/>:current==='requests'?<RequestsAdmin/>:current==='queue'?<DownloadsPage params={params}/>:current==='download-history'?<DownloadHistoryPage/>:current==='wanted'?<WantedPage/>:current==='movies'?<MoviesPage/>:current==='shows'?<ShowsPage/>:current==='rules'?<PickRulesPage/>:current==='download-settings'?<LibrarySettingsPage/>:current==='subtitles'?<SubtitlesPage/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<><ActivityAdmin/><HistoryAdmin params={params}/></>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
+        :current==='collections'?<CollectionsAdmin/>:current==='artwork'?<ArtworkAdmin params={params}/>:current==='connections'?<ConnectionsSettings params={params}/>:current==='explore'?<ExploreAdmin params={params}/>:current==='requests'?<RequestsAdmin/>:current==='queue'?<DownloadsPage params={params}/>:current==='download-history'?<DownloadHistoryPage params={params}/>:current==='wanted'?<WantedPage/>:current==='movies'?<MoviesPage/>:current==='shows'?<ShowsPage/>:current==='rules'?<PickRulesPage/>:current==='download-settings'?<LibrarySettingsPage/>:current==='subtitles'?<SubtitlesPage/>:current==='cleanup'?<CleanupAdmin/>:current==='activity'?<ActivityPage params={params}/>:current==='users'?<UsersAdmin/>:current==='schedule'?<ScheduleAdmin/>:<PlaybackSection/>}</div>
     </div>
     {Number(title)>0&&<MovieDialog key={title} id={Number(title)} pane={(panes.has(params.get('pane')??'')?params.get('pane'):'overview') as TitlePane}
       scope={params.get('scope')??undefined} setPane={(pane,scope)=>replaceRoute(withMovie(params,title!,pane,scope))}

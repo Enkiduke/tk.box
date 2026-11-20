@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {api,ApiClientError} from './api.js';
 import {ErrorNotice,Icon,Loading} from './components.js';
-import {SectionHead} from './settings-ui.js';
+import {Panel} from './manage-ui.js';
 import {qualityTiers} from '../../../packages/contracts/src/playback.js';
 import {ACTIVITY_REFRESH_MS,activityElapsed,activityPosition,formatActivityTime,useActivityClock,type ActivityTiming} from './activity-time.js';
 import './activity.css';
@@ -22,9 +22,11 @@ const mbps=(kbps:number)=>`${(kbps/1000).toFixed(1)} Mbps`;
 const resolution=(s?:Source)=>!s?.height?undefined:(s.height>=2000||(s.width??0)>=3800)?'4K':`${s.height>=1000||(s.width??0)>=1900?1080:s.height>=700||(s.width??0)>=1260?720:s.height}p`;
 const codec=(c?:string)=>c?.toUpperCase();
 const qualityName=(q?:string)=>{const tier=qualityTiers.find(t=>t.id===q);return tier?`${tier.height}p · ${mbps(tier.bitrateKbps)}`:q==='original'?'Original':'Auto';};
+const clock=new Intl.DateTimeFormat(undefined,{timeStyle:'short'});
 
-// Admin › Activity: what everyone is watching right now, in tk.box (library, IPTV, custom channels) and in any other Plex app, refreshed every few seconds.
-export function ActivityAdmin() {
+// What everyone is watching right now, in tk.box (library, IPTV, custom channels) and in any other Plex app,
+// re-read every few seconds while the page is visible. Admin › Activity keeps it on every tab for the count.
+export function useLiveActivity() {
   const [view,setView]=useState<View&{receivedAt:number}>(),[error,setError]=useState<string>(),[version,setVersion]=useState(0);
   const now=useActivityClock(!!view?.streams.length);
   useEffect(()=>{
@@ -33,15 +35,19 @@ export function ActivityAdmin() {
     void load();const timer=window.setInterval(()=>{if(!document.hidden)void load();},ACTIVITY_REFRESH_MS);
     return()=>{live=false;window.clearInterval(timer);};
   },[version]);
-  const reload=()=>setVersion(v=>v+1);
-  const elapsedMs=view?activityElapsed(now,view.receivedAt):0;
   const summary=view&&(view.streams.length
-    ?`${view.streams.length} active ${view.streams.length===1?'stream':'streams'}${view.transcodes?` (${view.transcodes} transcoding)`:''} · ${mbps(view.bandwidthKbps)}${view.wanBandwidthKbps?` (${mbps(view.wanBandwidthKbps)} WAN)`:''}`
-    :'Nothing is playing');
-  return <><SectionHead title="Activity" description={summary}/>
+    ?`${view.streams.length} ${view.streams.length===1?'stream':'streams'}${view.transcodes?` · ${view.transcodes} transcoding`:''} · ${mbps(view.bandwidthKbps)}${view.wanBandwidthKbps?` (${mbps(view.wanBandwidthKbps)} WAN)`:''}`
+    :'Nothing playing');
+  return {view,error,setError,now,elapsedMs:view?activityElapsed(now,view.receivedAt):0,summary,reload:()=>setVersion(v=>v+1)};
+}
+export type LiveActivity=ReturnType<typeof useLiveActivity>;
+
+export function NowPlaying({live}:{live:LiveActivity}) {
+  const {view,error,now,elapsedMs,reload,setError}=live;
+  return <>
     {error&&<ErrorNotice message={error} retry={reload}/>}
     {view?.plexError&&<p className="notice">{view.plexError}</p>}
-    {!view?(!error&&<Loading/>):view.streams.length>0&&
+    {!view?(!error&&<Loading/>):view.streams.length===0?<Panel><div className="ui-empty">Nothing playing</div></Panel>:
       <section className="activity-grid" aria-label="Live activity">{view.streams.map(s=><StreamCard key={s.id} stream={s} now={now} elapsedMs={elapsedMs} ended={reload} failed={setError}/>)}</section>}
   </>;
 }
@@ -66,13 +72,17 @@ function StreamCard({stream:s,now,elapsedMs,ended,failed}:{stream:Stream;now:num
   };
   const playback=activityPosition(s,elapsedMs);
   const time=playback?.time??(s.startedAt!==undefined?`Connected ${formatActivityTime(now-s.startedAt)}`:undefined);
+  // Time left at normal speed, and when it ends if it keeps playing.
+  const leftMs=s.positionMs!==undefined&&s.durationMs?Math.max(0,s.durationMs-s.positionMs-(s.state==='playing'?elapsedMs:0)):undefined;
+  const left=leftMs!==undefined?`${formatActivityTime(leftMs)} left${s.state==='playing'?` · ends ${clock.format(now+leftMs)}`:''}`:undefined;
   const behindLiveMs=s.behindLiveMs===undefined?undefined:s.behindLiveMs+(s.state==='paused'?elapsedMs:0);
+  const bandwidth=s.state==='paused'&&!s.rateKbps?'Paused':`${s.delivery==='direct'&&s.kind!=='plex'?'~':''}${mbps(s.rateKbps)}`;
   const rows:[string,string|undefined][]=[
-    ['Playback time',time],['Video',videoLine],['Audio',audioLine],['Speed',s.speed?.toFixed(1)],
+    ['Playback time',time],['Remaining',left],['Video',videoLine],['Audio',audioLine],['Speed',s.speed?.toFixed(1)],
     ['Quality',s.kind==='vod'?`${qualityName(s.quality)}${src?.bitrateKbps?` (source ${mbps(src.bitrateKbps)})`:''}`:undefined],
     ['Behind live',behindLiveMs?formatActivityTime(behindLiveMs):undefined],
     ['Location',`${s.local?'LAN':'WAN'}: ${s.ip}`],
-    ['Bandwidth',s.state==='paused'&&!s.rateKbps?'Paused':`${s.delivery==='direct'&&s.kind!=='plex'?'~':''}${mbps(s.rateKbps)}`]
+    ['Bandwidth',bandwidth]
   ];
   // Streams watched in tk.box stand out from those in other Plex apps.
   return <article className={`activity-card${s.kind==='plex'?'':' tkbox'}`}>
@@ -81,12 +91,16 @@ function StreamCard({stream:s,now,elapsedMs,ended,failed}:{stream:Stream;now:num
       <div className="activity-info">
         <strong title={title}>{title}</strong>
         {subtitle&&<small title={subtitle}>{subtitle}</small>}
-        <small title={[s.user,s.client].filter(Boolean).join(' · ')}>{[s.user,s.client].filter(Boolean).join(' · ')}</small>
+        <small title={[s.user,s.client].filter(Boolean).join(' · ')}><b>{s.user}</b>{s.client?` · ${s.client}`:''}</small>
         <small className="activity-state" title={`${states[s.state]} · ${kind} · ${delivery[s.delivery]}`}>
-          <span data-state={s.state}>{states[s.state]}</span> · {kind} · {delivery[s.delivery]}
+          <span data-state={s.state}>{states[s.state]}</span> · {kind} · <span data-delivery={s.delivery}>{delivery[s.delivery]}</span>
         </small>
       </div>
       {s.canStop&&<button type="button" className="icon-button activity-stop" aria-label={`Stop ${s.user}’s stream`} title="Stop this stream" disabled={stopping} onClick={stop}><Icon name="close" size={16}/></button>}
+    </div>
+    <div className="activity-facts">
+      {videoLine&&<span title={[videoLine,audioLine].filter(Boolean).join(' · ')}>{videoLine}</span>}
+      <span>{s.local?'LAN':'WAN'} · {bandwidth}{left?` · ${left}`:''}</span>
     </div>
     <details className="activity-disclosure">
       <summary>Stream details</summary>

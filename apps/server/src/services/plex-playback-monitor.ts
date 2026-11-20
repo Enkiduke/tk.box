@@ -193,6 +193,7 @@ export class PlexPlaybackMonitor {
         this.tracks.set(key, track);
         this.history.open({ id: track.id, owner: OWNER, accountId, accountName: row.User?.title, source: 'plex', stream,
           client: [row.Player?.product, row.Player?.platform].filter(Boolean).join(' · ') || 'Plex app',
+          ip: row.Player?.address || undefined,
           media: { serverId: server, ratingKey, title, type, durationMs: duration, libraryId: librarySectionID ?? '',
             year: row.year, showId: row.grandparentRatingKey, showTitle: row.grandparentTitle, seasonId: row.parentRatingKey,
             season: row.parentIndex, episode: row.index }

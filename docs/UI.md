@@ -10,7 +10,9 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
    segmented filters, the count on the right). Never both stacked, never a second bar. Filters are always segmented
    buttons (`Segmented`), never dropdowns; tables sort by their headers.
 3. **Content**: `Panel`s. A panel holds a table flush to its edges, or settings rows. No stacked full-width cards of
-   lists: a page with several lists shows one at a time through `Tabs`.
+   lists: a page with several lists shows one at a time through `Tabs`. When a page has `Tabs`, filters that apply to
+   every tab (Activity's period and source) sit in the header's right side, and a tab's own search and filters sit in
+   its panel's head, so there is still one bar.
 
 ## Sizes
 - Spacing on a 4 px grid: 4, 8, 12, 16, 24, 32.
@@ -24,6 +26,10 @@ preview (`npm run preview:plex`, real data, read-only) and screenshot it before 
 - Numbers right-aligned in tabular figures. An empty value is a dim "—"; a column that would be mostly empty is
   left out, or folded into the title's second line.
 - Row actions are icon buttons on the right, shown on hover or focus (`RowActions`). Each has a tooltip.
+- A wide table may let columns be turned off (`useColumns` + `ColumnsMenu`, the last control in its bar or panel
+  head), remembered per browser. The title, the main time and the actions always show.
+- A list too long to load at once (Activity › History) sorts on the server: the header click sets `sort`/`dir` in the
+  address and "Show 100 more" reads the next page.
 - A row opens its thing when its title is clicked. A movie or show opens as a dialog over the page you're on
   (`MovieDialog`, `&title=<id>`, `&pane=files|grabs|requests|search` for a tab, `&scope=S02` or `S02E05` for a show's
   search), never a page of its own, so the list stays as you left it. Its head holds the facts and the settings strip

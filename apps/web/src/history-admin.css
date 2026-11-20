@@ -1,43 +1,69 @@
-.history-admin { display: grid; gap: 1rem; min-width: 0; margin-top: 1.5rem; }
-.history-admin > h3 { margin: 0; font-size: 1rem; }
-.admin .history-admin > .subtabs { margin-bottom: 0; }
-.history-types { flex-wrap: wrap; }
-.history-controls { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
-.history-controls label { display: grid; gap: .3rem; font-size: .875rem; }
-.history-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: .65rem; }
-.history-table { overflow-x: auto; }
-.history-table table { width: 100%; border-collapse: collapse; text-align: left; }
-.history-table th, .history-table td { padding: .65rem .5rem; vertical-align: top; border-bottom: 1px solid rgb(255 255 255 / 10%); }
-.history-table th { white-space: nowrap; }
-.history-table td small { display: block; color: var(--muted); }
-.history-table + .history-controls { margin-top: .75rem; }
-.history-trend { display: flex; align-items: end; gap: 4px; height: 80px; }
-.history-trend > div { flex: 1; background: var(--accent); height: var(--watch-height); border-radius: 2px 2px 0 0; }
-.history-session-table th, .history-session-table td { padding: .5rem; }
-.history-session-table td:first-child { width: 38%; min-width: 10rem; overflow-wrap: anywhere; }
-.history-session-table td:nth-child(2) { max-width: 13rem; overflow-wrap: anywhere; }
-.history-session-table td:last-child, .history-session-table time { white-space: nowrap; }
-.history-session-table small { margin-top: .18rem; }
-.history-session-table tbody tr:hover, .history-session-table tbody tr:focus-within { background: var(--surface-2); }
-.history-session-title { display: inline-flex; align-items: baseline; gap: .45rem; font-weight: 600; }
-.history-session-title svg { flex: none; align-self: flex-start; margin-top: .13em; color: var(--muted); }
-.history-session-title small { font-weight: 400; }
-.history-session-watch { font-variant-numeric: tabular-nums; }
-.history-watch-value { display: inline-flex; gap: .5rem; align-items: center; }
-.history-progress-ring {
-  flex: none;
-  width: .85rem;
-  height: .85rem;
-  border-radius: 50%;
-  background: conic-gradient(var(--accent) calc(var(--playback-progress) * 1turn), var(--muted) 0);
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
-}
-.history-session-table .history-session-open { color: var(--accent); }
-.history-session-detail { display: grid; gap: 1rem; }
-.history-session-heading { display: flex; align-items: center; gap: .85rem; padding-right: 2.5rem; overflow-wrap: anywhere; }
-.history-session-heading h2, .history-session-heading p { margin: 0; }
-.history-session-heading p { margin-top: .3rem; }
-.history-detail-table th { width: 33%; color: var(--muted); font-weight: 500; }
-.history-detail-table th, .history-detail-table td { padding: .55rem .45rem; white-space: normal; overflow-wrap: anywhere; }
-.history-position { display: block; width: min(100%, 12rem); height: .45rem; margin-top: .4rem; accent-color: var(--accent); }
-.history-poster { flex: none; width: 56px; border-radius: 4px; }
+/* Admin › Activity (history-admin.tsx). Chart fills are checked for colour-blind separation on the dark surface. */
+:root { --history-direct: #36a86c; --history-remux: #5b95e0; --history-transcode: #b8862a; }
+.activity-filters { display: flex; gap: 8px; }
+.activity-filters .toggle-group { height: var(--ui-bar); align-items: stretch; padding: 3px; background: var(--surface); }
+.activity-filters .toggle-group button { padding: 0 12px; font-size: 13px; }
+/* Panel-head controls are 32 px (ui.css), centred on one line. */
+.ui-panel-actions .toggle-group { align-self: center; height: 32px; align-items: stretch; padding: 2px; background: var(--surface); }
+/* ui.css gives every panel-head button 32 px; inside a 32 px group they fill its 28 px inner height instead. */
+.ui-panel-actions .toggle-group button { height: auto; padding: 0 10px; font-size: 12.5px; }
+.ui-panel-actions > span { display: flex; }
+.ui-panel-actions .ui-search { width: 230px; }
+.ui-panel-actions .ui-count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 28px; text-align: right; }
+/* A closed <details> still reserves room below its summary; pin it to the summary's height (the menu is absolute). */
+.ui-panel-actions .ui-columns { display: flex; height: 32px; }
+.ui-panel-actions .ui-columns > summary { height: 32px; }
+.history-stream .ui-pill { margin: -2px 0; }
+
+.history-scope { display: inline-flex; align-items: center; gap: 6px; }
+.history-scope .icon-button { padding: 4px; color: var(--muted); }
+.history-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.history-title > div { min-width: 0; }
+.history-title small, .ui-table td > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+button.history-link { padding: 0; border: 0; background: none; cursor: pointer; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+button.history-link:hover { text-decoration: underline; }
+.history-user { color: var(--text); }
+.history-user:hover { text-decoration: underline; }
+.history-cut { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-mono { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--muted); }
+.history-thumb { display: grid; place-items: center; color: var(--dim); }
+.history-thumb.logo img { object-fit: contain; padding: 2px; }
+
+.history-detail { padding-bottom: 4px; }
+.history-facts { display: grid; gap: 6px; margin: 0; font-size: 13px; }
+.history-facts > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
+.history-facts dt { color: var(--muted); }
+.history-facts dd { margin: 0; overflow-wrap: anywhere; }
+.history-bar { display: block; width: 160px; height: 4px; margin-top: 6px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.history-bar span { display: block; height: 100%; background: var(--accent); }
+.history-plays { padding: 0 20px 12px 42px; }
+.history-plays li { grid-template-columns: 170px 130px minmax(0, 1fr); }
+.history-usage { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.history-usage li { display: grid; gap: 2px; min-width: 0; }
+.history-usage span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-usage small { color: var(--muted); font-size: 12px; }
+
+.history-graphs { display: grid; gap: 16px; }
+.history-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.history-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.history-legend { display: flex; gap: 16px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.history-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.history-legend i { width: 10px; height: 10px; border-radius: 2px; }
+[data-mode="direct"] { background: var(--history-direct); }
+[data-mode="remux"] { background: var(--history-remux); }
+[data-mode="transcode"] { background: var(--history-transcode); }
+[data-mode="one"] { background: var(--accent); }
+.history-chart { position: relative; display: grid; gap: 6px; padding-top: 18px; }
+.history-axis-top { position: absolute; top: 0; left: 0; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.history-days { display: flex; align-items: flex-end; gap: 2px; height: 160px; border-bottom: 1px solid var(--line); background: linear-gradient(to bottom, var(--line) 1px, transparent 1px) 0 0 / 100% 50%; }
+.history-chart.small .history-days { height: 120px; }
+.history-col { flex: 1; display: flex; align-items: flex-end; height: 100%; min-width: 0; }
+.history-col:hover .history-stack { filter: brightness(1.25); }
+.history-stack { display: flex; flex-direction: column; gap: 2px; width: 100%; min-height: 0; border-radius: 4px 4px 0 0; overflow: hidden; }
+.history-stack span { display: block; flex-basis: 0; min-height: 1px; }
+.history-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); }
+.history-axis.even { justify-content: stretch; gap: 2px; }
+.history-axis.even span { flex: 1; text-align: center; min-width: 0; }
+.history-meter { display: inline-block; width: 80px; height: 6px; margin-right: 8px; border-radius: 3px; background: var(--surface-3); overflow: hidden; vertical-align: middle; }
+.history-meter span { display: block; height: 100%; background: var(--accent); }
+.history-meter-n { font-weight: 500; font-variant-numeric: tabular-nums; }

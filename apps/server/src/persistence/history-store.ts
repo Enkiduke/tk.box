@@ -39,6 +39,7 @@ export type HistorySession = {
   accountId: string;
   accountName?: string;
   client: string;
+  ip?: string;
   stream: { delivery: HistoryDelivery; video?: string; audio?: string; sourceHeight?: number; sourceWidth?: number; outputHeight?: number; maxHeight?: number };
   startedAt: number;
   observedAt: number;
@@ -138,7 +139,7 @@ export class HistoryStore {
     const db = this.connection();
     return db.transaction(() => {
       db.prepare("UPDATE history_sessions SET ended_at=observed_at,end_reason='interrupted' WHERE ended_at IS NULL").run();
-      const rows = db.prepare(`SELECT s.id,s.generation,CASE WHEN s.source='plex' THEN 'plex' END AS source,s.account_id AS accountId,s.account_name AS accountName,s.client,s.started_at AS startedAt,
+      const rows = db.prepare(`SELECT s.id,s.generation,CASE WHEN s.source='plex' THEN 'plex' END AS source,s.account_id AS accountId,s.account_name AS accountName,s.client,s.ip,s.started_at AS startedAt,
         s.observed_at AS observedAt,s.position_ms AS positionMs,s.watch_ms AS watchMs,s.end_reason AS end,
         m.server_id AS serverId,m.rating_key AS ratingKey,m.metadata,s.stream
         FROM history_sessions s JOIN history_media m ON m.id=s.media_id
@@ -157,8 +158,8 @@ export class HistoryStore {
       tvdb_id=COALESCE(history_media.tvdb_id,excluded.tvdb_id) WHERE history_media.tmdb_id IS NULL AND excluded.tmdb_id IS NOT NULL`);
     const findMedia = db.prepare('SELECT id FROM history_media WHERE server_id=? AND rating_key=? AND metadata=?');
     const writeSession = db.prepare(`INSERT INTO history_sessions
-      (id,source,account_id,account_name,media_id,client,stream,generation,started_at,observed_at,ended_at,end_reason,watch_ms,position_ms)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+      (id,source,account_id,account_name,media_id,client,ip,stream,generation,started_at,observed_at,ended_at,end_reason,watch_ms,position_ms)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       stream=excluded.stream,generation=excluded.generation,observed_at=excluded.observed_at,ended_at=excluded.ended_at,
       end_reason=excluded.end_reason,watch_ms=excluded.watch_ms,position_ms=excluded.position_ms`);
     const writeDay = db.prepare(`INSERT INTO history_days(session_id,day,direct_ms,remux_ms,transcode_ms) VALUES(?,?,?,?,?)
@@ -176,7 +177,7 @@ export class HistoryStore {
     db.transaction(() => {
       for (const { session: s, days, live } of batch) {
         const source = s.source ?? (s.media.type === 'channel' ? s.media.serverId : 'vod');
-        writeSession.run(s.id, source, s.accountId, s.accountName ?? null, targetId(s.media), s.client, JSON.stringify(s.stream), s.generation,
+        writeSession.run(s.id, source, s.accountId, s.accountName ?? null, targetId(s.media), s.client, s.ip ?? null, JSON.stringify(s.stream), s.generation,
           s.startedAt, s.observedAt, s.end ? s.observedAt : null, s.end ?? null, s.watchMs, s.positionMs);
         for (const [day, time] of days) writeDay.run(s.id, day, time.direct, time.remux, time.transcode);
         for (const { day, feedId, airing, watchMs } of live ?? []) {

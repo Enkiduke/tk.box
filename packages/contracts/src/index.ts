@@ -22,7 +22,7 @@ export type HistoryListRow = {
   id: string; source: HistorySource; accountId: string; accountName: string | null; title: string;
   kind: string; ratingKey: string; showTitle?: string; startedAt: number; endedAt: number | null;
   year?: number; season?: number; episode?: number; channelNumber?: number;
-  watchMs: number; positionMs: number; durationMs?: number; client: string;
+  watchMs: number; positionMs: number; durationMs?: number; client: string; ip: string | null;
   stream: { delivery: string; video?: string; audio?: string; sourceHeight?: number; outputHeight?: number; maxHeight?: number };
   endReason: string | null; serverId: string;
 };
@@ -32,8 +32,23 @@ export type HistorySessionDetail = {
   deliveryMs: Record<'direct' | 'remux' | 'transcode', number>;
   allocations: { day: string; feedId: string; watchMs: number; title: string | null; estimated: number }[];
 };
-export type HistoryRank = { id: string; title: string; sessions: number; watchMs: number; viewers: number };
-export type HistoryMediaRank = HistoryRank & { kind: 'movie' | 'show' | 'episode' | 'channel' | 'program' };
+export type HistoryRank = { id: string; title: string; sessions: number; watchMs: number; viewers: number; lastAt: number };
+// A title's Plex rating key (a show's for a show) and, for an episode, its show and number.
+export type HistoryMediaRank = HistoryRank & { kind: 'movie' | 'show' | 'episode' | 'channel' | 'program'; serverId?: string; ratingKey?: string;
+  showTitle?: string; season?: number; episode?: number; year?: number };
+// A viewer and what they last watched, where and on what.
+export type HistoryUserRank = HistoryRank & { players: number; lastTitle: string; lastClient: string; lastIp: string | null };
+export type HistoryUsage = { name: string; sessions: number; watchMs: number; lastAt: number };
+export type HistoryUserDetail = { ips: HistoryUsage[]; players: HistoryUsage[]; sources: HistoryUsage[] };
+// Admin › Activity › Graphs. Weekdays run Sunday first; hours and weekdays are server time, by when sessions started.
+export type HistoryGraphs = {
+  weekdays: { sessions: number; watchMs: number }[]; hours: { sessions: number; watchMs: number }[];
+  players: HistoryUsage[]; platforms: HistoryUsage[];
+  days: { day: string; direct: number; remux: number; transcode: number }[];
+  peak: { streams: number; at: number } | null;
+};
+export const historySorts = ['started', 'title', 'user', 'player', 'source', 'watch', 'progress'] as const;
+export type HistorySort = typeof historySorts[number];
 export type HistorySummary = {
   sessions: number; viewers: number; watchMs: number;
   days: { day: string; watchMs: number }[];

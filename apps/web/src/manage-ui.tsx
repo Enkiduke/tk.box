@@ -176,6 +176,32 @@ function AutoMore({onNear,at}:{onNear:()=>void;at:number}) {
   },[at]);
   return <span ref={ref} aria-hidden="true"/>;
 }
+// Optional columns ([id, label, shown by default]) a viewer can turn off with the table's Columns menu, remembered
+// in this browser.
+export type OptionalColumn=readonly [string,string,boolean];
+export function useColumns(key:string,optional:readonly OptionalColumn[]) {
+  const [shown,setShown]=useState<ReadonlySet<string>>(()=>{
+    try{const saved=JSON.parse(localStorage.getItem(`columns:${key}`)??'null');if(Array.isArray(saved))return new Set(saved.map(String));}catch{/* defaults */}
+    return new Set(optional.filter(([,,on])=>on).map(([id])=>id));
+  });
+  const toggle=(id:string)=>setShown(s=>{
+    const next=new Set(s);if(next.has(id))next.delete(id);else next.add(id);
+    try{localStorage.setItem(`columns:${key}`,JSON.stringify([...next]));}catch{/* kept for this visit */}
+    return next;
+  });
+  return {has:(id:string)=>shown.has(id),toggle,optional};
+}
+export function ColumnsMenu({columns}:{columns:ReturnType<typeof useColumns>}) {
+  const ref=useRef<HTMLDetailsElement>(null);
+  useEffect(()=>{
+    const close=(e:MouseEvent)=>{if(ref.current?.open&&!ref.current.contains(e.target as Node))ref.current.open=false;};
+    document.addEventListener('click',close);return()=>document.removeEventListener('click',close);
+  },[]);
+  return <details ref={ref} className="ui-columns"><summary title="Choose columns"><Icon name="settings" size={15}/>Columns</summary>
+    <div className="ui-columns-menu" role="group" aria-label="Columns">{columns.optional.map(([id,label])=>
+      <label key={id}><input type="checkbox" checked={columns.has(id)} onChange={()=>columns.toggle(id)}/>{label}</label>)}</div>
+  </details>;
+}
 export const matches=(query:string,...fields:(string|number|undefined)[])=>{const q=query.trim().toLocaleLowerCase();return !q||fields.some(f=>f!==undefined&&String(f).toLocaleLowerCase().includes(q));};
 
 // ---- Selection ----

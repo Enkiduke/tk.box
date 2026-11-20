@@ -5,7 +5,7 @@ import { digest } from '../security/vault.js';
 import { every, errorDetail, type Repeating } from '../lib/every.js';
 
 // One delivery to record: a tk.box stream (from `session.started`, modules/watch-history.ts) or a Plex app's.
-export type PlaybackEntry = Pick<HistorySession, 'source' | 'accountId' | 'accountName' | 'media' | 'client' | 'stream'> & { id: string; owner: string };
+export type PlaybackEntry = Pick<HistorySession, 'source' | 'accountId' | 'accountName' | 'media' | 'client' | 'ip' | 'stream'> & { id: string; owner: string };
 type Delivery = PlaybackEntry;
 type LiveObservation = { epoch: number; airings?: Airings; stream?: HistorySession['stream']; replacing?: boolean };
 type Sample = PlaybackObservation & { receivedAt: number; epoch: number };
@@ -145,8 +145,8 @@ export class PlaybackHistory {
       const saved = this.resumable.get(digest(id));
       if (saved && this.canReattach(saved, owner, observation.sequence, epoch, now)) {
         // The caller has already checked that this delivery still belongs to the signed-in session.
-        const { accountId, accountName, media, client, stream } = saved.session;
-        this.open({ id, owner, accountId, accountName, media, client, stream, source: saved.session.source }, id, now);
+        const { accountId, accountName, media, client, ip, stream } = saved.session;
+        this.open({ id, owner, accountId, accountName, media, client, ip, stream, source: saved.session.source }, id, now);
         view = this.active.get(id);
       }
     }
@@ -162,8 +162,8 @@ export class PlaybackHistory {
     view.seen = now;
     if (ms && previous && view.days.size < MAX_PENDING_DAYS) {
       const first = !view.session;
-      const { media, accountId, accountName, stream, client, source } = view.delivery;
-      const s = view.session ??= { media, accountId, accountName, stream, client, source, id: view.id, generation: digest(id), startedAt: previous.receivedAt,
+      const { media, accountId, accountName, stream, client, ip, source } = view.delivery;
+      const s = view.session ??= { media, accountId, accountName, stream, client, ip, source, id: view.id, generation: digest(id), startedAt: previous.receivedAt,
         observedAt: now, positionMs: next.positionMs, watchMs: 0 };
       if (live?.stream) view.delivery.stream = live.stream;
       s.stream = view.delivery.stream;

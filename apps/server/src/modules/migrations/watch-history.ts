@@ -59,5 +59,8 @@ export const watchHistoryMigrations: Migration[] = [
     db.prepare('INSERT INTO history_imports(server_id,saved_at,saved_by,checked) VALUES(?,?,?,?)').run(saved.serverId, saved.at, saved.by, saved.checked);
     db.prepare(`INSERT INTO history_imported_watches(server_id,scope,rating_key,account,at)
         SELECT ?,scope,rating_key,account,at FROM cleanup_watch_snapshot`).run(saved.serverId);
-  } }
+  } },
+  // The viewer's address (Admin › Activity › History and Users). Older rows have none.
+  { name: 'session-ip', up: `ALTER TABLE history_sessions ADD COLUMN ip TEXT;
+      CREATE INDEX history_sessions_by_account_ip ON history_sessions(account_id, ip) WHERE ip IS NOT NULL;` }
 ];

@@ -87,7 +87,7 @@ export const liveSessionsModule = defineModule({
       const started = await (own ? customTv.start(hash, grant, input.channelId) : live.start(hash, input.channelId)).catch((e: unknown) => { sessions.release(ticket); throw e; });
       const browser = { ip: req.ip, userAgent: req.headers['user-agent']?.slice(0, 400) };
       const entry = {
-        id: started.id, owner: hash, accountId: grant.accountId, accountName: grant.name, client: describeClient(browser.userAgent),
+        id: started.id, owner: hash, accountId: grant.accountId, accountName: grant.name, client: describeClient(browser.userAgent), ip: browser.ip,
         media: { type: 'channel' as const, serverId: own ? 'custom' as const : 'iptv' as const, ratingKey: input.channelId,
           title: started.channel.name, number: started.channel.number },
         stream: { delivery: started.delivery, video: started.delivery === 'remux' ? 'copy' : 'transcode', audio: 'transcode',
