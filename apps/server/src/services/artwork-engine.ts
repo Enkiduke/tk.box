@@ -10,6 +10,7 @@ import type { CollectionsStore, KeptCollections } from '../persistence/collectio
 import type { CollectionsRunner } from './collections/runner.js';
 import { SEASONAL_PRESETS } from './collections/presets.js';
 import { ArtworkBatch } from './artwork-batch.js';
+import type { ShowAirings } from './wanted.js';
 
 // Runs Artwork's jobs, one at a time, in order, whichever engine they are for. The artwork engine
 // (apps/artwork/artwork_engine.py) runs in its own Python process, which runs one job after another (artwork-batch.ts):
@@ -33,7 +34,10 @@ const MAX_LINES = 5000, SAVED_LINES = 2000;
 
 // The engine's config for one run. Library titles come from the signed-in administrator's view of Plex, because the
 // engine matches its per-library layouts by title. Credentials are never written into it.
-export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections) {
+// `airings`: the library's shows' last and next episodes and season starts, by TMDB id (wanted.ts showAirings), which
+// the engine's status banners use over TMDB's.
+export function artworkConfig(settings: ArtworkSettings, layouts: Record<string, Record<string, unknown>>, libraries: ArtworkLibrary[], paths: Pick<Paths, 'plexUrl' | 'cacheDir'>, collections?: ArtworkCollections,
+  airings?: Record<string, ShowAirings>) {
   const title = (id: string) => libraries.find(l => l.key === id)?.title, f = collections?.franchise;
   return {
     plex: { url: paths.plexUrl, libraries: settings.libraries, upload: settings.upload, upload_logo: settings.uploadLogo, include_seasons: settings.includeSeasons,
@@ -46,7 +50,8 @@ export function artworkConfig(settings: ArtworkSettings, layouts: Record<string,
     ...(Object.keys(settings.layoutByType).length ? { layout_by_type: settings.layoutByType } : {}),
     layouts,
     // Which collections are custom ones, for their posters.
-    ...(collections?.definitions ? { collections: collections.definitions } : {})
+    ...(collections?.definitions ? { collections: collections.definitions } : {}),
+    ...(airings && Object.keys(airings).length ? { airings } : {})
   };
 }
 // The engine's provider keys, from Admin › Connections (service keys).
@@ -106,6 +111,9 @@ export class ArtworkEngine {
   }
   useWorker(worker: Worker) { this.worker = worker; }
   useCollections(runner: CollectionsRunner, store: CollectionsStore) { this.collections = runner; this.collectionsStore = store; }
+  // The library's show airings for the status banners: the library module mounts after this one and hands them over.
+  private airings?: () => Record<string, ShowAirings>;
+  useAirings(read: () => Record<string, ShowAirings>) { this.airings = read; }
   secrets(): EngineSecrets { return this.keys(); }
   // Cache the dependency check for a minute. An interrupted check can be tried again on the next request.
   status(force = false) {
@@ -255,7 +263,9 @@ export class ArtworkEngine {
     const collections = this.store.collectionsConfig();
     const inputs: Inputs = { settings: this.store.settings(), layouts: this.store.layouts(), collections, ...changes };
     const file = join(this.workDir, name), temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections), null, 2), { mode: 0o600 });
+    let airings: Record<string, ShowAirings> | undefined;
+    try { airings = this.airings?.(); } catch (e) { this.log('artwork: the library’s air days could not be read', { error: (e as Error).message }); }
+    writeFileSync(temporary, JSON.stringify(artworkConfig(inputs.settings, inputs.layouts, libraries, { plexUrl: this.paths.plexUrl, cacheDir: join(this.paths.cacheDir, 'artwork') }, inputs.collections, airings), null, 2), { mode: 0o600 });
     renameSync(temporary, file);
     return file;
   }

@@ -918,6 +918,23 @@ def banner_date(day, pattern, simplify, today):
     return re.sub(r"yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d", lambda found: names[found[0]], pattern)
 
 
+def with_airings(data, own):
+    """TMDb's /tv details `data` with tk.box's air days for a show in its library (`own`: "last", "next" and "seasons",
+    from the library's episodes): its last and next episode and each season's first day. tk.box's days take TVmaze's exact
+    time where it has one (a streamer's release ahead of the broadcast TMDb lists). TMDb's own fields on the same episode
+    (its episode_type) are kept; a season tk.box has no day for keeps TMDb's."""
+    def episode(theirs, mine):
+        if not mine:
+            return None
+        same = theirs and (theirs.get("season_number"), theirs.get("episode_number")) == (mine["season_number"], mine["episode_number"])
+        return {**theirs, **mine} if same else dict(mine)
+    starts = own.get("seasons") or {}
+    seasons = [{**season, "air_date": starts[str(season.get("season_number"))]} if str(season.get("season_number")) in starts else season
+               for season in data.get("seasons") or []]
+    return {**data, "seasons": seasons, "last_episode_to_air": episode(data.get("last_episode_to_air"), own.get("last")),
+            "next_episode_to_air": episode(data.get("next_episode_to_air"), own.get("next"))}
+
+
 def banner_pick(data, added, today, settings):
     """The status banner a show gets, by TSSK's rules but from TMDb's /tv details `data` and the day it was added to Plex
     (`added`, or None): {"category", "season", "episode", "date"}, or None. A category applies when its event falls inside its window
@@ -1767,6 +1784,8 @@ class Artwork(Metadata):
     def __init__(self, http, config, base):
         super().__init__(http, config, base)
         self.logo_lock, self.logo_locks, self.show_logos = threading.Lock(), {}, {}
+        # tk.box's library shows' air days by TMDB id (with_airings), so the banners agree with when it grabs
+        self.airings = config.get("airings") or {}
 
     def generated_poster(self, item, style, label, bundled, remote, fallback=None):
         """Poster inputs for a collection the engine draws itself: a logo (a logo file in the collection's folder, else
@@ -1888,6 +1907,11 @@ class Artwork(Metadata):
     def show_details(self, item):
         """TMDb status facts, with TVDB filling missing episodes or verifying a disputed ended/canceled status."""
         data = self.tmdb_details(item)
+        own = self.airings.get(str(item.get("tmdb_id"))) if item.get("type") == "tv" else None
+        if own:
+            data = with_airings(data, own)
+            if own.get("next"):
+                return data
         upcoming = data.get("next_episode_to_air") or {}
         day = to_date(upcoming.get("air_date"))
         today = date.today()

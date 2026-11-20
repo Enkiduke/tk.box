@@ -127,6 +127,31 @@ export const airedAt = (airDate: string | undefined) => { const day = dayStart(a
 // The one place that decides it; the library stores only what it gives.
 export const episodeAiredAt = (e: { airDate?: string | undefined; airTime?: number | undefined }) => e.airTime ?? airedAt(e.airDate);
 
+// A show's airings as the artwork engine's status banners read them (TMDB's last_episode_to_air, next_episode_to_air
+// and each season's air_date, apps/artwork show_details), from the library's own air times so the banners agree with
+// when tk.box grabs: TVmaze's exact time where known (a streamer's day ahead of the broadcast TMDB lists), on the
+// engine's local calendar (`dayOf`); else TMDB's day. Aired is episodeAiredAt's call (the stored airAt).
+export type AiringDay = { season_number: number; episode_number: number; air_date: string };
+export type ShowAirings = { last?: AiringDay; next?: AiringDay; seasons: Record<string, string> };
+const localDay = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+export function showAirings(episodes: readonly { season: number; episode: number; airDate?: string; airAt: number; airTime?: number }[], now: number,
+  dayOf: (at: number) => string = localDay): ShowAirings {
+  const out: ShowAirings = { seasons: {} };
+  let last: { at: number; e: AiringDay } | undefined, next: { at: number; e: AiringDay } | undefined;
+  const order = (a: AiringDay, b: AiringDay) => a.season_number - b.season_number || a.episode_number - b.episode_number;
+  for (const e of episodes) {
+    const day = e.airTime !== undefined ? dayOf(e.airTime) : e.airDate;
+    if (!day || e.season < 1) continue;
+    const entry = { season_number: e.season, episode_number: e.episode, air_date: day }, key = String(e.season);
+    if (!out.seasons[key] || day < out.seasons[key]) out.seasons[key] = day;
+    if (e.airAt <= now) { if (!last || e.airAt > last.at || (e.airAt === last.at && order(entry, last.e) > 0)) last = { at: e.airAt, e: entry }; }
+    else if (!next || e.airAt < next.at || (e.airAt === next.at && order(entry, next.e) < 0)) next = { at: e.airAt, e: entry };
+  }
+  if (last) out.last = last.e;
+  if (next) out.next = next.e;
+  return out;
+}
+
 // A show's follow mode (docs/ARR-REPLACEMENT.md, "Wanted"): `monitorFrom` for Future, `chosen` for Manual's seasons.
 export type ShowFollow = { monitor: Monitor; monitorFrom?: number; chosen?: readonly number[] };
 export type EpisodeFact = Omit<EpisodeRow, 'monitored'>;

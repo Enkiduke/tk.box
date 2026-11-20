@@ -60,7 +60,9 @@ export const artworkModule = defineModule({
     return {
       api: { store, engine,
         // Which collections downloaded each movie (Admin › Manage's Source column), and the downloads kept off Recently added.
-        collectionMovies: () => engine.collectionMovies(), hiddenFromRecent: () => engine.hiddenFromRecent() },
+        collectionMovies: () => engine.collectionMovies(), hiddenFromRecent: () => engine.hiddenFromRecent(),
+        // The library's shows' air days, for the status banners (the library module hands them over).
+        useAirings: (read: Parameters<ArtworkEngine['useAirings']>[0]) => engine.useAirings(read) },
       start() { if (!preview()) schedule.start(); },
       stop() { schedule.close(); worker.close(); engine.close(); }
     };

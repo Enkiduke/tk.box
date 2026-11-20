@@ -1826,5 +1826,20 @@ class BannerPickTests(unittest.TestCase):
         last = {"season_number": 3, "episode_number": 3, "air_date": "2026-11-20"}
         self.assertEqual(self.pick(last, seasons), "new_episode")
 
+    def test_library_air_days_win(self):
+        data = {"status": "Returning Series", "seasons": [{"season_number": 4, "air_date": "2026-11-22", "episode_count": 10}],
+                "last_episode_to_air": {"season_number": 3, "episode_number": 10, "air_date": "2025-04-13"},
+                "next_episode_to_air": {"season_number": 4, "episode_number": 1, "air_date": "2026-11-22", "episode_type": "standard"}}
+        own = {"last": {"season_number": 4, "episode_number": 1, "air_date": "2026-11-20"},
+               "next": {"season_number": 4, "episode_number": 2, "air_date": "2026-11-29"}, "seasons": {"4": "2026-11-20"}}
+        merged = sp.with_airings(data, own)
+        self.assertEqual(merged["seasons"][0]["air_date"], "2026-11-20")
+        self.assertEqual(merged["next_episode_to_air"], own["next"])
+        self.assertEqual(sp.banner_pick(merged, None, self.TODAY, sp.banner_settings(()))["category"], "new_season_started")
+        upcoming = sp.with_airings(data, {"next": {"season_number": 4, "episode_number": 1, "air_date": "2026-11-20"}, "seasons": {"4": "2026-11-20"}})
+        self.assertEqual(upcoming["next_episode_to_air"]["episode_type"], "standard", "TMDb's fields on the same episode are kept")
+        self.assertEqual(upcoming["next_episode_to_air"]["air_date"], "2026-11-20")
+
+
 if __name__ == "__main__":
     unittest.main()

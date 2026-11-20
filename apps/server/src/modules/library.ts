@@ -12,12 +12,15 @@ import type { PlexIndex } from '../services/plex-index.js';
 import { registerLibraryAdmin, type LibrarySources, type RequestReads } from '../library-api.js';
 import type { QueueApi } from '../services/queue.js';
 import { Tvmaze } from '../providers/tvmaze.js';
+import { showAirings, type ShowAirings } from '../services/wanted.js';
 
 const SWEEP_MINUTES = SWEEP_EVERY / 60000, CHECK_MS = 30000, SEEDING_MINUTES = 60, LIVE_SHARED_MS = 4000;
 
 type Deps = { queue: QueueApi; indexers: IndexersApi & { feedEvery?: (minutes: () => number) => void }; downloaders: DownloadersApi;
   // Which collections downloaded each movie (Admin › Manage's Source column).
-  artwork?: { collectionMovies(): Map<number, string[]> };
+  artwork?: { collectionMovies(): Map<number, string[]>;
+    // The status banners read the shows' air days from here, so they agree with when the library grabs.
+    useAirings?(read: () => Record<string, ShowAirings>): void };
   // What Plex holds (the plex-index module), shared with requests.
   plexIndex: PlexIndex };
 
@@ -82,7 +85,12 @@ export const libraryModule = defineModule({
     // Who asked for each title is the requests module's: it mounts after the library (it sends titles here) and hands
     // its reads over as it does (`readRequests`), before any route serves.
     let requestReads: RequestReads | undefined;
-    const sources: LibrarySources = { requests: () => requestReads, ...(artwork ? { collections: () => artwork.collectionMovies() } : {}) };
+    artwork?.useAirings?.(() => {
+      const byShow = new Map<number, ReturnType<LibraryStore['airedEpisodes']>>(), now = Date.now();
+      for (const e of store.airedEpisodes()) { const list = byShow.get(e.tmdbId) ?? []; list.push(e); byShow.set(e.tmdbId, list); }
+      return Object.fromEntries([...byShow].map(([tmdbId, episodes]) => [String(tmdbId), showAirings(episodes, now)]));
+    });
+    const sources: LibrarySources ={ requests: () => requestReads, ...(artwork ? { collections: () => artwork.collectionMovies() } : {}) };
     // Match: filing a show under a TVDB series (lib/season-map.ts), with the TVDB key from Admin › Connections.
     registerShowMatch(routes, library, new Tvdb(() => serviceKeys.providers().tvdb));
     registerLibraryAdmin(routes, { store, library, queue, titles, downloaders: shared, plexTitles: plexIndex, plexServer: () => config.PLEX_MACHINE_ID, sources });
