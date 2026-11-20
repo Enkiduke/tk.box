@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { BigIntStats } from 'node:fs';
 import { copyFile, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { AppError, requireThat } from '../errors.js';
@@ -81,6 +82,8 @@ export class ArtworkFiles {
   private sources?: Promise<Record<string, string>>;
   private rows = new Map<string, { at: number; row: TitleRow }>();
   private files = new Map<string, { hash: string; size?: string }>();
+  // Each folder's Plex ID as its .artwork.json had it, by folder time, so Edit artwork finds a title without reading every one.
+  private keys = new Map<string, { at: number; key: string | null }>();
   private writing = Promise.resolve();
   constructor(private root: string, private cache: string, private config: string) {}
 
@@ -104,21 +107,19 @@ export class ArtworkFiles {
     change(meta);
     await atomicWrite(join(folder, '.artwork.json'), JSON.stringify(meta, null, 2));
   }
-  private async url(path: string, rel: string, width: number) {
-    const { mtimeNs } = await stat(path, { bigint: true });
-    return `${ROUTES}/file?${new URLSearchParams({ p: rel, w: String(width), v: String(mtimeNs) })}`;
-  }
+  private link(rel: string, width: number, mtimeNs: bigint) { return `${ROUTES}/file?${new URLSearchParams({ p: rel, w: String(width), v: String(mtimeNs) })}`; }
+  private async url(path: string, rel: string, width: number) { return this.link(rel, width, (await stat(path, { bigint: true })).mtimeNs); }
   // The folder's one poster, logo, rendered or generated file (any image extension), or undefined.
-  async source(folder: string, name: string) {
-    const names = await readdir(folder).catch(() => [] as string[]);
+  async source(folder: string, name: string, listed?: string[]) {
+    const names = listed ?? await readdir(folder).catch(() => [] as string[]);
     const matches = names.filter(n => isImage(n) && basename(n, extname(n)).toLowerCase() === name);
     requireThat(matches.length <= 1, 'VALIDATION_FAILED', `Keep exactly one ${name} file in ${folder}; found ${matches.length}`);
     return matches[0] && join(folder, matches[0]);
   }
   // A file's identity for the page (sha-256's first 8) and its size, read once per version of the file. Renames keep a
   // file's time, so a version is its file ID as well; set-aside names are hashed fresh all the same.
-  private async identity(path: string) {
-    const { ino, mtimeNs, size } = await stat(path, { bigint: true }), key = `${path}|${ino}|${mtimeNs}|${size}`;
+  private async identity(path: string, info?: BigIntStats) {
+    const { ino, mtimeNs, size } = info ?? await stat(path, { bigint: true }), key = `${path}|${ino}|${mtimeNs}|${size}`;
     let hit = this.files.get(key);
     if (!hit) {
       const data = await readFile(path), dims = imageSize(data);
@@ -129,51 +130,79 @@ export class ArtworkFiles {
     return hit;
   }
 
+  // Every title folder with its time, looked at side by side. A folder's own time changes whenever a file in it is added,
+  // renamed or replaced (its .artwork.json too).
+  private async folders() {
+    const listed = await Promise.all(CATEGORIES.map(async cat => (await readdir(join(this.root, cat), { withFileTypes: true }).catch(() => []))
+      .filter(e => e.isDirectory()).map(e => ({ cat, name: e.name, folder: join(this.root, cat, e.name), id: `${cat}/${e.name}` }))));
+    const found = await Promise.all(listed.flat().map(async f => { const info = await stat(f.folder).catch(() => undefined); return info && { ...f, at: info.mtimeMs }; }));
+    return found.filter(f => !!f);
+  }
   async titles(): Promise<TitleRow[]> {
-    const rows: TitleRow[] = [];
-    for (const cat of CATEGORIES) {
-      const base = join(this.root, cat);
-      for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
-        if (!entry.isDirectory()) continue;
-        const folder = join(base, entry.name), id = `${cat}/${entry.name}`, at = (await stat(folder)).mtimeMs, hit = this.rows.get(id);
-        // A folder's own time changes whenever a file in it is added, renamed or replaced (its .artwork.json too).
-        if (hit && hit.at === at) { rows.push(hit.row); continue; }
-        const meta = await this.meta(folder), names = await readdir(folder), title = String(meta.title || entry.name);
+    const rows = await Promise.all((await this.folders()).map(async ({ cat, name, folder, id, at }): Promise<TitleRow> => {
+        const hit = this.rows.get(id);
+        if (hit && hit.at === at) return hit.row;
+        const [meta, names] = await Promise.all([this.meta(folder), readdir(folder)]), title = String(meta.title || name);
         const cover = ['rendered', 'poster'].map(n => names.find(f => isImage(f) && basename(f, extname(f)).toLowerCase() === n)).find(Boolean);
         const chart = cat === 'collections' && CHARTS.includes(collectionKey(title));
         const row: TitleRow = { id, cat, title, ...(meta.year ? { year: meta.year } : {}), first: chart,
           ...(cat === 'collections' ? { kind: typeof meta.kind === 'string' ? meta.kind : chart ? 'chart' : 'collection', ...(typeof meta.service === 'string' ? { service: meta.service } : {}) } : {}),
           thumb: cover ? await this.url(join(folder, cover), `${id}/${cover}`, 300) : null };
-        this.rows.set(id, { at, row }); rows.push(row);
-      }
-    }
+        this.rows.set(id, { at, row });
+        return row;
+    }));
     return rows.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
   }
+  // A title's folder by its Plex ID: where it was found before, when that folder still says so; else every folder's ID,
+  // read again only where its .artwork.json changed since (by the file's own time: it can be rewritten in place).
   async find(ratingKey: string) {
-    for (const cat of CATEGORIES) for (const entry of await readdir(join(this.root, cat), { withFileTypes: true }).catch(() => []))
-      if (entry.isDirectory() && String((await this.meta(join(this.root, cat, entry.name))).rating_key) === ratingKey) return { id: `${cat}/${entry.name}` };
-    return { id: null };
+    for (const [id, hit] of this.keys)
+      if (hit.key === ratingKey && String((await this.meta(this.path(id, [2]))).rating_key ?? '') === ratingKey) return { id };
+    const all = await Promise.all((await this.folders()).map(async f => ({ ...f, at: (await stat(join(f.folder, '.artwork.json')).catch(() => undefined))?.mtimeMs ?? 0 })));
+    const keys = await Promise.all(all.map(async ({ folder, id, at }) => {
+      const hit = this.keys.get(id);
+      if (hit && hit.at === at) return hit.key;
+      const meta = await this.meta(folder), key = meta.rating_key ? String(meta.rating_key) : null;
+      this.keys.set(id, { at, key });
+      return key;
+    }));
+    const present = new Set(all.map(f => f.id));
+    for (const id of this.keys.keys()) if (!present.has(id)) this.keys.delete(id);
+    const at = keys.indexOf(ratingKey);
+    return { id: at < 0 ? null : all[at]!.id };
   }
 
   // Changes whenever a file the preview depends on does, so the page knows when to ask for a new one.
-  private async version(folder: string, title: string) {
-    const state: unknown[] = [(await stat(this.config).catch(() => undefined))?.mtimeMs ?? 0, !!(await this.meta(title)).no_logo];
-    for (const [where, kind] of [[folder, 'poster'], [title, 'logo']] as const) {
-      const path = await this.source(where, kind), info = path && await stat(path);
-      state.push(path && info ? [basename(path), info.mtimeMs, info.size] : null);
-    }
+  private async version(folder: string, title: string, names?: string[]) {
+    const spot = async (where: string, kind: Kind, listed?: string[]) => {
+      const path = await this.source(where, kind, listed), info = path && await stat(path);
+      return path && info ? [basename(path), info.mtimeMs, info.size] : null;
+    };
+    const [config, meta, poster, logo] = await Promise.all([stat(this.config).catch(() => undefined), this.meta(title),
+      spot(folder, 'poster', names), spot(title, 'logo', folder === title ? names : undefined)]);
+    const state: unknown[] = [config?.mtimeMs ?? 0, !!meta.no_logo, poster, logo];
     return createHash('sha1').update(JSON.stringify(state)).digest('hex').slice(0, 10);
   }
   private async section(folder: string, rel: string, label: string | null, title: string): Promise<Section> {
-    const found: Section = { id: rel, label, pv: await this.version(folder, title), rendered: null, poster: null, logo: null, posters: [], logos: [] };
-    const sources = await this.sourceMap();
-    for (const name of (await readdir(folder)).sort((a, b) => natural(a) < natural(b) ? -1 : natural(a) > natural(b) ? 1 : 0)) {
-      const stem = basename(name, extname(name)), match = PICK.exec(stem), path = join(folder, name);
-      if (!isImage(name) || !(match || stem.toLowerCase() === 'rendered')) continue;
-      const info = await stat(path); if (!info.isFile()) continue;
-      const { hash, size } = await this.identity(path), fileRel = `${rel}/${name}`;
-      const entry: FileEntry = { name, thumb: await this.url(path, fileRel, 360), full: await this.url(path, fileRel, 1400), kb: Math.floor(info.size / 1024),
+    const names = await readdir(folder);
+    const [pv, sources] = await Promise.all([this.version(folder, title, names), this.sourceMap()]);
+    const found: Section = { id: rel, label, pv, rendered: null, poster: null, logo: null, posters: [], logos: [] };
+    const wanted = names.sort((a, b) => natural(a) < natural(b) ? -1 : natural(a) > natural(b) ? 1 : 0).flatMap(name => {
+      const stem = basename(name, extname(name)), match = PICK.exec(stem);
+      return isImage(name) && (match || stem.toLowerCase() === 'rendered') ? [{ name, match }] : [];
+    });
+    // The files are looked at side by side, one stat each, and listed in the folder's order.
+    const looked = await Promise.all(wanted.map(async ({ name, match }) => {
+      const path = join(folder, name), info = await stat(path, { bigint: true }).catch(() => undefined);
+      if (!info?.isFile()) return undefined;
+      const { hash, size } = await this.identity(path, info), fileRel = `${rel}/${name}`;
+      const entry: FileEntry = { name, thumb: this.link(fileRel, 360, info.mtimeNs), full: this.link(fileRel, 1400, info.mtimeNs), kb: Math.floor(Number(info.size) / 1024),
         kept: !!match?.[2]?.startsWith('-'), ...(size ? { size } : {}) };
+      return { match, entry, hash };
+    }));
+    for (const file of looked) {
+      if (!file) continue;
+      const { match, entry, hash } = file;
       if (!match) { found.rendered = entry; continue; }
       // Names change as picks rename files; the contents don't
       Object.assign(entry, { hash, source: sources[hash] ?? null });

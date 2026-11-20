@@ -21,7 +21,8 @@ export type AccessChecks = Record<FullLevel, (req: FastifyRequest) => Promise<Vi
 
 declare module 'fastify' {
   // portal: the route is also served on the Requests site (modules/module.ts); 'admin' lets an admin route through there.
-  interface FastifyContextConfig { access?: AccessLevel; portal?: boolean | 'admin' }
+  // binary: the route takes its body as raw bytes (application/octet-stream) instead of JSON; the origin check still applies.
+  interface FastifyContextConfig { access?: AccessLevel; portal?: boolean | 'admin'; binary?: boolean }
   interface FastifyRequest { viewer: Viewer | null; sessionHash: string | null; connectionActor: string | null; subtitleWorker: WorkerIdentity | null }
   interface FastifyInstance { accessChecks: Partial<AccessChecks> }
 }

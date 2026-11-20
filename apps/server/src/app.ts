@@ -112,7 +112,10 @@ export async function buildApp(config: Config, db: Db, vault: Vault, plex: PlexA
         ? !!host && previewHosts.has(host) && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer ?? '') && req.headers.origin === `http://${host}`
         : req.headers.origin === config.browserOrigin;
       requireThat(validOrigin, 'CSRF_REJECTED', 'Request origin is not permitted.', 403);
-      requireThat(req.headers['content-type']?.split(';')[0] === 'application/json', 'INVALID_CONTENT_TYPE', 'Use application/json.', 415);
+      // Neither type can be sent cross-site without a preflight, so the origin check above stays the guard.
+      const binary = (req.routeOptions.config as {binary?: boolean} | undefined)?.binary === true;
+      const type = req.headers['content-type']?.split(';')[0];
+      requireThat(binary ? type === 'application/octet-stream' : type === 'application/json', 'INVALID_CONTENT_TYPE', binary ? 'Use application/octet-stream.' : 'Use application/json.', 415);
     }
     for (const migration of legacyCookies) {
       const value = req.cookies[migration.old];

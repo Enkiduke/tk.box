@@ -173,11 +173,13 @@ export class ArtworkPictures {
       ...meta.rating_key ? { key: String(meta.rating_key) } : {}, season: kind === 'logo' ? null : season };
     const notes: string[] = [], rows: Row[] = [];
     const guard = (name: string, work: () => Promise<Art[]>) => work().then(found => found.map(art => [name, art] as Row), (e: Error) => { notes.push(`${name}: ${e.message}`); return [] as Row[]; });
-    // TMDb first: it fills in the TVDB and IMDb IDs the other providers look titles up by
+    // TMDb fills in the TVDB and IMDb IDs the other providers look titles up by, so a provider waits for it only when the
+    // title's saved IDs don't already have the one it needs.
+    const fanartNeeds = type === 'tv' ? !item.tvdb : !item.tmdb && !item.imdb, tvdbNeeds = !item.tvdb && !item.imdb;
     const plexRows = guard('plex', () => this.plexArt(item, kind, plex));
     const tmdbRows = guard('tmdb', async () => { await this.identify(item); return this.tmdbArt(item, kind); });
-    await tmdbRows;
-    for (const found of await Promise.all([tmdbRows, guard('fanart', () => this.fanartArt(item, kind)), guard('tvdb', () => this.tvdbArt(item, kind)), plexRows])) rows.push(...found);
+    const after = (needs: boolean, work: () => Promise<Art[]>) => needs ? tmdbRows.then(work) : work();
+    for (const found of await Promise.all([tmdbRows, guard('fanart', () => after(fanartNeeds, () => this.fanartArt(item, kind))), guard('tvdb', () => after(tvdbNeeds, () => this.tvdbArt(item, kind))), plexRows])) rows.push(...found);
     // Plex lists the same TMDb/TVDB images its agents found
     const seen = new Set<string>();
     let found = rows.filter(([, art]) => !seen.has(art.url) && !!seen.add(art.url));
@@ -186,10 +188,16 @@ export class ArtworkPictures {
     found.sort(([, a], [, b]) => Number(a.text !== false) - Number(b.text !== false) || this.rank(a) - this.rank(b) || b.width - a.width);
     const items: Picture[] = found.map(([provider, art]) => {
       // The page loads images only from tk.box: Plex's own copies need the token, the providers' are proxied
-      if (art.plex) { const view = `${ROUTES}/plex-image?${new URLSearchParams({ p: art.plex })}`; return { provider, url: null, plex: art.plex, view, thumb: view, language: art.language ?? null, text: art.text, width: art.width, height: art.height }; }
+      // Tiles get a small copy (Plex's resizer, TMDb's w300, Fanart's preview); the original only when it's opened or cropped.
+      const tile = kind === 'backdrop' ? 480 : 300;
+      if (art.plex) {
+        const view = `${ROUTES}/plex-image?${new URLSearchParams({ p: art.plex })}`, thumb = `${ROUTES}/plex-image?${new URLSearchParams({ p: art.plex, w: String(tile) })}`;
+        return { provider, url: null, plex: art.plex, view, thumb, language: art.language ?? null, text: art.text, width: art.width, height: art.height };
+      }
       const size = kind === 'backdrop' ? 'w1280' : 'w780';  // A smaller copy than the original is plenty to look at
-      const view = art.url.startsWith(IMAGE_BASE) ? `https://image.tmdb.org/t/p/${size}${art.url.slice(IMAGE_BASE.length)}` : art.url;
-      const thumb = art.thumb || (art.url.includes('assets.fanart.tv') ? art.url.replace('/fanart/', '/preview/') : art.url);
+      const tmdb = art.url.startsWith(IMAGE_BASE) ? art.url.slice(IMAGE_BASE.length) : undefined;
+      const view = tmdb ? `https://image.tmdb.org/t/p/${size}${tmdb}` : art.url;
+      const thumb = art.thumb || (tmdb ? `https://image.tmdb.org/t/p/w300${tmdb}` : art.url.includes('assets.fanart.tv') ? art.url.replace('/fanart/', '/preview/') : art.url);
       const proxied = (link: string) => `${ROUTES}/image?${new URLSearchParams({ u: link })}`;
       return { provider, url: art.url, plex: null, view: proxied(view), thumb: proxied(thumb), language: art.language ?? null, text: art.text, width: art.width, height: art.height };
     });

@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useRef,useState,type DragEvent,type PointerEvent} from 'react';
-import {api} from './api.js';
+import {api,apiFile} from './api.js';
 import {useApi,invalidate} from './hooks.js';
 import {Empty,ErrorNotice,Icon,Loading,Modal} from './components.js';
 import {useMutation} from './settings-ui.js';
@@ -28,7 +28,6 @@ const named=(title:string,year?:number)=>title+(year&&!title.includes(`(${year})
 const seasonName=(label:string)=>label.replace(/^Season 0*(\d+)$/,(_,n:string)=>n==='0'?'Specials':`Season ${n}`);
 const categories=[['','All'],['movies','Movies'],['tv','TV'],['collections','Collections'],['pending','Not pushed']] as const;
 const kb=(n:number)=>n>1023?`${(n/1024).toFixed(1)} MB`:`${n} KB`;
-const fileData=(file:Blob)=>new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).replace(/^data:[^,]*,/,''));reader.onerror=()=>reject(new Error('That file could not be read.'));reader.readAsDataURL(file);});
 
 export function ArtworkTitles({ratingKey,engineReady,upload}:{ratingKey?:string;engineReady:boolean;upload:boolean}) {
   const titles=useApi<TitlesView>(engineReady?'/admin/artwork/titles':undefined),[open,setOpen]=useState<string>(),[query,setQuery]=useState(''),[category,setCategory]=useState('');
@@ -84,21 +83,28 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
   const [scope,setScope]=useState(0),[tab,setTab]=useState<Kind>('poster'),[source,setSource]=useState<'all'|'posters'|'backdrops'>('all'),[text,setText]=useState<'all'|'textless'|'text'>('all');
   const [busy,setBusy]=useState<string>(),[error,setError]=useState(''),[crop,setCrop]=useState<{x:RemoteItem;target:[number,number]}>(),[zoom,setZoom]=useState<{src:string;label:string}>(),[adding,setAdding]=useState(false),[tint,setTint]=useState<{x:number;y:number}>();
   const d=detail.data,section=d?.sections[Math.min(scope,d.sections.length-1)];
-  const live=useApi<Live>(section?`/admin/artwork/title/live?id=${encodeURIComponent(section.id)}`:undefined);
-  const seriesLive=useApi<Live>(d&&scope>0?`/admin/artwork/title/live?id=${encodeURIComponent(d.sections[0]!.id)}`:undefined);
-  const remoteKind=(kind:'poster'|'logo'|'backdrop')=>section&&(kind!=='logo'||scope===0)?`/admin/artwork/title/remote?id=${encodeURIComponent(kind==='logo'?d!.sections[0]!.id:section.id)}&kind=${kind}`:undefined;
+  // The series is the title itself (its first section), so what needs only its ID is asked alongside the details, not after.
+  const sectionId=scope===0?id:section?.id;
+  const live=useApi<Live>(sectionId?`/admin/artwork/title/live?id=${encodeURIComponent(sectionId)}`:undefined);
+  const seriesLive=useApi<Live>(scope>0?`/admin/artwork/title/live?id=${encodeURIComponent(id)}`:undefined);
+  const remoteKind=(kind:'poster'|'logo'|'backdrop')=>sectionId&&(kind!=='logo'||scope===0)?`/admin/artwork/title/remote?id=${encodeURIComponent(kind==='logo'?id:sectionId)}&kind=${kind}`:undefined;
   const remote=useApi<Remote>(remoteKind(tab)),backdrops=useApi<Remote>(tab==='poster'?remoteKind('backdrop'):undefined);
   // Drawn by the engine, which may ask Plex first, so the rest of the title doesn't wait for it.
-  const background=useApi<{generated:Generated|null}>(d?.id.startsWith('collections/')?`/admin/artwork/title/background?id=${encodeURIComponent(d.id)}`:undefined);
+  const background=useApi<{generated:Generated|null}>(id.startsWith('collections/')?`/admin/artwork/title/background?id=${encodeURIComponent(id)}`:undefined);
   // Leaving a title lets the worker forget its previews.
   useEffect(()=>()=>{void api('/admin/artwork/title/clear','POST',{}).catch(()=>{});},[]);
-  const reload=()=>{detail.reload();state.reload();live.reload();seriesLive.reload();background.reload();};
-  const act=async(label:string,work:()=>Promise<{warning?:string|null}|unknown>,done:string)=>{
+  // Live (which files the last push used) changes only with Discard, a push or the logo turned on or off; the generated
+  // background only when it's used, recoloured or put back. Everything else just reads the folder again.
+  type Also={live?:boolean;background?:boolean};
+  const reload=(also:Also={})=>{detail.reload();state.reload();if(also.live){live.reload();seriesLive.reload();}if(also.background)background.reload();};
+  const act=async(label:string,work:()=>Promise<{warning?:string|null}|unknown>,done:string,also?:Also)=>{
     if(busy)return;setBusy(label);setError('');
-    try{const r=await work() as {warning?:string|null}|undefined;if(r?.warning)toast.warning(r.warning);else toast.success(done);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);reload();}
+    try{const r=await work() as {warning?:string|null}|undefined;if(r?.warning)toast.warning(r.warning);else toast.success(done);}catch(e){setError((e as Error).message);}finally{setBusy(undefined);reload(also);}
   };
+  // Picking a logo while "No logo" is on turns it back off, which changes what Live can tell.
+  const logoOn=()=>({live:tab==='logo'&&!!d?.no_logo});
   const upload$=async(file:Blob)=>{if(file.size>25*1024*1024){setError('That file is larger than 25 MB.');return;}
-    await act('add',async()=>api('/admin/artwork/title/upload','POST',{id:target().id,kind:target().kind,data:await fileData(file),use:true}),`Added. It’s the selected ${tab} now.`);};
+    await act('add',()=>apiFile('/admin/artwork/title/upload',{id:target().id,kind:target().kind,use:'1'},file),`Added. It’s the selected ${tab} now.`,logoOn());};
   const target=()=>({id:tab==='logo'?d!.sections[0]!.id:section!.id,kind:tab});
   // Paste an image anywhere while a title is open.
   useEffect(()=>{const paste=(e:ClipboardEvent)=>{const file=Array.from(e.clipboardData?.files??[]).find(f=>f.type.startsWith('image/'));if(file&&!crop&&!adding){e.preventDefault();void upload$(file);}};window.addEventListener('paste',paste);return()=>window.removeEventListener('paste',paste);});
@@ -134,8 +140,8 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
       void api<{target:[number,number]}>(`/admin/artwork/title/target?id=${encodeURIComponent(section!.id)}`).then(({target})=>setCrop({x:c.x,target}),(e:Error)=>setError(e.message)).finally(()=>setBusy(undefined));
       return;
     }
-    if(c.type==='file'){if(c.cur){setZoom({src:c.f.full,label:c.f.name});return;}void act(`f:${c.f.name}`,()=>api('/admin/artwork/title/select','POST',{id:u.id,kind:u.kind,name:c.f.name}),`${tab==='logo'?'Logo':'Poster'} updated.`);return;}
-    void act(`r:${sourceOf(c.x)}`,()=>api('/admin/artwork/title/import','POST',{id:u.id,kind:u.kind,...(c.x.plex?{plex:c.x.plex}:{url:c.x.url}),use:true}),`${tab==='logo'?'Logo':'Poster'} updated.`);
+    if(c.type==='file'){if(c.cur){setZoom({src:c.f.full,label:c.f.name});return;}void act(`f:${c.f.name}`,()=>api('/admin/artwork/title/select','POST',{id:u.id,kind:u.kind,name:c.f.name}),`${tab==='logo'?'Logo':'Poster'} updated.`,logoOn());return;}
+    void act(`r:${sourceOf(c.x)}`,()=>api('/admin/artwork/title/import','POST',{id:u.id,kind:u.kind,...(c.x.plex?{plex:c.x.plex}:{url:c.x.url}),use:true}),`${tab==='logo'?'Logo':'Poster'} updated.`,logoOn());
   };
   const keyOf=(c:Candidate)=>c.type==='file'?`f:${c.f.name}`:`r:${sourceOf(c.x)}`;
   const tile=(c:Candidate)=>{const [label,tone]=tag(c)??[];const x=c.type==='file'?c.x:c.x,f=c.type==='file'?c.f:undefined;
@@ -149,11 +155,11 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
           {f&&!(c.type==='file'&&c.cur)&&<button className="icon-button" aria-label={`Delete ${f.name}`} disabled={!!busy} onClick={()=>void act(`f:${f.name}`,()=>api('/admin/artwork/title/remove','POST',{id:target().id,kind:tab,name:f.name}),'Deleted.')}><Icon name="close" size={14}/></button>}</span></figcaption>
     </figure>;};
   const generatedTag=g&&(section.poster?.hash===g.hash?staged('poster',section,live.data)?['Selected','ok']:[liveHash===g.hash?'Live':'In use','live']:liveHash===g.hash?['Live','live']:undefined);
-  const recolor=(color:string|null)=>{setTint(undefined);void act('generated',()=>api('/admin/artwork/title/background-color','POST',{id:d.id,color}),color?'Background recoloured. It’s the selected poster now.':'Background back to its default colour. It’s the selected poster now.');};
+  const recolor=(color:string|null)=>{setTint(undefined);void act('generated',()=>api('/admin/artwork/title/background-color','POST',{id:d.id,color}),color?'Background recoloured. It’s the selected poster now.':'Background back to its default colour. It’s the selected poster now.',{background:true});};
   const generatedTile=g&&<figure key="generated" className={`artwork-tile poster${generatedTag?.[1]==='ok'?' selected':generatedTag?.[1]==='live'?' live':''}`}
     onContextMenu={e=>{e.preventDefault();if(!busy)setTint({x:e.clientX,y:e.clientY});}}>
     <button className="artwork-tile-pick" disabled={!!busy} aria-label={section.poster?.hash===g.hash?'View the generated background larger':'Use the generated background'} title="Right-click to change its colour"
-      onClick={()=>{if(section.poster?.hash===g.hash)setZoom({src:g.full,label:'Generated background'});else void act('generated',()=>api('/admin/artwork/title/generated','POST',{id:d.id}),'Poster updated.');}}>
+      onClick={()=>{if(section.poster?.hash===g.hash)setZoom({src:g.full,label:'Generated background'});else void act('generated',()=>api('/admin/artwork/title/generated','POST',{id:d.id}),'Poster updated.',{background:true});}}>
       <img src={g.thumb} alt="" loading="lazy" decoding="async"/>{generatedTag&&<span className={`badge ${generatedTag[1]}`}>{generatedTag[0]}</span>}{busy==='generated'&&<span className="artwork-tile-wait"><span className="spinner"/></span>}</button>
     <figcaption><span>Generated</span><span>{g.color.toUpperCase()}{g.color!==g.default?' · custom':''}</span>
       <span className="artwork-tile-tools"><button className="icon-button" aria-label="Change its colour" disabled={!!busy} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setTint({x:r.left,y:r.bottom+4});}}><Icon name="more" size={14}/></button></span></figcaption>
@@ -164,9 +170,9 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
     <div className="source-head">
       <div><h2>{named(d.title,d.year)}</h2><p className="muted small">{d.tv?'TV show':d.id.startsWith('collections/')?'Collection':'Movie'}{linked?` · Plex ID ${d.key}`:''} · <span className={`badge ${!linked?'':changed?'warning':'ok'}`}>{!linked?'Not linked to Plex':changed?`Not ${pushedState.upload?'pushed':'rendered'}`:'Up to date'}</span></p></div>
       <div className="button-row">
-        {changed&&<button disabled={!!busy} onClick={()=>void act('discard',()=>api('/admin/artwork/title/discard','POST',{id:d.id}),`Changes discarded. Back to what was last ${pushedState.upload?'pushed':'rendered'}.`)}>Discard changes</button>}
+        {changed&&<button disabled={!!busy} onClick={()=>void act('discard',()=>api('/admin/artwork/title/discard','POST',{id:d.id}),`Changes discarded. Back to what was last ${pushedState.upload?'pushed':'rendered'}.`,{live:true,background:true})}>Discard changes</button>}
         <button className={changed?'primary':''} disabled={!linked||!!busy} title={!linked?'Make this title’s artwork once (Update changed titles, or One title in the ⋯ menu) so it knows its Plex ID':undefined}
-          onClick={()=>void act('push',()=>api('/admin/artwork/push','POST',{ids:[d.id]}),`Queued. Follow it in the Console; ${pushedState.upload?'Plex':'this page'} shows the result when it’s done.`)}>{changed||!linked?verb:`${verb} again`}</button>
+          onClick={()=>void act('push',()=>api('/admin/artwork/push','POST',{ids:[d.id]}),`Queued. Follow it in the Console; ${pushedState.upload?'Plex':'this page'} shows the result when it’s done.`,{live:true})}>{changed||!linked?verb:`${verb} again`}</button>
       </div>
     </div>
     {error&&<ErrorNotice message={error} dismiss={()=>setError('')}/>}
@@ -188,7 +194,7 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
           <button className="artwork-add" disabled={!!busy} onClick={()=>setAdding(true)}><b>+</b><span>Add your own</span><small>Upload, link or drop</small></button>
           {generatedTile}
           {tab==='poster'&&(backdrops.loading||wide.length>0)&&<button className="artwork-add" onClick={()=>setSource('backdrops')}><Icon name="grid" size={26}/><span>Crop from a backdrop</span><small>{backdrops.loading?'Looking…':`${wide.length} to choose from`}</small></button>}
-          {tab==='logo'&&scope===0&&<button className={`artwork-add${d.no_logo?' selected':''}`} aria-pressed={d.no_logo} disabled={!!busy} onClick={()=>void act('nologo',()=>api('/admin/artwork/title/no-logo','POST',{id:d.id,on:!d.no_logo}),d.no_logo?'Logos are back on for this title.':'This title’s artwork will be made without a logo.')}><b>⊘</b><span>No logo</span><small>{d.no_logo?'Selected':'Artwork without a logo'}</small></button>}
+          {tab==='logo'&&scope===0&&<button className={`artwork-add${d.no_logo?' selected':''}`} aria-pressed={d.no_logo} disabled={!!busy} onClick={()=>void act('nologo',()=>api('/admin/artwork/title/no-logo','POST',{id:d.id,on:!d.no_logo}),d.no_logo?'Logos are back on for this title.':'This title’s artwork will be made without a logo.',{live:true})}><b>⊘</b><span>No logo</span><small>{d.no_logo?'Selected':'Artwork without a logo'}</small></button>}
           {shown.map(tile)}
           {remote.loading&&Array.from({length:6},(_,i)=><div key={i} className="skeleton artwork-skeleton"/>)}
         </div>}
@@ -198,7 +204,7 @@ function TitleEditor({id,upload}:{id:string;upload:boolean}) {
         {!!remote.data?.notes.length&&<p className="muted small">Some sources didn’t answer: {remote.data.notes.join(' · ')}</p>}
       </div>
     </div>
-    {adding&&<AddOwn kind={tab} onClose={()=>setAdding(false)} file={file=>{setAdding(false);void upload$(file);}} link={url=>{setAdding(false);void act('add',()=>api('/admin/artwork/title/import','POST',{...target(),url,use:true}),`Added. It’s the selected ${tab} now.`);}}/>}
+    {adding&&<AddOwn kind={tab} onClose={()=>setAdding(false)} file={file=>{setAdding(false);void upload$(file);}} link={url=>{setAdding(false);void act('add',()=>api('/admin/artwork/title/import','POST',{...target(),url,use:true}),`Added. It’s the selected ${tab} now.`,logoOn());}}/>}
     {crop&&<Crop item={crop.x} target={crop.target} onClose={()=>setCrop(undefined)} use={box=>{const x=crop.x;setCrop(undefined);void act(`r:${sourceOf(x)}`,()=>api('/admin/artwork/title/import','POST',{id:section.id,kind:'poster',...(x.plex?{plex:x.plex}:{url:x.url}),use:true,crop:box}),'Cropped. It’s the selected poster now.');}}/>}
     {zoom&&<Modal title={zoom.label} onClose={()=>setZoom(undefined)}><img className="artwork-zoom" src={zoom.src} alt=""/></Modal>}
     {tint&&g&&<BackgroundColor at={tint} color={g.color} fallback={g.default} onUse={recolor} onClose={()=>setTint(undefined)}/>}

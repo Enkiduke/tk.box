@@ -1,8 +1,11 @@
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
+import {randomUUID} from 'node:crypto';
+import {mkdir,unlink,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {z} from 'zod';
 import type {PlexGrant} from './providers/plex.js';
 import {ExploreImages} from './providers/explore-images.js';
+import {ArtworkCache} from './providers/artwork-cache.js';
 import {ArtworkStore,artworkCollectionsInput,artworkSettingsInput,layoutName,layoutValue} from './persistence/artwork-store.js';
 import type {ProviderKeys} from './persistence/service-keys.js';
 import type {ArtworkEngine,ArtworkRun} from './services/artwork-engine.js';
@@ -57,7 +60,12 @@ type Marks={warning:string|null;marks:[string,string|boolean|null][]};
 
 export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:ArtworkEngine,worker:ArtworkWorker,schedule:ArtworkSchedule,titles:TmdbTitles,keys:()=>ProviderKeys) {
   const remote=new ExploreImages(fetch,providerHosts,15*1024*1024);
-  const files=new ArtworkFiles(join(engine.workDir,'assets'),join(engine.paths.cacheDir,'artwork'),join(engine.workDir,'config.json'));
+  const cacheDir=join(engine.paths.cacheDir,'artwork'),uploads=join(cacheDir,'uploads');
+  const files=new ArtworkFiles(join(engine.workDir,'assets'),cacheDir,join(engine.workDir,'config.json'));
+  // Plex's pictures as the picker shows them (small copies, mostly), kept a while so tabbing back and forth doesn't ask again.
+  const plexImages=new ArtworkCache(64*1024*1024,600,15*60000);
+  // Uploads arrive as the file's own bytes; the worker is handed where they were saved, not the bytes again.
+  app.addContentTypeParser('application/octet-stream',{parseAs:'buffer',bodyLimit:26*1024*1024},(_request,body,done)=>done(null,body));
   const pictures=new ArtworkPictures(keys,titles,()=>store.settings().language||'en');
   const ask=async<T,>(request:FastifyRequest,method:string,params:Record<string,unknown>={})=>{const {grant}=viewer(request);return worker.request<T>(runOf(grant),method,params);};
   const send=(reply:FastifyReply,image:{bytes:Buffer;type:string;note?:string;boxes?:unknown},cache='no-store')=>{
@@ -146,19 +154,33 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
   });
   app.get('/api/v1/admin/artwork/file',images,async(request,reply)=>{
     const q=z.object({p:rel,w:width,v:z.string().max(40).optional()}).strict().parse(request.query),{grant}=viewer(request),w=q.w??400;
-    // The address changes with the file (v), so the browser may keep it. A thumbnail the engine hasn't made yet, it makes.
-    const found=await files.thumbnail(q.p,w);
-    return send(reply,found.bytes?{bytes:found.bytes,type:found.type}:await worker.image(runOf(grant),'thumb',{p:q.p,w,key:found.key}),'private, max-age=86400');
+    // The address changes with the file (v), so the browser may keep it as is. A thumbnail the engine hasn't made yet, it
+    // makes and saves where it's read from here, so the image itself never travels through the worker.
+    const cache='private, max-age=31536000, immutable';
+    let found=await files.thumbnail(q.p,w);
+    if(!found.bytes){await ask(request,'thumb',{p:q.p,w,key:found.key});found=await files.thumbnail(q.p,w);}
+    requireThat(found.bytes&&found.type,'ARTWORK_NOT_FOUND','The thumbnail could not be made.',502);
+    return send(reply,{bytes:found.bytes,type:found.type},q.v?cache:'private, max-age=86400');
   });
+  // One of Plex's pictures; with `w`, a copy Plex's own resizer made that wide (at most twice as tall), for the picker's tiles.
   app.get('/api/v1/admin/artwork/plex-image',images,async(request,reply)=>{
-    const {p}=z.object({p:plexPath}).strict().parse(request.query),{grant}=viewer(request);
-    let response:Response;
-    try{response=await fetch(new URL(p,engine.paths.plexUrl),{headers:{'X-Plex-Token':grant.serverToken},redirect:'error',signal:AbortSignal.timeout(20000)});}
-    catch{throw new AppError('PLEX_UNAVAILABLE','Plex could not be reached.',502);}
-    if(!response.ok){await response.body?.cancel();throw new AppError('ARTWORK_NOT_FOUND','Plex doesn’t have that picture.',404);}
-    const bytes=Buffer.from(await response.arrayBuffer()),type=imageType(bytes);
-    requireThat(type,'ARTWORK_NOT_FOUND','Not an image',404);
-    return send(reply,{bytes,type},'private, max-age=3600');
+    const {p,w}=z.object({p:plexPath,w:z.coerce.number().int().min(64).max(1000).optional()}).strict().parse(request.query),{grant}=viewer(request);
+    // Every route here is the administrators' own, and they all see the same server, so the copies are shared between them.
+    const key=`${engine.paths.plexUrl}|${p}|${w??''}`,hit=plexImages.get(key);
+    if(hit)return send(reply,hit,'private, max-age=3600');
+    const load=async(path:string)=>{
+      let response:Response;
+      try{response=await fetch(new URL(path,engine.paths.plexUrl),{headers:{'X-Plex-Token':grant.serverToken},redirect:'error',signal:AbortSignal.timeout(20000)});}
+      catch{throw new AppError('PLEX_UNAVAILABLE','Plex could not be reached.',502);}
+      if(!response.ok){await response.body?.cancel();return undefined;}
+      const bytes=Buffer.from(await response.arrayBuffer()),type=imageType(bytes);
+      return type?{bytes,type}:undefined;
+    };
+    // Plex's resizer can refuse a picture it can't read; then the original will do.
+    const image=(w?await load(`/photo/:/transcode?${new URLSearchParams({width:String(w),height:String(w*2),minSize:'0',upscale:'0',url:p})}`):undefined)??await load(p);
+    requireThat(image,'ARTWORK_NOT_FOUND','Plex doesn’t have that picture.',404);
+    plexImages.set(key,image);
+    return send(reply,image,'private, max-age=3600');
   });
   app.get('/api/v1/admin/artwork/image',images,async(request,reply)=>{
     const {u}=z.object({u:link}).strict().parse(request.query);
@@ -179,10 +201,18 @@ export function registerArtwork(app:FastifyInstance,store:ArtworkStore,engine:Ar
     // A crop is a picture of your own
     return added(input,await ask(request,'import',params),input.crop?'own':(input.plex??input.url)!);
   });
-  // An image from the administrator's computer, sent as base64 inside JSON like every other request (up to 25 MB).
-  app.post('/api/v1/admin/artwork/title/upload',{bodyLimit:36*1024*1024},async request=>{
-    const input=z.object({id:rel,kind,data:z.string().max(35*1024*1024).regex(/^[A-Za-z0-9+/]*={0,2}$/),use:z.boolean()}).strict().parse(request.body);
-    return added(input,await ask(request,'upload',{id:input.id,kind:input.kind,data:input.data}),'own');
+  // An image from the administrator's computer (up to 25 MB), sent as the file's own bytes with the title and spot in the
+  // address. It is saved under the cache for the worker to read, which removes it.
+  app.post('/api/v1/admin/artwork/title/upload',{bodyLimit:26*1024*1024,config:{binary:true}},async request=>{
+    const input=z.object({id:rel,kind,use:z.enum(['0','1']).transform(v=>v==='1')}).strict().parse(request.query);
+    const data=request.body;
+    requireThat(Buffer.isBuffer(data)&&data.length>0,'VALIDATION_FAILED','That file is empty.');
+    requireThat(data.length<=25*1024*1024,'VALIDATION_FAILED','That file is larger than 25 MB.');
+    await mkdir(uploads,{recursive:true});
+    const name=`${randomUUID()}.upload`,path=join(uploads,name);
+    await writeFile(path,data);
+    try{return added(input,await ask(request,'upload',{id:input.id,kind:input.kind,file:name}),'own');}
+    finally{await unlink(path).catch(()=>{});}
   });
   app.post('/api/v1/admin/artwork/title/discard',async request=>{
     const {id}=z.object({id:rel}).strict().parse(request.body),entry=await files.entry(id);

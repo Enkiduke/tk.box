@@ -3069,6 +3069,9 @@ def card_values(values):
             for key, value in values.items()}
 
 
+SHORT_HASHES, SHORT_HASH_LOCK = OrderedDict(), threading.Lock()  # Worker.short_hash's answers, newest last
+
+
 class Worker:
     """--worker: tk.box's Admin › Artwork asks this long-lived process for what needs the renderer (previews, layout previews,
     thumbnails, generated backgrounds, which files the last push used) as JSON lines on stdin (see serve_worker). tk.box
@@ -3126,21 +3129,24 @@ class Worker:
             raise ValueError("Not a candidate file" if candidate else "Not a poster or logo file")
         return path
 
-    def drop_previews(self):
-        """Forget every rendered preview and layout mask; the page asks for this when a title is closed."""
+    def drop_previews(self, lookups=False):
+        """Forget every rendered preview and layout mask; the page asks for this when a title is closed. The titles' Plex
+        lookups (base_item) are kept for when one is opened again, until the idle countdown (`lookups`) or a config change."""
         with self.lock:
-            self.renderers, self.previews, self.items = {}, {}, {}
+            self.renderers, self.previews = {}, {}
             self.samples, self.decoded, self.drafts, self.fetched = {}, OrderedDict(), OrderedDict(), OrderedDict()
-            if self.timer:
-                self.timer.cancel()
-                self.timer = None
+            if lookups:
+                self.items = {}
+                if self.timer:
+                    self.timer.cancel()
+                    self.timer = None
 
     def idle(self):
         """Restart the five-minute countdown after which drop_previews lets go of everything."""
         with self.lock:
             if self.timer:
                 self.timer.cancel()
-            self.timer = threading.Timer(300, self.drop_previews)
+            self.timer = threading.Timer(300, self.drop_previews, kwargs={"lookups": True})
             self.timer.daemon = True
             self.timer.start()
 
@@ -3234,7 +3240,11 @@ class Worker:
         """The Plex item and layout a push would use, looked up once while the title stays open. The page asks several
         things about a title at once; the first request looks it up and the others wait for its answer."""
         rel = f"{title.parent.name}/{title.name}"
+        self.idle()
         with self.lock:
+            stamp = self.config_path.stat().st_mtime_ns
+            if stamp != self.stamp:  # The layout may have changed
+                self.renderers, self.previews, self.items, self.stamp = {}, {}, {}, stamp
             if (rel, season) in self.items:
                 item, style = self.items[rel, season]
                 return dict(item), self.logo_style(title, style)
@@ -3526,9 +3536,21 @@ class Worker:
 
     @staticmethod
     def short_hash(path):
-        """A file's identity for the page and for set-aside names. Hashed fresh: renames can leave the remembered
-        digest stale."""
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+        """A file's identity for the page and for set-aside names, remembered per version of the file: its path, file ID,
+        modification time and size (renames keep a file's time, so the file ID tells a renamed one from another)."""
+        info = Path(path).stat()
+        key = (str(path), info.st_ino, info.st_mtime_ns, info.st_size)
+        with SHORT_HASH_LOCK:
+            hit = SHORT_HASHES.get(key)
+            if hit:
+                SHORT_HASHES.move_to_end(key)
+                return hit
+        value = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:8]
+        with SHORT_HASH_LOCK:
+            SHORT_HASHES[key] = value
+            while len(SHORT_HASHES) > 5000:
+                SHORT_HASHES.popitem(last=False)
+        return value
 
     @staticmethod
     def kept_name(path, kind):
@@ -3802,10 +3824,11 @@ def worker_width(params, low, high, default):
 
 
 def worker_file(worker, params):
+    """Make a saved file's thumbnail; tk.box reads it from the thumbs folder, so only its type comes back."""
     path = worker.path(params.get("p"), (3, 4))
     if not path.is_file() or path.suffix.lower() not in ArtworkFiles.extensions:
         raise ValueError("Not an image")
-    return worker_image(*worker.thumbnail(path, worker_width(params, 64, 2000, 400), params.get("key")))
+    return {"type": worker.thumbnail(path, worker_width(params, 64, 2000, 400), params.get("key"))[1]}
 
 
 def worker_preview(worker, params):
@@ -3822,10 +3845,16 @@ def worker_import(worker, params):
 
 
 def worker_upload(worker, params):
-    data = base64.b64decode(str(params.get("data") or ""), validate=True)
-    if len(data) > WEB_UPLOAD_LIMIT:
+    """An upload tk.box saved under the cache's uploads folder (it removes the file afterwards)."""
+    name = str(params.get("file") or "")
+    if not re.fullmatch(r"[0-9a-f-]{36}\.upload", name):
+        raise ValueError("Unknown upload")
+    path = worker.cache / "uploads" / name
+    if not path.is_file():
+        raise ValueError("Unknown upload")
+    if path.stat().st_size > WEB_UPLOAD_LIMIT:
         raise ValueError("That file is larger than 40 MB")
-    return worker.add(params.get("id"), params.get("kind"), data)
+    return worker.add(params.get("id"), params.get("kind"), path.read_bytes())
 
 
 def worker_template_preview(worker, params):
