@@ -223,4 +223,9 @@ export const libraryMigrations: Migration[] = [
     const set = db.prepare('UPDATE library_episodes SET air_at = ? WHERE title_id = ? AND season = ? AND episode = ?');
     for (const r of rows) set.run(episodeAiredAt({ airDate: r.air_date ?? undefined, airTime: r.air_time ?? undefined }) ?? null, r.title_id, r.season, r.episode);
   } },
+  // Show matches (lib/season-map.ts): the TVDB series an administrator filed a show under, by its TMDB id, so it holds
+  // before the show is in the library (a failed request) and survives TMDB refreshes. `seasons`: JSON, TMDB season to
+  // the series' season, only when they differ.
+  { name: 'show-matches', up: `CREATE TABLE show_matches(tmdb_id INTEGER PRIMARY KEY, tvdb_id INTEGER NOT NULL,
+    series_title TEXT NOT NULL, series_year INTEGER, seasons TEXT, at INTEGER NOT NULL, by TEXT NOT NULL);` },
 ];

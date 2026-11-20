@@ -8,7 +8,8 @@ import { builtInProfile } from '../lib/builtin-profiles.js';
 import { seedingDecision, seedingRule } from '../lib/seeding.js';
 import { bettersLibrary, compareDecisions, decide, fewSeeders, pick,type Decision, type EpisodeWant, type LibraryFile, type PickContext } from '../lib/pick-rules.js';
 import { EARLY_COPIES, rank } from '../lib/quality.js';
-import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
+import { imdbNumber, inShowNumbering, normaliseTitle, parseRelease, type ParsedRelease, type ShowSeries, type ShowTitle } from '../lib/release-name.js';
+import { cleanSeasonMap, tmdbSeasonOf, tvdbSeasonOf, type ShowMatch } from '../lib/season-map.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
 import { beforeCinemas, episodeAiredAt, have as haveOf, type Have, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, releaseChanged, scopeName, showEnded, unreleasedUndated,
   showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
@@ -157,6 +158,9 @@ export const parsedFacts = (p: ParsedRelease) => ({
 // A season pack, by its name.
 const isPack = (grab: Pick<Grab, 'releaseName'>) => parseRelease(grab.releaseName).seasonPack;
 
+// A show request that failed with this can be matched to a TVDB series (Admin › Requests › Match).
+export const NO_TVDB_TEXT = 'has no TVDB id';
+
 export class Library {
   private missing = new Map<number, number>();
   // Download health, in memory (docs/STALLS.md): each grab's samples toward its next verdict, and its swarm's seeds.
@@ -238,10 +242,13 @@ export class Library {
       return [{ season: seasons[i]!, episode: e.episode_number, ...(e.name ? { name: e.name } : {}), ...(airDate ? { airDate } : {}),
         ...(e.runtime ? { runtime: e.runtime } : {}) }];
     }));
-    const year = yearOf(show.first_air_date), tvdbId = show.external_ids?.tvdb_id || undefined, imdbId = show.external_ids?.imdb_id || undefined;
+    // A show match (lib/season-map.ts) overrides TMDB's TVDB id; TVmaze then answers in the series' numbers.
+    const match = this.store.showMatch(tmdbId);
+    const year = yearOf(show.first_air_date), tvdbId = match?.tvdbId ?? (show.external_ids?.tvdb_id || undefined), imdbId = show.external_ids?.imdb_id || undefined;
     const runtime = show.episode_run_time?.find(m => m > 0) ?? episodes.find(e => e.runtime)?.runtime;
-    const airings = this.deps.airings && (tvdbId || imdbId) ? await this.deps.airings({ ...(tvdbId ? { tvdbId } : {}), ...(imdbId ? { imdbId } : {}) })
+    const fromTvmaze = this.deps.airings && (tvdbId || imdbId) ? await this.deps.airings({ ...(tvdbId ? { tvdbId } : {}), ...(imdbId ? { imdbId } : {}) })
       .catch(e => { this.deps.log('library: TVmaze air times unavailable', { tmdb: tmdbId, error: e instanceof Error ? e.message : String(e) }); return []; }) : [];
+    const airings = match?.seasons ? fromTvmaze.flatMap(a => { const season = tmdbSeasonOf(match.seasons, a.season); return season === undefined ? [] : [{ ...a, season }]; }) : fromTvmaze;
     return {
       facts: { title: show.name, ...(year ? { year } : {}), ...(tvdbId ? { tvdbId } : {}), ...(imdbId ? { imdbId } : {}),
         aliases: aliasesOf(show.name, [show.original_name, ...(show.alternative_titles?.results ?? []).map(t => t.title)]),
@@ -265,6 +272,28 @@ export class Library {
     return this.store.title(title.id)!;
   }
   private inTransaction(write: () => void) { this.store.db.transaction(write)(); }
+
+  // The Match dialog (lib/season-map.ts): the show's TMDB seasons, each with its episode count and first air date, and
+  // the match it has.
+  async matchFacts(tmdbId: number) {
+    const { facts, seasons, episodes } = await this.tmdbShow(tmdbId);
+    return { title: facts.title, ...(facts.year ? { year: facts.year } : {}), ...(this.store.showMatch(tmdbId) ? { match: this.store.showMatch(tmdbId)! } : {}),
+      seasons: seasons.map(season => {
+        const own = episodes.filter(e => e.season === season), firstAired = own.map(e => e.airDate).filter((d): d is string => !!d).sort()[0];
+        return { season, episodes: own.length, ...(firstAired ? { firstAired } : {}) };
+      }) };
+  }
+  // Files a show under a TVDB series. A show the library has takes the series' TVDB id and is read from TMDB again, and
+  // the Plex index reads its episodes again. Files already imported keep their names.
+  async matchShow(input: Omit<ShowMatch, 'at'>) {
+    requireWritable();
+    const seasons = cleanSeasonMap(input.seasons);
+    this.store.setShowMatch({ tmdbId: input.tmdbId, tvdbId: input.tvdbId, series: input.series, ...(seasons ? { seasons } : {}), by: input.by });
+    this.deps.log('library: show matched', { tmdb: input.tmdbId, tvdb: input.tvdbId, seasons: seasons ?? null, by: input.by });
+    const title = this.store.titleByTmdb('show', input.tmdbId);
+    if (title) { const fresh = await this.refreshShow(title.id); this.changed(fresh, 'monitor', { by: input.by }); }
+    return this.store.showMatch(input.tmdbId)!;
+  }
 
   // Adds a movie (or monitors it again), with TMDB's ids, aliases and release dates, and searches it as the timing
   // says: at once, or (not out) from its cinema release with Early copies on, else from its home release.
@@ -303,7 +332,7 @@ export class Library {
   // when asked. With `search`, the asked seasons' searches are queued at once.
   async addShow(input: AddShow) {
     const settings = this.store.settings(), { facts, ...tmdb } = await this.tmdbShow(input.tmdbId);
-    if (!facts.tvdbId) throw new AppError('NO_TVDB_ID', `TMDB has no TVDB id for ${facts.title}, which its file names need.`, 422);
+    if (!facts.tvdbId) throw new AppError('NO_TVDB_ID', `TMDB ${NO_TVDB_TEXT} for ${facts.title}, which its file names need. Match it to a TVDB series.`, 422);
     const profileId = input.profileId && this.store.profile(input.profileId) ? input.profileId : settings.defaultProfile;
     const chosen = [...new Set(input.seasons.filter(n => n > 0))], now = this.now();
     let title = this.store.titleByTmdb('show', input.tmdbId);
@@ -552,8 +581,22 @@ export class Library {
   private scopesOf(title: LibraryTitle, state = this.showState(title), at = this.now()) {
     return showScopes(title, state.seasons, state.episodes, this.profile(title), at, this.store.grabbingEpisodes(title.id));
   }
+  // A show filed under another TVDB series is searched both ways: by its own name in its own numbers, and by the
+  // series' TVDB id in the series' (indexers.ts searchShow).
   private showQuery(title: LibraryTitle, season: number, episode?: number): ShowQuery {
-    return { kind: 'show', title: title.title, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), season, ...(episode !== undefined ? { episode } : {}) };
+    const series = this.seriesOf(title);
+    return { kind: 'show', title: title.title, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), season, ...(episode !== undefined ? { episode } : {}),
+      ...(series ? { series: { title: series.title, season: tvdbSeasonOf(series.seasons, season) } } : {}) };
+  }
+  // The show's TVDB series when a show match files it under another series' seasons.
+  private seriesOf(title: LibraryTitle): ShowSeries | undefined {
+    if (title.kind !== 'show') return undefined;
+    const match = this.store.showMatch(title.tmdbId);
+    return match?.seasons ? { title: match.series.title, ...(match.series.year ? { year: match.series.year } : {}), seasons: match.seasons } : undefined;
+  }
+  private showTitle(title: LibraryTitle): ShowTitle {
+    const series = this.seriesOf(title);
+    return { title: title.title, ...(title.year ? { year: title.year } : {}), aliases: title.aliases, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}), ...(series ? { series } : {}) };
   }
   // What the pick rules weigh for a season: the wanted episodes, the library's file for each episode that has one, an
   // episode's runtime and how many the season has.
@@ -566,7 +609,7 @@ export class Library {
     }
     const inSeason = state.episodes.filter(e => e.season === season);
     const runtime = inSeason.find(e => episodes.includes(e.episode) && e.runtime)?.runtime ?? title.runtime;
-    return { kind: 'episode', title: { title: title.title, ...(title.year ? { year: title.year } : {}), aliases: title.aliases, ...(title.tvdbId ? { tvdbId: title.tvdbId } : {}) },
+    return { kind: 'episode', title: this.showTitle(title),
       season, episodes, pack, ...(have.size ? { have } : {}), ...(runtime ? { runtime } : {}), seasonEpisodes: inSeason.length };
   }
   // The releases to grab for a season's wanted episodes: a pack first when the scope is a season; otherwise (or with no
@@ -783,19 +826,26 @@ export class Library {
   private async onShowFeed(releases: Release[]) {
     const shows = this.store.activeShows();
     if (!shows.length) return 0;
-    const byName = new Map<string, LibraryTitle[]>(), byTvdb = new Map<number, LibraryTitle>();
+    // A show filed under another TVDB series (a show match) shares its id and name with the series' other shows: each
+    // takes only the releases its own season numbers place (inShowNumbering).
+    const byName = new Map<string, LibraryTitle[]>(), byTvdb = new Map<number, LibraryTitle[]>(), named = new Map<number, ShowTitle>();
+    const add = <K,>(map: Map<K, LibraryTitle[]>, key: K, s: LibraryTitle) => { const list = map.get(key) ?? []; if (!list.includes(s)) list.push(s); map.set(key, list); };
     for (const s of shows) {
-      for (const name of [s.title, ...s.aliases]) { const key = normaliseTitle(name), list = byName.get(key) ?? []; if (!list.includes(s)) list.push(s); byName.set(key, list); }
-      if (s.tvdbId) byTvdb.set(s.tvdbId, s);
+      const show = this.showTitle(s);
+      named.set(s.id, show);
+      for (const name of [s.title, ...s.aliases, ...(show.series ? [show.series.title] : [])]) add(byName, normaliseTitle(name), s);
+      if (s.tvdbId) add(byTvdb, s.tvdbId, s);
     }
     const found = new Map<string, { title: LibraryTitle; season: number; releases: Release[] }>();
     for (const release of releases) {
       const parsed = parseRelease(release.name, new Date(this.now()).getUTCFullYear());
       if (parsed.season === undefined || parsed.multiSeason) continue;
       const tvdb = Number(release.ids?.tvdbid);
-      const titles = Number.isInteger(tvdb) && byTvdb.has(tvdb) ? [byTvdb.get(tvdb)!] : byName.get(normaliseTitle(parsed.title)) ?? [];
+      const titles = Number.isInteger(tvdb) && byTvdb.has(tvdb) ? byTvdb.get(tvdb)! : byName.get(normaliseTitle(parsed.title)) ?? [];
       for (const t of titles) {
-        const key = `${t.id}:${parsed.season}`, entry = found.get(key) ?? { title: t, season: parsed.season, releases: [] };
+        const numbered = inShowNumbering(parsed, named.get(t.id)!);
+        if (typeof numbered === 'string' || numbered.season === undefined) continue;
+        const key = `${t.id}:${numbered.season}`, entry = found.get(key) ?? { title: t, season: numbered.season, releases: [] };
         entry.releases.push(release); found.set(key, entry);
       }
     }

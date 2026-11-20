@@ -116,7 +116,9 @@ export type RequestStatus = 'queued' | 'requested' | 'downloading' | 'partial' |
 export type RequestItem = { id: number; kind: 'movie' | 'show'; tmdbId: number; title: string; year?: number; status: RequestStatus; statusAt: number; createdAt: number;
   seen: boolean; seasons: { season: number; available: boolean }[]; accountName: string; error?: string; removedBy?: string;
   // The Requests page's All requests: the request is the viewer's own, so they may cancel it.
-  mine?: boolean };
+  mine?: boolean;
+  // Admin › Requests: a show that failed for want of a TVDB id, which Match fixes.
+  needsMatch?: boolean };
 export type RequestPage = { items: RequestItem[]; total: number; page: number; hasMore: boolean };
 export type RequestArtwork = { posterUrl?: string; backdropUrl?: string };
 export type RequestRelease =

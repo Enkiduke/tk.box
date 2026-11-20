@@ -1,3 +1,4 @@
+import type { SeasonMap, ShowMatch } from '../lib/season-map.js';
 import { z } from 'zod';
 import type { Db } from './database.js';
 import { prepared } from './statements.js';
@@ -300,6 +301,23 @@ export class LibraryStore {
   setEarlyCopies(id: number, on: boolean) { prepared(this.db, 'UPDATE library_titles SET early_copies = ? WHERE id = ?').run(on ? 1 : 0, id); }
   setPaused(id: number, reason: string | null) { prepared(this.db, 'UPDATE library_titles SET paused = ?, paused_reason = ? WHERE id = ?').run(reason === null ? 0 : 1, reason, id); }
   setAddedBy(id: number, by: string) { prepared(this.db, 'UPDATE library_titles SET added_by = ? WHERE id = ?').run(by, id); }
+  // Show matches (lib/season-map.ts). Setting one gives the library's title, if it has the show, the series' TVDB id.
+  showMatch(tmdbId: number): ShowMatch | undefined {
+    const r = prepared(this.db, 'SELECT * FROM show_matches WHERE tmdb_id = ?').get(tmdbId) as
+      { tmdb_id: number; tvdb_id: number; series_title: string; series_year: number | null; seasons: string | null; at: number; by: string } | undefined;
+    if (!r) return undefined;
+    const seasons = json<SeasonMap | undefined>(r.seasons, undefined);
+    return { tmdbId: r.tmdb_id, tvdbId: r.tvdb_id, series: { title: r.series_title, ...opt('year', r.series_year) }, ...(seasons ? { seasons } : {}), at: r.at, by: r.by };
+  }
+  setShowMatch(m: Omit<ShowMatch, 'at'>) {
+    this.db.transaction(() => {
+      prepared(this.db, `INSERT INTO show_matches(tmdb_id, tvdb_id, series_title, series_year, seasons, at, by) VALUES(?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tmdb_id) DO UPDATE SET tvdb_id = excluded.tvdb_id, series_title = excluded.series_title, series_year = excluded.series_year,
+        seasons = excluded.seasons, at = excluded.at, by = excluded.by`)
+        .run(m.tmdbId, m.tvdbId, m.series.title, m.series.year ?? null, m.seasons ? JSON.stringify(m.seasons) : null, this.now(), m.by);
+      prepared(this.db, `UPDATE library_titles SET tvdb_id = ? WHERE kind = 'show' AND tmdb_id = ?`).run(m.tvdbId, m.tmdbId);
+    })();
+  }
   setFolder(id: number, folder: string) { prepared(this.db, 'UPDATE library_titles SET folder = ? WHERE id = ? AND folder IS NULL').run(folder, id); }
   setProfile(id: number, profileId: number) { prepared(this.db, 'UPDATE library_titles SET profile_id = ? WHERE id = ?').run(profileId, id); }
   deleteTitle(id: number) { prepared(this.db, 'DELETE FROM library_titles WHERE id = ?').run(id); }

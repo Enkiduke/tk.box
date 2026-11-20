@@ -3,7 +3,8 @@ import { readOnly } from '../errors.js';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { runProcess } from '../streaming/ffmpeg.js';
-import { parseRelease, type ParsedRelease } from '../lib/release-name.js';
+import { inShowNumbering, parseRelease, type ParsedRelease, type ShowTitle } from '../lib/release-name.js';
+import { tvdbSeasonOf } from '../lib/season-map.js';
 import { qualityOf, type Quality } from '../lib/quality.js';
 import { scoreFormats } from '../lib/formats.js';
 import { audioChannelsName, audioCodecName, dynamicRangeName, episodeFileName, movieFileName, movieFolder, seasonFolder, seriesFolder, videoCodecName } from '../lib/naming.js';
@@ -253,12 +254,18 @@ export class LibraryImporter {
     const known = new Map(show.episodes.map(e => [key([e.season, e.episode]), e]));
     const covered = new Set(grab.episodes.length ? grab.episodes.map(key) : known.keys());
     const claimed = new Set<string>();
+    // A show filed under another TVDB series (a show match): its files may be named in the series' season numbers, and
+    // are named, foldered and numbered as the series' (lib/season-map.ts).
+    const match = this.store.showMatch(title.tmdbId), seasons = match?.seasons;
+    const showTitle: ShowTitle = { title: title.title, ...(title.year ? { year: title.year } : {}), aliases: title.aliases,
+      ...(seasons && match ? { series: { title: match.series.title, ...(match.series.year ? { year: match.series.year } : {}), seasons } } : {}) };
+    const numbered = (p: ParsedRelease | undefined) => { if (!p) return undefined; const n = inShowNumbering(p, showTitle); return typeof n === 'string' ? undefined : n; };
 
     type Plan = { video: Found; described: Described; refs: EpisodeRef[]; probe?: Probe };
     const plans: Plan[] = [];
     for (const video of videos) {
       const described = this.describe(video.path, contentPath, grab, title);
-      const named = [described.fileParse, described.folderParse].find(p => p && !p.obfuscated && !p.multiSeason && p.season !== undefined && p.episodes.length);
+      const named = [numbered(described.fileParse), numbered(described.folderParse)].find(p => p && !p.obfuscated && !p.multiSeason && p.season !== undefined && p.episodes.length);
       let refs: EpisodeRef[] = named ? named.episodes.map(e => [named.season!, e] as EpisodeRef) : [];
       if (!named && videos.length === 1 && covered.size === 1) refs = [...covered].map(k => k.split(':').map(Number) as EpisodeRef);
       if (!refs.length) { skipped.push({ path: video.path, reason: 'not named for an episode' }); continue; }
@@ -288,15 +295,16 @@ export class LibraryImporter {
       return { ok: false, failure: fakes && fakes === plans.length ? 'fake' : 'no-file', reason, skipped };
     }
 
-    const naming = { title: title.title, ...(title.year ? { year: title.year } : {}), tvdbId: title.tvdbId };
+    const naming = seasons && match ? { title: match.series.title, ...(match.series.year ? { year: match.series.year } : {}), tvdbId: match.tvdbId }
+      : { title: title.title, ...(title.year ? { year: title.year } : {}), tvdbId: title.tvdbId };
     const folder = title.folder ?? seriesFolder(naming);
     const files: EpisodeFileImported[] = [];
     for (const [index, { video, described: { parsed, quality, score, labels, group }, refs, probe }] of keep.entries()) {
       const media = mediaOf(parsed, probe), ext = extname(video.path).toLowerCase();
       const sorted = [...refs].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-      const episodes = sorted.map(r => { const name = known.get(key(r))?.name; return { season: r[0], episode: r[1], ...(name ? { title: name } : {}) }; });
+      const episodes = sorted.map(r => { const name = known.get(key(r))?.name; return { season: tvdbSeasonOf(seasons, r[0]), episode: r[1], ...(name ? { title: name } : {}) }; });
       const name = episodeFileName(naming, episodes, { quality, proper: parsed.proper, repack: parsed.repack, customFormats: labels, ...media, ...(group ? { group } : {}) }, ext);
-      const dest = join(title.root, folder, seasonFolder(sorted[0]![0]), `${name}${ext}`);
+      const dest = join(title.root, folder, seasonFolder(episodes[0]!.season), `${name}${ext}`);
       const copied = await this.bringIn(video.path, dest, options);
       if (copied) media.copied = true;
       const last = index === keep.length - 1;

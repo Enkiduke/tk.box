@@ -199,3 +199,12 @@ export type LibrarySettingsView = {
 };
 export type NamingPreview = { quality?: string; folder: string; file: string; path: string };
 
+
+// The Match dialog (Admin › Requests, a show's dialog): the TVDB series a show is filed under, and, when TVDB counts it
+// as seasons of another series, which series season each TMDB season is (`seasons`, only when they differ).
+export type MatchSeason = { season: number; episodes: number; firstAired?: string };
+export type ShowMatchView = { tmdbId: number; title: string; year?: number; tvdbKey: boolean; seasons: MatchSeason[];
+  match?: { tvdbId: number; series: { title: string; year?: number }; seasons?: Record<string, number>; at: number } };
+export type TvdbSeriesHit = { tvdbId: number; name: string; year?: number; image?: string; network?: string };
+export type TvdbSeriesView = { series: TvdbSeriesHit; seasons: MatchSeason[]; suggested: Record<string, number> };
+export type ShowMatchInput = { tvdbId: number; seasons: Record<string, number> };

@@ -1,4 +1,4 @@
-import { matchMovie, matchShow, parseRelease, type MovieTitle, type ParsedRelease, type ReleaseIds, type ShowTitle } from './release-name.js';
+import { inShowNumbering, matchMovie, matchShow, parseRelease, type MovieTitle, type ParsedRelease, type ReleaseIds, type ShowTitle } from './release-name.js';
 import { EARLY_COPIES, qualityOf, rank, type Quality } from './quality.js';
 import { scoreFormats, type Format, type Score } from './formats.js';
 import { DEFAULT_RUNTIME, meetsCutoff, sizeLimits, tierOf, type QualityProfile } from './profiles.js';
@@ -108,7 +108,9 @@ export function bettersLibrary(file: { quality: Quality; score: number; parsed: 
 }
 
 export function decide(release: Candidate, want: Want, ctx: PickContext): Decision {
-  const parsed = parseRelease(release.name, new Date(ctx.now).getUTCFullYear());
+  // A show filed under another TVDB series reads the release in its own season numbers (lib/release-name.ts).
+  const raw = parseRelease(release.name, new Date(ctx.now).getUTCFullYear());
+  const numbered = want.kind === 'episode' ? inShowNumbering(raw, want.title) : raw, parsed = typeof numbered === 'string' ? raw : numbered;
   const { profile } = ctx;
   let quality = qualityOf(parsed);
   if (!quality && tierOf(profile, 'Unknown') >= 0) quality = 'Unknown';
@@ -128,7 +130,7 @@ export function decide(release: Candidate, want: Want, ctx: PickContext): Decisi
     if (parsed.multiSeason) rejects.push('a multi-season pack');
     else if (parsed.season !== undefined) rejects.push(`an episode or season, not a movie`);
   } else {
-    const f = episodeFit(parsed, want);
+    const f = typeof numbered === 'string' ? { reject: numbered } : episodeFit(parsed, want);
     if ('reject' in f) rejects.push(f.reject); else fit = f;
   }
   const match = want.kind === 'movie' ? matchMovie(parsed, want.title, release.ids) : matchShow(parsed, want.title, release.ids);

@@ -53,8 +53,9 @@ export const COOKIE_ALERT = 'indexer.iptorrents.cookie';
 // passkey) and its categories.
 export type Release = Candidate & { indexer: IndexerName; link: string; categories: number[] };
 export type MovieQuery = { kind: 'movie'; title: string; year?: number; imdbId?: string; uhd?: boolean };
-// A season (its pack and episodes), or one episode of it.
-export type ShowQuery = { kind: 'show'; title: string; tvdbId?: number; season: number; episode?: number };
+// A season (its pack and episodes), or one episode of it. `series`: the show is filed under another TVDB series (a show
+// match, lib/season-map.ts), whose `tvdbId` it then is, with the season in that series' numbers.
+export type ShowQuery = { kind: 'show'; title: string; tvdbId?: number; season: number; episode?: number; series?: { title: string; season: number } };
 export type TitleQuery = MovieQuery | ShowQuery;
 const episodeCode = (q: ShowQuery) => `S${String(q.season).padStart(2, '0')}${q.episode === undefined ? '' : `E${String(q.episode).padStart(2, '0')}`}`;
 // Which protocols' indexers a search asks (the library asks Usenet first, then torrents); all when omitted.
@@ -351,7 +352,15 @@ export class Indexers {
     return { releases, indexers };
   }
 
+  // A show filed under another series is searched twice: by its own name in its own numbers, and as the series' season
+  // (by TVDB id, or the series' name when that finds nothing); the pick rules sort out which is which.
   private async searchShow(row: Row, settings: IndexerSettings, query: ShowQuery, report: IndexerReport, signal?: AbortSignal): Promise<Release[]> {
+    if (query.series) {
+      const { series, tvdbId, ...own } = query, seen = new Set<string>();
+      const asSeries: ShowQuery = { ...own, title: series.title, season: series.season, ...(tvdbId ? { tvdbId } : {}) };
+      const found = [...await this.searchShow(row, settings, own, report, signal), ...await this.searchShow(row, settings, asSeries, report, signal)];
+      return found.filter(r => !seen.has(r.guid) && !!seen.add(r.guid));
+    }
     const term = `${query.title} ${episodeCode(query)}`;
     if (row.name === 'iptorrents') {
       const client = this.ipt(row);

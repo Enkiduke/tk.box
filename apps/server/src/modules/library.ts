@@ -1,3 +1,5 @@
+import { registerShowMatch } from '../show-match-api.js';
+import { Tvdb } from '../providers/tvdb.js';
 import { defineModule } from './module.js';
 import { libraryMigrations } from './migrations/library.js';
 import { AppError, preview } from '../errors.js';
@@ -28,7 +30,7 @@ export const libraryModule = defineModule({
   name: 'library',
   access: 'admin',
   migrations: libraryMigrations,
-  setup(routes, { config, db, bus, plexOwner, tmdb: titles, jobs, log }, { queue, indexers, downloaders, artwork, plexIndex }: Deps) {
+  setup(routes, { config, db, bus, plexOwner, serviceKeys, tmdb: titles, jobs, log }, { queue, indexers, downloaders, artwork, plexIndex }: Deps) {
     const store = new LibraryStore(db);
     const holds: PlexHolds = {
       has: tmdbId => plexIndex.movie(tmdbId) !== undefined,
@@ -64,7 +66,7 @@ export const libraryModule = defineModule({
     plexIndex.follow(() => store.monitoredShows());
     // The title identity (plexIndex.resolve) learns library title ids and file paths from here.
     plexIndex.library({ title: id => store.title(id), titleId: (kind, tmdbId) => store.titleByTmdb(kind, tmdbId)?.id,
-      pathTitle: path => store.fileByPath(path)?.titleId });
+      pathTitle: path => store.fileByPath(path)?.titleId, showMatch: tmdbId => store.showMatch(tmdbId) });
     bus.on('library.title.changed', ({ titleId, kind, change }) => {
       if (kind !== 'show' || (change !== 'added' && change !== 'monitor')) return;
       const title = store.title(titleId);
@@ -81,6 +83,8 @@ export const libraryModule = defineModule({
     // its reads over as it does (`readRequests`), before any route serves.
     let requestReads: RequestReads | undefined;
     const sources: LibrarySources = { requests: () => requestReads, ...(artwork ? { collections: () => artwork.collectionMovies() } : {}) };
+    // Match: filing a show under a TVDB series (lib/season-map.ts), with the TVDB key from Admin › Connections.
+    registerShowMatch(routes, library, new Tvdb(() => serviceKeys.providers().tvdb));
     registerLibraryAdmin(routes, { store, library, queue, titles, downloaders: shared, plexTitles: plexIndex, plexServer: () => config.PLEX_MACHINE_ID, sources });
     // Collections' seasonal downloads (docs/ARR-REPLACEMENT.md, phase 1): added as a request would be, unless the
     // library already has the movie; and those the collections let go deleted with their files, if the library

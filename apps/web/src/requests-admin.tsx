@@ -5,6 +5,7 @@ import {invalidate,useApi,useNearViewport} from './hooks.js';
 import {Artwork,Empty,ErrorNotice,FadeImage,Icon,Loading} from './components.js';
 import {Card,SectionHead,Switch,date,useMutation} from './settings-ui.js';
 import {toast} from './toasts.js';
+import {ShowMatchDialog} from './show-match.js';
 
 // Admin › Requests: every request (docs/REQUESTS.md), their default profiles (tk.box's), and the Requests site.
 export const requestStatusNames:Record<RequestStatus,string>={queued:'Queued',requested:'Requested',downloading:'Downloading',partial:'Partly available',available:'Available',failed:'Failed',removed:'Removed'};
@@ -39,6 +40,7 @@ function RequestList() {
   const query=new URLSearchParams({page:String(page),...(status?{status}:{}),...(kind?{kind}:{}),...(search?{q:search}:{})});
   const list=useApi<RequestPage>(`/admin/requests?${query}`),mutation=useMutation(()=>invalidate('/admin/requests?'));
   const act=(item:RequestItem,action:'retry'|'remove')=>void mutation.run(async()=>{if(action==='retry'){await api(`/admin/requests/${item.id}/retry`,'POST');toast.info(`Retrying ${item.title}`);}else{await api(`/admin/requests/${item.id}`,'DELETE');toast.success(`Removed ${item.title}`);}});
+  const [matching,setMatching]=useState<RequestItem>();
   return <Card>
     <div className="requests-filters">
       <RequestFilter label="Media type" options={kindFilters} value={kind} onChange={value=>{setKind(value);setPage(1);}}/>
@@ -48,15 +50,17 @@ function RequestList() {
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     {list.error&&!list.data?<ErrorNotice message={list.error.message} retry={list.reload}/>:!list.data?<Loading/>:!list.data.items.length?<Empty title="No requests"/>:<>
       <ul className="requests-list" role="list">
-        {list.data.items.map(item=><RequestRow key={item.id} item={item} busy={mutation.busy} act={act}/>)}
+        {list.data.items.map(item=><RequestRow key={item.id} item={item} busy={mutation.busy} act={act} match={()=>setMatching(item)}/>)}
       </ul>
       <div className="button-row requests-pager"><span className="muted small">{list.data.total} in all</span>
         <button disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Previous</button><button disabled={!list.data.hasMore} onClick={()=>setPage(p=>p+1)}>Next</button></div>
     </>}
+    {matching&&<ShowMatchDialog tmdbId={matching.tmdbId} title={matching.title} saveLabel="Match and retry" onClose={()=>setMatching(undefined)}
+      after={async()=>{await api(`/admin/requests/${matching.id}/retry`,'POST');}}/>}
   </Card>;
 }
 
-function RequestRow({item,busy,act}:{item:RequestItem;busy:boolean;act:(item:RequestItem,action:'retry'|'remove')=>void}) {
+function RequestRow({item,busy,act,match}:{item:RequestItem;busy:boolean;act:(item:RequestItem,action:'retry'|'remove')=>void;match:()=>void}) {
   const [ref,near]=useNearViewport<HTMLLIElement>('240px');
   const {data:art}=useApi<RequestArtwork>(near?`/admin/requests/${item.id}/artwork`:undefined);
   return <li ref={ref} className="request-row">
@@ -78,7 +82,8 @@ function RequestRow({item,busy,act}:{item:RequestItem;busy:boolean;act:(item:Req
       {item.status==='removed'&&item.removedBy&&<small>{removedBy[item.removedBy]}</small>}
     </div>
     {item.status!=='removed'&&<div className="button-row request-actions">
-      {item.status==='failed'&&<button aria-label={`Retry ${item.title}`} disabled={busy} onClick={()=>act(item,'retry')}>Retry</button>}
+      {item.needsMatch&&<button className="primary" aria-label={`Match ${item.title} to a TVDB series`} disabled={busy} onClick={match}>Match</button>}
+      {item.status==='failed'&&!item.needsMatch&&<button aria-label={`Retry ${item.title}`} disabled={busy} onClick={()=>act(item,'retry')}>Retry</button>}
       <button aria-label={`Remove ${item.title}`} disabled={busy} onClick={()=>act(item,'remove')}>Remove</button>
     </div>}
   </li>;

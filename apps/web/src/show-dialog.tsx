@@ -6,6 +6,7 @@ import {Switch} from './settings-ui.js';
 import {toast} from './toasts.js';
 import {InteractiveSearchPanel} from './interactive-search.js';
 import {RequestsTable,SourceLine} from './movie-source.js';
+import {ShowMatchDialog} from './show-match.js';
 import {FilesTable,GrabsTable,TitleControls,WatchHistoryPanel,type Mutation} from './movie-dialog.js';
 import {ACTIONS,Dash,FavoriteStar,GrabPill,IconAction,MediaStatusPill,Panel,Poster,RowActions,Table,Tabs,When,WhenDay,gb,type TitlePane,type Tone} from './manage-ui.js';
 
@@ -63,7 +64,7 @@ export function ShowDialogBody({t,path,pane,scope,setPane,mutation,onDeleted}:{t
 }
 
 function Head({t,path,mutation,search,onDeleted}:{t:ShowTitleView;path:string;mutation:Mutation;search:()=>void;onDeleted:()=>void}) {
-  const now=Date.now(),s=showStatus(t),{have,total,size}=t,next=t.nextAir?.day;
+  const now=Date.now(),s=showStatus(t),{have,total,size}=t,next=t.nextAir?.day,[matching,setMatching]=useState(false);
   return <header className="ui-movie">
     <Poster id={t.id} className="ui-movie-poster"/>
     <div className="ui-movie-main">
@@ -83,7 +84,9 @@ function Head({t,path,mutation,search,onDeleted}:{t:ShowTitleView;path:string;mu
       <TitleControls t={t} path={path} mutation={mutation} onDeleted={onDeleted}>
         <button disabled={mutation.busy||t.paused||!t.monitored||!t.wanted.missing&&!t.wanted.cutoff} title="Search now for every wanted episode and grab the best matches" onClick={search}>
           <Icon name="search" size={16}/>Automatic search</button>
+        <button disabled={mutation.busy} title="Pick the TVDB series and seasons its files are named by" onClick={()=>setMatching(true)}><Icon name="link" size={16}/>Match</button>
       </TitleControls>
+      {matching&&<ShowMatchDialog tmdbId={t.tmdbId} title={t.title} onClose={()=>setMatching(false)}/>}
     </div>
   </header>;
 }

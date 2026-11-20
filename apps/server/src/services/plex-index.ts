@@ -1,4 +1,5 @@
 import type { PlexAvailability, PlexCopy } from '../providers/plex.js';
+import { tmdbSeasonOf, toShowKeys, type SeasonMap, type ShowMatch } from '../lib/season-map.js';
 
 // What the Plex server holds, by TMDB id (and TVDB for shows): one index for the whole app, built in app.ts (the
 // plex-index module) and read by the library (wanted, Admin's Plex links) and requests (statuses, Explore's labels,
@@ -36,6 +37,8 @@ export type LibraryIdentity = {
   titleId(kind: TitleKind, tmdbId: number): number | undefined;
   // The library title a file belongs to.
   pathTitle(path: string): number | undefined;
+  // A show match (lib/season-map.ts): the show is Plex's series of that TVDB id, in the series' season numbers.
+  showMatch?(tmdbId: number): Pick<ShowMatch, 'tvdbId' | 'seasons'> | undefined;
 };
 type Keyed = { kind: TitleKind; held: Held; season?: number; episode?: number };
 type Index = { movies: Map<number, Held>; shows: Map<number, Held>; showsByTvdb: Map<number, Held>; keys: Map<string, Keyed> };
@@ -96,7 +99,30 @@ export class PlexIndex {
     return keyed && keyed.season === undefined ? keyed.held : undefined;
   }
   movie(tmdbId: number) { return this.index?.movies.get(tmdbId); }
-  show(tmdbId: number, tvdbId?: number | undefined) { return this.index?.shows.get(tmdbId) ?? (tvdbId ? this.index?.showsByTvdb.get(tvdbId) : undefined); }
+  // A matched show filed under another series' seasons answers with the series, cut to the show's seasons and renumbered
+  // into them (so its readers keep TMDB's numbers).
+  show(tmdbId: number, tvdbId?: number | undefined) {
+    const match = this.libraryIds?.showMatch?.(tmdbId);
+    if (match?.seasons) { const held = this.index?.showsByTvdb.get(match.tvdbId); return held && this.renumbered(held, match.seasons); }
+    const id = match?.tvdbId ?? tvdbId;
+    return this.index?.shows.get(tmdbId) ?? (id ? this.index?.showsByTvdb.get(id) : undefined);
+  }
+  // Kept per copy until the map or the copy's episodes (read again in place, readShow) change.
+  private renumberedCache = new WeakMap<Held, { key: string; from: Held['episodes']; held: Held }>();
+  private renumbered(held: Held, seasons: SeasonMap): Held {
+    const key = JSON.stringify(seasons), hit = this.renumberedCache.get(held);
+    if (hit?.key === key && hit.from === held.episodes) return hit.held;
+    const map = <V,>(from: ReadonlyMap<number, V>) => {
+      const out = new Map<number, V>();
+      for (const [t, v] of from) { const s = tmdbSeasonOf(seasons, t); if (s !== undefined) out.set(s, v); }
+      return out;
+    };
+    const episodeKeys = held.episodeKeys && new Map([...held.episodeKeys].flatMap(([k, [t, e]]) => { const s = tmdbSeasonOf(seasons, t); return s === undefined ? [] : [[k, [s, e] as const]]; }));
+    const next: Held = { ...held, seasons: map(held.seasons), ...(held.episodes ? { episodes: toShowKeys(seasons, held.episodes) } : {}), ...(episodeKeys ? { episodeKeys } : {}),
+      ...(held.seasonItems ? { seasonItems: map(held.seasonItems) } : {}), ...(held.seasonLatest ? { seasonLatest: map(held.seasonLatest) } : {}) };
+    this.renumberedCache.set(held, { key, from: held.episodes, held: next });
+    return next;
+  }
   // Every title Plex holds, keyed like Explore items (`movie:tmdb:603`).
   *titles(): Generator<[kind: 'movie' | 'show', tmdbId: number, held: Held]> {
     for (const [id, held] of this.index?.movies ?? []) yield ['movie', id, held];

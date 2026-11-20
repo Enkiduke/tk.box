@@ -1,3 +1,5 @@
+import { tmdbSeasonOf, type SeasonMap } from './season-map.js';
+
 // The release-name parser (docs/ARR-REPLACEMENT.md, "The parser"). Pure: a name in, what it says out. Everything after
 // the title (resolution, source, codecs, flags) is read only from the part after the title and year, so a title word
 // like "Web", "French" or "Real" is never taken for a tag.
@@ -297,7 +299,10 @@ export const imdbNumber = (id: string | number | undefined) => {
 
 export type Match = { ok: boolean; reason: string };
 export type MovieTitle = { title: string; year?: number; aliases?: readonly string[]; imdbId?: string };
-export type ShowTitle = { title: string; year?: number; aliases?: readonly string[]; tvdbId?: number };
+// `series`: the TVDB series a show is filed under when TVDB counts it as seasons of another series (a show match with a
+// season map, lib/season-map.ts); `tvdbId` is then that series'.
+export type ShowTitle = { title: string; year?: number; aliases?: readonly string[]; tvdbId?: number; series?: ShowSeries };
+export type ShowSeries = { title: string; year?: number; seasons: SeasonMap };
 // What an indexer says the release is (NZBGeek's imdb and tvdbid attributes). When present it settles the match.
 export type ReleaseIds = { imdb?: string | number; tvdbid?: string | number };
 
@@ -326,13 +331,33 @@ export function matchMovie(parsed: ParsedRelease, movie: MovieTitle, ids: Releas
   return { ok: true, reason: 'title matches' };
 }
 
-// A show: the title or an alias (season and episode are the pick rules' to check). A tvdbid attribute settles it.
+const ownTitles = (show: ShowTitle) => {
+  const titles = [show.title, ...(show.aliases ?? [])];
+  if (show.year !== undefined) titles.push(`${withoutYear(show.title)} ${show.year}`);
+  return titles;
+};
+
+// A show: the title or an alias, or its TVDB series' title (season and episode are the pick rules' to check). A tvdbid
+// attribute settles it.
 export function matchShow(parsed: ParsedRelease, show: ShowTitle, ids: ReleaseIds = {}): Match {
   const theirs = ids.tvdbid === undefined || ids.tvdbid === '' ? undefined : Number(ids.tvdbid);
   if (theirs !== undefined && Number.isInteger(theirs) && theirs > 0 && show.tvdbId !== undefined)
     return theirs === show.tvdbId ? { ok: true, reason: 'TVDB id matches' } : { ok: false, reason: `TVDB id ${theirs} isn't ${show.tvdbId}` };
   if (!parsed.title) return { ok: false, reason: 'the name is obfuscated' };
-  const titles = [show.title, ...(show.aliases ?? [])];
-  if (show.year !== undefined) titles.push(`${withoutYear(show.title)} ${show.year}`);
+  const titles = ownTitles(show);
+  if (show.series) titles.push(show.series.title, ...(show.series.year !== undefined ? [`${withoutYear(show.series.title)} ${show.series.year}`] : []));
   return namesMatch(parsed, titles) ? { ok: true, reason: 'title matches' } : { ok: false, reason: `title “${parsed.title}” isn't “${show.title}”` };
+}
+
+// The release (or file) in the show's own season numbers. A show filed under another TVDB series is named two ways:
+// for itself, numbered as TMDB numbers it (Monster The Lizzie Borden Story S01E02), or as the series' season
+// (Monster S04E02, or any name carrying the series' tvdbid). Named for itself, it's as it is; otherwise its season is
+// the series' and turned back into the show's through the map, and a series season the show doesn't map to is
+// another show's (a string: why).
+export function inShowNumbering(parsed: ParsedRelease, show: ShowTitle): ParsedRelease | string {
+  const series = show.series;
+  if (!series || parsed.season === undefined || parsed.multiSeason) return parsed;
+  if (parsed.title && namesMatch(parsed, ownTitles(show))) return parsed;
+  const season = tmdbSeasonOf(series.seasons, parsed.season);
+  return season === undefined ? `${series.title} season ${parsed.season} isn't ${show.title}` : { ...parsed, season };
 }

@@ -291,3 +291,10 @@ span.ui-source strong{color:var(--text);font-weight:600}
 .ui-table tr[data-drop=after] td{box-shadow:inset 0 -2px 0 var(--accent)}
 .ui-table tr[data-drop=into] td{background:var(--accent-tint)}
 .ui-chips .ui-chip[draggable=true]{cursor:grab}
+/* Match (show-match.tsx): the TVDB series search and the season map. */
+.ui-match{display:grid;gap:16px}
+.ui-match>p{margin:0}
+.ui-match-search{display:flex;gap:8px;align-items:center}
+.ui-match .ui-table-wrap{max-height:360px;overflow:auto}
+.ui-table tr.selected td{background:var(--accent-tint)}
+.ui-match select{width:100%}

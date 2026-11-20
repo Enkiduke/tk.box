@@ -1,3 +1,4 @@
+import { NO_TVDB_TEXT } from './library.js';
 import type { ExploreSeason, RequestArtwork, RequestItem, RequestLabel, RequestTiming } from '../../../../packages/contracts/src/index.js';
 import { AppError, readOnly, requireThat, requireWritable } from '../errors.js';
 import type { TmdbTitles } from '../providers/tmdb-titles.js';
@@ -311,7 +312,8 @@ export class Requests {
 export function requestItem(row: RequestRow): RequestItem {
   return { id: row.id, kind: row.kind, tmdbId: row.tmdbId, title: row.title, ...(row.year ? { year: row.year } : {}), status: row.status, statusAt: row.statusAt, createdAt: row.createdAt,
     seen: row.seen, seasons: row.seasons.map(s => ({ season: s.season, available: !!s.availableAt })), accountName: row.accountName,
-    ...(row.lastError && (row.status === 'failed' || row.status === 'queued') ? { error: row.lastError } : {}), ...(row.removedBy ? { removedBy: removedBy(row) } : {}) };
+    ...(row.lastError && (row.status === 'failed' || row.status === 'queued') ? { error: row.lastError } : {}), ...(row.removedBy ? { removedBy: removedBy(row) } : {}),
+    ...(row.kind === 'show' && row.status === 'failed' && row.lastError?.includes(NO_TVDB_TEXT) ? { needsMatch: true } : {}) };
 }
 // Who removed it, without naming an administrator's account: the requester, an administrator, Clean Up, or the library.
 export const removedBy = (row: Pick<RequestRow, 'removedBy' | 'accountId'>) => row.removedBy === 'library' || row.removedBy === 'cleanup' ? row.removedBy : row.removedBy === row.accountId ? 'requester' : 'admin';
