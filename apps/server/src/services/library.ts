@@ -10,7 +10,7 @@ import { bettersLibrary, compareDecisions, decide, fewSeeders, pick,type Decisio
 import { EARLY_COPIES, rank } from '../lib/quality.js';
 import { imdbNumber, normaliseTitle, parseRelease, type ParsedRelease } from '../lib/release-name.js';
 import { done, fail, retry, type Outcome, type QueueApi, type QueueItem, type HandlerContext } from './queue.js';
-import { beforeCinemas, episodeAiredAt, have as haveOf, type Have, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, scopeName, showEnded,
+import { beforeCinemas, episodeAiredAt, have as haveOf, type Have, episodeWanted, firstEpisodeSearchAt, firstSearchAt, followEpisodes, isOut, movieWanted, nextEpisodeSearchAt, nextSearchAt, parseScope, releaseChanged, scopeName, showEnded, unreleasedUndated,
   showScopes, type EpisodeFact, type ShowScope, type Wanted } from './wanted.js';
 import { findVideos, type LibraryImporter, type ShowImport } from './library-import.js';
 import { rarSets, unpack, unpackFolder } from './unpack.js';
@@ -81,7 +81,7 @@ export type BulkChanges = Omit<LibraryBulkEdit, 'ids'>;
 // A quick-edit search that couldn't run, in a word.
 const BULK_REASONS: Record<string, string> = { TITLE_PAUSED: 'Failing', TITLE_UNMONITORED: 'Not monitored', GRAB_OPEN: 'Already downloading', NOTHING_WANTED: 'Nothing wanted' };
 type Emit = <K extends keyof BusEvents>(event: K, payload: BusEvents[K]) => void;
-type TmdbMovie = { title?: string; original_title?: string; release_date?: string; runtime?: number | null; imdb_id?: string | null;
+type TmdbMovie = { title?: string; original_title?: string; release_date?: string; status?: string; runtime?: number | null; imdb_id?: string | null;
   external_ids?: { imdb_id?: string | null };
   alternative_titles?: { titles?: { title?: string }[] };
   release_dates?: { results?: { iso_3166_1?: string; release_dates?: { type?: number; release_date?: string }[] }[] } };
@@ -129,7 +129,8 @@ const matchesLibraryFile = (release: Release, file: LibraryFileRow, grab: Grab |
   (grab?.guid === release.guid && grab.indexer === release.indexer) || file.releaseName?.toLowerCase() === release.name.toLowerCase();
 
 // TMDB's days for a movie: release_dates types 3 (theatrical; 2, limited, when there's no 3), 4 (digital), 5 (physical).
-// The US dates when TMDB has them, else the earliest anywhere.
+// The US dates when TMDB has them, else the earliest anywhere. With TMDB's status (Released, Planned, In Production…),
+// which says whether an undated movie is out (wanted.ts, isOut).
 export function releasedFrom(movie: TmdbMovie): Released {
   const results = movie.release_dates?.results ?? [];
   const pickDay = (types: number[]) => {
@@ -138,7 +139,7 @@ export function releasedFrom(movie: TmdbMovie): Released {
   };
   const theatrical = pickDay([3]) ?? pickDay([2]) ?? (movie.release_date ? movie.release_date.slice(0, 10) : undefined);
   const digital = pickDay([4]), physical = pickDay([5]);
-  return { ...(theatrical ? { theatrical } : {}), ...(digital ? { digital } : {}), ...(physical ? { physical } : {}) };
+  return { ...(theatrical ? { theatrical } : {}), ...(digital ? { digital } : {}), ...(physical ? { physical } : {}), ...(movie.status ? { status: movie.status } : {}) };
 }
 
 // What Interactive search shows was read from a release's name.
@@ -645,8 +646,9 @@ export class Library {
     this.store.pruneSkips();
     for (const title of this.store.dueMovies(now)) {
       if (this.store.openGrabFor(title.id) || !this.wanted(title).wanted) continue;
-      // Not in cinemas yet (a search scheduled under older timing rules): move it to when it may search, not now.
-      if (beforeCinemas(title.released, now) !== undefined) {
+      // Not in cinemas yet, or undated and not released (a search scheduled under older timing rules): move it to when it
+      // may search, not now.
+      if (beforeCinemas(title.released, now) !== undefined || unreleasedUndated(title.released)) {
         const last = this.store.search(title.id, 'movie'), file = this.store.files(title.id)[0];
         this.store.setSearch({ titleId: title.id, scope: 'movie', lastAt: last?.lastAt ?? 0, misses: last?.misses ?? 0,
           nextAt: firstSearchAt({ now, released: title.released, earlyCopies: title.earlyCopies, ...(file ? { file } : {}) }) });
@@ -1590,8 +1592,8 @@ export class Library {
       else {
         const facts = await this.tmdb(title.tmdbId);
         this.store.refreshed(title.id, facts);
-        // New release dates: the movie is timed again from them, its misses over.
-        if (JSON.stringify(facts.released) !== JSON.stringify(title.released)) this.searchAfresh(title.id);
+        // New release dates, or TMDB now calling it released or not: the movie is timed again, its misses over.
+        if (releaseChanged(title.released, facts.released)) this.searchAfresh(title.id);
       }
     }
     catch (e) { return fail(errorText(e), e instanceof AppError && e.code === 'NOT_FOUND'); }

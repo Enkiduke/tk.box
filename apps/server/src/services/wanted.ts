@@ -8,7 +8,7 @@ import type { EpisodeRow, Monitor, Released, SeasonRow } from '../persistence/li
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 // A miss waits 1, 2, 4, then 7 days; a title long out (LONG_OUT) that still misses after that, 14 days from the 9th
 // miss and 30 from the 11th, as RSS still catches it. Anything that could change a search's outcome (a new profile,
-// Monitored or Resume, Search now, new release dates) starts the misses over (Library.searchAfresh).
+// Monitored or Resume, Search now, new release dates or status) starts the misses over (Library.searchAfresh).
 export const MISS_BACKOFF_DAYS = [1, 2, 4, 7, 7, 7, 7, 7, 14, 14, 30] as const;
 export const LONG_OUT = 90 * DAY;
 export const missBackoff = (misses: number, longOut = false) => {
@@ -56,13 +56,27 @@ export function homeRelease(released: Released) {
   const digital = dayStart(released.digital), physical = dayStart(released.physical);
   return digital === undefined ? physical : physical === undefined ? digital : Math.min(digital, physical);
 }
+// No dates at all and TMDB doesn't call it released (Planned, In Production…): not out, and not searched for until TMDB
+// dates it or marks it released (the daily refresh then starts its searches over). No status (an older row) or
+// Released: taken as out, as an old film TMDB never dated is.
+export const unreleasedUndated = (released: Released) =>
+  !released.theatrical && !released.digital && !released.physical && released.status !== undefined && released.status !== 'Released';
+// A refresh that changes when the movie may be searched: new dates, or TMDB starting or stopping to call it released.
+// A status first seen (a row from before statuses were kept) changes nothing by itself.
+export function releaseChanged(before: Released, after: Released) {
+  const days = (r: Released) => `${r.theatrical ?? ''}|${r.digital ?? ''}|${r.physical ?? ''}`;
+  if (days(before) !== days(after)) return true;
+  return before.status !== undefined && (before.status === 'Released') !== (after.status === 'Released');
+}
+
 // Out at home: a digital or physical release that has happened, or (with neither known) a theatrical one long enough
-// ago, or no dates at all.
+// ago, or no dates at all unless TMDB says it isn't released.
 export function isOut(released: Released, now: number) {
   const home = homeRelease(released);
   if (home !== undefined) return home <= now;
   const theatrical = dayStart(released.theatrical);
-  return theatrical === undefined || theatrical + THEATRICAL_GRACE <= now;
+  if (theatrical === undefined) return !unreleasedUndated(released);
+  return theatrical + THEATRICAL_GRACE <= now;
 }
 
 // `earlyCopies`: the movie's own switch.
@@ -73,7 +87,9 @@ export const beforeCinemas = (released: Released, now: number) => { const at = d
 
 // On request or add: at once when the movie is out. Not out: from its cinema release with Early copies on, else from
 // its home release (with no home date yet, a week on but not before cinemas), with RSS only until then.
+// Undated and not released: looked at again a day on, after TMDB's daily refresh, with no indexer search till it's dated.
 export function firstSearchAt(input: TimingInput): number {
+  if (unreleasedUndated(input.released)) return input.now + DAY;
   if (isOut(input.released, input.now)) return input.now;
   const cinemas = beforeCinemas(input.released, input.now);
   if (input.earlyCopies) return cinemas ?? input.now;
@@ -88,6 +104,7 @@ export function firstSearchAt(input: TimingInput): number {
 // - and never past the home release while waiting for it.
 export function nextSearchAt(input: TimingInput & { misses: number }): number {
   const { now, released, earlyCopies, file } = input;
+  if (unreleasedUndated(released)) return now + DAY;
   const home = homeRelease(released);
   let next = now + missBackoff(input.misses, isOut(released, now - LONG_OUT));
   const cinemas = beforeCinemas(released, now);
