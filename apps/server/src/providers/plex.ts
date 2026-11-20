@@ -560,6 +560,23 @@ export class PlexAdapter {
     await this.json(url, serverToken);
     return true;
   }
+  // A movie's upgrade, once Plex has it: 'waiting' until Plex has scanned the new file in (a part named `fileName`) and
+  // read its resolution, so the poster's quality badge, made after, reads the new one. With `resurface` (an early copy
+  // upgraded to a real one) the movie then moves to the top of Recently Added: its added date is set to now.
+  async upgradedMovie(serverToken: string, ratingKey: string, fileName: string, resurface: boolean): Promise<'done' | 'waiting'> {
+    if (resurface) requireWritable();
+    requireThat(/^\d+$/.test(ratingKey), 'INVALID_MEDIA', 'Invalid Plex media identifier.');
+    const item = z.object({ MediaContainer: z.object({ Metadata: z.array(z.object({ librarySectionID: z.union([z.string(), z.number()]).transform(String),
+      Media: z.array(z.object({ videoResolution: z.string().optional(), Part: z.array(z.object({ file: z.string().optional() })).default([]) })).default([]) })).min(1) }) })
+      .parse(await this.json(new URL(`/library/metadata/${ratingKey}`, this.config.PLEX_URL), serverToken)).MediaContainer.Metadata[0]!;
+    const name = (path: string) => path.split(/[\\/]/).pop();
+    if (!item.Media.some(m => m.videoResolution && m.Part.some(p => p.file && name(p.file) === fileName))) return 'waiting';
+    if (!resurface) return 'done';
+    const url = new URL(`/library/sections/${item.librarySectionID}/all`, this.config.PLEX_URL);
+    for (const [key, value] of Object.entries({ type: '1', id: ratingKey, 'addedAt.value': String(Math.floor(Date.now() / 1000)), 'addedAt.locked': '1' })) url.searchParams.set(key, value);
+    await this.json(url, serverToken, 'PUT');
+    return 'done';
+  }
   async availability(grant:PlexGrant):Promise<PlexAvailability> {
     const libraries=grant.libraries.filter(l=>l.type==='movie'||l.type==='show');
     const result:PlexAvailability={titles:[],seasons:[],complete:true};

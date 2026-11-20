@@ -169,6 +169,16 @@ export class ArtworkSchedule {
     done(left ? `Queued ${titles(queued)}; ${left} more next check.` : queued ? `Queued ${titles(queued)}.` : 'Nothing new.');
   }
   // A full run now (Admin › Schedule), by whoever asked, with their grant.
+  // An early copy upgraded to a real one (library.movie.resurfaced): its poster is made again if that changed it (the
+  // quality badge), when artwork covers its library and sends results to Plex.
+  async upgraded(ratingKey: string, title: string, section?: string) {
+    const settings = this.store.settings();
+    if (!settings.upload || (section !== undefined && !settings.libraries.includes(section))) return;
+    const grant = await this.adminGrant().catch(() => undefined);
+    if (!grant) return;
+    const args = ['--item', ratingKey, '--changed-only'];
+    if (!this.engine.pending(args)) this.engine.enqueue('system:schedule', `Upgraded: ${title}`, args, { token: grant.serverToken, libraries: grant.libraries });
+  }
   runNow(name: Task, actor: string, grant: PlexGrant) {
     const task = TASKS[name], upload = this.store.settings().upload;
     const args = task.upload && !upload ? name === 'collections-all' ? ['index', 'build'] : undefined : [...task.args];

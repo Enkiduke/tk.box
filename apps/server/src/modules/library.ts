@@ -43,6 +43,18 @@ export const libraryModule = defineModule({
     const library = new Library({
       store, queue, indexers, downloaders, titles, plex: holds, importer, ...(tvmaze ? { airings: tvmaze.airings.bind(tvmaze) } : {}),
       scan: folder => plexOwner.scanFolder(folder),
+      // An upgrade Plex has: the movie's copy holding the new file (moved up Recently Added when `resurface`), or every
+      // copy of a show. Artwork checks their posters (library.title.upgraded).
+      upgraded: async (title, fileName, resurface) => {
+        const held = title.kind === 'movie' ? plexIndex.movie(title.tmdbId) : plexIndex.show(title.tmdbId, title.tvdbId);
+        if (!held) return 'waiting';
+        const copies = held.copies ?? [{ ratingKey: held.ratingKey, ...(held.section ? { section: held.section } : {}) }];
+        const upgraded = (copy: (typeof copies)[number]) => bus.emit('library.title.upgraded', { kind: title.kind, tmdbId: title.tmdbId, title: title.title,
+          ratingKey: copy.ratingKey, ...(copy.section ? { section: copy.section } : {}), resurfaced: resurface });
+        if (title.kind === 'show') { copies.forEach(upgraded); return 'done'; }
+        for (const copy of copies) if (await plexOwner.upgradedMovie(copy.ratingKey, fileName, resurface) === 'done') { upgraded(copy); return 'done'; }
+        return 'waiting';
+      },
       emit: (event, payload) => bus.emit(event, payload),
       log: (message, detail) => log.info(message, detail),
     });

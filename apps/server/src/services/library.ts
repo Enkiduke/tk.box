@@ -109,8 +109,11 @@ type SendPayload = { grabId: number; link: string };
 type GrabPayload = { grabId: number; from?: string };
 // One Plex scan for a folder's new files (`fileIds`, a pack's season folder), each then announced as imported.
 type FilePayload = { fileId: number; fileIds?: number[] };
+type UpgradePayload = { fileId: number; resurface: boolean };
 
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
+// How long to give Plex to scan an upgrade in before following it up (poster, Recently Added), and between looks after.
+const UPGRADE_EVERY = 2 * MINUTE;
 // SABnzbd's history holds 500 jobs; a grab it no longer lists for this many checks (30 s apart) is taken as gone.
 const MISSING_CHECKS = 6;
 // TMDB's facts are read again daily for a movie that isn't out (a show still airing), weekly for one that is (ended).
@@ -165,6 +168,9 @@ export class Library {
   constructor(private deps: {
     store: LibraryStore; queue: QueueApi; indexers: IndexersApi; downloaders: DownloadersApi; titles: Pick<TmdbTitles, 'get'>;
     plex: PlexHolds; importer: LibraryImporter; scan: (folder: string) => Promise<boolean>; emit: Emit;
+    // An upgrade, once Plex has its file named `fileName` ('waiting' until then): its poster is checked, and with
+    // `resurface` a movie moves to the top of Plex's Recently Added.
+    upgraded?: (title: LibraryTitle, fileName: string, resurface: boolean) => Promise<'done' | 'waiting'>;
     log: (message: string, detail?: Record<string, unknown>) => void; now?: () => number; unpacker?: Unpacker;
     // TVmaze's exact air times (providers/tvmaze.ts); without it, or when it fails, TMDB's day decides.
     airings?: (ids: { tvdbId?: number; imdbId?: string }) => Promise<TvmazeAiring[]>;
@@ -187,6 +193,7 @@ export class Library {
       onFailed: (item, error) => this.alert(`library.import.${item.payload.grabId}`, 'An unpack gave up', error) });
     queue.handle<SearchPayload>('refresh-title', { label: 'Refresh titles from TMDB', area: 'Library', handler: item => this.refresh(item) });
     queue.handle<FilePayload>('plex-scan', { label: 'Tell Plex about new files', area: 'Library', handler: item => this.scan(item) });
+    queue.handle<UpgradePayload>('plex-upgraded', { label: 'Follow up upgrades in Plex', area: 'Library', handler: item => this.upgraded(item) });
     this.stopFeed = this.deps.indexers.feeds(async releases => { await this.onFeed(releases); });
   }
   close() { this.stopFeed?.(); }
@@ -1087,6 +1094,9 @@ export class Library {
       }
     }
     const how = torrent ? (from ? { from, state: 'seeding' as const } : { link: true, state: 'seeding' as const }) : {};
+    // A movie whose file is an early copy (a cam and the like): upgraded to a real one, Plex shows it as newly added.
+    const before = title.kind === 'movie' ? this.store.files(title.id) : [];
+    const wasEarly = before.length > 0 && before.every(f => EARLY_COPIES.has(f.quality));
     try {
       // A movie: its one file, against TMDB's runtime. A show: its files mapped to episodes, each against its episodes'.
       const result = title.kind === 'show'
@@ -1114,6 +1124,11 @@ export class Library {
       const byFolder = new Map<string, number[]>();
       for (const f of files) byFolder.set(dirname(f.path), [...byFolder.get(dirname(f.path)) ?? [], f.fileId]);
       for (const ids of byFolder.values()) this.deps.queue.enqueue('plex-scan', `file:${ids[0]}`, { fileId: ids[0]!, ...(ids.length > 1 ? { fileIds: ids } : {}) });
+      // An upgrade: its poster is checked once Plex has it, and an early copy made real moves up Recently Added.
+      if (result.replaced.length) {
+        const fileId = files[0]!.fileId, resurface = wasEarly && title.kind === 'movie' && !EARLY_COPIES.has(this.store.file(fileId)!.quality);
+        this.deps.queue.enqueue('plex-upgraded', `file:${fileId}`, { fileId, resurface } satisfies UpgradePayload, { runAt: now + UPGRADE_EVERY, maxAttempts: 10 });
+      }
       this.grabChanged(grab);
       // An upgrade: the files it replaced are gone.
       if (result.replaced.length) this.changed(title, 'file', { paths: result.replaced });
@@ -1229,6 +1244,25 @@ export class Library {
     }
     for (const f of files) this.deps.emit('library.file.imported', { titleId: f.titleId, fileId: f.id, path: f.path, kind: title?.kind ?? 'movie', tmdbId: title?.tmdbId ?? 0 });
     return done();
+  }
+
+  // ---- plex-upgraded ----
+
+  // An upgrade, once Plex has the new file: its poster is checked, and an early copy made real moves to the top of
+  // Recently Added.
+  private async upgraded(item: QueueItem<UpgradePayload>): Promise<Outcome> {
+    const file = this.store.file(item.payload.fileId), title = file && this.store.title(file.titleId), { resurface } = item.payload;
+    if (!file || !title || !this.deps.upgraded) return done();
+    try {
+      if (await this.deps.upgraded(title, file.path.split(/[\\/]/).pop()!, resurface) === 'done') {
+        if (resurface) this.deps.log('library: an upgraded early release is back in Recently Added', { title: title.id, path: file.path });
+        return done();
+      }
+    } catch (e) {
+      if (e instanceof AppError && e.code === 'NO_PLEX_TOKEN') { this.deps.log('library: no Plex admin token, so the upgrade wasn’t followed up', { title: title.id }); return done(); }
+      return fail(errorText(e));
+    }
+    return retry(this.now() + UPGRADE_EVERY);
   }
 
   // ---- Admin › Downloads ----

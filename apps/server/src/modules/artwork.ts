@@ -36,6 +36,8 @@ export const artworkModule = defineModule({
     engine.useCollections(new CollectionsRunner({ plex, tmdb, mdblistKey: () => serviceKeys.providers().mdblist, artwork: store, store: collections }), collections);
     const schedule = new ArtworkSchedule(store, engine, plex, () => plexOwner.grant(), (message, detail) => log.warn(message, detail), streaming);
     bus.on('plex.library.changed', ({ sections }) => schedule.finished(sections));
+    bus.on('library.title.upgraded', ({ ratingKey, section, title }) => void schedule.upgraded(ratingKey, title, section)
+      .catch(e => log.warn('artwork: an upgraded title’s poster wasn’t queued', { ratingKey, error: (e as Error).message })));
     bus.on('plex.notifications.connecting', ({ grant }) => schedule.notificationLibraries(grant));
     engine.finished = () => {
       bus.emit('library.edited', { by: 'artwork' });

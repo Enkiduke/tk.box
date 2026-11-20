@@ -40,6 +40,9 @@ export type BusEvents = {
   // a collection letting it go; `paths`: its files' records that went).
   'library.grab.changed': { grabId: number; titleId: number; state: GrabState };
   'library.file.imported': { titleId: number; fileId: number; path: string; kind: 'movie' | 'show'; tmdbId: number };
+  // A title's file was upgraded and Plex has the new one: its copy `ratingKey` may need a new poster (the quality badge).
+  // `resurfaced`: an early copy became a real one, and the movie is back at the top of Recently Added.
+  'library.title.upgraded': { kind: 'movie' | 'show'; tmdbId: number; title: string; ratingKey: string; section?: string; resurfaced: boolean };
   'library.title.changed': { titleId: number; kind: 'movie' | 'show'; tmdbId: number; change: TitleChange; by?: string; paths?: string[] };
   // A collections run wants these movies (seasonal downloads): the library adds those it lacks, and
   // deletes those in `removeIds` that it added for collections and nobody has requested or kept since.
