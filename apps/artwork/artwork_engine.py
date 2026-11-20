@@ -954,7 +954,9 @@ def banner_pick(data, added, today, settings):
     ended = (last.get("season_number"), last.get("episode_number"), aired)
     for episode, day in ((upcoming, coming), (last, aired)):
         season, number = episode.get("season_number") or 0, episode.get("episode_number") or 0
-        if season > 0 and number > 0 and (season, number) != (1, 1) and near("new_episode", day, False):
+        # Episodes out on a later season's first day (one, or a batch released together) are that season starting, not a new episode
+        premiere = season > 1 and day is not None and day == to_date((seasons.get(season) or {}).get("air_date"))
+        if season > 0 and number > 0 and (season, number) != (1, 1) and not premiere and near("new_episode", day, False):
             found.append(("new_episode", season, number, day))
             break
     if status == "Returning Series" and finale(last) and near("season_finale", aired, False):

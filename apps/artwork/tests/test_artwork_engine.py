@@ -1808,5 +1808,23 @@ class SafeguardTests(unittest.TestCase):
         later.save(prune=True)  # A whole-library run that no longer used other.jpg
         self.assertEqual(list(json.loads(store_file.read_text())), [str(poster)])
 
+
+class BannerPickTests(unittest.TestCase):
+    TODAY = date(2026, 11, 20)
+
+    def pick(self, last, seasons):
+        data = {"status": "Returning Series", "last_episode_to_air": last, "seasons": seasons}
+        return sp.banner_pick(data, None, self.TODAY, sp.banner_settings(()))["category"]
+
+    def test_premiere_batch_is_season_started(self):
+        seasons = [{"season_number": 3, "air_date": "2026-11-20", "episode_count": 8}]
+        last = {"season_number": 3, "episode_number": 2, "air_date": "2026-11-20"}
+        self.assertEqual(self.pick(last, seasons), "new_season_started")
+
+    def test_later_episode_is_new_episode(self):
+        seasons = [{"season_number": 3, "air_date": "2026-11-13", "episode_count": 8}]
+        last = {"season_number": 3, "episode_number": 3, "air_date": "2026-11-20"}
+        self.assertEqual(self.pick(last, seasons), "new_episode")
+
 if __name__ == "__main__":
     unittest.main()
