@@ -28,7 +28,7 @@ import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields, replace
-from datetime import date, timedelta
+from datetime import date, datetime, time as clock, timedelta, timezone
 from functools import lru_cache
 from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
@@ -918,6 +918,20 @@ def banner_date(day, pattern, simplify, today):
     return re.sub(r"yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d", lambda found: names[found[0]], pattern)
 
 
+
+def pacific_day(at=None):
+    """The US Pacific day at `at` (a UTC datetime or a Unix timestamp; now by default), whatever the server's own zone: the
+    status banners' "today" and "tomorrow", as tk.box counts air days. US daylight time: the second Sunday of March to the
+    first Sunday of November, both at 2 am local. Worked out here, as Python on Windows has no time zone data."""
+    now = datetime.fromtimestamp(at, timezone.utc) if isinstance(at, (int, float)) else at or datetime.now(timezone.utc)
+
+    def sunday(month, nth):
+        first = date(now.year, month, 1)
+        return first + timedelta(days=(6 - first.weekday()) % 7 + 7 * (nth - 1))
+    summer = datetime.combine(sunday(3, 2), clock(10), timezone.utc) <= now < datetime.combine(sunday(11, 1), clock(9), timezone.utc)
+    return (now - timedelta(hours=7 if summer else 8)).date()
+
+
 def with_airings(data, own):
     """TMDb's /tv details `data` with tk.box's air days for a show in its library (`own`: "last", "next" and "seasons",
     from the library's episodes): its last and next episode and each season's first day. tk.box's days take TVmaze's exact
@@ -992,7 +1006,7 @@ def banner_pick(data, added, today, settings):
 
 def sample_banner(category):
     """Made-up facts for a Template preview of one banner category: season 2, episode 8, three days from today."""
-    return {"category": category, "season": 2, "episode": 8, "date": (date.today() + timedelta(days=3)).isoformat()}
+    return {"category": category, "season": 2, "episode": 8, "date": (pacific_day() + timedelta(days=3)).isoformat()}
 
 
 def banner_layer(banner, style, base):
@@ -1002,7 +1016,7 @@ def banner_layer(banner, style, base):
     settings = banner_settings(style.status_banners)[banner["category"]]
     day, text = to_date(banner.get("date")), settings["text"]
     values = {"season": banner.get("season"), "episode": banner.get("episode"),
-              "date": banner_date(day, style.status_banner_date_format, style.status_banner_simplify_dates, date.today()) if day else ""}
+              "date": banner_date(day, style.status_banner_date_format, style.status_banner_simplify_dates, pacific_day()) if day else ""}
     for name, value in values.items():
         text = text.replace("{" + name + "}", "" if value is None else str(value))
     font, opacity = style.status_banner_font_file, settings["opacity"]
@@ -1900,7 +1914,7 @@ class Artwork(Metadata):
     def tmdb_details(self, item):
         def stale(data):
             upcoming = to_date((data.get("next_episode_to_air") or {}).get("air_date"))
-            return upcoming is not None and upcoming < date.today()
+            return upcoming is not None and upcoming < pacific_day()
         return self.tmdb(f"/{item['type']}/{item['tmdb_id']}", stale=stale if item["type"] == "tv" else None,
                          append_to_response="images,external_ids", include_image_language=f"{self.language},en,null")
 
@@ -1914,7 +1928,7 @@ class Artwork(Metadata):
                 return data
         upcoming = data.get("next_episode_to_air") or {}
         day = to_date(upcoming.get("air_date"))
-        today = date.today()
+        today = pacific_day()
         ended = data.get("status") in ("Ended", "Canceled")
         if not ended and day and day >= today and (upcoming.get("season_number") or 0) > 0 and (upcoming.get("episode_number") or 0) > 0:
             return data
@@ -1951,7 +1965,7 @@ class Artwork(Metadata):
         if not item.get("tmdb_id") or not self.keys.get("tmdb_key"):
             return None
         added = (item.get("media") or {}).get("added")
-        return banner_pick(self.show_details(item), date.fromtimestamp(added) if added else None, date.today(), banner_settings(style.status_banners))
+        return banner_pick(self.show_details(item), pacific_day(added) if added else None, pacific_day(), banner_settings(style.status_banners))
 
     def badge_facts(self, item, style):
         """Fill item['media'] with what the enabled badges need beyond the Plex listing."""
@@ -2802,10 +2816,12 @@ class Batch:
         artwork, sources, config, base =self.artwork, self.sources, self.config, self.base
         output = item["output_path"]
         resend = self.refresh
+        check = bool(item.get("_banner_check"))  # --added: the show's poster, made again only if its banner changed
         if self.added and output.exists():
-            if self.delivered(item):
+            if not self.delivered(item):
+                resend = True  # --added: a poster on disk that Plex never got (a failed upload, a re-added title) is sent, not trusted
+            elif not check:
                 return "EXISTS", output
-            resend = True  # --added: a poster on disk that Plex never got (a failed upload, a re-added title) is sent, not trusted
         style = self.styles[item["layout_key"]]
         saved_stock = sources.apply(item)
         sources.refresh_generated(item, style)
@@ -2816,7 +2832,7 @@ class Batch:
         signature = render_signature(item, style, config, base, self.server)
         current = bool(signature and output.is_file() and self.recorded(item, style, state, signature) == signature)
         selection = None
-        if not self.force and self.changed_only and current:
+        if not self.force and (self.changed_only or check) and current:
             if saved_stock:
                 # Made as a stock poster: look again, and rebuild only if a poster that fits has turned up by now.
                 selection = self.better_than_stock(item, style)
@@ -2983,8 +2999,13 @@ def run(config_path, *, refresh=False, changed_only=False, rating_key=None, forc
             # requested season/episode, and only the pieces Plex doesn't have yet.
             show = next(item for item in items if item.get("season") is None)
             if season is not None and show["output_path"].exists() and batch.delivered(show):
-                # A lone episode also covers its season poster, which is skipped if it's already in Plex.
-                items = [item for item in items if item.get("season") == season and (
+                # A lone episode also covers its season poster, which is skipped if it's already in Plex. The show's
+                # poster comes too when it carries a status banner, which a new episode can change ("Season 4 started"):
+                # made again only if the banner did.
+                banner = "status_banner" in batch.styles[show["layout_key"]].badges
+                if banner:
+                    show["_banner_check"] = True
+                items = [item for item in items if (banner and item is show) or item.get("season") == season and (
                     episode is None or item.get("episode") in (None, episode))]
             if not items:
                 raise ValueError("--added matched nothing; is the season/episode in Plex yet?")

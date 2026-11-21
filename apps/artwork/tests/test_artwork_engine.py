@@ -1841,5 +1841,14 @@ class BannerPickTests(unittest.TestCase):
         self.assertEqual(upcoming["next_episode_to_air"]["air_date"], "2026-11-20")
 
 
+    def test_pacific_day_follows_us_daylight_time(self):
+        utc = lambda *parts: sp.datetime(*parts, tzinfo=sp.timezone.utc)
+        self.assertEqual(sp.pacific_day(utc(2026, 11, 21, 1, 0)), date(2026, 11, 20), "8 pm ET Friday is still Friday")
+        self.assertEqual(sp.pacific_day(utc(2026, 11, 21, 8, 30)), date(2026, 11, 21))
+        self.assertEqual(sp.pacific_day(utc(2026, 7, 4, 6, 30)), date(2026, 7, 3), "daylight time: UTC-7")
+        self.assertEqual(sp.pacific_day(utc(2026, 7, 4, 7, 30)), date(2026, 7, 4))
+        self.assertEqual(sp.pacific_day(utc(2026, 3, 8, 9, 59).timestamp()), date(2026, 3, 8), "a timestamp works too")
+
+
 if __name__ == "__main__":
     unittest.main()
