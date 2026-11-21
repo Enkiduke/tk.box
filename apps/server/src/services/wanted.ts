@@ -131,23 +131,25 @@ export const episodeAiredAt = (e: { airDate?: string | undefined; airTime?: numb
 // and each season's air_date, apps/artwork show_details), from the library's own air times so the banners agree with
 // when tk.box grabs: TVmaze's exact time where known (a streamer's day ahead of the broadcast TMDB lists), as a US
 // Pacific day like the aired guess above, not the server's (UTC would make a 9 pm ET Sunday episode Monday's); else
-// TMDB's day. Aired is episodeAiredAt's call (the stored airAt).
+// TMDB's day. Aired is episodeAiredAt's call (the stored airAt), or `held`: an episode tk.box or Plex has is out
+// whatever the listings say, as of today at the latest.
 export type AiringDay = { season_number: number; episode_number: number; air_date: string };
 export type ShowAirings = { last?: AiringDay; next?: AiringDay; seasons: Record<string, string> };
 const pacific = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
 export const pacificDay = (at: number) => pacific.format(at);
-export function showAirings(episodes: readonly { season: number; episode: number; airDate?: string; airAt: number; airTime?: number }[], now: number,
+export function showAirings(episodes: readonly { season: number; episode: number; airDate?: string; airAt: number; airTime?: number; held?: boolean }[], now: number,
   dayOf: (at: number) => string = pacificDay): ShowAirings {
-  const out: ShowAirings = { seasons: {} };
+  const out: ShowAirings = { seasons: {} }, today = dayOf(now);
   let last: { at: number; e: AiringDay } | undefined, next: { at: number; e: AiringDay } | undefined;
   const order = (a: AiringDay, b: AiringDay) => a.season_number - b.season_number || a.episode_number - b.episode_number;
   for (const e of episodes) {
-    const day = e.airTime !== undefined ? dayOf(e.airTime) : e.airDate;
-    if (!day || e.season < 1) continue;
+    const listed = e.airTime !== undefined ? dayOf(e.airTime) : e.airDate;
+    if (!listed || e.season < 1) continue;
+    const early = e.held && e.airAt > now, day = early && listed > today ? today : listed, at = early ? now : e.airAt;
     const entry = { season_number: e.season, episode_number: e.episode, air_date: day }, key = String(e.season);
     if (!out.seasons[key] || day < out.seasons[key]) out.seasons[key] = day;
-    if (e.airAt <= now) { if (!last || e.airAt > last.at || (e.airAt === last.at && order(entry, last.e) > 0)) last = { at: e.airAt, e: entry }; }
-    else if (!next || e.airAt < next.at || (e.airAt === next.at && order(entry, next.e) < 0)) next = { at: e.airAt, e: entry };
+    if (at <= now) { if (!last || at > last.at || (at === last.at && order(entry, last.e) > 0)) last = { at, e: entry }; }
+    else if (!next || at < next.at || (at === next.at && order(entry, next.e) < 0)) next = { at, e: entry };
   }
   if (last) out.last = last.e;
   if (next) out.next = next.e;

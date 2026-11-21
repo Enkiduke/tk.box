@@ -88,7 +88,11 @@ export const libraryModule = defineModule({
     artwork?.useAirings?.(() => {
       const byShow = new Map<number, ReturnType<LibraryStore['airedEpisodes']>>(), now = Date.now();
       for (const e of store.airedEpisodes()) { const list = byShow.get(e.tmdbId) ?? []; list.push(e); byShow.set(e.tmdbId, list); }
-      return Object.fromEntries([...byShow].map(([tmdbId, episodes]) => [String(tmdbId), showAirings(episodes, now)]));
+      // Held: tk.box's file or Plex's copy (in TMDB's numbers), so a download ahead of the listed day reads as out.
+      return Object.fromEntries([...byShow].map(([tmdbId, episodes]) => {
+        const plex = holds.showEpisodes?.(tmdbId, episodes[0]?.tvdbId);
+        return [String(tmdbId), showAirings(episodes.map(e => ({ ...e, held: e.hasFile || !!plex?.has(`${e.season}:${e.episode}`) })), now)];
+      }));
     });
     const sources: LibrarySources ={ requests: () => requestReads, ...(artwork ? { collections: () => artwork.collectionMovies() } : {}) };
     // Match: filing a show under a TVDB series (lib/season-map.ts), with the TVDB key from Admin › Connections.

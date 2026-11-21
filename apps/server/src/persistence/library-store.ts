@@ -508,13 +508,15 @@ export class LibraryStore {
       .map(r => ({ show: title(r), season: r.e_season, episode: r.e_episode, ...opt('name', r.e_name), airDate: r.e_air_date, ...opt('airTime', r.e_air_time),
         followed: !!r.e_followed, hasFile: !!r.has_file }));
   }
-  // Every show's episodes that have an air time (specials left out), with the show's TMDB id: the artwork engine's
-  // status banners read the library's air days (services/wanted.ts showAirings).
+  // Every show's episodes that have an air time (specials left out), with the show's TMDB and TVDB ids and whether
+  // tk.box has a file for it: the artwork engine's status banners read the library's air days (services/wanted.ts showAirings).
   airedEpisodes() {
-    return (prepared(this.db, `SELECT t.tmdb_id, e.season, e.episode, e.air_date, e.air_at, e.air_time FROM library_episodes e
-        JOIN library_titles t ON t.id = e.title_id WHERE t.kind = 'show' AND e.season > 0 AND e.air_at IS NOT NULL ORDER BY t.tmdb_id`)
-      .all() as { tmdb_id: number; season: number; episode: number; air_date: string | null; air_at: number; air_time: number | null }[])
-      .map(r => ({ tmdbId: r.tmdb_id, season: r.season, episode: r.episode, ...opt('airDate', r.air_date), airAt: r.air_at, ...opt('airTime', r.air_time) }));
+    return (prepared(this.db, `SELECT t.tmdb_id, t.tvdb_id, e.season, e.episode, e.air_date, e.air_at, e.air_time,
+        EXISTS(SELECT 1 FROM library_file_episodes fe WHERE fe.title_id = t.id AND fe.season = e.season AND fe.episode = e.episode) AS has_file
+      FROM library_episodes e JOIN library_titles t ON t.id = e.title_id WHERE t.kind = 'show' AND e.season > 0 AND e.air_at IS NOT NULL ORDER BY t.tmdb_id`)
+      .all() as { tmdb_id: number; tvdb_id: number | null; season: number; episode: number; air_date: string | null; air_at: number; air_time: number | null; has_file: number }[])
+      .map(r => ({ tmdbId: r.tmdb_id, ...opt('tvdbId', r.tvdb_id), season: r.season, episode: r.episode, ...opt('airDate', r.air_date), airAt: r.air_at, ...opt('airTime', r.air_time),
+        hasFile: !!r.has_file }));
   }
   // Shows Clean Up must keep (library_titles.keep), by TMDB id.
   keptShows() { return new Set((prepared(this.db, `SELECT tmdb_id FROM library_titles WHERE kind = 'show' AND keep = 1`).all() as { tmdb_id: number }[]).map(r => r.tmdb_id)); }
