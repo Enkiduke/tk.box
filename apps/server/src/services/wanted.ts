@@ -129,13 +129,15 @@ export const episodeAiredAt = (e: { airDate?: string | undefined; airTime?: numb
 
 // A show's airings as the artwork engine's status banners read them (TMDB's last_episode_to_air, next_episode_to_air
 // and each season's air_date, apps/artwork show_details), from the library's own air times so the banners agree with
-// when tk.box grabs: TVmaze's exact time where known (a streamer's day ahead of the broadcast TMDB lists), on the
-// engine's local calendar (`dayOf`); else TMDB's day. Aired is episodeAiredAt's call (the stored airAt).
+// when tk.box grabs: TVmaze's exact time where known (a streamer's day ahead of the broadcast TMDB lists), as a US
+// Pacific day like the aired guess above, not the server's (UTC would make a 9 pm ET Sunday episode Monday's); else
+// TMDB's day. Aired is episodeAiredAt's call (the stored airAt).
 export type AiringDay = { season_number: number; episode_number: number; air_date: string };
 export type ShowAirings = { last?: AiringDay; next?: AiringDay; seasons: Record<string, string> };
-const localDay = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const pacific = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
+export const pacificDay = (at: number) => pacific.format(at);
 export function showAirings(episodes: readonly { season: number; episode: number; airDate?: string; airAt: number; airTime?: number }[], now: number,
-  dayOf: (at: number) => string = localDay): ShowAirings {
+  dayOf: (at: number) => string = pacificDay): ShowAirings {
   const out: ShowAirings = { seasons: {} };
   let last: { at: number; e: AiringDay } | undefined, next: { at: number; e: AiringDay } | undefined;
   const order = (a: AiringDay, b: AiringDay) => a.season_number - b.season_number || a.episode_number - b.episode_number;
