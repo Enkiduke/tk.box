@@ -665,11 +665,11 @@ def read_config(path):
         config = json.load(handle)
     if not isinstance(config, dict):
         raise ValueError("Config must be a JSON object")
-    allowed = {"plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections"}
+    allowed = {"plex", "assets_dir", "cache_dir", "workers", "quality", "language", "missing_art", "overlay_marker", "default_layout", "layout_by_type", "layout_by_library", "layouts", "items", "overrides", "collections", "airings"}
     unknown = set(config) - allowed
     if unknown:
         raise ValueError(f"Unknown config keys: {', '.join(sorted(map(str, unknown)))}")
-    for name in ("plex", "overrides"):
+    for name in ("plex", "overrides", "airings"):
         if not isinstance(config.get(name, {}), dict):
             raise ValueError(f"{name} must be a mapping")
     for name, keys in (("plex", {"url", "token", "libraries", "upload", "include_seasons", "include_episodes", "include_collections", "collection_region", "completion_label", "upload_logo"}),):
