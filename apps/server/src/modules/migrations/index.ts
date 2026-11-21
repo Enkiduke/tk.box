@@ -14,6 +14,7 @@ import { requestsMigrations } from './requests.js';
 import { exploreMigrations } from './explore.js';
 import { cleanupMigrations } from './cleanup.js';
 import { subtitleFinderMigrations } from './subtitle-finder.js';
+import { jobsMigrations } from './jobs.js';
 
 // Every module's migrations by module name, in mount order. mountModule runs a module's own as it mounts; this list
 // lets tests and scripts get the full schema without mounting (tests/migrations.test.ts checks it matches the modules).
@@ -30,7 +31,8 @@ export const moduleMigrations: Readonly<Record<string, readonly Migration[]>> = 
   'subtitle-finder': subtitleFinderMigrations,
   requests: requestsMigrations,
   explore: exploreMigrations,
-  cleanup: cleanupMigrations
+  cleanup: cleanupMigrations,
+  jobs: jobsMigrations
 };
 
 // `vault` lets a migration that re-seals data run (artwork's TMDB key move); without it, such a migration throws when it

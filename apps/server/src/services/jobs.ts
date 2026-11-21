@@ -77,7 +77,7 @@ export class Jobs {
         ...(next !== undefined ? { nextRun: next } : {}), upcoming, canRun: !!job.run };
       return view;
     });
-    return { now, until, jobs };
+    return { now, until, zone: Intl.DateTimeFormat().resolvedOptions().timeZone, jobs };
   }
 }
 

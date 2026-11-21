@@ -385,7 +385,7 @@ function SchedulesPanel({source,guide,health,changed}:{source:Source;guide?:Sour
   });
   return <>
     {mutation.error&&<ErrorNotice message={mutation.error}/>}
-    <Card title="Schedules" description="Server local time.">
+    <Card title="Schedules" description="In the time zone set on Admin › Schedule.">
       <form className="form-stack" onSubmit={e=>{e.preventDefault();save();}}>
         {source.remote?<div className="field">Refresh the playlist<SchedulePicker value={playlist} min={60} set={edit((v:Schedule|null)=>v&&setPlaylist(v))}/></div>:<p className="muted small">Uploaded playlists don’t refresh.</p>}
         {!guide?<p className="muted small">No EPG yet. Add one in the Guide tab.</p>:guide.remote&&epg?<div className="field">Refresh the guide<SchedulePicker value={epg} min={60} disabled={!!guide.running} set={edit((v:Schedule|null)=>v&&setEpg(v))}/></div>:<p className="muted small">Uploaded guides don’t refresh.</p>}

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// When a job runs on its own, in server local time: every so many minutes since it last ran, at set times on chosen
+// When a job runs on its own, in the schedule time zone (Admin › Schedule): every so many minutes since it last ran, at set times on chosen
 // weekdays (none chosen is every day), or a five-field cron expression (minute hour day month weekday) for anything else.
 export type Schedule = { kind: 'every'; minutes: number } | { kind: 'times'; times: string[]; days: number[] } | { kind: 'cron'; expression: string };
 export type Scheduled = { enabled: boolean; schedule: Schedule };
@@ -144,4 +144,5 @@ export type JobView = {
   // Its runs from now to `until`, the first being nextRun.
   upcoming: number[]; canRun: boolean;
 };
-export type JobList = { now: number; until: number; jobs: JobView[] };
+// `zone`: the time zone every schedule's times are in (Admin › Schedule's picker; the server's own until one is chosen).
+export type JobList = { now: number; until: number; zone: string; jobs: JobView[] };

@@ -130,7 +130,7 @@ function ArtworkSchedules({data,changed}:{data:Overview;changed:()=>void}) {
     <div className="button-row sticky-actions"><button className="primary" disabled={mutation.busy}>Save schedules</button></div>
   </form>;
 }
-// When artwork jobs run on their own: changed titles on a schedule (server local time), and newly added titles as Plex
+// When artwork jobs run on their own: changed titles on a schedule (in the Schedule time zone), and newly added titles as Plex
 // adds them (with a scheduled check besides). Collections have their own schedules (Admin › Collections).
 function SchedulesCard({schedules,states,set}:{schedules:Schedules;states:Overview['schedules'];set:(value:Schedules)=>void}) {
   return <Card title="Schedules" description="Server local time.">

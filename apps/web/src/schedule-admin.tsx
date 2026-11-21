@@ -11,6 +11,8 @@ import {DownloadJobs} from './downloads-admin.js';
 const stateNames:Record<JobState,string>={running:'Running',ok:'OK',failed:'Failed',waiting:'Waiting',off:'Off',never:'Not run yet'};
 const REFRESH_MS=15000,HOUR=3600000,DAY_HOURS=24;
 const hourLabel=new Intl.DateTimeFormat(undefined,{hour:'numeric'});
+// The zones the time zone picker offers: the browser's list, with the one in use if the list lacks it (UTC).
+const zones=(current:string)=>{const all=(Intl as {supportedValuesOf?:(key:string)=>string[]}).supportedValuesOf?.('timeZone')??[];return all.includes(current)?all:[current,...all];};
 
 // "3 min ago", "in 2 h", "just now".
 function when(at:number,now:number) {
@@ -34,7 +36,10 @@ export function ScheduleAdmin() {
   useEffect(()=>{const t=setInterval(()=>{setNow(Date.now());if(!document.hidden)list.reload();},REFRESH_MS);return()=>clearInterval(t);},[]);
   const run=(job:JobView)=>{setStarting(job.id);void mutation.run(()=>api(`/admin/jobs/${encodeURIComponent(job.id)}/run`,'POST')).then(ok=>{if(ok)toast.info(`${job.label} started`);}).finally(()=>setStarting(''));};
   const data=list.data,attention=data?.jobs.filter(j=>j.state==='failed'||j.state==='waiting').length??0;
-  return <><SectionHead title="Schedule" description={data&&(attention?`${plural(attention,'job')} need${attention===1?'s':''} attention`:'Everything is on schedule')}/>
+  const setZone=(timeZone:string)=>void mutation.run(()=>api('/admin/jobs/time-zone','PUT',{timeZone})).then(ok=>{if(ok)toast.info(`Schedules now run on ${timeZone} time`);});
+  return <><SectionHead title="Schedule" description={data&&(attention?`${plural(attention,'job')} need${attention===1?'s':''} attention`:'Everything is on schedule')}>
+      {data&&<select aria-label="Time zone" title="The time zone every schedule runs in" value={data.zone} disabled={mutation.busy} onChange={e=>setZone(e.target.value)}>{zones(data.zone).map(z=><option key={z} value={z}>{z.replaceAll('_',' ')}</option>)}</select>}
+    </SectionHead>
     {mutation.error&&<ErrorNotice message={mutation.error} dismiss={()=>mutation.setError('')}/>}
     {list.error&&!data?<ErrorNotice message={list.error.message} retry={list.reload}/>:!data?<Loading/>:!data.jobs.length?<Empty title="No jobs"/>:<>
       <Timeline data={data} now={now}/>
